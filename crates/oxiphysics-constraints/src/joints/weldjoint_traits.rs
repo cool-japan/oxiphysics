@@ -10,12 +10,12 @@
 
 use crate::traits::Constraint;
 use oxiphysics_core::BodyHandle;
-use oxiphysics_core::math::{Unit, Vec3};
+use oxiphysics_core::math::Vec3;
 use oxiphysics_rigid::RigidBodySet;
 
+use super::constraint_math::apply_orientation_correction;
 use super::functions::{
     apply_angular_impulse, apply_pair_impulse, linear_effective_mass, read_body,
-    small_rotation_quat,
 };
 use super::types::WeldJoint;
 
@@ -121,26 +121,20 @@ impl Constraint for WeldJoint {
                 body.transform.position -= correction * (b.inv_mass / k);
             }
         }
-        let current_rel = a.rotation.inverse() * b.rotation;
-        let rot_error = self.desired_relative_rotation.inverse() * current_rel;
-        let (axis, angle) = rot_error
-            .axis_angle()
-            .unwrap_or((Unit::new_normalize(Vec3::new(1.0, 0.0, 0.0)), 0.0));
-        if angle.abs() > 1e-6 {
-            let ang_correction = axis.into_inner() * angle * self.baumgarte;
-            let ang_k = a.inv_inertia + b.inv_inertia;
-            if let Some(ang_k_inv) = ang_k.try_inverse() {
-                let delta = ang_k_inv * ang_correction;
-                if let Some(body) = bodies.get_mut(self.body_a) {
-                    let dq = small_rotation_quat(&(-delta * 0.5));
-                    body.transform.rotation = dq * body.transform.rotation;
-                }
-                if let Some(body) = bodies.get_mut(self.body_b) {
-                    let dq = small_rotation_quat(&(delta * 0.5));
-                    body.transform.rotation = dq * body.transform.rotation;
-                }
-            }
-        }
+        // With B = A·desired·e the orientation error e (axis · angle in B's
+        // frame) is the rotation that must be removed; in the world frame it is
+        // the same rotation conjugated by A·desired.
+        let target_frame = a.rotation * self.desired_relative_rotation;
+        let rot_error =
+            self.desired_relative_rotation.inverse() * (a.rotation.inverse() * b.rotation);
+        let error_world = target_frame * rot_error.scaled_axis();
+        apply_orientation_correction(
+            bodies,
+            self.body_a,
+            self.body_b,
+            error_world,
+            self.baumgarte,
+        );
     }
     fn body_handles(&self) -> Vec<BodyHandle> {
         vec![self.body_a, self.body_b]

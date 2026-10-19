@@ -287,47 +287,126 @@ pub struct DislocationCore {
     pub displacements: Vec<(usize, [f64; 3])>,
 }
 /// Periodic boundary conditions box.
+///
+/// The cell is spanned by `a = (lx, 0, 0)`, `b = (xy, ly, 0)` and
+/// `c = (0, 0, lz)`: orthorhombic for the tilt factor `xy = 0`, monoclinic
+/// otherwise (the LAMMPS triclinic convention restricted to an `xy` tilt, which
+/// is what a simple shear `x -> x + gamma y` needs).
 #[derive(Debug, Clone)]
 pub struct SimBox {
     /// Box lengths along x, y, z (Å).
     pub lengths: [f64; 3],
+    /// Tilt factor `xy` (Å): the second box vector is `(xy, ly, 0)`, so
+    /// crossing a periodic boundary in y shifts x by `xy`.  Zero for an
+    /// orthorhombic box.
+    pub xy: f64,
+}
+/// Reduces the displacement `d` into `[-len / 2, len / 2]` by whole periods
+/// `len`: the number of periods removed and the reduced value.
+///
+/// A displacement of exactly half a period (or an odd number of half periods)
+/// keeps the sign of `d`, so `+len / 2` stays `+len / 2`.  A degenerate period
+/// or a non-finite displacement is left alone.
+fn reduce_half_period(d: f64, len: f64) -> (f64, f64) {
+    if !(len > 0.0 && len.is_finite() && d.is_finite()) {
+        return (0.0, d);
+    }
+    let periods = ((d.abs() / len - 0.5).ceil().max(0.0)).copysign(d);
+    if !periods.is_finite() {
+        return (0.0, d);
+    }
+    let mut k = periods;
+    let mut reduced = d - k * len;
+    // Rounding of `d / len` can leave the result a hair outside; one correction
+    // in the right direction suffices.
+    if reduced > 0.5 * len {
+        k += 1.0;
+        reduced = d - k * len;
+    } else if reduced < -0.5 * len {
+        k -= 1.0;
+        reduced = d - k * len;
+    }
+    (k, reduced)
+}
+/// Wraps the coordinate `x` into `[0, len)`: the number of periods removed and
+/// the wrapped coordinate.  A degenerate period or a non-finite coordinate is
+/// left alone.
+///
+/// A coordinate within rounding error of a lattice point (for instance a
+/// coordinate a hair below zero, which would come back as exactly `len`) is
+/// reported as `0`.
+fn wrap_coordinate(x: f64, len: f64) -> (f64, f64) {
+    if !(len > 0.0 && len.is_finite() && x.is_finite()) {
+        return (0.0, x);
+    }
+    let mut k = (x / len).floor();
+    if !k.is_finite() {
+        return (0.0, x);
+    }
+    let mut wrapped = x - k * len;
+    if wrapped < 0.0 {
+        k -= 1.0;
+        wrapped = x - k * len;
+    } else if wrapped >= len {
+        k += 1.0;
+        wrapped = x - k * len;
+    }
+    if !(0.0..len).contains(&wrapped) {
+        return (k, 0.0);
+    }
+    (k, wrapped)
+}
+/// `k * xy`, zero for `k = 0` so that an undefined tilt cannot poison an
+/// untouched coordinate.
+fn tilt_drag(k: f64, xy: f64) -> f64 {
+    if k == 0.0 { 0.0 } else { k * xy }
 }
 impl SimBox {
     /// Create a new orthorhombic box.
     pub fn new(lx: f64, ly: f64, lz: f64) -> Self {
         Self {
             lengths: [lx, ly, lz],
+            xy: 0.0,
         }
     }
     /// Cubic box.
     pub fn cubic(l: f64) -> Self {
         Self::new(l, l, l)
     }
-    /// Apply minimum image convention.
-    pub fn min_image(&self, dr: [f64; 3]) -> [f64; 3] {
-        let mut out = dr;
-        for (out_k, &len) in out.iter_mut().zip(self.lengths.iter()) {
-            while *out_k > 0.5 * len {
-                *out_k -= len;
-            }
-            while *out_k < -0.5 * len {
-                *out_k += len;
-            }
-        }
-        out
+    /// The same box with the tilt factor `xy` (Å); see [`SimBox::xy`].
+    pub fn with_xy_tilt(mut self, xy: f64) -> Self {
+        self.xy = xy;
+        self
     }
-    /// Wrap position into box.
+    /// Apply the minimum image convention.
+    ///
+    /// The y period is removed first (it drags x along by `xy`), then x and z.
+    /// Every displacement that is shorter than half of each box edge is mapped
+    /// to its nearest periodic image, so all pairs inside a cutoff that is
+    /// smaller than half of every edge are found with the correct image.
+    pub fn min_image(&self, dr: [f64; 3]) -> [f64; 3] {
+        let [lx, ly, lz] = self.lengths;
+        let (ky, y) = reduce_half_period(dr[1], ly);
+        let (_, x) = reduce_half_period(dr[0] - tilt_drag(ky, self.xy), lx);
+        let (_, z) = reduce_half_period(dr[2], lz);
+        [x, y, z]
+    }
+    /// Wrap position into the box.
+    ///
+    /// The box is the parallelepiped spanned by `(lx, 0, 0)`, `(xy, ly, 0)` and
+    /// `(0, 0, lz)`: afterwards the fractional coordinates `y / ly`,
+    /// `(x - xy y / ly) / lx` and `z / lz` lie in `[0, 1)`.
     pub fn wrap(&self, pos: [f64; 3]) -> [f64; 3] {
-        let mut out = pos;
-        for (out_k, &len) in out.iter_mut().zip(self.lengths.iter()) {
-            while *out_k >= len {
-                *out_k -= len;
-            }
-            while *out_k < 0.0 {
-                *out_k += len;
-            }
-        }
-        out
+        let [lx, ly, lz] = self.lengths;
+        let (ky, y) = wrap_coordinate(pos[1], ly);
+        let shear_offset = if y.is_finite() && ly > 0.0 && ly.is_finite() {
+            self.xy * (y / ly)
+        } else {
+            0.0
+        };
+        let (_, x) = wrap_coordinate(pos[0] - tilt_drag(ky, self.xy) - shear_offset, lx);
+        let (_, z) = wrap_coordinate(pos[2], lz);
+        [x + shear_offset, y, z]
     }
     /// Volume of the box (ų).
     pub fn volume(&self) -> f64 {
@@ -416,8 +495,10 @@ pub struct EamParams {
     pub cutoff: f64,
     /// Atomic mass (amu).
     pub mass: f64,
-    /// Lattice constant (Å).
+    /// Lattice constant (Å) of the conventional cubic cell.
     pub lattice_a: f64,
+    /// Equilibrium crystal structure of the element.
+    pub structure: CrystalStructure,
     /// Element label (e.g. "Cu", "Ni").
     pub label: String,
 }
@@ -435,6 +516,7 @@ impl EamParams {
             cutoff: 5.50,
             mass: 63.546,
             lattice_a: 3.615,
+            structure: CrystalStructure::FCC,
             label: "Cu".to_string(),
         }
     }
@@ -451,6 +533,7 @@ impl EamParams {
             cutoff: 5.30,
             mass: 58.693,
             lattice_a: 3.524,
+            structure: CrystalStructure::FCC,
             label: "Ni".to_string(),
         }
     }
@@ -467,6 +550,7 @@ impl EamParams {
             cutoff: 6.00,
             mass: 26.982,
             lattice_a: 4.050,
+            structure: CrystalStructure::FCC,
             label: "Al".to_string(),
         }
     }
@@ -483,6 +567,7 @@ impl EamParams {
             cutoff: 5.30,
             mass: 55.845,
             lattice_a: 2.8665,
+            structure: CrystalStructure::BCC,
             label: "Fe".to_string(),
         }
     }

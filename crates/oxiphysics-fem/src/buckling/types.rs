@@ -3,7 +3,12 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use crate::analysis::{FemError, dense};
 use std::f64::consts::PI;
+
+/// Cap on the Jacobi sweeps used by the buckling eigen-solver (about ten are
+/// needed in practice; the convergence is quadratic).
+const MAX_JACOBI_SWEEPS: usize = 100;
 
 /// Dense n×n geometric stiffness matrix.
 pub struct GeometricStiffness {
@@ -74,74 +79,79 @@ impl BucklingProblem {
     pub fn set_kg(&mut self, i: usize, j: usize, v: f64) {
         self.kg.set(i, j, v);
     }
-    /// Solve for the smallest `num_modes` buckling load factors via inverse power iteration.
+    /// Solve for the smallest `num_modes` positive buckling load factors λ of
+    /// `(K − λ·Kg)·φ = 0` together with their mode shapes.
     ///
-    /// Returns load factors sorted in ascending order.
-    pub fn solve_buckling_load_factors(&self, num_modes: usize) -> Vec<f64> {
+    /// `K` must be symmetric positive definite (apply the boundary conditions
+    /// first so that no rigid-body mode remains) and `Kg` symmetric.  With the
+    /// Cholesky factorisation `K = L·Lᵀ` the problem becomes the *standard*
+    /// symmetric eigenproblem `A·y = μ·y` for `A = L⁻¹·Kg·L⁻ᵀ`, `μ = 1/λ`,
+    /// `φ = L⁻ᵀ·y`, which is diagonalised completely by Jacobi sweeps.  Every
+    /// positive `μ` gives one buckling load `λ = 1/μ`, so *all* modes — not just
+    /// the first — are found, in ascending order of `λ`.  Eigenvalues `μ ≤ 0`
+    /// correspond to buckling under a reversed load and are not reported, and
+    /// neither are those that are zero to round-off (a `Kg` with a null space).
+    /// Fewer than `num_modes` modes are returned when fewer positive factors
+    /// exist; an empty vector means the structure does not buckle under the
+    /// reference load.
+    ///
+    /// The mode shapes are scaled to unit Euclidean norm; the sign is fixed so
+    /// that the first component of (nearly) largest magnitude is positive.
+    ///
+    /// # Errors
+    ///
+    /// - [`FemError::InvalidInput`] — non-finite or non-symmetric `K` / `Kg`, or a
+    ///   `K` that is not positive definite;
+    /// - [`FemError::SolverNotConverged`] — the Jacobi iteration did not converge.
+    pub fn solve_buckling_modes(&self, num_modes: usize) -> Result<Vec<BucklingMode>, FemError> {
         let n = self.n;
-        let num_modes = num_modes.min(n);
-        let mut factors = Vec::with_capacity(num_modes);
-        for mode_idx in 0..num_modes {
-            let shift = if mode_idx == 0 {
-                0.0
-            } else {
-                factors[mode_idx - 1] * 1.01 + 1e-6
-            };
-            let lf = self.inverse_power_iteration(shift, 500, 1e-10);
-            factors.push(lf);
+        // Kg·φ = μ·K·φ with μ = 1/λ and K playing the role of the mass matrix.
+        let eigen = dense::generalized_symmetric_eigen(
+            ("geometric stiffness matrix Kg", &self.kg.data),
+            ("elastic stiffness matrix K", &self.k.data),
+            n,
+            MAX_JACOBI_SWEEPS,
+        )?;
+        let spectral_radius = eigen.values.iter().fold(0.0_f64, |r, mu| r.max(mu.abs()));
+        // A μ this small is round-off of a zero eigenvalue (λ = ∞), not a load.
+        let cutoff = n as f64 * f64::EPSILON * spectral_radius;
+        let mut modes = Vec::new();
+        // μ ascending ⇒ walk from the largest μ (smallest λ) downwards.
+        for index in (0..n).rev() {
+            if modes.len() >= num_modes {
+                break;
+            }
+            let mu = eigen.values[index];
+            if mu <= cutoff {
+                break;
+            }
+            let mut shape = eigen.eigenvector(index);
+            let norm = shape.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if norm > 0.0 {
+                for value in shape.iter_mut() {
+                    *value /= norm;
+                }
+            }
+            dense::normalise_sign(&mut shape);
+            modes.push(BucklingMode {
+                load_factor: 1.0 / mu,
+                mode_shape: shape,
+            });
         }
-        factors.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        factors
+        Ok(modes)
     }
-    /// Perform inverse power iteration with shift `sigma` to find eigenvalue nearest sigma.
-    fn inverse_power_iteration(&self, sigma: f64, max_iter: usize, tol: f64) -> f64 {
-        let n = self.n;
-        let mut a = vec![0.0f64; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                a[i * n + j] = self.k.get(i, j) - sigma * self.kg.get(i, j);
-            }
-        }
-        let mut v = vec![1.0f64 / (n as f64).sqrt(); n];
-        let mut lambda = sigma + 1.0;
-        for _ in 0..max_iter {
-            let mut w = vec![0.0f64; n];
-            for (i, w_i) in w.iter_mut().enumerate().take(n) {
-                for (j, v_j) in v.iter().enumerate().take(n) {
-                    *w_i += self.kg.get(i, j) * v_j;
-                }
-            }
-            let z = match gaussian_solve(&a, &w, n) {
-                Some(x) => x,
-                None => return sigma + 1.0,
-            };
-            let mut num = 0.0f64;
-            let mut den = 0.0f64;
-            for i in 0..n {
-                let mut kv_i = 0.0f64;
-                let mut kgv_i = 0.0f64;
-                for (j, z_j) in z.iter().enumerate().take(n) {
-                    kv_i += self.k.get(i, j) * z_j;
-                    kgv_i += self.kg.get(i, j) * z_j;
-                }
-                num += z[i] * kv_i;
-                den += z[i] * kgv_i;
-            }
-            let new_lambda = if den.abs() > 1e-300 {
-                num / den
-            } else {
-                sigma + 1.0
-            };
-            let norm: f64 = z.iter().map(|x| x * x).sum::<f64>().sqrt();
-            if norm > 1e-300 {
-                v = z.iter().map(|x| x / norm).collect();
-            }
-            if (new_lambda - lambda).abs() < tol * (1.0 + lambda.abs()) {
-                return new_lambda;
-            }
-            lambda = new_lambda;
-        }
-        lambda
+
+    /// Solve for the smallest `num_modes` positive buckling load factors,
+    /// sorted in ascending order.
+    ///
+    /// See [`solve_buckling_modes`](Self::solve_buckling_modes) for the method,
+    /// the conditions on `K` and `Kg`, and the errors.
+    pub fn solve_buckling_load_factors(&self, num_modes: usize) -> Result<Vec<f64>, FemError> {
+        Ok(self
+            .solve_buckling_modes(num_modes)?
+            .into_iter()
+            .map(|mode| mode.load_factor)
+            .collect())
     }
 }
 /// Koiter's asymptotic post-buckling expansion for initial post-buckling.
@@ -240,9 +250,6 @@ impl StiffnessMatrix {
     }
     fn set(&mut self, i: usize, j: usize, v: f64) {
         self.data[i * self.n + j] = v;
-    }
-    fn get(&self, i: usize, j: usize) -> f64 {
-        self.data[i * self.n + j]
     }
 }
 /// Sparse-triplet representation of the global buckling eigenvalue problem.

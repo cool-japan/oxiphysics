@@ -37,6 +37,14 @@ const AVOGADRO: f64 = 6.02214076e23;
 /// Vacuum permittivity in F/m.
 const EPSILON_0: f64 = 8.854187817e-12;
 
+/// Coulomb constant `e² / (4π ε₀)` in eV·Angstrom for charges in units of `e`
+/// (about 14.3996).
+///
+/// `e² / (4π ε₀)` equals `e · [e / (4π ε₀)]` joule·metre.  Dividing by `e`
+/// expresses it in electron-volt·metre, and dividing by `1e-10` m/Angstrom
+/// converts the metre to Angstrom, leaving `e / (4π ε₀ · 1e-10)`.
+const COULOMB_CONSTANT_EV_ANGSTROM: f64 = ELEMENTARY_CHARGE / (4.0 * PI * EPSILON_0 * 1.0e-10);
+
 /// Reference temperature in K (25 C).
 const REF_TEMPERATURE: f64 = 298.15;
 
@@ -80,6 +88,16 @@ pub enum AtomSpecies {
 }
 
 impl AtomSpecies {
+    /// Every species, ordered by its enum discriminant (`species as usize`).
+    const ALL: [AtomSpecies; 6] = [
+        AtomSpecies::Li,
+        AtomSpecies::C,
+        AtomSpecies::O,
+        AtomSpecies::P,
+        AtomSpecies::Fe,
+        AtomSpecies::Mn,
+    ];
+
     /// Atomic mass in kg.
     pub fn mass(&self) -> f64 {
         match self {
@@ -1030,41 +1048,98 @@ impl Default for BatteryAnalysis {
 // Lennard-Jones force between battery atoms
 // ---------------------------------------------------------------------------
 
+/// Number of distinct [`AtomSpecies`].
+const N_SPECIES: usize = AtomSpecies::ALL.len();
+
+/// Smallest pair separation (Angstrom) resolved by [`compute_battery_forces`];
+/// closer pairs are skipped to avoid the `1/r` singularity.
+const MIN_PAIR_DISTANCE: f64 = 0.01;
+
+/// Lorentz-Berthelot Lennard-Jones parameters of one species pair.
+#[derive(Debug, Clone, Copy)]
+struct LjPair {
+    /// Combined diameter `(σ₁ + σ₂) / 2` in Angstrom.
+    sigma: f64,
+    /// Combined well depth `√(ε₁ ε₂)` in eV.
+    epsilon: f64,
+    /// Separation `0.1 σ` below which the force is switched off.
+    r_min: f64,
+    /// Separation `3 σ` above which the force is switched off.
+    r_max: f64,
+}
+
+impl LjPair {
+    /// Combine the per-species parameters with the Lorentz-Berthelot rules.
+    fn new(sigma1: f64, epsilon1: f64, sigma2: f64, epsilon2: f64) -> Self {
+        let sigma = 0.5 * (sigma1 + sigma2);
+        Self {
+            sigma,
+            epsilon: (epsilon1 * epsilon2).sqrt(),
+            r_min: 0.1 * sigma,
+            r_max: 3.0 * sigma,
+        }
+    }
+
+    /// Force magnitude `-dU/dr` (eV/Angstrom, positive = repulsive) at
+    /// separation `r`, zero outside `[0.1 σ, 3 σ]`.
+    fn force(&self, r: f64) -> f64 {
+        if r < self.r_min || r > self.r_max {
+            return 0.0;
+        }
+        let sr6 = (self.sigma / r).powi(6);
+        let sr12 = sr6 * sr6;
+        24.0 * self.epsilon * (2.0 * sr12 - sr6) / r
+    }
+}
+
+/// Lennard-Jones parameters of every ordered species pair, indexed by
+/// `species as usize`.
+fn lj_pair_table() -> [[LjPair; N_SPECIES]; N_SPECIES] {
+    AtomSpecies::ALL.map(|a| {
+        AtomSpecies::ALL
+            .map(|b| LjPair::new(a.lj_sigma(), a.lj_epsilon(), b.lj_sigma(), b.lj_epsilon()))
+    })
+}
+
 /// Compute LJ force magnitude between two atoms.
 ///
-/// Uses Lorentz-Berthelot combining rules.
+/// Uses Lorentz-Berthelot combining rules.  The magnitude is `-dU/dr` in
+/// eV/Angstrom for `sigma` in Angstrom and `epsilon` in eV; positive values
+/// are repulsive.  The force is switched off for `r < 0.1 σ` and `r > 3 σ`.
 pub fn lj_force_magnitude(r: f64, sigma1: f64, epsilon1: f64, sigma2: f64, epsilon2: f64) -> f64 {
-    let sigma = 0.5 * (sigma1 + sigma2);
-    let epsilon = (epsilon1 * epsilon2).sqrt();
-    if r < 0.1 * sigma || r > 3.0 * sigma {
-        return 0.0;
-    }
-    let sr6 = (sigma / r).powi(6);
-    let sr12 = sr6 * sr6;
-    24.0 * epsilon * (2.0 * sr12 - sr6) / r
+    LjPair::new(sigma1, epsilon1, sigma2, epsilon2).force(r)
 }
 
 /// Compute Coulomb force magnitude between two charged atoms.
 ///
-/// F = k_e * q1 * q2 / r^2   (in eV/Angstrom, with charges in e).
+/// `F = k_e * q1 * q2 / (dielectric * r^2)` in eV/Angstrom, with `r` in
+/// Angstrom, charges in units of `e` and `k_e = e^2 / (4 pi eps_0)`
+/// = 14.3996 eV*Angstrom / e^2.  The result is positive (repulsive) for like
+/// charges and negative (attractive) for opposite charges.  Pairs closer than
+/// 0.1 Angstrom return zero.
 pub fn coulomb_force(r: f64, q1: f64, q2: f64, dielectric: f64) -> f64 {
     if r < 0.1 {
         return 0.0;
     }
-    // Coulomb constant in eV*Angstrom / e^2
-    let k_e = ELEMENTARY_CHARGE / (4.0 * PI * EPSILON_0 * 1.0e-10) / ELEMENTARY_CHARGE;
-    k_e * q1 * q2 / (dielectric * r * r)
+    COULOMB_CONSTANT_EV_ANGSTROM * q1 * q2 / (dielectric * r * r)
 }
 
 /// Compute pairwise forces on a list of battery atoms.
 ///
-/// Updates force arrays in-place.
+/// Updates force arrays in-place (eV/Angstrom).  Every pair closer than
+/// `cutoff` (Angstrom) interacts through the Lennard-Jones force of
+/// [`lj_force_magnitude`] plus the screened Coulomb force of [`coulomb_force`];
+/// both are repulsive when positive, so the force on atom `j` points away from
+/// atom `i` and the force on `i` is its negative (Newton's third law).  A
+/// non-positive or NaN `cutoff` selects no pairs.
 pub fn compute_battery_forces(atoms: &mut [LatticeAtom], cutoff: f64, dielectric: f64) {
     let n = atoms.len();
-    // Zero forces
     for atom in atoms.iter_mut() {
         atom.zero_forces();
     }
+    let cutoff_sq = if cutoff > 0.0 { cutoff * cutoff } else { 0.0 };
+    let min_sq = MIN_PAIR_DISTANCE * MIN_PAIR_DISTANCE;
+    let lj_table = lj_pair_table();
     // O(N^2) pairwise loop (for small systems)
     for i in 0..n {
         for j in (i + 1)..n {
@@ -1074,26 +1149,19 @@ pub fn compute_battery_forces(atoms: &mut [LatticeAtom], cutoff: f64, dielectric
                 *dr_val = atoms[j].pos[d] - atoms[i].pos[d];
                 r2 += *dr_val * *dr_val;
             }
-            let r = r2.sqrt();
-            if r > cutoff || r < 0.01 {
+            if r2 > cutoff_sq || r2 < min_sq {
                 continue;
             }
-            // LJ force
-            let flj = lj_force_magnitude(
-                r,
-                atoms[i].species.lj_sigma(),
-                atoms[i].species.lj_epsilon(),
-                atoms[j].species.lj_sigma(),
-                atoms[j].species.lj_epsilon(),
-            );
-            // Coulomb force
+            let r = r2.sqrt();
+            let flj = lj_table[atoms[i].species as usize][atoms[j].species as usize].force(r);
             let fc = coulomb_force(r, atoms[i].charge, atoms[j].charge, dielectric);
-
+            // Repulsive-positive magnitude: atom j is pushed along +dr, atom i
+            // along -dr.
             let f_total = flj + fc;
             for (d, &dr_val) in dr.iter().enumerate() {
                 let f_d = f_total * dr_val / r;
-                atoms[i].force[d] += f_d;
-                atoms[j].force[d] -= f_d;
+                atoms[i].force[d] -= f_d;
+                atoms[j].force[d] += f_d;
             }
         }
     }
@@ -1418,5 +1486,165 @@ mod tests {
         let f = coulomb_force(5.0, 1.0, 1.0, 1.0);
         // Like charges repel (positive force)
         assert!(f > 0.0);
+    }
+
+    /// Two atoms: the first at the origin, the second `separation` along +x.
+    fn pair_along_x(
+        species_a: AtomSpecies,
+        species_b: AtomSpecies,
+        separation: f64,
+    ) -> Vec<LatticeAtom> {
+        vec![
+            LatticeAtom::new([0.0, 0.0, 0.0], species_a, 0),
+            LatticeAtom::new([separation, 0.0, 0.0], species_b, 0),
+        ]
+    }
+
+    #[test]
+    fn test_coulomb_constant_is_ev_angstrom_per_e_squared() {
+        // e^2 / (4 pi eps_0) = 14.3996 eV*Angstrom: two unit charges 1 Angstrom
+        // apart repel with 14.3996 eV/Angstrom (not the 8.99e19 of the old code).
+        let f = coulomb_force(1.0, 1.0, 1.0, 1.0);
+        assert!((f - 14.399_645).abs() < 1.0e-4, "k_e = {f}");
+        // 1/r^2 scaling, charge product and dielectric screening.
+        assert!((coulomb_force(2.0, 1.0, 1.0, 1.0) - f / 4.0).abs() < 1.0e-12);
+        assert!((coulomb_force(1.0, 2.0, -3.0, 1.0) + 6.0 * f).abs() < 1.0e-9);
+        assert!((coulomb_force(1.0, 1.0, 1.0, 80.0) - f / 80.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn test_coulomb_force_vanishes_inside_minimum_distance() {
+        assert_eq!(coulomb_force(0.05, 1.0, 1.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn test_like_charges_repel_each_other() {
+        // Two Li+ ions 3 Angstrom apart: the force on atom 0 points to -x,
+        // away from atom 1, and the force on atom 1 to +x.
+        let mut atoms = pair_along_x(AtomSpecies::Li, AtomSpecies::Li, 3.0);
+        compute_battery_forces(&mut atoms, 10.0, 1.0);
+        let expected =
+            lj_force_magnitude(3.0, 2.18, 0.002, 2.18, 0.002) + coulomb_force(3.0, 1.0, 1.0, 1.0);
+        assert!(expected > 1.0, "Coulomb repulsion dominates: {expected}");
+        assert!(
+            atoms[0].force[0] < 0.0,
+            "atom 0 must be pushed towards -x, got {}",
+            atoms[0].force[0]
+        );
+        assert!(
+            atoms[1].force[0] > 0.0,
+            "atom 1 must be pushed towards +x, got {}",
+            atoms[1].force[0]
+        );
+        assert!((atoms[1].force[0] - expected).abs() < 1.0e-12);
+        assert!((atoms[0].force[0] + expected).abs() < 1.0e-12);
+        for atom in &atoms {
+            assert_eq!(atom.force[1], 0.0);
+            assert_eq!(atom.force[2], 0.0);
+        }
+    }
+
+    #[test]
+    fn test_opposite_charges_attract_each_other() {
+        // Li+ (+1 e) and O (-2 e) 3 Angstrom apart: Li is pulled towards +x.
+        let mut atoms = pair_along_x(AtomSpecies::Li, AtomSpecies::O, 3.0);
+        compute_battery_forces(&mut atoms, 10.0, 1.0);
+        let coulomb = coulomb_force(3.0, 1.0, -2.0, 1.0);
+        assert!(coulomb < -3.0, "attraction of about 3.2 eV/A: {coulomb}");
+        assert!(atoms[0].force[0] > 3.0, "Li force {}", atoms[0].force[0]);
+        assert!(atoms[1].force[0] < -3.0, "O force {}", atoms[1].force[0]);
+        assert!((atoms[0].force[0] + atoms[1].force[0]).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn test_lj_pair_is_repulsive_inside_and_attractive_outside_the_minimum() {
+        // Neutral carbon pair (sigma = 3.40 A): the LJ minimum sits at
+        // 2^(1/6) sigma = 3.816 A.
+        let mut inside = pair_along_x(AtomSpecies::C, AtomSpecies::C, 3.0);
+        compute_battery_forces(&mut inside, 12.0, 1.0);
+        assert!(inside[0].force[0] < 0.0 && inside[1].force[0] > 0.0);
+        let mut outside = pair_along_x(AtomSpecies::C, AtomSpecies::C, 5.0);
+        compute_battery_forces(&mut outside, 12.0, 1.0);
+        assert!(outside[0].force[0] > 0.0 && outside[1].force[0] < 0.0);
+    }
+
+    #[test]
+    fn test_pair_force_is_minus_gradient_of_pair_energy() {
+        // U(r) = 4 eps [(sigma/r)^12 - (sigma/r)^6] + k_e q1 q2 / (eps_r r)
+        // for Li (+1 e) and O (-2 e): sigma = 2.65 A, eps = 0.004 eV.
+        let (sigma, epsilon) = (2.65_f64, 0.004_f64);
+        let (q1, q2, eps_r) = (1.0_f64, -2.0_f64, 4.0_f64);
+        let energy = |r: f64| {
+            let sr6 = (sigma / r).powi(6);
+            4.0 * epsilon * (sr6 * sr6 - sr6) + COULOMB_CONSTANT_EV_ANGSTROM * q1 * q2 / (eps_r * r)
+        };
+        for r in [2.5_f64, 3.0, 4.2, 6.0] {
+            let h = 1.0e-5;
+            let minus_gradient = -(energy(r + h) - energy(r - h)) / (2.0 * h);
+            let mut atoms = pair_along_x(AtomSpecies::Li, AtomSpecies::O, r);
+            compute_battery_forces(&mut atoms, 20.0, eps_r);
+            // The force on the atom at +x equals -dU/dr along +x.
+            assert!(
+                (atoms[1].force[0] - minus_gradient).abs() < 1.0e-7,
+                "r = {r}: force {} vs -dU/dr {minus_gradient}",
+                atoms[1].force[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_battery_forces_conserve_momentum_and_respect_cutoff() {
+        let mut atoms = vec![
+            LatticeAtom::new([0.0, 0.0, 0.0], AtomSpecies::Li, 0),
+            LatticeAtom::new([2.5, 0.4, -0.3], AtomSpecies::O, 0),
+            LatticeAtom::new([-0.7, 2.9, 0.5], AtomSpecies::Fe, 1),
+            LatticeAtom::new([40.0, 40.0, 40.0], AtomSpecies::Mn, 2),
+        ];
+        compute_battery_forces(&mut atoms, 8.0, 3.0);
+        let mut total = [0.0_f64; 3];
+        for atom in &atoms {
+            for (t, f) in total.iter_mut().zip(atom.force) {
+                *t += f;
+            }
+        }
+        for t in total {
+            assert!(t.abs() < 1.0e-12, "net force must vanish, got {total:?}");
+        }
+        assert_eq!(atoms[3].force, [0.0; 3], "atom beyond the cutoff");
+        assert!(atoms[0].force.iter().any(|f| f.abs() > 1.0e-3));
+    }
+
+    #[test]
+    fn test_non_positive_cutoff_selects_no_pairs() {
+        for cutoff in [0.0, -5.0, f64::NAN] {
+            let mut atoms = pair_along_x(AtomSpecies::Li, AtomSpecies::Li, 3.0);
+            compute_battery_forces(&mut atoms, cutoff, 1.0);
+            assert_eq!(atoms[0].force, [0.0; 3], "cutoff {cutoff}");
+            assert_eq!(atoms[1].force, [0.0; 3], "cutoff {cutoff}");
+        }
+    }
+
+    #[test]
+    fn test_species_table_matches_discriminants_and_pair_function() {
+        for (index, species) in AtomSpecies::ALL.iter().enumerate() {
+            assert_eq!(*species as usize, index);
+        }
+        let table = lj_pair_table();
+        for a in AtomSpecies::ALL {
+            for b in AtomSpecies::ALL {
+                for r in [1.0_f64, 2.0, 3.5, 5.0, 9.0] {
+                    let from_table = table[a as usize][b as usize].force(r);
+                    let direct = lj_force_magnitude(
+                        r,
+                        a.lj_sigma(),
+                        a.lj_epsilon(),
+                        b.lj_sigma(),
+                        b.lj_epsilon(),
+                    );
+                    assert_eq!(from_table, direct);
+                    assert_eq!(from_table, table[b as usize][a as usize].force(r));
+                }
+            }
+        }
     }
 }

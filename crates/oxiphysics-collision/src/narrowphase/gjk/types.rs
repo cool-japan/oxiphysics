@@ -6,6 +6,7 @@ use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Real, Vec3};
 use oxiphysics_geometry::Shape;
 
+use super::distance::converge_distance;
 use super::functions::*;
 
 /// A single iteration record in a GJK debug trace.
@@ -153,14 +154,11 @@ impl WarmStartGjk {
             }
             let new_pt = support(shape_a, transform_a, shape_b, transform_b, &direction);
             if new_pt.point.dot(&direction) < -TOLERANCE {
-                let (closest, bary) = simplex.closest_point_to_origin();
-                let dist = closest.norm();
-                let (pa, pb) = barycentric_witnesses(&simplex, &bary);
-                break GjkResult::Separated {
-                    point_a: pa,
-                    point_b: pb,
-                    distance: dist,
-                };
+                // Separated: converge the distance and the witness points from
+                // the terminating simplex instead of reporting its upper bound.
+                let pair = converge_distance(shape_a, transform_a, shape_b, transform_b, &simplex);
+                iters += pair.iterations;
+                break pair.into_result();
             }
             simplex.push(new_pt);
             if let Some(new_dir) = do_simplex(&mut simplex) {
@@ -478,9 +476,52 @@ impl VoronoiSimplexSolver {
         (best_point, best_feature)
     }
 }
+/// Outcome of the GJK boundary search, before the distance of a separated pair
+/// is refined.
+pub(crate) enum GjkSearch {
+    /// The simplex encloses the origin, so the shapes overlap (or the iteration
+    /// budget ran out while they were touching).
+    Overlap(Simplex),
+    /// A separating axis was certified. The simplex is the closest feature found
+    /// so far: it bounds the distance from above but is not yet converged.
+    Separated(Simplex),
+}
 /// GJK algorithm for convex shape intersection and closest-point queries.
 pub struct Gjk;
 impl Gjk {
+    /// Run the GJK search and report whether the origin is enclosed, together
+    /// with the number of iterations it took.
+    ///
+    /// This is the cheap part shared by every query: it decides overlap versus
+    /// separation without spending support queries on the exact distance of a
+    /// separated pair.
+    pub(crate) fn search(
+        shape_a: &dyn Shape,
+        transform_a: &Transform,
+        shape_b: &dyn Shape,
+        transform_b: &Transform,
+    ) -> (GjkSearch, usize) {
+        let mut simplex = Simplex::new();
+        let mut direction = transform_b.position - transform_a.position;
+        if direction.norm_squared() < TOLERANCE {
+            direction = Vec3::new(1.0, 0.0, 0.0);
+        }
+        let first = support(shape_a, transform_a, shape_b, transform_b, &direction);
+        simplex.push(first);
+        direction = -first.point;
+        for iteration in 1..=MAX_ITERATIONS {
+            let new_point = support(shape_a, transform_a, shape_b, transform_b, &direction);
+            if new_point.point.dot(&direction) < -TOLERANCE {
+                return (GjkSearch::Separated(simplex), iteration);
+            }
+            simplex.push(new_point);
+            match do_simplex(&mut simplex) {
+                Some(new_direction) => direction = new_direction,
+                None => return (GjkSearch::Overlap(simplex), iteration),
+            }
+        }
+        (GjkSearch::Overlap(simplex), MAX_ITERATIONS)
+    }
     /// Test whether two convex shapes intersect.
     pub fn intersect(
         shape_a: &dyn Shape,
@@ -489,9 +530,27 @@ impl Gjk {
         transform_b: &Transform,
     ) -> bool {
         matches!(
-            Self::query(shape_a, transform_a, shape_b, transform_b),
-            GjkResult::Intersecting(_)
+            Self::search(shape_a, transform_a, shape_b, transform_b).0,
+            GjkSearch::Overlap(_)
         )
+    }
+    /// The terminating simplex of an overlapping pair, or `None` if the shapes
+    /// are separated.
+    ///
+    /// The simplex is the seed that [`Epa`](crate::narrowphase::Epa) expands into
+    /// a penetration contact. Unlike [`Gjk::query`] this does not refine the
+    /// distance of a separated pair, which makes it the cheaper choice when only
+    /// overlapping pairs are of interest.
+    pub fn overlap_simplex(
+        shape_a: &dyn Shape,
+        transform_a: &Transform,
+        shape_b: &dyn Shape,
+        transform_b: &Transform,
+    ) -> Option<Simplex> {
+        match Self::search(shape_a, transform_a, shape_b, transform_b).0 {
+            GjkSearch::Overlap(simplex) => Some(simplex),
+            GjkSearch::Separated(_) => None,
+        }
     }
     /// Compute closest points between two convex shapes.
     pub fn closest_points(
@@ -508,43 +567,24 @@ impl Gjk {
         }
     }
     /// Full GJK query returning either intersection or closest points.
+    ///
+    /// For a separated pair the result is the converged closest-point pair:
+    /// `distance` is the true distance (exact for polyhedra, within about a
+    /// relative `1e-9` on curved shapes) and `point_a - point_b` the closest-point
+    /// vector of that length, with both witnesses on their shapes.
     pub fn query(
         shape_a: &dyn Shape,
         transform_a: &Transform,
         shape_b: &dyn Shape,
         transform_b: &Transform,
     ) -> GjkResult {
-        let mut simplex = Simplex::new();
-        let mut direction = transform_b.position - transform_a.position;
-        if direction.norm_squared() < TOLERANCE {
-            direction = Vec3::new(1.0, 0.0, 0.0);
-        }
-        let first = support(shape_a, transform_a, shape_b, transform_b, &direction);
-        simplex.push(first);
-        direction = -first.point;
-        for _ in 0..MAX_ITERATIONS {
-            let new_point = support(shape_a, transform_a, shape_b, transform_b, &direction);
-            if new_point.point.dot(&direction) < -TOLERANCE {
-                let (closest, bary) = simplex.closest_point_to_origin();
-                let dist = closest.norm();
-                // Witness points from the barycentric weights of the closest
-                // simplex feature (not the shape origins), so that
-                // `point_a - point_b` is the closest-point vector of length `dist`.
-                let (point_a, point_b) = barycentric_witnesses(&simplex, &bary);
-                return GjkResult::Separated {
-                    point_a,
-                    point_b,
-                    distance: dist,
-                };
-            }
-            simplex.push(new_point);
-            if let Some(new_dir) = do_simplex(&mut simplex) {
-                direction = new_dir;
-            } else {
-                return GjkResult::Intersecting(simplex);
+        match Self::search(shape_a, transform_a, shape_b, transform_b).0 {
+            GjkSearch::Overlap(simplex) => GjkResult::Intersecting(simplex),
+            GjkSearch::Separated(simplex) => {
+                converge_distance(shape_a, transform_a, shape_b, transform_b, &simplex)
+                    .into_result()
             }
         }
-        GjkResult::Intersecting(simplex)
     }
 }
 impl Gjk {

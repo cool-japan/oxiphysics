@@ -210,11 +210,21 @@ mod tests {
         assert_eq!(r.max_iter, 100);
     }
     #[test]
-    fn test_fast_sweep_runs_without_panic() {
+    fn test_fast_sweep_keeps_signs_and_distances_on_a_coarse_grid() {
+        // The accuracy of the sweep is covered in `fast_sweep`; this runs it on the
+        // small shared fixture: the field stays finite, keeps the sign of every node
+        // and an exact distance field moves by no more than a few cells.
         let mut f = make_sphere_field(0.5);
+        let before = f.data.clone();
         let r = LevelSetReinit::new(1e-4, 10);
-        r.fast_sweep(&mut f, 2);
+        r.fast_sweep(&mut f, 24);
         assert_eq!(f.data.len(), 8 * 8 * 8);
+        for (b, a) in before.iter().zip(f.data.iter()) {
+            assert!(a.is_finite());
+            assert_eq!(*b > 0.0, *a > 0.0);
+            assert_eq!(*b < 0.0, *a < 0.0);
+            assert!((a - b).abs() <= 3.0 * f.dx, "{b} -> {a}");
+        }
     }
     #[test]
     fn test_advection_shifts_interface() {

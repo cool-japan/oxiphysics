@@ -201,7 +201,14 @@ mod tests {
         reader.parse(content.as_bytes()).unwrap();
         assert_eq!(reader.count(), 1);
         let rec = &reader.records[0];
-        assert!((rec.x[0] - 2000.0).abs() < 1e-6, "x[0]={}", rec.x[0]);
+        // FIRSTX and DELTAX are actual values: XFACTOR must not scale them, and
+        // YFACTOR must scale each listed ordinate exactly once.
+        assert_eq!(rec.x.len(), 2);
+        assert_eq!(rec.y.len(), 2);
+        assert!((rec.x[0] - 1000.0).abs() < 1e-9, "x[0]={}", rec.x[0]);
+        assert!((rec.x[1] - 1100.0).abs() < 1e-9, "x[1]={}", rec.x[1]);
+        assert!((rec.y[0] - 5.0).abs() < 1e-12, "y[0]={}", rec.y[0]);
+        assert!((rec.y[1] - 10.0).abs() < 1e-12, "y[1]={}", rec.y[1]);
     }
     #[test]
     fn test_jdx_parse_multi_block() {
@@ -234,6 +241,231 @@ mod tests {
         let mut reader = JcampDxReader::new();
         reader.parse("".as_bytes()).unwrap();
         assert_eq!(reader.count(), 0);
+    }
+
+    fn parse_jdx(content: &str) -> crate::Result<JcampDxReader> {
+        let mut reader = JcampDxReader::new();
+        reader.parse(content.as_bytes())?;
+        Ok(reader)
+    }
+
+    fn assert_close_slices(got: &[f64], want: &[f64], tol: f64) {
+        assert_eq!(got.len(), want.len());
+        for (i, (g, w)) in got.iter().zip(want).enumerate() {
+            assert!((g - w).abs() <= tol, "index {i}: {g} vs {w}");
+        }
+    }
+
+    fn roundtrip_record(original: &SpectrumRecord) -> (String, SpectrumRecord) {
+        let mut buf = Vec::new();
+        SpectralExport::write_jcamp_dx(original, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        let reader = parse_jdx(&text).unwrap();
+        assert_eq!(reader.count(), 1, "file was:\n{text}");
+        let record = reader.records.into_iter().next().unwrap();
+        (text, record)
+    }
+
+    fn sample_metadata(title: &str) -> SpectrumMetadata {
+        SpectrumMetadata {
+            title: title.to_string(),
+            source: SpectrumSource::Ftir,
+            x_label: "1/CM".to_string(),
+            y_label: "ABSORBANCE".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_jdx_write_read_roundtrip_uniform_axis() {
+        // 21 points: two full lines of eight ordinates plus a line of five.
+        let x: Vec<f64> = (0..21).map(|i| 400.0 + 15.5 * i as f64).collect();
+        let y: Vec<f64> = (0..21)
+            .map(|i| (0.37 * i as f64).sin() * 1.0e-3 + 0.125 * i as f64)
+            .collect();
+        let original =
+            SpectrumRecord::from_arrays(x.clone(), y.clone(), sample_metadata("Uniform"));
+        let (text, back) = roundtrip_record(&original);
+        assert!(text.contains("##XYDATA=(X++(Y..Y))"), "{text}");
+        assert!(text.contains("##DELTAX="), "{text}");
+        assert!(text.contains("##LASTX="), "{text}");
+        assert!(!text.contains("##XYPOINTS"), "{text}");
+        assert_eq!(back.x.len(), back.y.len());
+        assert_close_slices(&back.x, &x, 1e-9);
+        assert_close_slices(&back.y, &y, 1e-9);
+        assert_eq!(back.metadata.title, "Uniform");
+        assert_eq!(back.metadata.source, SpectrumSource::Ftir);
+        assert_eq!(back.metadata.x_label, "1/CM");
+        assert_eq!(back.metadata.y_label, "ABSORBANCE");
+    }
+
+    #[test]
+    fn test_jdx_write_read_roundtrip_descending_axis() {
+        // Infrared spectra are usually stored from high to low wavenumber.
+        let x: Vec<f64> = (0..10).map(|i| 4000.0 - 400.0 * i as f64).collect();
+        let y: Vec<f64> = (0..10).map(|i| 0.1 * (i * i) as f64).collect();
+        let original = SpectrumRecord::from_arrays(x.clone(), y.clone(), sample_metadata("Desc"));
+        let (text, back) = roundtrip_record(&original);
+        assert!(text.contains("##FIRSTX=4e3"), "{text}");
+        assert!(text.contains("##LASTX=4e2"), "{text}");
+        assert_close_slices(&back.x, &x, 1e-9);
+        assert_close_slices(&back.y, &y, 1e-9);
+    }
+
+    #[test]
+    fn test_jdx_write_read_roundtrip_non_uniform_axis_uses_xypoints() {
+        // An X++(Y..Y) table cannot describe this grid; it must not be forced
+        // into one (DELTAX would silently move every point).
+        let x = vec![400.0, 450.0, 500.0, 640.0, 1000.0, 1000.5, 2500.25];
+        let y = vec![0.1, -0.2, 0.3, 1.0e-7, 5.5e3, 0.0, -1.25];
+        let original = SpectrumRecord::from_arrays(x.clone(), y.clone(), sample_metadata("Pairs"));
+        let (text, back) = roundtrip_record(&original);
+        assert!(text.contains("##XYPOINTS=(XY..XY)"), "{text}");
+        assert!(!text.contains("##DELTAX"), "{text}");
+        assert_eq!(back.x, x);
+        assert_eq!(back.y, y);
+    }
+
+    #[test]
+    fn test_jdx_write_read_roundtrip_single_and_empty_records() {
+        let one = SpectrumRecord::from_arrays(vec![633.0], vec![0.75], sample_metadata("One"));
+        let (_, back) = roundtrip_record(&one);
+        assert_eq!(back.x, vec![633.0]);
+        assert_eq!(back.y, vec![0.75]);
+
+        let empty = SpectrumRecord::from_arrays(vec![], vec![], sample_metadata("None"));
+        let mut buf = Vec::new();
+        SpectralExport::write_jcamp_dx(&empty, &mut buf).unwrap();
+        let reader = parse_jdx(&String::from_utf8(buf).unwrap()).unwrap();
+        assert_eq!(reader.count(), 0);
+    }
+
+    #[test]
+    fn test_jdx_write_rejects_mismatched_lengths() {
+        let bad =
+            SpectrumRecord::from_arrays(vec![1.0, 2.0, 3.0], vec![1.0], sample_metadata("Bad"));
+        let mut buf = Vec::new();
+        assert!(SpectralExport::write_jcamp_dx(&bad, &mut buf).is_err());
+    }
+
+    #[test]
+    fn test_jdx_missing_deltax_is_derived_from_lastx() {
+        // Written by other tools: FIRSTX/LASTX/NPOINTS without DELTAX, three
+        // ordinates per line, only the first abscissa of each line listed.
+        let content = "##TITLE=NoDelta\n##JCAMP-DX=4.24\n##DATA TYPE=INFRARED SPECTRUM\n\
+                       ##NPOINTS=9\n##FIRSTX=100.0\n##LASTX=180.0\n\
+                       ##XFACTOR=1.0\n##YFACTOR=2.0\n##XYDATA=(X++(Y..Y))\n\
+                       100.0 1 2 3\n130.0 4 5 6\n160.0 7 8 9\n##END=\n";
+        let reader = parse_jdx(content).unwrap();
+        let rec = &reader.records[0];
+        let x: Vec<f64> = (0..9).map(|i| 100.0 + 10.0 * i as f64).collect();
+        let y: Vec<f64> = (1..=9).map(|v| 2.0 * v as f64).collect();
+        assert_close_slices(&rec.x, &x, 1e-12);
+        assert_close_slices(&rec.y, &y, 1e-12);
+    }
+
+    #[test]
+    fn test_jdx_axis_falls_back_to_the_abscissa_check_values() {
+        let content = "##TITLE=Checks\n##XFACTOR=0.5\n##YFACTOR=1.0\n\
+                       ##XYDATA=(X++(Y..Y))\n1000.0 1.0 2.0\n1008.0 3.0 4.0\n##END=\n";
+        let reader = parse_jdx(content).unwrap();
+        let rec = &reader.records[0];
+        assert_close_slices(&rec.x, &[500.0, 502.0, 504.0, 506.0], 1e-12);
+        assert_close_slices(&rec.y, &[1.0, 2.0, 3.0, 4.0], 1e-12);
+    }
+
+    #[test]
+    fn test_jdx_axis_that_cannot_be_determined_is_an_error() {
+        let content = "##TITLE=NoAxis\n##XYDATA=(X++(Y..Y))\n100.0 1.0 2.0 3.0\n##END=\n";
+        let err = parse_jdx(content).unwrap_err();
+        assert!(matches!(err, crate::Error::Parse(_)), "{err}");
+    }
+
+    #[test]
+    fn test_jdx_npoints_mismatch_is_an_error() {
+        let content = "##TITLE=Short\n##NPOINTS=5\n##FIRSTX=1.0\n##DELTAX=1.0\n\
+                       ##XYDATA=(X++(Y..Y))\n1.0 1.0 2.0 3.0\n##END=\n";
+        let err = parse_jdx(content).unwrap_err();
+        assert!(matches!(err, crate::Error::Parse(_)), "{err}");
+    }
+
+    #[test]
+    fn test_jdx_non_numeric_data_token_is_an_error() {
+        // SQZ-compressed ordinates are not supported; they must not be skipped.
+        let content = "##TITLE=Squeezed\n##NPOINTS=3\n##FIRSTX=1.0\n##DELTAX=1.0\n\
+                       ##XYDATA=(X++(Y..Y))\n1.0 1 2 3A\n##END=\n";
+        let err = parse_jdx(content).unwrap_err();
+        assert!(matches!(err, crate::Error::Parse(_)), "{err}");
+    }
+
+    #[test]
+    fn test_jdx_blocks_without_end_markers_are_not_lost() {
+        let content = "##TITLE=First\n##NPOINTS=2\n##FIRSTX=1.0\n##DELTAX=1.0\n\
+                       ##XYDATA=(X++(Y..Y))\n1.0 10.0 20.0\n\
+                       ##TITLE=Second\n##NPOINTS=2\n##FIRSTX=5.0\n##DELTAX=1.0\n\
+                       ##XYDATA=(X++(Y..Y))\n5.0 30.0 40.0\n";
+        let reader = parse_jdx(content).unwrap();
+        assert_eq!(reader.count(), 2);
+        assert_eq!(reader.records[0].metadata.title, "First");
+        assert_eq!(reader.records[0].y, vec![10.0, 20.0]);
+        assert_eq!(reader.records[1].metadata.title, "Second");
+        assert_eq!(reader.records[1].x, vec![5.0, 6.0]);
+        assert_eq!(reader.records[1].y, vec![30.0, 40.0]);
+    }
+
+    #[test]
+    fn test_jdx_block_state_does_not_leak_between_blocks() {
+        // The second block has no FIRSTX/LASTX/DELTAX of its own: it must use
+        // its check values, not the first block's axis or scale factors.
+        let content = "##TITLE=A\n##XFACTOR=10.0\n##YFACTOR=3.0\n##FIRSTX=0.0\n##LASTX=1.0\n\
+                       ##XYDATA=(X++(Y..Y))\n0.0 1.0 1.0\n##END=\n\
+                       ##TITLE=B\n##XYDATA=(X++(Y..Y))\n7.0 1.0 1.0\n8.0 2.0 2.0\n##END=\n";
+        let reader = parse_jdx(content).unwrap();
+        assert_eq!(reader.count(), 2);
+        assert_close_slices(&reader.records[0].y, &[3.0, 3.0], 1e-12);
+        assert_close_slices(&reader.records[1].x, &[7.0, 7.5, 8.0, 8.5], 1e-12);
+        assert_close_slices(&reader.records[1].y, &[1.0, 1.0, 2.0, 2.0], 1e-12);
+    }
+
+    #[test]
+    fn test_jdx_xypoints_pairs_are_scaled_once() {
+        let content = "##TITLE=Pairs\n##XFACTOR=2.0\n##YFACTOR=0.5\n##NPOINTS=3\n\
+                       ##XYPOINTS=(XY..XY)\n1,2; 3,4\n5 6\n##END=\n";
+        let reader = parse_jdx(content).unwrap();
+        let rec = &reader.records[0];
+        assert_close_slices(&rec.x, &[2.0, 6.0, 10.0], 1e-12);
+        assert_close_slices(&rec.y, &[1.0, 2.0, 3.0], 1e-12);
+    }
+
+    #[test]
+    fn test_jdx_xypoints_with_an_odd_number_count_is_an_error() {
+        let content = "##TITLE=Odd\n##XYPOINTS=(XY..XY)\n1,2; 3\n##END=\n";
+        assert!(parse_jdx(content).is_err());
+    }
+
+    #[test]
+    fn test_jdx_inline_comments_are_ignored_in_data_lines() {
+        let content = "##TITLE=Inline\n##NPOINTS=2\n##FIRSTX=1.0\n##DELTAX=1.0\n\
+                       ##XYDATA=(X++(Y..Y))\n1.0 0.5 0.25 $$ checksum 17\n##END=\n";
+        let reader = parse_jdx(content).unwrap();
+        assert_eq!(reader.records[0].y, vec![0.5, 0.25]);
+    }
+
+    #[test]
+    fn test_jdx_every_record_has_matching_axis_lengths() {
+        let inputs = [
+            "##TITLE=A\n##FIRSTX=0\n##DELTAX=1\n##XYDATA=(X++(Y..Y))\n0 1 2 3 4\n##END=\n",
+            "##TITLE=B\n##XYPOINTS=(XY..XY)\n1,2; 3,4\n##END=\n",
+            "##TITLE=C\n##NTUPLES=NMR\n##PAGE=N=1\n1 2\n3 4\n##END NTUPLES=NMR\n##END=\n",
+            "##TITLE=D\n##FIRSTX=1\n##LASTX=3\n##XYDATA=(X++(Y..Y))\n1 7 8 9\n",
+        ];
+        for content in inputs {
+            let reader = parse_jdx(content).unwrap();
+            assert_eq!(reader.count(), 1, "{content}");
+            let rec = &reader.records[0];
+            assert!(!rec.x.is_empty(), "{content}");
+            assert_eq!(rec.x.len(), rec.y.len(), "{content}");
+        }
     }
     #[test]
     fn test_anif_roundtrip() {
@@ -546,6 +778,9 @@ mod tests {
         reader.parse(content.as_bytes()).unwrap();
         assert_eq!(reader.count(), 1);
         assert_eq!(reader.records[0].metadata.title, "RoundTrip");
+        // The data survive the trip, not just the title.
+        assert_close_slices(&reader.records[0].x, &original.x, 1e-9);
+        assert_close_slices(&reader.records[0].y, &original.y, 1e-9);
     }
     #[test]
     fn test_read_csv_spectrum() {

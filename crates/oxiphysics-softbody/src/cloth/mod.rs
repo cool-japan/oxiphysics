@@ -2,6 +2,9 @@
 
 #[cfg(test)]
 mod bending_tests;
+mod dihedral;
+#[cfg(test)]
+mod dihedral_tests;
 mod functions;
 mod self_collision;
 mod types;

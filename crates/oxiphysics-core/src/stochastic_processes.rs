@@ -634,6 +634,14 @@ impl HestonModel {
 /// - beta in \[-1, 1\]: skewness parameter
 /// - c > 0: scale parameter
 /// - mu: location parameter
+///
+/// The parametrisation is the classical "S1" one (Samorodnitsky and Taqqu),
+/// with characteristic function
+/// `exp(-c^alpha |t|^alpha (1 - i beta sgn(t) tan(pi alpha / 2)) + i mu t)` for
+/// `alpha != 1` and `exp(-c |t| (1 + i beta (2/pi) sgn(t) ln|t|) + i mu t)` for
+/// `alpha = 1`.  For `alpha < 1` and `beta = 1` the support is `[mu, inf)`,
+/// for `beta = -1` it is `(-inf, mu]`; `alpha = 2` is a Gaussian with variance
+/// `2 c^2`.
 pub struct LevyStableProcess {
     /// Stability index alpha in (0, 2].
     pub alpha: f64,
@@ -661,31 +669,60 @@ impl LevyStableProcess {
         }
     }
 
-    /// Sample from S(alpha, beta, 1, 0) using the Chambers-Mallows-Stuck algorithm.
+    /// `true` when the stability index is 1 (to within rounding), the case that
+    /// needs its own sampling formula and location correction.
+    fn is_unit_alpha(&self) -> bool {
+        (self.alpha - 1.0).abs() < 1e-10
+    }
+
+    /// Sample from S(alpha, beta, 1, 0) using the Chambers-Mallows-Stuck
+    /// algorithm in the form of Weron (1996).
+    ///
+    /// With `U` uniform on `(-pi/2, pi/2)` and `W` a standard exponential:
+    ///
+    /// * `alpha != 1`:
+    ///   `X = S sin(alpha (U + B)) / cos(U)^(1/alpha)
+    ///        * (cos(U - alpha (U + B)) / W)^((1 - alpha) / alpha)`
+    ///   with `B = atan(beta tan(pi alpha / 2)) / alpha` and
+    ///   `S = (1 + beta^2 tan^2(pi alpha / 2))^(1 / (2 alpha))`.
+    /// * `alpha = 1`:
+    ///   `X = (2/pi) [(pi/2 + beta U) tan U
+    ///        - beta ln((pi/2) W cos U / (pi/2 + beta U))]`.
     fn sample_standard(&self, rng: &mut Lcg) -> f64 {
-        let u = PI * (rng.uniform() - 0.5);
+        // `uniform()` lies in [0, 1); keep U strictly inside (-pi/2, pi/2).
+        let u = PI * (rng.uniform().max(f64::EPSILON / 2.0) - 0.5);
         let w = rng.exponential(1.0);
-        if (self.alpha - 1.0).abs() < 1e-10 {
-            // Cauchy case
-            let b_pi = self.beta * PI / 2.0;
-            (1.0 + self.beta * u.tan()) * u.tan() - self.beta * (b_pi.cos() / b_pi.cos()).ln()
+        if self.is_unit_alpha() {
+            let tilted = std::f64::consts::FRAC_PI_2 + self.beta * u;
+            (2.0 / PI)
+                * (tilted * u.tan()
+                    - self.beta * (std::f64::consts::FRAC_PI_2 * w * u.cos() / tilted).ln())
         } else {
-            let zeta = -self.beta * (PI * self.alpha / 2.0).tan();
-            let xi = zeta.atan() / self.alpha;
-            let term1 = (1.0 + zeta * zeta).powf(1.0 / (2.0 * self.alpha));
-            let term2 = (self.alpha * (u + xi)).sin()
-                / ((self.alpha * xi).cos() * u.cos()).powf(1.0 / self.alpha);
-            let term3 =
-                ((u - self.alpha * (u + xi)).cos() / w).powf((1.0 - self.alpha) / self.alpha);
-            term1 * term2 * term3
+            let tan_half_pi_alpha = (std::f64::consts::FRAC_PI_2 * self.alpha).tan();
+            let skew_angle = (self.beta * tan_half_pi_alpha).atan() / self.alpha;
+            let scale =
+                (1.0 + (self.beta * tan_half_pi_alpha).powi(2)).powf(1.0 / (2.0 * self.alpha));
+            let angle = self.alpha * (u + skew_angle);
+            let radial = (u - angle).cos().max(f64::MIN_POSITIVE) / w;
+            scale * angle.sin() / u.cos().powf(1.0 / self.alpha)
+                * radial.powf((1.0 - self.alpha) / self.alpha)
         }
     }
 
     /// Generate a path of increments (not cumulative).
+    ///
+    /// Every increment is a sample of the stable law `S(alpha, beta, c, mu)`:
+    /// `mu + c X` for a standard sample `X`, plus the logarithmic correction
+    /// `(2/pi) beta c ln c` of the S1 parametrisation when `alpha = 1`.
     pub fn increments(&self, n: usize) -> Vec<f64> {
         let mut rng = Lcg::new(self.seed);
+        let location = if self.is_unit_alpha() {
+            self.mu + 2.0 / PI * self.beta * self.c * self.c.ln()
+        } else {
+            self.mu
+        };
         (0..n)
-            .map(|_| self.mu + self.c * self.sample_standard(&mut rng))
+            .map(|_| location + self.c * self.sample_standard(&mut rng))
             .collect()
     }
 
@@ -1442,6 +1479,146 @@ mod tests {
     fn test_levy_alpha_validation() {
         let result = std::panic::catch_unwind(|| LevyStableProcess::new(0.0, 0.0, 1.0, 0.0, 1));
         assert!(result.is_err());
+    }
+
+    /// Fraction of the sorted `samples` that are `<= x`.
+    fn empirical_cdf(sorted_samples: &[f64], x: f64) -> f64 {
+        sorted_samples.partition_point(|&s| s <= x) as f64 / sorted_samples.len() as f64
+    }
+
+    /// Compares 200 000 increments of `levy` with exact CDF values `(x, F(x))`.
+    ///
+    /// The reference values come from Gil-Pelaez inversion of the S1
+    /// characteristic function (or the closed forms of the Cauchy, Levy and
+    /// Gaussian members); the sampling error of every comparison is below 0.0012.
+    fn assert_levy_cdf(levy: &LevyStableProcess, exact: &[(f64, f64)]) {
+        let mut samples = levy.increments(200_000);
+        samples.sort_by(|a, b| a.total_cmp(b));
+        for &(x, expected) in exact {
+            let measured = empirical_cdf(&samples, x);
+            assert!(
+                (measured - expected).abs() < 0.006,
+                "alpha = {}, beta = {}: F({x}) = {measured}, expected {expected}",
+                levy.alpha,
+                levy.beta
+            );
+        }
+    }
+
+    #[test]
+    fn test_levy_alpha_half_totally_skewed_is_the_levy_distribution() {
+        // S_{1/2}(c, 1, mu) is the Levy distribution, F(x) = erfc(sqrt(c / (2 (x - mu)))):
+        // supported on [mu, inf), so every sample is at least mu.
+        let standard = LevyStableProcess::new(0.5, 1.0, 1.0, 0.0, 7);
+        assert!(standard.increments(10_000).iter().all(|&x| x >= 0.0));
+        assert_levy_cdf(
+            &standard,
+            &[
+                (0.25, 0.0455002638964),
+                (1.0, 0.317310507863),
+                (2.0, 0.479500122187),
+                (5.0, 0.654720846019),
+            ],
+        );
+        let shifted = LevyStableProcess::new(0.5, 1.0, 2.0, 3.0, 8);
+        assert!(shifted.increments(10_000).iter().all(|&x| x >= 3.0));
+        assert_levy_cdf(
+            &shifted,
+            &[
+                (3.5, 0.0455002638964),
+                (4.0, 0.15729920705),
+                (5.0, 0.317310507863),
+                (11.0, 0.617075077452),
+            ],
+        );
+        // beta = -1 mirrors the distribution onto the negative half line.
+        let mirrored = LevyStableProcess::new(0.5, -1.0, 1.0, 0.0, 9);
+        assert!(mirrored.increments(10_000).iter().all(|&x| x <= 0.0));
+    }
+
+    #[test]
+    fn test_levy_skew_sign_follows_beta() {
+        // For alpha = 1.5 and beta = +-1: P(X <= 0) = 1/2 - B / pi with
+        // B = atan(beta tan(pi alpha / 2)) / alpha = -+ pi / 6, i.e. 2/3 and 1/3.
+        assert_levy_cdf(
+            &LevyStableProcess::new(1.5, 1.0, 1.0, 0.0, 11),
+            &[(0.0, 2.0 / 3.0)],
+        );
+        assert_levy_cdf(
+            &LevyStableProcess::new(1.5, -1.0, 1.0, 0.0, 12),
+            &[(0.0, 1.0 / 3.0)],
+        );
+    }
+
+    #[test]
+    fn test_levy_alpha_two_is_gaussian_with_variance_two_c_squared() {
+        let levy = LevyStableProcess::new(2.0, 0.7, 1.5, -1.0, 21);
+        let samples = levy.increments(200_000);
+        let n = samples.len() as f64;
+        let mean = samples.iter().sum::<f64>() / n;
+        let variance = samples.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+        assert!((mean + 1.0).abs() < 0.03, "mean = {mean}, expected -1");
+        assert!(
+            (variance / (2.0 * 1.5 * 1.5) - 1.0).abs() < 0.02,
+            "variance = {variance}, expected {}",
+            2.0 * 1.5 * 1.5
+        );
+    }
+
+    #[test]
+    fn test_levy_alpha_one_symmetric_is_cauchy() {
+        // Cauchy(location 3, scale 2): quartiles at 3 -+ 2.
+        let levy = LevyStableProcess::new(1.0, 0.0, 2.0, 3.0, 31);
+        assert_levy_cdf(
+            &levy,
+            &[(1.0, 0.25), (3.0, 0.5), (5.0, 0.75), (10.0, 0.911414467217)],
+        );
+    }
+
+    #[test]
+    fn test_levy_alpha_one_skewed_includes_the_logarithmic_location_term() {
+        // S1 parametrisation: Y = c X + (2/pi) beta c ln c + mu for alpha = 1.
+        assert_levy_cdf(
+            &LevyStableProcess::new(1.0, 1.0, 2.0, 0.0, 41),
+            &[
+                (-2.0, 0.02417353021),
+                (0.0, 0.2433296689),
+                (2.0, 0.4965292626),
+                (6.0, 0.7505720738),
+            ],
+        );
+        assert_levy_cdf(
+            &LevyStableProcess::new(1.0, 0.5, 0.5, 1.0, 42),
+            &[
+                (0.0, 0.08534672889),
+                (1.0, 0.4992416853),
+                (2.0, 0.7956834232),
+                (4.0, 0.9190486513),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_levy_general_alpha_matches_the_exact_cdf() {
+        assert_levy_cdf(
+            &LevyStableProcess::new(1.3, -0.6, 0.7, 1.2, 51),
+            &[
+                (-1.0, 0.07205912577),
+                (0.5, 0.1680528649),
+                (1.2, 0.2877701619),
+                (2.0, 0.5493745753),
+                (4.0, 0.9705212433),
+            ],
+        );
+        assert_levy_cdf(
+            &LevyStableProcess::new(0.8, 0.9, 1.0, 0.0, 52),
+            &[
+                (0.0, 0.01285202562),
+                (1.0, 0.01928415103),
+                (3.0, 0.4189797054),
+                (10.0, 0.8571149541),
+            ],
+        );
     }
 
     // ── BranchingProcess tests ────────────────────────────────────────────────

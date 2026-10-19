@@ -9,9 +9,14 @@
 //! is present) and fall back to the CPU reference implementation otherwise.
 //! The public signatures never change between feature configurations.
 //!
-//! One GPU dispatch spans at most 65 535 workgroups of 256 elements, so inputs
-//! longer than 16 776 960 elements (and histograms with more than 256 bins) are
-//! computed by the CPU reference implementation instead.
+//! One dispatch dimension holds at most 65 535 workgroups of 256 elements
+//! (16 776 960 elements).  Longer inputs are not refused: their dispatch is
+//! folded into a 2-D grid ([`crate::compute::timestamp::dispatch_count_for`])
+//! and every kernel linearises its invocation and workgroup indices with
+//! `num_workgroups`, so only the device's memory limits and the 32-bit index
+//! space bound the input.  Histograms with more than 256 bins are computed by
+//! the CPU reference implementation, and so is any call the GPU rejects (for
+//! example an allocation beyond the device limits).
 //!
 //! All entry points of this module and of [`crate::gpu_radix`] share one
 //! process-wide backend that is created on first use: the wgpu instance,
@@ -167,6 +172,7 @@ pub(crate) mod cpu {
 /// nested GPU work has to go through the [`shared::Scratch`] it receives.
 #[cfg(feature = "wgpu-backend")]
 pub(crate) mod shared {
+    use crate::compute::timestamp::{MAX_WORKGROUPS_PER_DIMENSION, dispatch_count_with_limit};
     use crate::compute::wgpu_backend::real::WgpuBackendReal;
     use crate::compute::wgpu_backend::{WgpuBufferHandle, WgpuInitError};
     use std::ops::Deref;
@@ -216,25 +222,6 @@ pub(crate) mod shared {
         result
     }
 
-    /// Most workgroups one dispatch may span along a single dimension on every
-    /// WebGPU implementation (`maxComputeWorkgroupsPerDimension` default).
-    pub(crate) const MAX_WORKGROUPS_PER_DIMENSION: usize = 65_535;
-
-    /// Refuse a dispatch of `workgroups` groups along x that exceeds
-    /// [`MAX_WORKGROUPS_PER_DIMENSION`].
-    ///
-    /// wgpu reports such a dispatch as a validation error, which panics; returning
-    /// an error instead lets the caller take its CPU path for very large inputs.
-    pub(crate) fn check_workgroups(workgroups: usize) -> Result<(), WgpuInitError> {
-        if workgroups > MAX_WORKGROUPS_PER_DIMENSION {
-            return Err(WgpuInitError::DeviceRequestFailed(format!(
-                "a dispatch of {workgroups} workgroups exceeds the limit of \
-                 {MAX_WORKGROUPS_PER_DIMENSION} per dimension"
-            )));
-        }
-        Ok(())
-    }
-
     /// Number of times the shared backend was created: `1` once it has been asked
     /// for, whether or not an adapter was found.
     #[cfg(test)]
@@ -256,6 +243,9 @@ pub(crate) mod shared {
     pub(crate) struct Scratch<'a> {
         backend: &'a mut WgpuBackendReal,
         owned: Vec<WgpuBufferHandle>,
+        /// Most workgroups one dispatch of this scope may span along a single
+        /// dimension (see [`dispatch_shape`](Self::dispatch_shape)).
+        workgroup_limit: u32,
     }
 
     impl<'a> Scratch<'a> {
@@ -264,7 +254,37 @@ pub(crate) mod shared {
             Self {
                 backend,
                 owned: Vec::new(),
+                workgroup_limit: MAX_WORKGROUPS_PER_DIMENSION,
             }
+        }
+
+        /// Fold dispatches under a per-dimension limit of `limit` workgroups.
+        ///
+        /// Production scopes use the portable WebGPU limit; the tests lower it so
+        /// that small inputs already need a multi-row (folded) grid.
+        #[cfg(test)]
+        pub(crate) fn with_workgroup_limit(mut self, limit: u32) -> Self {
+            self.workgroup_limit = limit;
+            self
+        }
+
+        /// Dispatch shape that covers `items` threads with workgroups of
+        /// `group_size` threads.
+        ///
+        /// A shape wider than one dimension allows is folded into y; every kernel
+        /// dispatched with it linearises its indices with `num_workgroups`
+        /// (see [`dispatch_count_with_limit`]).  Fails only when even the folded
+        /// grid cannot cover `items` or its thread indices would not fit 32 bits.
+        pub(crate) fn dispatch_shape(
+            &self,
+            items: usize,
+            group_size: u32,
+        ) -> Result<[u32; 3], WgpuInitError> {
+            Ok(dispatch_count_with_limit(
+                items,
+                group_size,
+                self.workgroup_limit,
+            )?)
         }
 
         /// Allocate a storage buffer of `size_bytes` bytes that lives until the scope ends.
@@ -341,18 +361,26 @@ pub(crate) mod shared {
 
 #[cfg(feature = "wgpu-backend")]
 mod gpu {
-    use super::shared::{Scratch, check_workgroups};
+    use super::shared::Scratch;
     use crate::compute::wgpu_backend::WgpuInitError;
-    use crate::compute::wgpu_backend::real::WgpuBackendReal;
     use crate::kernels_wgsl::{
         COMPACT_WGSL, HISTOGRAM_WGSL, REDUCE_WGSL, SCAN_ADD_WGSL, SCAN_WGSL,
     };
 
     const BLOCK: usize = 256;
 
-    fn params_bytes(n: u32, num_bins: u32) -> Vec<u8> {
-        let p: [u32; 4] = [n, num_bins, 0, 0];
-        bytemuck::cast_slice(&p).to_vec()
+    /// The parameter words of a kernel: element count, bin count, two padding words.
+    ///
+    /// Counts reach the kernels as 32-bit words; a count that does not fit is
+    /// refused instead of wrapping around.
+    fn params_bytes(n: usize, num_bins: usize) -> Result<Vec<u8>, WgpuInitError> {
+        let word = |value: usize| {
+            u32::try_from(value).map_err(|_| {
+                WgpuInitError::Validation(format!("{value} does not fit a 32-bit kernel parameter"))
+            })
+        };
+        let p: [u32; 4] = [word(n)?, word(num_bins)?, 0, 0];
+        Ok(bytemuck::cast_slice(&p).to_vec())
     }
 
     fn ro() -> wgpu::BufferBindingType {
@@ -375,8 +403,10 @@ mod gpu {
             return Ok(vec![0u32]);
         }
 
+        // One workgroup per 256-element block; more blocks than one dispatch
+        // dimension holds are folded into y (the kernels linearise the block index).
+        let workgroups = gpu.dispatch_shape(n, BLOCK as u32)?;
         let num_blocks = n.div_ceil(BLOCK);
-        check_workgroups(num_blocks)?;
         let padded = num_blocks * BLOCK;
 
         let mut padded_in = vec![0u32; padded];
@@ -388,7 +418,7 @@ mod gpu {
         let params_buf = gpu.alloc(16);
 
         gpu.queue_write_buffer_raw(&input_buf, bytemuck::cast_slice(&padded_in));
-        gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
+        gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n, 0)?);
 
         gpu.dispatch_wgsl(
             SCAN_WGSL,
@@ -399,7 +429,7 @@ mod gpu {
                 (block_sums_buf, rw()),
                 (params_buf, ro()),
             ],
-            [num_blocks as u32, 1, 1],
+            workgroups,
         )?;
 
         if num_blocks > 1 {
@@ -413,7 +443,7 @@ mod gpu {
                 SCAN_ADD_WGSL,
                 "add_block_offsets",
                 &[(output_buf, rw()), (offsets_buf, ro()), (params_buf, ro())],
-                [num_blocks as u32, 1, 1],
+                workgroups,
             )?;
         }
 
@@ -430,8 +460,9 @@ mod gpu {
         let mut current: Vec<f32> = data.to_vec();
         loop {
             let n = current.len();
+            // One workgroup per block; a grid wider than one dimension is folded.
+            let workgroups = gpu.dispatch_shape(n, BLOCK as u32)?;
             let num_blocks = n.div_ceil(BLOCK);
-            check_workgroups(num_blocks)?;
             let padded = num_blocks * BLOCK;
 
             let mut padded_in = vec![0f32; padded];
@@ -442,13 +473,13 @@ mod gpu {
             let params_buf = gpu.alloc(16);
 
             gpu.queue_write_buffer_raw(&in_buf, bytemuck::cast_slice(&padded_in));
-            gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
+            gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n, 0)?);
 
             gpu.dispatch_wgsl(
                 REDUCE_WGSL,
                 "reduce_sum_block",
                 &[(in_buf, ro()), (partials_buf, rw()), (params_buf, ro())],
-                [num_blocks as u32, 1, 1],
+                workgroups,
             )?;
 
             let partials = gpu.read_f32(partials_buf, num_blocks)?;
@@ -470,8 +501,9 @@ mod gpu {
         let mut current: Vec<f32> = data.to_vec();
         loop {
             let n = current.len();
+            // One workgroup per block; a grid wider than one dimension is folded.
+            let workgroups = gpu.dispatch_shape(n, BLOCK as u32)?;
             let num_blocks = n.div_ceil(BLOCK);
-            check_workgroups(num_blocks)?;
             let padded = num_blocks * BLOCK;
 
             let mut padded_in = vec![NEG_FLT_MAX; padded];
@@ -482,13 +514,13 @@ mod gpu {
             let params_buf = gpu.alloc(16);
 
             gpu.queue_write_buffer_raw(&in_buf, bytemuck::cast_slice(&padded_in));
-            gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
+            gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n, 0)?);
 
             gpu.dispatch_wgsl(
                 REDUCE_WGSL,
                 "reduce_max_block",
                 &[(in_buf, ro()), (partials_buf, rw()), (params_buf, ro())],
-                [num_blocks as u32, 1, 1],
+                workgroups,
             )?;
 
             let partials = gpu.read_f32(partials_buf, num_blocks)?;
@@ -508,7 +540,8 @@ mod gpu {
         if n == 0 {
             return Ok(Vec::new());
         }
-        check_workgroups(n.div_ceil(BLOCK))?;
+        // Fail before any work if even the folded grid cannot cover the input.
+        let workgroups = gpu.dispatch_shape(n, BLOCK as u32)?;
 
         // The scan sums raw values and the kernel tests `keep == 1`, while the CPU
         // reference keeps every non-zero flag: normalise the flags to 0/1 so both
@@ -531,9 +564,8 @@ mod gpu {
         gpu.queue_write_buffer_raw(&values_buf, bytemuck::cast_slice(values));
         gpu.queue_write_buffer_raw(&keep_buf, bytemuck::cast_slice(&flags));
         gpu.queue_write_buffer_raw(&positions_buf, bytemuck::cast_slice(&positions));
-        gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, 0));
+        gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n, 0)?);
 
-        let workgroups = WgpuBackendReal::dispatch_count_for(n, 256)?;
         gpu.dispatch_wgsl(
             COMPACT_WGSL,
             "scatter_kept",
@@ -565,7 +597,8 @@ mod gpu {
         if n == 0 {
             return Ok(vec![0u32; num_bins]);
         }
-        check_workgroups(n.div_ceil(BLOCK))?;
+        // Fail before any work if even the folded grid cannot cover the input.
+        let workgroups = gpu.dispatch_shape(n, BLOCK as u32)?;
 
         let data_buf = gpu.alloc((n.max(1) * 4) as u64);
         let global_bins_buf = gpu.alloc((num_bins * 4) as u64);
@@ -574,9 +607,8 @@ mod gpu {
         gpu.queue_write_buffer_raw(&data_buf, bytemuck::cast_slice(data));
         let zero_bins = vec![0u32; num_bins];
         gpu.queue_write_buffer_raw(&global_bins_buf, bytemuck::cast_slice(&zero_bins));
-        gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n as u32, num_bins as u32));
+        gpu.queue_write_buffer_raw(&params_buf, &params_bytes(n, num_bins)?);
 
-        let workgroups = WgpuBackendReal::dispatch_count_for(n, 256)?;
         gpu.dispatch_wgsl(
             HISTOGRAM_WGSL,
             "histogram_main",
@@ -830,47 +862,150 @@ mod tests {
             assert_eq!(guard.live_buffer_count(), 0, "the unwound scope leaked");
         }
 
-        #[test]
-        fn workgroup_limit_is_checked_exactly_at_the_dimension_limit() {
-            let limit = shared::MAX_WORKGROUPS_PER_DIMENSION;
-            assert!(shared::check_workgroups(0).is_ok());
-            assert!(shared::check_workgroups(limit).is_ok());
-            assert!(matches!(
-                shared::check_workgroups(limit + 1),
-                Err(WgpuInitError::DeviceRequestFailed(_))
-            ));
+        /// Run `body` in a scratch scope of the shared backend whose dispatches are
+        /// folded under `limit` workgroups per dimension.
+        ///
+        /// `None` when the host has no GPU adapter.  Unlike the public primitives this
+        /// surfaces every GPU error, so a result that comes back really was computed
+        /// by the GPU and not by the CPU fallback.
+        fn on_gpu<T>(
+            limit: u32,
+            body: impl FnOnce(&mut shared::Scratch<'_>) -> Result<T, WgpuInitError>,
+        ) -> Option<Result<T, WgpuInitError>> {
+            let mutex = shared::shared_backend()?;
+            let mut guard = mutex.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut scratch = shared::Scratch::new(&mut guard).with_workgroup_limit(limit);
+            Some(body(&mut scratch))
         }
 
         #[test]
-        fn dispatches_wider_than_one_dimension_fall_back_to_the_cpu() {
-            if shared::shared_backend().is_none() {
+        fn dispatch_shape_folds_exactly_beyond_the_workgroup_limit() {
+            let shapes = on_gpu(3, |gpu| {
+                Ok([0usize, 1, 700, 768, 769, 1000, 1100, 2000, 2304]
+                    .map(|items| gpu.dispatch_shape(items, 256).expect("shape")))
+            });
+            let Some(Ok(shapes)) = shapes else {
                 eprintln!("SKIPPED: no GPU adapter");
                 return;
+            };
+            assert_eq!(
+                shapes,
+                [
+                    [0, 1, 1], // nothing to do
+                    [1, 1, 1],
+                    [3, 1, 1], // 3 workgroups still fit one dimension
+                    [3, 1, 1],
+                    [2, 2, 1], // 4 workgroups: folded
+                    [2, 2, 1],
+                    [3, 2, 1], // 5 workgroups in a 3 x 2 grid with one spare
+                    [3, 3, 1], // 8 workgroups in a 3 x 3 grid with one spare
+                    [3, 3, 1], // 9 workgroups fill the grid
+                ]
+            );
+            // One workgroup more than a 3 x 3 grid holds is an error, not a panic.
+            let beyond = on_gpu(3, |gpu| Ok(gpu.dispatch_shape(2305, 256)));
+            assert!(matches!(beyond, Some(Ok(Err(_)))), "{beyond:?}");
+            // At the portable limit the same inputs are not folded at all.
+            let portable = on_gpu(shared_limit(), |gpu| gpu.dispatch_shape(5000, 256));
+            assert!(matches!(portable, Some(Ok([20, 1, 1]))), "{portable:?}");
+        }
+
+        /// The limit production scopes use.
+        fn shared_limit() -> u32 {
+            crate::compute::timestamp::MAX_WORKGROUPS_PER_DIMENSION
+        }
+
+        #[test]
+        fn folded_primitives_match_the_cpu_reference_when_the_grid_is_wider_than_one_row() {
+            // A limit of 3 workgroups per dimension folds every input of 4 to 9
+            // blocks into a 2-D grid, most of them with spare workgroups that lie
+            // behind the data.
+            for &n in &[257usize, 700, 1000, 1100, 1280, 2000, 2304] {
+                let data = lcg_data(n, 1000);
+                let floats: Vec<f32> = data.iter().map(|&v| (v % 13) as f32).collect();
+                let keep: Vec<u32> = data.iter().map(|&v| u32::from(v % 3 == 0)).collect();
+                let outcome = on_gpu(3, |gpu| {
+                    let scan = gpu::exclusive_scan_u32(gpu, &data)?;
+                    let sum = gpu::reduce_sum_f32(gpu, &floats)?;
+                    let max = gpu::reduce_max_f32(gpu, &floats)?;
+                    let compacted = gpu::compact_u32(gpu, &data, &keep)?;
+                    let bins = gpu::histogram_u32(gpu, &data, 200)?;
+                    Ok((scan, sum, max, compacted, bins))
+                });
+                let Some(outcome) = outcome else {
+                    eprintln!("SKIPPED: no GPU adapter");
+                    return;
+                };
+                let (scan, sum, max, compacted, bins) =
+                    outcome.unwrap_or_else(|e| panic!("n={n}: the folded dispatch failed: {e}"));
+                assert_eq!(scan, cpu::exclusive_scan_u32(&data), "scan n={n}");
+                assert_eq!(sum, cpu::reduce_sum_f32(&floats), "sum n={n}");
+                assert_eq!(max, cpu::reduce_max_f32(&floats), "max n={n}");
+                assert_eq!(compacted, cpu::compact_u32(&data, &keep), "compact n={n}");
+                assert_eq!(bins, cpu::histogram_u32(&data, 200), "histogram n={n}");
             }
-            // 65 536 blocks of 256 elements: one workgroup more than a dimension allows.
-            let too_wide = 256 * (shared::MAX_WORKGROUPS_PER_DIMENSION + 1);
-            let data = vec![1u32; too_wide];
-            let floats = vec![1.0f32; too_wide];
-            let refused = shared::run(|gpu| {
+        }
+
+        #[test]
+        fn folded_primitives_reject_inputs_beyond_the_folded_grid_without_allocating() {
+            // 10 blocks do not fit a 3 x 3 grid.
+            let data = vec![1u32; 256 * 10];
+            let floats = vec![1.0f32; 256 * 10];
+            let refused = on_gpu(3, |gpu| {
                 let scan = gpu::exclusive_scan_u32(gpu, &data).is_err();
                 let hist = gpu::histogram_u32(gpu, &data, 4).is_err();
                 let keep = gpu::compact_u32(gpu, &data, &data).is_err();
                 let sum = gpu::reduce_sum_f32(gpu, &floats).is_err();
                 let max = gpu::reduce_max_f32(gpu, &floats).is_err();
-                Ok::<_, WgpuInitError>((scan, hist, keep, sum, max, gpu.live_buffer_count()))
+                Ok((scan, hist, keep, sum, max, gpu.live_buffer_count()))
             });
+            let Some(refused) = refused else {
+                eprintln!("SKIPPED: no GPU adapter");
+                return;
+            };
             assert_eq!(
-                refused,
-                Some((true, true, true, true, true, 0)),
-                "every kernel must refuse the oversized dispatch before allocating anything"
+                refused.expect("the closure never fails"),
+                (true, true, true, true, true, 0),
+                "an input the grid cannot cover must be refused before allocating anything"
             );
-            // The public entry points still answer correctly, through the CPU path.
-            let scan = exclusive_scan_u32(&data);
-            assert_eq!(scan.len(), too_wide);
-            assert_eq!(scan.last().copied(), Some(too_wide as u32 - 1));
-            assert_eq!(histogram_u32(&data, 4), vec![0, too_wide as u32, 0, 0]);
-            assert_eq!(reduce_sum_f32(&floats), too_wide as f32);
-            assert_eq!(compact_u32(&data, &data).len(), too_wide);
+        }
+
+        #[test]
+        fn inputs_wider_than_one_dispatch_dimension_run_on_the_gpu() {
+            // 65 537 blocks of 256 elements: one more than 65 536, which already
+            // needs a second row of the portable 65 535-wide dispatch grid, and the
+            // last block is partial.
+            let n = 256 * 65_536 + 1;
+            let data: Vec<u32> = (0..n as u32).map(|i| i % 4).collect();
+            let limit = shared_limit();
+            let scan = on_gpu(limit, |gpu| gpu::exclusive_scan_u32(gpu, &data));
+            let Some(scan) = scan else {
+                eprintln!("SKIPPED: no GPU adapter");
+                return;
+            };
+            assert_eq!(
+                scan.expect("the scan must run on the GPU"),
+                cpu::exclusive_scan_u32(&data),
+                "scan of {n} elements"
+            );
+            let hist = on_gpu(limit, |gpu| gpu::histogram_u32(gpu, &data, 4));
+            assert_eq!(
+                hist.expect("adapter")
+                    .expect("the histogram must run on the GPU"),
+                cpu::histogram_u32(&data, 4),
+                "histogram of {n} elements"
+            );
+            // 65 537 full blocks: every partial sum is exactly representable in f32
+            // (16 777 472 = 2^24 + 256), so the order of summation cannot matter.
+            let full_blocks = 256 * 65_537;
+            let floats = vec![1.0f32; full_blocks];
+            let sum = on_gpu(limit, |gpu| gpu::reduce_sum_f32(gpu, &floats));
+            assert_eq!(
+                sum.expect("adapter")
+                    .expect("the reduction must run on the GPU"),
+                16_777_472.0,
+                "sum of {full_blocks} ones"
+            );
         }
 
         #[test]
@@ -890,6 +1025,45 @@ mod tests {
             if shared::shared_backend().is_some() {
                 let failed = shared::run(|gpu| gpu.read_u32(WgpuBufferHandle(usize::MAX), 4));
                 assert!(failed.is_none());
+            }
+        }
+
+        #[test]
+        fn readback_shorter_than_requested_is_an_error_naming_both_lengths() {
+            let outcome = shared::run(|gpu| {
+                let buffer = gpu.alloc(16);
+                gpu.queue_write_buffer_raw(&buffer, bytemuck::cast_slice(&[1u32, 2, 3, 4]));
+                let prefix = gpu.read_u32(buffer, 2)?;
+                let whole = gpu.read_u32(buffer, 4)?;
+                let float_count = gpu.read_f32(buffer, 4)?.len();
+                let too_many_words = gpu.read_u32(buffer, 5).map(|words| words.len());
+                let too_many_floats = gpu.read_f32(buffer, 8).map(|floats| floats.len());
+                Ok::<_, WgpuInitError>((
+                    prefix,
+                    whole,
+                    float_count,
+                    too_many_words,
+                    too_many_floats,
+                ))
+            });
+            let Some((prefix, whole, float_count, too_many_words, too_many_floats)) = outcome
+            else {
+                eprintln!("SKIPPED: no GPU adapter");
+                return;
+            };
+            assert_eq!(prefix, vec![1, 2], "a shorter request reads a prefix");
+            assert_eq!(whole, vec![1, 2, 3, 4]);
+            assert_eq!(float_count, 4);
+            for result in [too_many_words, too_many_floats] {
+                match result {
+                    Err(WgpuInitError::DeviceRequestFailed(message)) => {
+                        assert!(
+                            message.contains("returned 4 words, expected"),
+                            "the error must name both lengths: {message}"
+                        );
+                    }
+                    other => panic!("expected a short-readback error, got {other:?}"),
+                }
             }
         }
     }

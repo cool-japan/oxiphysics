@@ -3,8 +3,10 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use crate::atom::AtomSet;
+use crate::error::MdError;
 use oxiphysics_core::math::Vec3;
 
+use super::bussi::{bussi_decay, sample_alpha2};
 use super::functions::Thermostat;
 
 /// Computes kinetic temperature per spatial component for diagnostics.
@@ -68,13 +70,19 @@ impl KineticDiagnostics {
         }
     }
 }
-/// Bussi-Donadio-Parrinello CSVR thermostat.
+/// Bussi-Donadio-Parrinello canonical sampling through velocity rescaling (CSVR).
 ///
-/// Rescales velocities stochastically so that the system correctly samples
-/// the canonical (NVT) ensemble.  Unlike the simple velocity-rescaling
-/// thermostat, CSVR adds a stochastic term derived from the Wiener process
-/// to the kinetic energy, ensuring that kinetic energy fluctuations match
-/// those of the canonical ensemble.
+/// Every call to [`Thermostat::apply`] draws a new total kinetic energy `K'`
+/// from the exact finite-step solution of the Bussi stochastic differential
+/// equation (eq. A7 of the reference, with `N_f = 3·N`) and multiplies all
+/// velocities by `sqrt(K'/K)`.  The kinetic energy therefore relaxes to the
+/// target `K̄ = N_f·k_B·T/2` with time constant `tau` *and* fluctuates like
+/// the canonical ensemble: `Var(K) = 2·K̄²/N_f`.  A thermostat that rescales
+/// deterministically (Berendsen) or with too little noise gets this variance
+/// wrong, which is why the noise amplitude here is not tunable.
+///
+/// See [`SvrThermostat`] for the same update with an explicit number of
+/// degrees of freedom and a kinetic-energy interface.
 ///
 /// # Reference
 /// Bussi, Donadio, Parrinello. J. Chem. Phys. 126, 014101 (2007).
@@ -132,26 +140,16 @@ impl CsvrThermostat {
         let n_dof = (3 * n_atoms) as f64;
         0.5 * n_dof * boltzmann_k * target_temp
     }
-    /// LCG uniform in \[0, 1).
-    pub(super) fn next_uniform(&mut self) -> f64 {
-        self.rng_state = self
-            .rng_state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (self.rng_state >> 11) as f64 / (1u64 << 53) as f64
-    }
-    /// Box-Muller normal sample.
-    pub(super) fn next_normal(&mut self) -> f64 {
-        let u1 = self.next_uniform().max(1e-300);
-        let u2 = self.next_uniform();
-        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-    }
 }
-/// Stochastic velocity rescaling thermostat (full Bussi et al. implementation).
+/// Stochastic velocity rescaling thermostat on a kinetic-energy interface.
 ///
-/// Unlike `CsvrThermostat` (which uses a simplified approximation), this
-/// implementation uses the exact chi-squared sampling via a sum of M
-/// standard normals, which is tractable for small systems.
+/// Implements the same exact Bussi-Donadio-Parrinello update as
+/// [`CsvrThermostat`] (eq. A7: a Gaussian `R₁` plus an exactly sampled
+/// `χ²(N_f − 1)` deviate), but with an explicit number of degrees of freedom
+/// `n_dof` and an explicit target kinetic energy.  This is the right choice
+/// when the thermostatted subsystem has constraints (`N_f ≠ 3·N`) or when the
+/// caller already holds the kinetic energy.  Used through
+/// [`Thermostat::apply`] the target is `K̄ = n_dof·k_B·T/2`.
 ///
 /// # Reference
 /// Bussi, Donadio, Parrinello, J. Chem. Phys. 126, 014101 (2007).
@@ -159,7 +157,8 @@ impl CsvrThermostat {
 pub struct SvrThermostat {
     /// Coupling time constant τ (ps).
     pub tau: f64,
-    /// Number of degrees of freedom (set automatically from atom count).
+    /// Number of degrees of freedom `N_f` that define the target kinetic
+    /// energy `K̄ = N_f·k_B·T/2` (usually `3·N`, fewer with constraints).
     pub n_dof: usize,
     /// LCG RNG state.
     pub(super) rng_state: u64,
@@ -185,62 +184,50 @@ impl SvrThermostat {
             rng_state: seed,
         }
     }
-    fn next_uniform(&mut self) -> f64 {
-        self.rng_state = self
-            .rng_state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (self.rng_state >> 11) as f64 / (1u64 << 53) as f64
-    }
-    fn next_normal(&mut self) -> f64 {
-        let u1 = self.next_uniform().max(1e-300);
-        let u2 = self.next_uniform();
-        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-    }
-    /// Sample a chi-squared(n_dof - 1) random variable by summing squares of
-    /// `n_dof - 1` standard normals.  For large n_dof (> 50) we fall back to
-    /// the Wilson-Hilferty approximation.
-    fn sample_chi2_nm1(&mut self) -> f64 {
-        let nf = (self.n_dof as f64) - 1.0;
-        if nf <= 0.0 {
-            return 0.0;
-        }
-        if nf > 50.0 {
-            let z = self.next_normal();
-            let a = 2.0 / (9.0 * nf);
-            return (nf * (1.0 - a + z * a.sqrt()).powi(3)).max(0.0);
-        }
-        let count = nf as usize;
-        let mut sum = 0.0;
-        for _ in 0..count {
-            let z = self.next_normal();
-            sum += z * z;
-        }
-        sum
-    }
-    /// Compute the rescaling factor for one SVR step.
+    /// Compute the velocity-scaling factor `α = sqrt(K'/K)` for one SVR step.
     ///
-    /// The new kinetic energy K_new is sampled from:
-    ///   K_new = K_target / n_dof * \[chi^2(n_dof - 1) + (n_1 + sqrt(c*(1-c)) * R)^2\]
+    /// The new kinetic energy `K'` is drawn from the exact solution of the
+    /// Bussi stochastic differential equation (eq. A7 of the reference):
     ///
-    /// where c = exp(-dt/tau), R ~ N(0,1), and n_1 = sqrt(K_cur / K_target).
+    /// ```text
+    /// K' = c·K + (1 − c)·K̄/N_f·(R² + S) + 2·R·sqrt(c·(1 − c)·K·K̄ / N_f)
+    /// ```
+    ///
+    /// with `c = exp(−dt/τ)`, `R ~ N(0, 1)` and `S ~ χ²(N_f − 1)` sampled
+    /// exactly for every `N_f`.  Hence `E[K'] = c·K + (1 − c)·K̄`, and the
+    /// stationary kinetic-energy distribution is the canonical one with
+    /// `Var(K) = 2·K̄²/N_f`.
+    ///
+    /// # Arguments
+    /// * `current_ke` – present kinetic energy `K`.
+    /// * `target_ke`  – target kinetic energy `K̄` (`n_dof·k_B·T/2` for a
+    ///   thermostat at temperature `T`).
+    /// * `dt`         – time elapsed since the previous call.
+    ///
+    /// Returns `1.0` (no scaling) when `current_ke` is not a positive finite
+    /// number, `target_ke` is negative or not finite, or `n_dof` is zero.
     pub fn rescale_factor(&mut self, current_ke: f64, target_ke: f64, dt: f64) -> f64 {
-        if current_ke < 1e-30 || target_ke < 1e-30 {
+        let usable = current_ke.is_finite()
+            && current_ke > 1e-30
+            && target_ke.is_finite()
+            && target_ke >= 0.0
+            && self.n_dof > 0;
+        if !usable {
             return 1.0;
         }
-        let c = (-dt / self.tau).exp();
-        let n_f = self.n_dof as f64;
-        let r = self.next_normal();
-        let chi2 = self.sample_chi2_nm1();
-        let n1 = (current_ke / target_ke).sqrt();
-        let term1 = c * n1;
-        let term2 = (target_ke / n_f) * ((1.0 - c) * chi2);
-        let term3 = 2.0 * (c * (1.0 - c) * current_ke / n_f).max(0.0).sqrt() * r;
-        let ke_new = (term1 * term1 * target_ke + term2 + term3).max(0.0);
-        if ke_new < 1e-30 {
-            return 1.0;
+        let c = bussi_decay(dt, self.tau);
+        let alpha_sq = sample_alpha2(
+            &mut self.rng_state,
+            current_ke,
+            target_ke,
+            self.n_dof as f64,
+            c,
+        );
+        if alpha_sq.is_finite() && alpha_sq > 0.0 {
+            alpha_sq.sqrt()
+        } else {
+            1.0
         }
-        (ke_new / current_ke).sqrt()
     }
 }
 /// Berendsen (velocity-rescaling) thermostat.
@@ -607,22 +594,59 @@ impl NoseHooverChain {
     /// * `chain_length` – number of chain members M (recommended: 3–5).
     /// * `q`            – coupling masses for each chain member.
     /// * `n_dof`        – number of physical degrees of freedom (3·N typically).
-    pub fn new(chain_length: usize, q: Vec<f64>, n_dof: usize) -> Self {
-        assert_eq!(q.len(), chain_length, "q must have chain_length elements");
-        Self {
+    ///
+    /// # Errors
+    /// Returns [`MdError::General`] if `chain_length` is zero, `q` does not
+    /// have exactly `chain_length` elements, any coupling mass is not a
+    /// positive finite number, or `n_dof` is zero.
+    pub fn new(chain_length: usize, q: Vec<f64>, n_dof: usize) -> Result<Self, MdError> {
+        if chain_length == 0 {
+            return Err(MdError::General(
+                "NoseHooverChain: chain_length must be at least 1".to_string(),
+            ));
+        }
+        if q.len() != chain_length {
+            return Err(MdError::General(format!(
+                "NoseHooverChain: q has {} elements but chain_length is {}",
+                q.len(),
+                chain_length
+            )));
+        }
+        if let Some((k, value)) = q
+            .iter()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite() || **value <= 0.0)
+        {
+            return Err(MdError::General(format!(
+                "NoseHooverChain: coupling mass q[{k}] = {value} must be positive and finite"
+            )));
+        }
+        if n_dof == 0 {
+            return Err(MdError::General(
+                "NoseHooverChain: n_dof must be at least 1".to_string(),
+            ));
+        }
+        Ok(Self {
             chain_length,
             q,
             eta: vec![0.0; chain_length],
             xi: vec![0.0; chain_length],
             n_dof,
-        }
+        })
     }
     /// Create an NHC thermostat with uniform coupling mass.
     ///
     /// A common choice is Q = n_dof * k_B * T_target * tau^2, where tau
     /// is a characteristic thermostat time.  Here we accept the mass
     /// directly so the caller can pre-compute it.
-    pub fn with_uniform_mass(chain_length: usize, mass: f64, n_dof: usize) -> Self {
+    ///
+    /// # Errors
+    /// The same conditions as [`NoseHooverChain::new`].
+    pub fn with_uniform_mass(
+        chain_length: usize,
+        mass: f64,
+        n_dof: usize,
+    ) -> Result<Self, MdError> {
         let q = vec![mass; chain_length];
         Self::new(chain_length, q, n_dof)
     }
@@ -630,9 +654,16 @@ impl NoseHooverChain {
     ///
     /// This uses the Yoshida-Suzuki integrator of order 4 with `n_ys = 3`
     /// Yoshida–Suzuki sub-steps.  The velocities are rescaled and the eta
-    /// and xi variables are updated.
+    /// and xi variables are updated.  Each sub-step is a symmetric
+    /// kick–scale–kick: the driving force `G₁ = 2·KE − N_f·k_B·T` of the first
+    /// thermostat is evaluated with the kinetic energy *as already scaled by
+    /// the preceding sub-steps* (`KE·s²`), both before and after the scaling.
     ///
     /// Returns the velocity-scaling factor `s` such that `v_new = s * v_old`.
+    ///
+    /// If the chain is empty or the public vectors `q`, `xi`, `eta` are
+    /// shorter than `chain_length` (a state the constructors never produce),
+    /// the thermostat is inert and `1.0` is returned instead of panicking.
     pub fn propagate(
         &mut self,
         kinetic_energy: f64,
@@ -640,29 +671,38 @@ impl NoseHooverChain {
         boltzmann_k: f64,
         dt: f64,
     ) -> f64 {
+        let chain = self
+            .chain_length
+            .min(self.q.len())
+            .min(self.xi.len())
+            .min(self.eta.len());
+        if chain == 0 {
+            return 1.0;
+        }
         let w1 = 1.0 / (2.0 - 2.0_f64.powf(1.0 / 3.0));
         let w0 = 1.0 - 2.0 * w1;
         let ws = [w1, w0, w1];
         let mut scale = 1.0_f64;
         let kbt = boltzmann_k * target_temp;
-        let g0 = 2.0 * kinetic_energy - (self.n_dof as f64) * kbt;
+        let n_f = self.n_dof as f64;
         for &w in &ws {
             let dt_ys = w * dt;
             let dt2 = dt_ys * 0.5;
-            if self.chain_length > 1 {
-                let m = self.chain_length - 1;
-                let g_m = self.q[m - 1] * self.xi[m - 1] * self.xi[m - 1] - kbt;
-                self.xi[m] += g_m / self.q[m] * dt2;
+            let g0 = 2.0 * kinetic_energy * scale * scale - n_f * kbt;
+            if chain > 1 {
+                let last = chain - 1;
+                let g_last = self.q[last - 1] * self.xi[last - 1] * self.xi[last - 1] - kbt;
+                self.xi[last] += g_last / self.q[last] * dt2;
             }
-            if self.chain_length > 2 {
-                for k in (1..self.chain_length - 1).rev() {
+            if chain > 2 {
+                for k in (1..chain - 1).rev() {
                     let g_k = self.q[k - 1] * self.xi[k - 1] * self.xi[k - 1] - kbt;
                     let xi_kp1 = self.xi[k + 1];
                     let aa = (-xi_kp1 * dt2 * 0.5).exp();
                     self.xi[k] = aa * (aa * self.xi[k] + g_k / self.q[k] * dt2);
                 }
             }
-            if self.chain_length > 1 {
+            if chain > 1 {
                 let aa = (-self.xi[1] * dt2 * 0.5).exp();
                 self.xi[0] = aa * (aa * self.xi[0] + g0 / self.q[0] * dt2);
             } else {
@@ -670,28 +710,28 @@ impl NoseHooverChain {
             }
             let vs = (-self.xi[0] * dt_ys).exp();
             scale *= vs;
-            for k in 0..self.chain_length {
+            for k in 0..chain {
                 self.eta[k] += self.xi[k] * dt_ys;
             }
-            let g0_new = 2.0 * kinetic_energy * scale * scale - (self.n_dof as f64) * kbt;
-            if self.chain_length > 1 {
+            let g0_new = 2.0 * kinetic_energy * scale * scale - n_f * kbt;
+            if chain > 1 {
                 let aa = (-self.xi[1] * dt2 * 0.5).exp();
                 self.xi[0] = aa * (aa * self.xi[0] + g0_new / self.q[0] * dt2);
             } else {
                 self.xi[0] += g0_new / self.q[0] * dt2;
             }
-            if self.chain_length > 2 {
-                for k in 1..self.chain_length - 1 {
+            if chain > 2 {
+                for k in 1..chain - 1 {
                     let g_k = self.q[k - 1] * self.xi[k - 1] * self.xi[k - 1] - kbt;
                     let xi_kp1 = self.xi[k + 1];
                     let aa = (-xi_kp1 * dt2 * 0.5).exp();
                     self.xi[k] = aa * (aa * self.xi[k] + g_k / self.q[k] * dt2);
                 }
             }
-            if self.chain_length > 1 {
-                let m = self.chain_length - 1;
-                let g_m = self.q[m - 1] * self.xi[m - 1] * self.xi[m - 1] - kbt;
-                self.xi[m] += g_m / self.q[m] * dt2;
+            if chain > 1 {
+                let last = chain - 1;
+                let g_last = self.q[last - 1] * self.xi[last - 1] * self.xi[last - 1] - kbt;
+                self.xi[last] += g_last / self.q[last] * dt2;
             }
         }
         scale
@@ -709,14 +749,27 @@ impl NoseHooverChain {
     }
     /// Conserved energy contribution from the NHC variables.
     ///
-    /// H_nhc = Σ_k \[Q_k * xi_k^2 / 2 + k_B * T * eta_k\]
+    /// ```text
+    /// H_nhc = Σ_k Q_k·ξ_k²/2  +  N_f·k_B·T·η₁  +  k_B·T·Σ_{k≥2} η_k
+    /// ```
+    ///
+    /// The first thermostat is coupled to the `N_f` physical degrees of
+    /// freedom (`dξ₁/dt = (2·KE − N_f·k_B·T)/Q₁ − ξ₁ξ₂`), so its position
+    /// carries the factor `N_f`; every further thermostat controls a single
+    /// degree of freedom and carries one `k_B·T`.  `KE + PE + H_nhc` is the
+    /// quantity the NHC dynamics conserves.
     pub fn conserved_energy(&self, target_temp: f64, boltzmann_k: f64) -> f64 {
         let kbt = boltzmann_k * target_temp;
+        let n_f = self.n_dof as f64;
         self.q
             .iter()
             .zip(self.xi.iter())
             .zip(self.eta.iter())
-            .map(|((q, xi), eta)| 0.5 * q * xi * xi + kbt * eta)
+            .enumerate()
+            .map(|(k, ((q, xi), eta))| {
+                let weight = if k == 0 { n_f } else { 1.0 };
+                0.5 * q * xi * xi + weight * kbt * eta
+            })
             .sum()
     }
     /// Chain length accessor.

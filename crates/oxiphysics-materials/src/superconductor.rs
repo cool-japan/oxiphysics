@@ -9,6 +9,7 @@
 //!
 //! All quantities use SI units unless explicitly noted.
 
+use crate::{Error, Result, require_finite, require_positive};
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -110,16 +111,27 @@ impl SuperconductorProps {
 // Ginzburg–Landau model
 // ---------------------------------------------------------------------------
 
+/// Largest Newton update `max_i |δψ_i|` at which [`GinzburgLandauModel::solve_gl`]
+/// accepts the discrete Ginzburg–Landau equation as solved.
+const GL_NEWTON_TOLERANCE: f64 = 1.0e-12;
+/// Smallest fraction of a Newton step the backtracking line search may fall back to.
+const GL_MIN_STEP_FRACTION: f64 = 1.0e-10;
+
 /// Ginzburg–Landau phenomenological model for an order parameter field.
 ///
 /// The order parameter |ψ|² represents the local superfluid density
 /// (|ψ|² = 1 in the fully superconducting state, 0 in the normal state).
+/// The profile is defined on a uniform grid of `n` points with spacing `dx`
+/// (metres), `x_i = i·dx`, so the coherence length ξ and the grid spacing
+/// enter the discrete equation only through the ratio `ξ/dx`.
 #[derive(Clone, Debug)]
 pub struct GinzburgLandauModel {
     /// Spatial grid of order parameter magnitudes |ψ| (dimensionless, 0–1).
     pub order_parameter: Vec<f64>,
     /// Corresponding magnetic field values B (T) on the same grid.
     pub magnetic_field: Vec<f64>,
+    /// Grid spacing Δx (m) between consecutive points of the profile.
+    pub dx: f64,
     /// Ginzburg–Landau coherence length ξ (m).
     pub coherence_length: f64,
     /// London penetration depth λ (m).
@@ -129,51 +141,177 @@ pub struct GinzburgLandauModel {
 }
 
 impl GinzburgLandauModel {
-    /// Create a new GL model with `n` grid points.
-    pub fn new(n: usize, coherence_length: f64, penetration_depth: f64) -> Self {
+    /// Create a new GL model with `n` grid points of spacing `dx` (m).
+    pub fn new(n: usize, dx: f64, coherence_length: f64, penetration_depth: f64) -> Self {
         let kappa = penetration_depth / coherence_length.max(1e-300);
         Self {
             order_parameter: vec![1.0; n],
             magnetic_field: vec![0.0; n],
+            dx,
             coherence_length,
             penetration_depth,
             kappa,
         }
     }
 
-    /// Solve the linearised GL equation using a simple Euler relaxation.
+    /// Solve the stationary, zero-field Ginzburg–Landau equation
+    /// `ξ² ψ'' + ψ (1 − ψ²) = 0` with a Newton iteration and return the
+    /// order-parameter profile `|ψ(x)|`.
     ///
-    /// Returns the steady-state order parameter profile `|ψ(x)|`.
-    /// The boundary condition is |ψ(0)| = 0 (surface) and |ψ(∞)| = 1 (bulk).
-    /// `n_iter` relaxation sweeps are performed.
-    pub fn solve_gl(&mut self, n_iter: usize) -> Vec<f64> {
+    /// The boundary conditions are `|ψ(0)| = 0` (surface) and
+    /// `|ψ(L)| = 1` (bulk) with `L = (n − 1)·dx`.  Second-order central
+    /// differences with `r = (ξ/dx)²` give the nonlinear system
+    /// `R_i = r (ψ_{i−1} − 2ψ_i + ψ_{i+1}) + ψ_i − ψ_i³ = 0`, whose
+    /// tridiagonal Jacobian (off-diagonals `r`, diagonal `−2r + 1 − 3ψ_i²`) is
+    /// solved with the Thomas algorithm at every iteration; a backtracking line
+    /// search on `max|R|` keeps the iteration globally convergent.  The solution
+    /// approaches the analytic kink `ψ(x) = tanh(x / (√2 ξ))` with an error
+    /// of order `(dx/ξ)²`.
+    ///
+    /// The current `order_parameter` (default: all ones) is the starting guess;
+    /// on success it is replaced by the converged profile.
+    ///
+    /// `n_iter` is the maximum number of Newton iterations; the iteration stops
+    /// as soon as the largest update falls below `1e-12`.
+    ///
+    /// # Errors
+    /// * [`Error::ParameterOutOfRange`] / [`Error::General`] for a non-positive
+    ///   or non-finite `dx` or `coherence_length`.
+    /// * [`Error::Singularity`] if the Newton system has a zero pivot.
+    /// * [`Error::NumericalDivergence`] if the iteration does not converge
+    ///   within `n_iter` iterations or the line search stalls.  The stored
+    ///   profile is left unchanged in every error case.
+    pub fn solve_gl(&mut self, n_iter: usize) -> Result<Vec<f64>> {
+        require_finite("dx", self.dx)?;
+        require_positive("dx", self.dx)?;
+        require_finite("coherence_length", self.coherence_length)?;
+        require_positive("coherence_length", self.coherence_length)?;
         let n = self.order_parameter.len();
         if n < 2 {
-            return self.order_parameter.clone();
+            return Ok(self.order_parameter.clone());
         }
-        // Apply boundary conditions.
-        self.order_parameter[0] = 0.0;
-        *self
-            .order_parameter
-            .last_mut()
-            .expect("collection should not be empty") = 1.0;
+        let ratio = self.coherence_length / self.dx;
+        let r = ratio * ratio;
+        require_finite("(coherence_length / dx)^2", r)?;
 
-        // Simple Gauss–Seidel relaxation on ξ²∇²ψ - ψ(|ψ|² - 1) = 0.
-        // Linearised around ψ ≈ tanh(x/ξ√2) profile.
-        for _ in 0..n_iter {
-            for i in 1..n - 1 {
-                let psi_l = self.order_parameter[i - 1];
-                let psi_r = self.order_parameter[i + 1];
-                let psi = self.order_parameter[i];
-                // Laplacian term (dx = 1 normalised).
-                let laplacian = psi_l - 2.0 * psi + psi_r;
-                // GL: ξ²∇²ψ + ψ(1 - |ψ|²) = 0 → ψ_new via relaxation.
-                let rhs = self.coherence_length.powi(2) * laplacian + psi * (1.0 - psi * psi);
-                self.order_parameter[i] = (psi + 0.1 * rhs).clamp(0.0, 1.0);
+        // Starting guess with the Dirichlet conditions imposed.
+        let mut psi = self.order_parameter.clone();
+        for value in psi.iter_mut() {
+            if !value.is_finite() {
+                *value = 1.0;
             }
         }
-        self.order_parameter.clone()
+        psi[0] = 0.0;
+        psi[n - 1] = 1.0;
+        let m = n - 2;
+        if m == 0 {
+            self.order_parameter = psi.clone();
+            return Ok(psi);
+        }
+
+        let mut residual = vec![0.0_f64; m];
+        let mut trial_residual = vec![0.0_f64; m];
+        let mut diagonal = vec![0.0_f64; m];
+        let mut delta = vec![0.0_f64; m];
+        let mut scratch = vec![0.0_f64; m];
+        let mut trial = psi.clone();
+        let mut last_norm = f64::INFINITY;
+
+        for _ in 0..n_iter {
+            let norm = gl_residual(&psi, r, &mut residual);
+            last_norm = norm;
+            for (d, &p) in diagonal.iter_mut().zip(psi[1..n - 1].iter()) {
+                *d = -2.0 * r + 1.0 - 3.0 * p * p;
+            }
+            for (d, &res) in delta.iter_mut().zip(residual.iter()) {
+                *d = -res;
+            }
+            solve_constant_offdiagonal_tridiagonal(r, &diagonal, &mut delta, &mut scratch)?;
+            let step = delta.iter().fold(0.0_f64, |acc, d| acc.max(d.abs()));
+            if !step.is_finite() {
+                return Err(Error::diverged("ginzburg_landau_newton", 0, norm));
+            }
+            if step < GL_NEWTON_TOLERANCE {
+                for (p, d) in psi[1..n - 1].iter_mut().zip(delta.iter()) {
+                    *p += d;
+                }
+                self.order_parameter = psi.clone();
+                return Ok(psi);
+            }
+            // Backtracking line search on the max-norm of the residual.
+            let mut fraction = 1.0_f64;
+            loop {
+                for ((t, &p), &d) in trial[1..n - 1]
+                    .iter_mut()
+                    .zip(psi[1..n - 1].iter())
+                    .zip(delta.iter())
+                {
+                    *t = p + fraction * d;
+                }
+                let trial_norm = gl_residual(&trial, r, &mut trial_residual);
+                if trial_norm <= (1.0 - 1.0e-4 * fraction) * norm {
+                    break;
+                }
+                fraction *= 0.5;
+                if fraction < GL_MIN_STEP_FRACTION {
+                    return Err(Error::diverged("ginzburg_landau_newton", 0, norm));
+                }
+            }
+            psi.copy_from_slice(&trial);
+        }
+        Err(Error::diverged("ginzburg_landau_newton", n_iter, last_norm))
     }
+}
+
+/// Residual `R_i = r (ψ_{i−1} − 2ψ_i + ψ_{i+1}) + ψ_i − ψ_i³` of the discrete
+/// Ginzburg–Landau equation at the interior nodes of `psi`; returns `max|R_i|`.
+fn gl_residual(psi: &[f64], r: f64, out: &mut [f64]) -> f64 {
+    let mut norm = 0.0_f64;
+    for (res, w) in out.iter_mut().zip(psi.windows(3)) {
+        let p = w[1];
+        *res = r * (w[0] - 2.0 * p + w[2]) + p - p * p * p;
+        norm = norm.max(res.abs());
+    }
+    norm
+}
+
+/// Thomas algorithm for the tridiagonal system with main diagonal `diagonal`
+/// and both off-diagonals equal to `off`.  The right-hand side `rhs` is
+/// overwritten with the solution; `scratch` must have the same length.
+fn solve_constant_offdiagonal_tridiagonal(
+    off: f64,
+    diagonal: &[f64],
+    rhs: &mut [f64],
+    scratch: &mut [f64],
+) -> Result<()> {
+    let m = diagonal.len();
+    if m == 0 {
+        return Ok(());
+    }
+    let zero_pivot = || {
+        Error::singular(
+            "ginzburg_landau_newton",
+            "zero or non-finite pivot in the tridiagonal Newton system",
+        )
+    };
+    let mut pivot = diagonal[0];
+    if pivot == 0.0 || !pivot.is_finite() {
+        return Err(zero_pivot());
+    }
+    scratch[0] = off / pivot;
+    rhs[0] /= pivot;
+    for i in 1..m {
+        pivot = diagonal[i] - off * scratch[i - 1];
+        if pivot == 0.0 || !pivot.is_finite() {
+            return Err(zero_pivot());
+        }
+        scratch[i] = off / pivot;
+        rhs[i] = (rhs[i] - off * rhs[i - 1]) / pivot;
+    }
+    for i in (0..m - 1).rev() {
+        rhs[i] -= scratch[i] * rhs[i + 1];
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -456,15 +594,17 @@ mod tests {
     // 9. GL model initialises to |ψ| = 1 everywhere.
     #[test]
     fn test_gl_model_initial_order_parameter() {
-        let gl = GinzburgLandauModel::new(10, 10e-9, 40e-9);
+        let gl = GinzburgLandauModel::new(10, 1e-9, 10e-9, 40e-9);
         assert!(gl.order_parameter.iter().all(|&v| (v - 1.0).abs() < EPS));
+        assert_eq!(gl.dx, 1e-9);
+        assert!((gl.kappa - 4.0).abs() < 1e-12);
     }
 
     // 10. solve_gl boundary conditions: |ψ(0)| = 0, |ψ(n-1)| = 1.
     #[test]
     fn test_gl_solve_boundary_conditions() {
-        let mut gl = GinzburgLandauModel::new(20, 0.1, 0.4);
-        let psi = gl.solve_gl(200);
+        let mut gl = GinzburgLandauModel::new(20, 0.05, 0.1, 0.4);
+        let psi = gl.solve_gl(200).unwrap();
         assert!(psi[0].abs() < EPS, "Surface must be 0, got {}", psi[0]);
         assert!(
             (psi[19] - 1.0).abs() < EPS,
@@ -476,8 +616,8 @@ mod tests {
     // 11. solve_gl output values are in [0, 1].
     #[test]
     fn test_gl_solve_range() {
-        let mut gl = GinzburgLandauModel::new(30, 0.1, 0.4);
-        let psi = gl.solve_gl(100);
+        let mut gl = GinzburgLandauModel::new(30, 0.05, 0.1, 0.4);
+        let psi = gl.solve_gl(100).unwrap();
         for &v in &psi {
             assert!(
                 (0.0..=1.0).contains(&v),
@@ -489,11 +629,160 @@ mod tests {
     // 12. solve_gl is monotonically non-decreasing from surface to bulk.
     #[test]
     fn test_gl_solve_monotone() {
-        let mut gl = GinzburgLandauModel::new(30, 0.1, 0.4);
-        let psi = gl.solve_gl(500);
+        let mut gl = GinzburgLandauModel::new(30, 0.05, 0.1, 0.4);
+        let psi = gl.solve_gl(500).unwrap();
         for w in psi.windows(2) {
             assert!(w[1] >= w[0] - 1e-8, "Not monotone: {} > {}", w[0], w[1]);
         }
+    }
+
+    // 12a. The profile follows the analytic kink tanh(x / (sqrt(2) xi)) when the
+    // grid spacing (in metres) resolves the coherence length (in metres).
+    #[test]
+    fn test_gl_solve_reproduces_tanh_kink_in_physical_units() {
+        let xi = 10e-9;
+        let dx = xi / 10.0;
+        let mut gl = GinzburgLandauModel::new(401, dx, xi, 40e-9);
+        let psi = gl.solve_gl(100).unwrap();
+        let mut worst = 0.0_f64;
+        for (i, &v) in psi.iter().enumerate() {
+            let exact = (i as f64 * dx / (std::f64::consts::SQRT_2 * xi)).tanh();
+            worst = worst.max((v - exact).abs());
+        }
+        assert!(worst < 1.0e-3, "max deviation from tanh profile = {worst}");
+        // The first interior node must sit on the ramp, not on the bulk plateau.
+        let expected_first = (dx / (std::f64::consts::SQRT_2 * xi)).tanh();
+        assert!(
+            (psi[1] - expected_first).abs() < 1.0e-3 && psi[1] < 0.1,
+            "psi[1] = {} (kink value {expected_first})",
+            psi[1]
+        );
+        // The stored profile is the returned one.
+        assert_eq!(gl.order_parameter, psi);
+    }
+
+    // 12b. Only the ratio xi/dx matters: the same profile for any length unit.
+    #[test]
+    fn test_gl_solve_is_invariant_under_length_rescaling() {
+        let mut reference = GinzburgLandauModel::new(101, 0.5e-9, 5.0e-9, 20.0e-9);
+        let mut rescaled = GinzburgLandauModel::new(101, 0.05, 0.5, 2.0);
+        let a = reference.solve_gl(100).unwrap();
+        let b = rescaled.solve_gl(100).unwrap();
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert!((x - y).abs() < 1.0e-12, "{x} vs {y}");
+        }
+    }
+
+    // 12c. The converged profile satisfies the discrete GL equation to round-off.
+    #[test]
+    fn test_gl_solve_satisfies_discrete_equation() {
+        let xi = 3.0e-9;
+        let dx = 0.75e-9;
+        let r = (xi / dx) * (xi / dx);
+        let mut gl = GinzburgLandauModel::new(161, dx, xi, 12e-9);
+        let psi = gl.solve_gl(50).unwrap();
+        for w in psi.windows(3) {
+            let res = r * (w[0] - 2.0 * w[1] + w[2]) + w[1] - w[1].powi(3);
+            assert!(res.abs() < 1.0e-9, "residual {res} at psi = {}", w[1]);
+        }
+    }
+
+    // 12d. Halving dx quarters the error: the scheme is second order.
+    #[test]
+    fn test_gl_solve_is_second_order_accurate() {
+        let xi = 1.0_f64;
+        let error = |points: usize, cells_per_xi: f64| {
+            let dx = xi / cells_per_xi;
+            let mut gl = GinzburgLandauModel::new(points, dx, xi, 4.0);
+            let psi = gl.solve_gl(100).unwrap();
+            psi.iter()
+                .enumerate()
+                .map(|(i, &v)| (v - (i as f64 * dx / (std::f64::consts::SQRT_2 * xi)).tanh()).abs())
+                .fold(0.0_f64, f64::max)
+        };
+        // Both grids cover L = 40 xi.
+        let coarse = error(201, 5.0);
+        let fine = error(401, 10.0);
+        let ratio = coarse / fine;
+        assert!(
+            (3.5..4.5).contains(&ratio),
+            "error ratio {ratio} (coarse {coarse}, fine {fine}) should be ~4"
+        );
+    }
+
+    // 12e. Unresolved coherence length (xi << dx): the profile jumps to the bulk value.
+    #[test]
+    fn test_gl_solve_unresolved_kink_is_a_step() {
+        let mut gl = GinzburgLandauModel::new(12, 1.0, 0.05, 0.2);
+        let psi = gl.solve_gl(100).unwrap();
+        assert_eq!(psi[0], 0.0);
+        for &v in &psi[2..] {
+            assert!((v - 1.0).abs() < 1.0e-3, "bulk value expected, got {v}");
+        }
+    }
+
+    // 12f. A converged profile is a fixed point: one Newton step confirms it.
+    #[test]
+    fn test_gl_solve_warm_start_is_a_fixed_point() {
+        let mut gl = GinzburgLandauModel::new(81, 0.1, 1.0, 4.0);
+        let first = gl.solve_gl(50).unwrap();
+        let again = gl.solve_gl(1).unwrap();
+        for (x, y) in first.iter().zip(again.iter()) {
+            assert!((x - y).abs() < 1.0e-11, "{x} vs {y}");
+        }
+    }
+
+    // 12g. Non-convergence within the iteration cap is an error and leaves the state alone.
+    #[test]
+    fn test_gl_solve_reports_non_convergence() {
+        use crate::Error;
+        let mut gl = GinzburgLandauModel::new(401, 0.1, 1.0, 4.0);
+        let before = gl.order_parameter.clone();
+        assert!(matches!(
+            gl.solve_gl(1),
+            Err(Error::NumericalDivergence { .. })
+        ));
+        assert!(matches!(
+            gl.solve_gl(0),
+            Err(Error::NumericalDivergence { .. })
+        ));
+        assert_eq!(gl.order_parameter, before);
+        assert!(gl.solve_gl(100).is_ok());
+    }
+
+    // 12h. Invalid grid parameters are rejected.
+    #[test]
+    fn test_gl_solve_rejects_invalid_grid() {
+        for (dx, xi) in [
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (f64::NAN, 1.0),
+            (1.0, 0.0),
+            (1.0, -2.0),
+            (1.0, f64::INFINITY),
+            (1.0e-200, 1.0e200),
+        ] {
+            let mut gl = GinzburgLandauModel::new(10, dx, xi, 1.0);
+            assert!(
+                gl.solve_gl(10).is_err(),
+                "dx={dx}, xi={xi} must be rejected"
+            );
+        }
+    }
+
+    // 12i. Degenerate grids.
+    #[test]
+    fn test_gl_solve_degenerate_grids() {
+        let mut empty = GinzburgLandauModel::new(0, 1.0, 1.0, 2.0);
+        assert!(empty.solve_gl(5).unwrap().is_empty());
+        let mut single = GinzburgLandauModel::new(1, 1.0, 1.0, 2.0);
+        assert_eq!(single.solve_gl(5).unwrap(), vec![1.0]);
+        let mut pair = GinzburgLandauModel::new(2, 1.0, 1.0, 2.0);
+        assert_eq!(pair.solve_gl(5).unwrap(), vec![0.0, 1.0]);
+        let mut triple = GinzburgLandauModel::new(3, 1.0, 1.0, 2.0);
+        let psi = triple.solve_gl(50).unwrap();
+        assert_eq!((psi[0], psi[2]), (0.0, 1.0));
+        assert!(psi[1] > 0.0 && psi[1] < 1.0);
     }
 
     // 13. BcsGap::from_tc gives Δ(0) ≈ 1.764 k_B T_c.

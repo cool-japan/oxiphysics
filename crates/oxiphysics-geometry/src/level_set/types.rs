@@ -591,10 +591,13 @@ impl LevelSetField {
         self.data.iter().cloned().fold(f64::MIN, f64::max)
     }
 }
-/// Level-set reinitialization via fast marching method (redistancing).
+/// Level-set reinitialization (redistancing).
 ///
-/// Converts an arbitrary level-set function into a proper signed distance
-/// function while preserving the zero-level-set location.
+/// Turns a level-set function into a signed distance function with `|∇φ| = 1`
+/// while keeping the sign of every node and, to the accuracy of the schemes, the
+/// zero level set.  Two solvers are available: pseudo-time integration of the
+/// Sussman reinitialization equation ([`reinitialize`](Self::reinitialize)) and
+/// fast sweeping of the Eikonal equation ([`fast_sweep`](Self::fast_sweep)).
 pub struct LevelSetReinit {
     /// Convergence tolerance for iterative reinitialization.
     pub tol: f64,

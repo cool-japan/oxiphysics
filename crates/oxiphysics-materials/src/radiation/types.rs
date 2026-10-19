@@ -5,6 +5,20 @@
 use super::functions::{
     BOLTZMANN_K, SIGMA, blackbody_emissive_power, blackbody_spectral_intensity, wien_displacement,
 };
+use crate::{Error, Result, require_finite, require_in_range, require_non_negative};
+
+/// Advance a 64-bit linear congruential generator (Knuth's MMIX multiplier and
+/// increment) and return a uniform deviate in \[0, 1).
+///
+/// The 53 most significant bits of the new state form the mantissa,
+/// `U = (state >> 11) · 2⁻⁵³`, so `U` takes values in `[0, 1 − 2⁻⁵³]`.  (The
+/// top *31* bits divided by `2³² − 1` would only cover `[0, 0.5)`.)
+fn lcg_next(seed: &mut u64) -> f64 {
+    *seed = seed
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    (*seed >> 11) as f64 * (1.0 / (1_u64 << 53) as f64)
+}
 
 /// Simple single-diode solar cell model.
 ///
@@ -238,11 +252,7 @@ impl MonteCarloViewFactor {
     }
     /// Simple 64-bit LCG random number in \[0, 1).
     fn rand_next(&mut self) -> f64 {
-        self.seed = self
-            .seed
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        (self.seed >> 33) as f64 / (u32::MAX as f64)
+        lcg_next(&mut self.seed)
     }
     /// Estimate the view factor for two coaxial parallel disks using MC.
     ///
@@ -254,6 +264,9 @@ impl MonteCarloViewFactor {
     /// * `r2` — radius of disk 2
     /// * `h`  — separation distance
     pub fn parallel_disks(&mut self, r1: f64, r2: f64, h: f64) -> f64 {
+        if self.n_rays == 0 {
+            return 0.0;
+        }
         let mut hits = 0usize;
         for _ in 0..self.n_rays {
             let r_orig = r1 * self.rand_next().sqrt();
@@ -743,10 +756,26 @@ impl GrayBodyModel {
         temp_k * eps.powf(0.25)
     }
 }
+/// Largest number of collisions a single photon packet may undergo before
+/// [`MCRadiationTransport::slab_transport`] gives up (guards against runaway
+/// random walks in extremely thick, purely scattering slabs, whose collision
+/// count grows like the square of the optical thickness).
+const MAX_COLLISIONS_PER_PHOTON: u64 = 10_000_000;
+/// Statistical weight below which a photon packet plays Russian roulette.
+const ROULETTE_WEIGHT_THRESHOLD: f64 = 1.0e-3;
+/// Survival probability of Russian roulette (survivors are re-weighted by its inverse).
+const ROULETTE_SURVIVAL_PROBABILITY: f64 = 0.1;
+
 /// Simple 1-D Monte Carlo radiation transport through an absorbing/scattering slab.
 ///
-/// Uses path-length sampling to simulate photon transport through a homogeneous
-/// participating medium of thickness `L` with extinction coefficient `β = κ + σ_s`.
+/// Photon packets enter a plane-parallel, homogeneous slab of thickness `L`
+/// at `x = 0` along the slab normal.  Free paths are sampled from the
+/// extinction coefficient `β = κ + σ_s`; at every collision the packet keeps
+/// the fraction `ω = σ_s/β` (single-scattering albedo) of its statistical
+/// weight and is scattered isotropically (direction cosine `μ` uniform in
+/// \[−1, 1\]), so back-scattered packets are tracked and may leave through
+/// the entrance face.  Packets of very low weight are terminated or boosted by
+/// unbiased Russian roulette.
 #[derive(Debug, Clone)]
 pub struct MCRadiationTransport {
     /// Number of photon packets.
@@ -761,75 +790,245 @@ impl MCRadiationTransport {
     }
     /// Advance the LCG.
     fn rand_next(&mut self) -> f64 {
-        self.seed = self
-            .seed
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        (self.seed >> 33) as f64 / (u32::MAX as f64)
+        lcg_next(&mut self.seed)
     }
     /// Estimate slab transmittance for a purely absorbing medium.
     ///
     /// # Arguments
     /// * `kappa` — absorption coefficient \[1/m\]
     /// * `thickness` — slab thickness \[m\]
-    pub fn slab_transmittance(&mut self, kappa: f64, thickness: f64) -> f64 {
+    ///
+    /// # Errors
+    /// See [`MCRadiationTransport::slab_transmittance_full`].
+    pub fn slab_transmittance(&mut self, kappa: f64, thickness: f64) -> Result<f64> {
         self.slab_transmittance_full(kappa, thickness, 0.0)
     }
-    /// Estimate slab transmittance for an absorbing + scattering medium.
+    /// Estimate slab transmittance for an absorbing + scattering medium
+    /// described by its *absorption* coefficient.
+    ///
+    /// The extinction coefficient follows from `κ = β·(1 − ω)`, i.e.
+    /// `β = κ/(1 − ω)`; it is undefined for a purely scattering medium
+    /// (`ω = 1`, `κ = 0`), which has to be treated with
+    /// [`MCRadiationTransport::slab_transport`] using `β` directly.
     ///
     /// # Arguments
     /// * `kappa`     — absorption coefficient \[1/m\]
     /// * `thickness` — slab thickness \[m\]
-    /// * `albedo`    — single-scattering albedo ω = σ_s / (κ + σ_s)
-    pub fn slab_transmittance_full(&mut self, kappa: f64, thickness: f64, albedo: f64) -> f64 {
-        if self.n_photons == 0 {
-            return 0.0;
+    /// * `albedo`    — single-scattering albedo ω = σ_s / (κ + σ_s), `0 ≤ ω < 1`
+    ///
+    /// # Errors
+    /// * [`Error::ParameterOutOfRange`] for a negative `kappa` or `thickness`, or an
+    ///   albedo outside `[0, 1]`; [`Error::General`] for non-finite values.
+    /// * [`Error::Singularity`] for `ω = 1`, where `β` cannot be derived from `κ`.
+    /// * [`Error::NumericalDivergence`] if a photon exceeds the collision limit.
+    pub fn slab_transmittance_full(
+        &mut self,
+        kappa: f64,
+        thickness: f64,
+        albedo: f64,
+    ) -> Result<f64> {
+        require_finite("kappa", kappa)?;
+        require_non_negative("kappa", kappa)?;
+        require_in_range("albedo", albedo, 0.0, 1.0)?;
+        if albedo >= 1.0 {
+            return Err(Error::singular(
+                "slab_transmittance_full",
+                "beta = kappa/(1 - albedo) is undefined for albedo = 1; \
+                 call slab_transport with the extinction coefficient instead",
+            ));
         }
-        let beta = kappa / (1.0 - albedo).max(1e-15);
-        let mut transmitted = 0usize;
+        let beta = kappa / (1.0 - albedo);
+        let (transmittance, _reflectance) = self.slab_transport(beta, thickness, albedo)?;
+        Ok(transmittance)
+    }
+    /// Monte Carlo transport of a normally incident beam through a slab.
+    ///
+    /// Returns the estimated `(transmittance, reflectance)`: the weight escaping
+    /// through the far face (`x = L`, including the unscattered beam) and through
+    /// the entrance face (`x = 0`) per incident photon packet.  The remainder,
+    /// `1 − T − R`, is absorbed; for a conservative medium (`ω = 1`) every
+    /// packet eventually escapes and `T + R = 1` holds exactly.
+    ///
+    /// Per packet: set `μ = 1`, `w = 1`; repeatedly sample the free path
+    /// `s = −ln(U)/β`, advance `x += μ·s`; on `x ≥ L` tally `T += w`, on `x < 0`
+    /// tally `R += w`; otherwise scale `w *= ω`, apply Russian roulette
+    /// (survival 0.1) once `w < 10⁻³`, and draw a new isotropic `μ = 2U − 1`.
+    ///
+    /// # Arguments
+    /// * `beta`      — extinction coefficient κ + σ_s \[1/m\]
+    /// * `thickness` — slab thickness `L` \[m\]
+    /// * `albedo`    — single-scattering albedo ω, `0 ≤ ω ≤ 1`
+    ///
+    /// # Errors
+    /// * [`Error::ParameterOutOfRange`] for a negative `beta` or `thickness`, or an
+    ///   albedo outside `[0, 1]`; [`Error::General`] for non-finite values.
+    /// * [`Error::NumericalDivergence`] if a single packet needs more than
+    ///   10⁷ collisions (an optically extreme, purely scattering slab).
+    pub fn slab_transport(&mut self, beta: f64, thickness: f64, albedo: f64) -> Result<(f64, f64)> {
+        require_finite("beta", beta)?;
+        require_non_negative("beta", beta)?;
+        require_finite("thickness", thickness)?;
+        require_non_negative("thickness", thickness)?;
+        require_in_range("albedo", albedo, 0.0, 1.0)?;
+        if self.n_photons == 0 {
+            return Ok((0.0, 0.0));
+        }
+        if beta == 0.0 || thickness == 0.0 {
+            // Vacuum or an infinitely thin slab: every packet passes straight through.
+            return Ok((1.0, 0.0));
+        }
+        let mut transmitted = 0.0_f64;
+        let mut reflected = 0.0_f64;
         for _ in 0..self.n_photons {
             let mut x = 0.0_f64;
+            let mut mu = 1.0_f64;
             let mut weight = 1.0_f64;
-            let mut alive = true;
-            while alive && x < thickness {
-                let xi = self.rand_next().max(1e-15);
-                let s = -xi.ln() / beta;
-                x += s;
+            let mut collisions = 0_u64;
+            loop {
+                // 1 − U lies in (0, 1], so the logarithm is always finite.
+                let s = -(1.0 - self.rand_next()).ln() / beta;
+                x += mu * s;
                 if x >= thickness {
-                    transmitted += 1;
+                    transmitted += weight;
                     break;
                 }
-                if albedo < f64::EPSILON {
-                    alive = false;
-                } else {
-                    weight *= albedo;
-                    if weight < 0.001 {
-                        let rr = self.rand_next();
-                        if rr < 0.1 {
-                            weight /= 0.1;
-                        } else {
-                            alive = false;
-                        }
-                    }
-                    let cos_theta = 2.0 * self.rand_next() - 1.0;
-                    if cos_theta < 0.0 {
-                        alive = false;
+                if x < 0.0 {
+                    reflected += weight;
+                    break;
+                }
+                collisions += 1;
+                if collisions > MAX_COLLISIONS_PER_PHOTON {
+                    return Err(Error::diverged(
+                        "slab_transport",
+                        collisions as usize,
+                        weight,
+                    ));
+                }
+                weight *= albedo;
+                if weight <= 0.0 {
+                    // Purely absorbing medium: the packet is absorbed at its first collision.
+                    break;
+                }
+                if weight < ROULETTE_WEIGHT_THRESHOLD {
+                    if self.rand_next() < ROULETTE_SURVIVAL_PROBABILITY {
+                        weight /= ROULETTE_SURVIVAL_PROBABILITY;
+                    } else {
+                        break;
                     }
                 }
+                mu = 2.0 * self.rand_next() - 1.0;
             }
         }
-        transmitted as f64 / self.n_photons as f64
+        let n = self.n_photons as f64;
+        Ok((transmitted / n, reflected / n))
     }
     /// Estimate the mean free path \[m\] in a medium with extinction coefficient `beta`.
     ///
-    /// Analytical result: `mfp = 1/beta`. This method provides the MC estimate.
+    /// Analytical result: `mfp = 1/beta`. This method provides the MC estimate
+    /// (the mean of `−ln(U)/β` over `n_photons` samples, at least one).  A zero
+    /// `beta` gives an infinite mean free path; a negative or NaN `beta` gives NaN.
     pub fn estimate_mean_free_path(&mut self, beta: f64) -> f64 {
+        if beta.is_nan() || beta < 0.0 {
+            return f64::NAN;
+        }
+        if beta == 0.0 {
+            return f64::INFINITY;
+        }
         let mut total_path = 0.0;
         let n = self.n_photons.max(1);
         for _ in 0..n {
-            let xi = self.rand_next().max(1e-15);
-            total_path += -xi.ln() / beta;
+            total_path += -(1.0 - self.rand_next()).ln() / beta;
         }
         total_path / n as f64
+    }
+}
+
+#[cfg(test)]
+mod rng_tests {
+    use super::{MCRadiationTransport, MonteCarloViewFactor, lcg_next};
+
+    const N: usize = 1_000_000;
+
+    #[test]
+    fn lcg_next_covers_the_whole_unit_interval() {
+        let mut seed = 12_345_678_901_u64;
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+        let mut sum = 0.0_f64;
+        let mut sum_sq = 0.0_f64;
+        let mut above_half = 0_usize;
+        for _ in 0..N {
+            let u = lcg_next(&mut seed);
+            assert!((0.0..1.0).contains(&u), "deviate out of [0,1): {u}");
+            min = min.min(u);
+            max = max.max(u);
+            sum += u;
+            sum_sq += u * u;
+            if u >= 0.5 {
+                above_half += 1;
+            }
+        }
+        let n = N as f64;
+        let mean = sum / n;
+        let variance = sum_sq / n - mean * mean;
+        assert!((mean - 0.5).abs() < 2.0e-3, "mean = {mean}");
+        assert!(
+            (variance - 1.0 / 12.0).abs() < 1.0e-3,
+            "variance = {variance}"
+        );
+        assert!(
+            (above_half as f64 / n - 0.5).abs() < 2.0e-3,
+            "the upper half of the interval must be populated: {above_half}"
+        );
+        assert!(
+            max > 0.999 && min < 0.001,
+            "range [{min}, {max}] must span [0,1)"
+        );
+    }
+
+    #[test]
+    fn lcg_next_deciles_are_equally_populated() {
+        let mut seed = 42_u64;
+        let mut bins = [0_usize; 10];
+        for _ in 0..N {
+            let u = lcg_next(&mut seed);
+            bins[((u * 10.0) as usize).min(9)] += 1;
+        }
+        for (i, &count) in bins.iter().enumerate() {
+            let fraction = count as f64 / N as f64;
+            assert!((fraction - 0.1).abs() < 2.0e-3, "decile {i}: {fraction}");
+        }
+    }
+
+    #[test]
+    fn lcg_next_is_deterministic_and_uncorrelated() {
+        let mut a = 7_u64;
+        let mut b = 7_u64;
+        let mut previous = lcg_next(&mut a);
+        assert_eq!(previous, lcg_next(&mut b));
+        let mut cross = 0.0_f64;
+        for _ in 0..N {
+            let u = lcg_next(&mut a);
+            assert_eq!(u, lcg_next(&mut b));
+            cross += (previous - 0.5) * (u - 0.5);
+            previous = u;
+        }
+        let lag_one = cross / N as f64 / (1.0 / 12.0);
+        assert!(lag_one.abs() < 5.0e-3, "lag-1 correlation = {lag_one}");
+    }
+
+    #[test]
+    fn both_monte_carlo_generators_use_the_full_unit_interval() {
+        // The former generators returned values only in [0, 0.5).
+        let mut view = MonteCarloViewFactor::new(1);
+        let mut transport = MCRadiationTransport::new(1, 99);
+        let mut view_max = 0.0_f64;
+        let mut transport_max = 0.0_f64;
+        for _ in 0..10_000 {
+            view_max = view_max.max(view.rand_next());
+            transport_max = transport_max.max(transport.rand_next());
+        }
+        assert!(view_max > 0.99, "view-factor RNG max = {view_max}");
+        assert!(transport_max > 0.99, "transport RNG max = {transport_max}");
     }
 }

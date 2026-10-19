@@ -920,12 +920,19 @@ impl AircraftState6Dof {
 /// 6-DOF aircraft equations of motion integrator.
 ///
 /// Integrates Newton-Euler EOM in body axes using 4th-order Runge-Kutta.
+/// The aerodynamic model includes the static derivatives, the control
+/// derivatives and the rate-damping derivatives (`Cl_p`, `Cl_r`, `Cm_q`,
+/// `Cl_q`, `Cn_p`, `Cn_r`); the rigid-body rotation uses the full inertia
+/// tensor including the `Ixz` product of inertia.
 pub struct SixDofIntegrator {
     /// Aircraft total mass (kg).
     pub mass: f64,
     /// Inertia tensor diagonal \[Ixx, Iyy, Izz\] (kg·m²).
     pub inertia: [f64; 3],
-    /// Product of inertia Ixz (kg·m²).
+    /// Product of inertia `Ixz = ∫ x z dm` (kg·m²) in body axes (x forward,
+    /// z down), with the sign convention of Stevens and Lewis: the inertia
+    /// tensor is `[[Ixx, 0, -Ixz], [0, Iyy, 0], [-Ixz, 0, Izz]]`.  A physical
+    /// tensor needs `Ixx * Izz > Ixz²`.
     pub i_xz: f64,
     /// Wing reference area (m²).
     pub s_ref: f64,
@@ -943,27 +950,44 @@ pub struct SixDofIntegrator {
 
 impl SixDofIntegrator {
     /// Compute aerodynamic force and moment coefficients at the current state.
+    ///
+    /// `p_hat`, `q_hat` and `r_hat` are the **non-dimensional** body rates
+    /// `p b / (2 V)`, `q c / (2 V)` and `r b / (2 V)` (V the true airspeed),
+    /// which is the normalisation of the rate derivatives `Cl_p`, `Cl_r`,
+    /// `Cm_q`, `Cl_q`, `Cn_p` and `Cn_r`.  They add the damping contributions
+    /// `Cl += Cl_q q_hat`, `Cm += Cm_q q_hat`,
+    /// `C_roll += Cl_p p_hat + Cl_r r_hat` and
+    /// `Cn += Cn_p p_hat + Cn_r r_hat`.  The drag coefficient is taken from the
+    /// polar at the total lift coefficient.
     pub fn aero_coefficients(
         &self,
         alpha: f64,
         beta: f64,
-        _p: f64,
-        _q: f64,
-        _r: f64,
+        p_hat: f64,
+        q_hat: f64,
+        r_hat: f64,
         delta_e: f64,
         delta_a: f64,
         delta_r: f64,
     ) -> AeroCoefficients {
-        let cl = self.polar.cl_from_alpha(alpha) + self.long_derivs.cl_de * delta_e;
+        let cl = self.polar.cl_from_alpha(alpha)
+            + self.long_derivs.cl_de * delta_e
+            + self.long_derivs.cl_q * q_hat;
         let cd = self.polar.cd_from_cl(cl);
         let cy = self.lat_derivs.cy_beta * beta + self.lat_derivs.cy_dr * delta_r;
         let c_roll = self.lat_derivs.cl_beta * beta
             + self.lat_derivs.cl_da * delta_a
-            + self.lat_derivs.cl_dr * delta_r;
-        let cm = self.long_derivs.cm_alpha * alpha + self.long_derivs.cm_de * delta_e;
+            + self.lat_derivs.cl_dr * delta_r
+            + self.lat_derivs.cl_p * p_hat
+            + self.lat_derivs.cl_r * r_hat;
+        let cm = self.long_derivs.cm_alpha * alpha
+            + self.long_derivs.cm_de * delta_e
+            + self.long_derivs.cm_q * q_hat;
         let cn = self.lat_derivs.cn_beta * beta
             + self.lat_derivs.cn_da * delta_a
-            + self.lat_derivs.cn_dr * delta_r;
+            + self.lat_derivs.cn_dr * delta_r
+            + self.lat_derivs.cn_p * p_hat
+            + self.lat_derivs.cn_r * r_hat;
 
         AeroCoefficients {
             cl,
@@ -973,6 +997,37 @@ impl SixDofIntegrator {
             cm,
             cn,
         }
+    }
+
+    /// Body-axis angular acceleration `[p_dot, q_dot, r_dot]` (rad/s²) for the
+    /// applied moments `[L, M, N]` (N·m) and body rates `[p, q, r]` (rad/s).
+    ///
+    /// Solves Euler's equation `J ω̇ = M − ω × (J ω)` for the tensor
+    /// `J = [[Ixx, 0, -Ixz], [0, Iyy, 0], [-Ixz, 0, Izz]]` in closed form
+    /// (Stevens and Lewis), with `Γ = Ixx Izz − Ixz²`:
+    ///
+    /// ```text
+    /// p_dot = [Izz L + Ixz N + Ixz (Ixx − Iyy + Izz) p q − (Izz (Izz − Iyy) + Ixz²) q r] / Γ
+    /// q_dot = [M + (Izz − Ixx) p r − Ixz (p² − r²)] / Iyy
+    /// r_dot = [Ixz L + Ixx N + (Ixx (Ixx − Iyy) + Ixz²) p q − Ixz (Ixx − Iyy + Izz) q r] / Γ
+    /// ```
+    ///
+    /// For `Ixz = 0` this reduces to the diagonal-tensor equations.  It needs a
+    /// physical inertia tensor (`Iyy > 0`, `Ixx Izz > Ixz²`).
+    pub fn angular_acceleration(&self, moments: [f64; 3], rates: [f64; 3]) -> [f64; 3] {
+        let [ixx, iyy, izz] = self.inertia;
+        let ixz = self.i_xz;
+        let [l_m, m_m, n_m] = moments;
+        let [p, q, r] = rates;
+        let gamma = ixx * izz - ixz * ixz;
+        let p_dot = (izz * l_m + ixz * n_m + ixz * (ixx - iyy + izz) * p * q
+            - (izz * (izz - iyy) + ixz * ixz) * q * r)
+            / gamma;
+        let q_dot = (m_m + (izz - ixx) * p * r - ixz * (p * p - r * r)) / iyy;
+        let r_dot = (ixz * l_m + ixx * n_m + (ixx * (ixx - iyy) + ixz * ixz) * p * q
+            - ixz * (ixx - iyy + izz) * q * r)
+            / gamma;
+        [p_dot, q_dot, r_dot]
     }
 
     /// Integrate one RK4 step.
@@ -1041,7 +1096,22 @@ impl SixDofIntegrator {
         let beta = s.beta();
         let q_bar = s.dynamic_pressure(rho);
         let v_ref = self.s_ref;
-        let coeffs = self.aero_coefficients(alpha, beta, p, q, r, delta_e, delta_a, delta_r);
+
+        // Non-dimensional body rates for the damping derivatives; the rate
+        // terms are switched off below 1 m/s where p b / 2V is meaningless.
+        let v_tas = s.tas();
+        let (p_hat, q_hat, r_hat) = if v_tas > 1.0 {
+            let half_over_v = 0.5 / v_tas;
+            (
+                p * self.b_ref * half_over_v,
+                q * self.c_mac * half_over_v,
+                r * self.b_ref * half_over_v,
+            )
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        let coeffs =
+            self.aero_coefficients(alpha, beta, p_hat, q_hat, r_hat, delta_e, delta_a, delta_r);
 
         // Forces in stability axes → body axes
         let f_aero_x = q_bar * v_ref * (-coeffs.cd * alpha.cos() + coeffs.cl * alpha.sin());
@@ -1070,11 +1140,9 @@ impl SixDofIntegrator {
         let m_m = qsc * coeffs.cm;
         let n_m = qsb * coeffs.cn;
 
-        // Angular acceleration (simplified: ignore Ixz cross terms)
-        let [ixx, iyy, izz] = self.inertia;
-        let p_dot = (l_m + (iyy - izz) * q * r) / ixx;
-        let q_dot = (m_m + (izz - ixx) * p * r) / iyy;
-        let r_dot = (n_m + (ixx - iyy) * p * q) / izz;
+        // Angular acceleration from Euler's equations with the full inertia
+        // tensor (Ixz coupling of roll and yaw).
+        let [p_dot, q_dot, r_dot] = self.angular_acceleration([l_m, m_m, n_m], [p, q, r]);
 
         // Kinematic equations (Euler angle rates)
         let phi_dot = p + (q * phi.sin() + r * phi.cos()) * theta.tan();
@@ -1237,6 +1305,9 @@ impl TrimCondition {
 // ============================================================================
 // Tests
 // ============================================================================
+
+#[cfg(test)]
+mod six_dof_tests;
 
 #[cfg(test)]
 mod tests {

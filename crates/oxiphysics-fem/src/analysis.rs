@@ -6,8 +6,12 @@
 //! Provides:
 //! - [`LinearStaticAnalysis`] — classic K·u = f solve
 //! - [`StaticAnalysis`] — standalone dense-matrix static analysis
-//! - [`ModalAnalysis`] — Rayleigh-quotient iteration / power iteration
+//! - [`ModalAnalysis`] — natural frequencies and mode shapes of `K·φ = ω²·M·φ`
+//!   (Cholesky reduction + Jacobi, shifted inverse iteration for single modes)
 //! - [`DynamicAnalysis`] — Newmark-β and Wilson-θ time integration
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use oxiphysics_core::math::Vec3;
 
@@ -18,6 +22,8 @@ use crate::element::LinearTetrahedron;
 use crate::error::Error;
 use crate::mesh::TetrahedralMesh;
 use crate::solvers::{jacobi_preconditioner, pcg_solve};
+
+pub(crate) mod dense;
 
 // ---------------------------------------------------------------------------
 // FEM error type
@@ -514,15 +520,42 @@ impl StaticAnalysis {
 }
 
 // ---------------------------------------------------------------------------
-// ModalAnalysis — Rayleigh-quotient / inverse iteration
+// ModalAnalysis — generalized symmetric eigenproblem K·φ = ω²·M·φ
 // ---------------------------------------------------------------------------
 
-/// Modal analysis: computes natural frequencies and mode shapes using
-/// Rayleigh-quotient iteration (inverse iteration with shift).
+/// Convergence tolerance (change of the normalised iterate) of the shifted
+/// inverse iteration behind [`ModalAnalysis::compute_mode_shapes`].
+const MODE_SHAPE_TOLERANCE: f64 = 1.0e-10;
+
+/// Relative size of the first shift perturbation applied by the mode-shape
+/// iteration when `K − ω²·M` is singular (the shift sits exactly on an
+/// eigenvalue); it is grown a hundredfold per retry.
+const SHIFT_PERTURBATION: f64 = 1.0e-10;
+
+/// Number of perturbed retries before `K − ω²·M` is declared singular.
+const SHIFT_RETRIES: usize = 3;
+
+/// A negative eigenvalue larger in magnitude than this fraction of the
+/// spectral radius is a genuine instability, not round-off of a rigid-body mode.
+const NEGATIVE_EIGENVALUE_TOLERANCE: f64 = 1.0e-10;
+
+/// Modal analysis of the dense undamped system `K·φ = ω²·M·φ`.
+///
+/// Natural frequencies and mode shapes come from the exact generalized
+/// symmetric-definite eigen-decomposition: `M = L·Lᵀ` (Cholesky), the reduced
+/// matrix `C = L⁻¹·K·L⁻ᵀ` is diagonalised by cyclic Jacobi sweeps and the mode
+/// shapes follow from `φ = L⁻ᵀ·y`.  The `n_modes` lowest modes are therefore
+/// returned **in ascending order of frequency** and none can be skipped —
+/// something a Rayleigh-quotient iteration started from an arbitrary vector
+/// cannot guarantee.  [`compute_mode_shapes`](Self::compute_mode_shapes)
+/// recovers the shape of the mode nearest a prescribed frequency by shifted
+/// inverse iteration.
 pub struct ModalAnalysis {
-    /// Maximum number of iterations per mode.
+    /// Iteration cap: Jacobi sweeps for the frequencies / modes and
+    /// inverse-iteration steps for a single mode shape.
     pub max_iter: usize,
-    /// Convergence tolerance on the Rayleigh quotient.
+    /// Convergence tolerance on the change of the normalised mode shape in the
+    /// shifted inverse iteration (used by [`mode_shape`](Self::mode_shape)).
     pub tol: f64,
 }
 
@@ -530,7 +563,7 @@ impl Default for ModalAnalysis {
     fn default() -> Self {
         Self {
             max_iter: 500,
-            tol: 1e-10,
+            tol: MODE_SHAPE_TOLERANCE,
         }
     }
 }
@@ -557,234 +590,241 @@ impl ModalAnalysis {
         y
     }
 
-    /// Solve A·x = b by Gaussian elimination (small n, no pivoting needed for
-    /// well-conditioned problems).  Returns None if singular.
-    fn solve_dense(a: &[f64], b: &[f64], n: usize) -> Option<Vec<f64>> {
-        let cols = n + 1;
-        let mut aug = vec![0.0; n * cols];
-        for i in 0..n {
-            for j in 0..n {
-                aug[i * cols + j] = a[i * n + j];
-            }
-            aug[i * cols + n] = b[i];
-        }
-        for col in 0..n {
-            // Partial pivot
-            let mut max_val = aug[col * cols + col].abs();
-            let mut max_row = col;
-            for row in (col + 1)..n {
-                let v = aug[row * cols + col].abs();
-                if v > max_val {
-                    max_val = v;
-                    max_row = row;
-                }
-            }
-            if max_val < 1e-15 {
-                return None;
-            }
-            if max_row != col {
-                for k in 0..cols {
-                    aug.swap(col * cols + k, max_row * cols + k);
-                }
-            }
-            let pivot = aug[col * cols + col];
-            for row in (col + 1)..n {
-                let factor = aug[row * cols + col] / pivot;
-                for k in col..cols {
-                    let sub = factor * aug[col * cols + k];
-                    aug[row * cols + k] -= sub;
-                }
-            }
-        }
-        let mut x = vec![0.0; n];
-        for i in (0..n).rev() {
-            let mut s = aug[i * cols + n];
-            for j in (i + 1)..n {
-                s -= aug[i * cols + j] * x[j];
-            }
-            x[i] = s / aug[i * cols + i];
-        }
-        Some(x)
+    /// The `n_modes` lowest natural frequencies (rad/s) of `K·φ = ω²·M·φ` in
+    /// ascending order, using this instance's [`max_iter`](Self::max_iter).
+    ///
+    /// See [`compute_natural_frequencies`](Self::compute_natural_frequencies).
+    pub fn frequencies(
+        &self,
+        k: &[f64],
+        m: &[f64],
+        n: usize,
+        n_modes: usize,
+    ) -> Result<Vec<f64>, FemError> {
+        Self::compute_natural_frequencies(k, m, n, n_modes, self.max_iter)
     }
 
-    /// Compute the `n_modes` lowest natural frequencies (rad/s) using
-    /// Rayleigh-quotient iteration on the dense generalized eigenproblem K·φ = ω²·M·φ.
+    /// Mode shape nearest `omega`, using this instance's
+    /// [`max_iter`](Self::max_iter) and [`tol`](Self::tol).
     ///
-    /// Both `k` and `m` are row-major flat arrays of size n×n.
+    /// See [`compute_mode_shapes`](Self::compute_mode_shapes).
+    pub fn mode_shape(
+        &self,
+        k: &[f64],
+        m: &[f64],
+        n: usize,
+        omega: f64,
+    ) -> Result<Vec<f64>, FemError> {
+        Self::shifted_inverse_iteration(k, m, n, omega, self.max_iter, self.tol)
+    }
+
+    /// The `n_modes` lowest natural frequencies (rad/s) of the dense
+    /// generalized eigenproblem `K·φ = ω²·M·φ`, in **ascending** order.
+    ///
+    /// `k` and `m` are row-major `n × n` arrays; `max_iter` caps the Jacobi
+    /// sweeps (about ten are needed in practice).  At most `n` frequencies are
+    /// returned.  Eigenvalues that are negative only by round-off (rigid-body
+    /// modes of a free structure) are reported as `ω = 0`.
+    ///
+    /// # Errors
+    ///
+    /// - [`FemError::InvalidInput`] — wrongly sized or non-finite `k` / `m`, a
+    ///   non-symmetric `k` or `m`, a mass matrix that is not positive definite
+    ///   (e.g. a massless DOF), or a stiffness matrix with a genuinely negative
+    ///   eigenvalue (an unstable structure has no real frequency);
+    /// - [`FemError::SolverNotConverged`] — the Jacobi iteration needs more than
+    ///   `max_iter` sweeps.
     pub fn compute_natural_frequencies(
         k: &[f64],
         m: &[f64],
         n: usize,
         n_modes: usize,
         max_iter: usize,
-    ) -> Vec<f64> {
-        let mut freqs = Vec::with_capacity(n_modes);
-        let mut found_modes: Vec<Vec<f64>> = Vec::new();
-
-        for mode_idx in 0..n_modes {
-            // Initial vector
-            let mut q: Vec<f64> = (0..n)
-                .map(|i| {
-                    let v = ((i + mode_idx * 13 + 1) as f64 * 0.7).sin();
-                    if i == mode_idx % n { v + 1.0 } else { v }
-                })
-                .collect();
-
-            // Mass-normalise
-            let mq = Self::matvec_dense(m, &q, n);
-            let nm = Self::dot(&q, &mq).max(0.0).sqrt();
-            if nm > 1e-60 {
-                for qi in q.iter_mut() {
-                    *qi /= nm;
-                }
-            }
-
-            let mut omega_sq = 0.0_f64;
-
-            for _iter in 0..max_iter {
-                // Deflate against converged modes
-                for phi in &found_modes {
-                    let mphi = Self::matvec_dense(m, phi, n);
-                    let c = Self::dot(&q, &mphi);
-                    for i in 0..n {
-                        q[i] -= c * phi[i];
-                    }
-                }
-
-                // Rayleigh quotient
-                let kq = Self::matvec_dense(k, &q, n);
-                let mq2 = Self::matvec_dense(m, &q, n);
-                let num = Self::dot(&q, &kq);
-                let den = Self::dot(&q, &mq2);
-                let rq = if den.abs() > 1e-60 { num / den } else { 0.0 };
-
-                // Inverse iteration: solve (K - rq*M)*y = M*q
-                let mut km = vec![0.0; n * n];
-                for i in 0..n {
-                    for j in 0..n {
-                        km[i * n + j] = k[i * n + j] - rq * m[i * n + j];
-                    }
-                }
-                let rhs = Self::matvec_dense(m, &q, n);
-                let y_opt = Self::solve_dense(&km, &rhs, n);
-                let y = match y_opt {
-                    Some(y) => y,
-                    None => {
-                        // Fallback: plain power iteration
-                        let mut rhs2 = Self::matvec_dense(m, &q, n);
-                        // Solve K·y = M·q instead
-                        if let Some(sol) = Self::solve_dense(k, &rhs2, n) {
-                            rhs2 = sol;
-                        }
-                        rhs2
-                    }
-                };
-
-                // Deflate y
-                let mut yd = y.clone();
-                for phi in &found_modes {
-                    let mphi = Self::matvec_dense(m, phi, n);
-                    let c = Self::dot(&yd, &mphi);
-                    for i in 0..n {
-                        yd[i] -= c * phi[i];
-                    }
-                }
-
-                // Mass-normalise
-                let my = Self::matvec_dense(m, &yd, n);
-                let nm2 = Self::dot(&yd, &my).max(0.0).sqrt();
-                if nm2 < 1e-60 {
-                    break;
-                }
-                let q_new: Vec<f64> = yd.iter().map(|yi| yi / nm2).collect();
-
-                // New Rayleigh quotient
-                let kqn = Self::matvec_dense(k, &q_new, n);
-                let mqn = Self::matvec_dense(m, &q_new, n);
-                let num_new = Self::dot(&q_new, &kqn);
-                let den_new = Self::dot(&q_new, &mqn);
-                let rq_new = if den_new.abs() > 1e-60 {
-                    num_new / den_new
-                } else {
-                    0.0
-                };
-
-                let change = (rq_new - omega_sq).abs() / (rq_new.abs() + 1e-60);
-                q = q_new;
-                omega_sq = rq_new;
-                if change < 1e-10 && _iter > 0 {
-                    break;
-                }
-            }
-
-            freqs.push(omega_sq.max(0.0).sqrt());
-            found_modes.push(q);
-        }
-
-        freqs
+    ) -> Result<Vec<f64>, FemError> {
+        Ok(Self::compute_modes(k, m, n, n_modes, max_iter)?
+            .into_iter()
+            .map(|(omega, _)| omega)
+            .collect())
     }
 
-    /// Compute the mode shape for a given angular frequency `omega` using
-    /// inverse iteration: solve (K − ω²·M)·φ = b repeatedly.
+    /// The `n_modes` lowest modes `(ω, φ)` of `K·φ = ω²·M·φ` in ascending order
+    /// of the angular frequency `ω` (rad/s).
     ///
-    /// Both `k` and `m` are row-major flat arrays of size n×n.
+    /// The shapes are mass-orthonormal (`φᵢᵀ·M·φⱼ = δᵢⱼ`) and carry a
+    /// deterministic sign: the first component whose magnitude is (within
+    /// `1e-9` relative) the largest one is positive.
+    /// Arguments and errors are those of
+    /// [`compute_natural_frequencies`](Self::compute_natural_frequencies).
+    pub fn compute_modes(
+        k: &[f64],
+        m: &[f64],
+        n: usize,
+        n_modes: usize,
+        max_iter: usize,
+    ) -> Result<Vec<(f64, Vec<f64>)>, FemError> {
+        let eigen = dense::generalized_symmetric_eigen(
+            ("stiffness matrix K", k),
+            ("mass matrix M", m),
+            n,
+            max_iter,
+        )?;
+        let count = n_modes.min(n);
+        let spectral_radius = eigen.values.iter().fold(0.0_f64, |r, v| r.max(v.abs()));
+        let mut modes = Vec::with_capacity(count);
+        for (index, &lambda) in eigen.values.iter().enumerate().take(count) {
+            if lambda < -NEGATIVE_EIGENVALUE_TOLERANCE * spectral_radius {
+                return Err(FemError::InvalidInput(format!(
+                    "stiffness matrix K has a negative eigenvalue {lambda:e} (relative to the \
+                     spectral radius {spectral_radius:e}): the structure is unstable and has no \
+                     real natural frequency"
+                )));
+            }
+            let mut shape = eigen.eigenvector(index);
+            dense::normalise_sign(&mut shape);
+            modes.push((lambda.max(0.0).sqrt(), shape));
+        }
+        Ok(modes)
+    }
+
+    /// Mode shape of the mode whose eigenvalue is nearest `omega²`, by shifted
+    /// inverse iteration: repeatedly solve `(K − ω²·M)·y = M·φ`.
+    ///
+    /// `k` and `m` are row-major `n × n` arrays and `max_iter` caps the
+    /// iteration steps.  The returned shape is mass-normalised
+    /// (`φᵀ·M·φ = 1`) with a deterministic sign.
+    ///
+    /// When `omega` is itself a natural frequency, `K − ω²·M` is singular; the
+    /// shift is then perturbed by `1e-10·max(ω², 1)` (grown a hundredfold per
+    /// retry, three retries) so that the iteration converges to that mode in a
+    /// step or two instead of failing.
+    ///
+    /// # Errors
+    ///
+    /// - [`FemError::InvalidInput`] — `max_iter == 0`, a non-finite `omega`,
+    ///   wrongly sized or non-finite `k` / `m`, or a `M` that is not positive
+    ///   along the computed shape;
+    /// - [`FemError::SingularSystem`] — `K − ω²·M` stays singular under every
+    ///   perturbation (a singular matrix pencil);
+    /// - [`FemError::SolverNotConverged`] — the iteration did not settle within
+    ///   `max_iter` steps (for instance `ω²` midway between two eigenvalues).
     pub fn compute_mode_shapes(
         k: &[f64],
         m: &[f64],
         n: usize,
         omega: f64,
         max_iter: usize,
-    ) -> Vec<f64> {
-        let shift = omega * omega;
-        // Build K - shift*M
-        let mut km = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                km[i * n + j] = k[i * n + j] - shift * m[i * n + j];
-            }
+    ) -> Result<Vec<f64>, FemError> {
+        Self::shifted_inverse_iteration(k, m, n, omega, max_iter, MODE_SHAPE_TOLERANCE)
+    }
+
+    /// Shared implementation of [`compute_mode_shapes`](Self::compute_mode_shapes)
+    /// and [`mode_shape`](Self::mode_shape).
+    fn shifted_inverse_iteration(
+        k: &[f64],
+        m: &[f64],
+        n: usize,
+        omega: f64,
+        max_iter: usize,
+        tol: f64,
+    ) -> Result<Vec<f64>, FemError> {
+        if max_iter == 0 {
+            return Err(FemError::InvalidInput(
+                "max_iter must be at least 1".to_string(),
+            ));
+        }
+        if !omega.is_finite() {
+            return Err(FemError::InvalidInput(format!(
+                "angular frequency must be finite, got {omega}"
+            )));
+        }
+        if !(tol.is_finite() && tol > 0.0) {
+            return Err(FemError::InvalidInput(format!(
+                "convergence tolerance must be finite and positive, got {tol}"
+            )));
+        }
+        dense::validate_square("stiffness matrix K", k, n)?;
+        dense::validate_square("mass matrix M", m, n)?;
+        if n == 0 {
+            return Ok(Vec::new());
         }
 
-        let mut q: Vec<f64> = (0..n).map(|i| ((i + 1) as f64 * 0.5).sin()).collect();
-        // Normalise
-        let nrm: f64 = q.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if nrm > 1e-60 {
-            for qi in q.iter_mut() {
-                *qi /= nrm;
+        let base_shift = omega * omega;
+        let mut factors = None;
+        for attempt in 0..=SHIFT_RETRIES {
+            let shift = if attempt == 0 {
+                base_shift
+            } else {
+                let growth = 100.0_f64.powi(attempt as i32 - 1);
+                base_shift + SHIFT_PERTURBATION * base_shift.max(1.0) * growth
+            };
+            let shifted: Vec<f64> = k
+                .iter()
+                .zip(m.iter())
+                .map(|(k_ij, m_ij)| k_ij - shift * m_ij)
+                .collect();
+            match dense::LuFactors::factor(&shifted, n) {
+                Ok(lu) => {
+                    factors = Some(lu);
+                    break;
+                }
+                Err(Error::SingularSystem) => continue,
+                Err(other) => return Err(other.into()),
             }
         }
+        let factors = factors.ok_or(FemError::SingularSystem)?;
 
+        // Deterministic start vector with no special symmetry (additive
+        // recurrence of the golden ratio), so that it is not accidentally
+        // M-orthogonal to a mode of a symmetric structure.
+        let mut q: Vec<f64> = (0..n)
+            .map(|i| ((i + 1) as f64 * 0.618_033_988_749_894_9).fract() - 0.5)
+            .collect();
+        Self::scale_to_unit_norm(&mut q)?;
+
+        let mut converged = false;
         for _ in 0..max_iter {
             let rhs = Self::matvec_dense(m, &q, n);
-            let y = match Self::solve_dense(&km, &rhs, n) {
-                Some(y) => y,
-                None => break,
-            };
-            let ny: f64 = y.iter().map(|x| x * x).sum::<f64>().sqrt();
-            if ny < 1e-60 {
+            let mut y = factors.solve(&rhs)?;
+            Self::scale_to_unit_norm(&mut y)?;
+            // The direction matters, not the sign of the iterate.
+            let same: f64 = q.iter().zip(&y).map(|(a, b)| (a - b) * (a - b)).sum();
+            let flipped: f64 = q.iter().zip(&y).map(|(a, b)| (a + b) * (a + b)).sum();
+            q = y;
+            if same.min(flipped).sqrt() < tol {
+                converged = true;
                 break;
             }
-            let q_new: Vec<f64> = y.iter().map(|yi| yi / ny).collect();
-            let change: f64 = q
-                .iter()
-                .zip(q_new.iter())
-                .map(|(a, b)| (a - b).abs())
-                .sum::<f64>()
-                / (n as f64);
-            q = q_new;
-            if change < 1e-12 {
-                break;
-            }
+        }
+        if !converged {
+            return Err(FemError::SolverNotConverged);
         }
 
-        // Mass-normalise
-        let mq = Self::matvec_dense(m, &q, n);
-        let mn: f64 = Self::dot(&q, &mq).max(0.0).sqrt();
-        if mn > 1e-60 {
-            for qi in q.iter_mut() {
-                *qi /= mn;
-            }
+        let mass_q = Self::matvec_dense(m, &q, n);
+        let modal_mass = Self::dot(&q, &mass_q);
+        if !(modal_mass.is_finite() && modal_mass > 0.0) {
+            return Err(FemError::InvalidInput(format!(
+                "mass matrix M is not positive along the computed mode shape (φᵀMφ = {modal_mass:e})"
+            )));
         }
-        q
+        let scale = modal_mass.sqrt();
+        for value in q.iter_mut() {
+            *value /= scale;
+        }
+        dense::normalise_sign(&mut q);
+        Ok(q)
+    }
+
+    /// Scale `v` to unit Euclidean norm; a zero or non-finite vector means the
+    /// shifted system overflowed or collapsed.
+    fn scale_to_unit_norm(v: &mut [f64]) -> Result<(), FemError> {
+        let norm = Self::dot(v, v).sqrt();
+        if !(norm.is_finite() && norm > 0.0) {
+            return Err(FemError::SingularSystem);
+        }
+        for value in v.iter_mut() {
+            *value /= norm;
+        }
+        Ok(())
     }
 }
 
@@ -792,9 +832,47 @@ impl ModalAnalysis {
 // DynamicAnalysis — Newmark-β and Wilson-θ
 // ---------------------------------------------------------------------------
 
+/// State `(displacement, velocity, acceleration)` produced by one step of
+/// [`DynamicAnalysis::newmark_beta_step`] or [`DynamicAnalysis::wilson_theta_step`].
+pub type StepState = (Vec<f64>, Vec<f64>, Vec<f64>);
+
+/// The two direct time-integration schemes; each has its own constant step
+/// matrix and therefore its own slot in the factorisation cache.
+#[derive(Debug, Clone, Copy)]
+enum StepScheme {
+    /// Newmark-β: `M + γ·dt·C + β·dt²·K`.
+    Newmark,
+    /// Wilson-θ: `K + 6/τ²·M + 3/τ·C`.
+    Wilson,
+}
+
+impl StepScheme {
+    /// Slot of this scheme in the factorisation cache.
+    fn slot(self) -> usize {
+        match self {
+            StepScheme::Newmark => 0,
+            StepScheme::Wilson => 1,
+        }
+    }
+}
+
+/// An LU factorisation together with the exact matrix it was computed from.
+struct CachedFactorization {
+    /// The factorised matrix.  A later step reuses the factors only when it
+    /// assembles exactly this matrix, so changing `dt`, `β`, `γ`, `θ` — or
+    /// mutating the public `m`, `c`, `k` — can never return a stale solution.
+    matrix: Vec<f64>,
+    /// Shared factors, so the substitution can run outside the cache lock.
+    factors: Arc<dense::LuFactors>,
+}
+
 /// Direct time-integration for structural dynamics: M·ü + C·u̇ + K·u = f(t).
 ///
-/// Provides Newmark-β and Wilson-θ stepping methods.
+/// Provides Newmark-β and Wilson-θ stepping methods.  The step matrix of each
+/// scheme is constant while the time step and the scheme parameters stay
+/// unchanged, so it is LU-factorised once and the factors are reused by every
+/// following step (`O(n²)` per step instead of `O(n³)`); see
+/// [`factorization_count`](Self::factorization_count).
 pub struct DynamicAnalysis {
     /// Mass matrix (row-major, n×n).
     pub m: Vec<f64>,
@@ -804,12 +882,32 @@ pub struct DynamicAnalysis {
     pub k: Vec<f64>,
     /// Number of DOFs.
     pub n: usize,
+    /// Latest factorisation per scheme, see [`CachedFactorization`].
+    step_factors: Mutex<[Option<CachedFactorization>; 2]>,
+    /// Number of LU factorisations performed so far.
+    factorizations: AtomicUsize,
 }
 
 impl DynamicAnalysis {
     /// Construct a new `DynamicAnalysis`.
     pub fn new(m: Vec<f64>, c: Vec<f64>, k: Vec<f64>, n: usize) -> Self {
-        Self { m, c, k, n }
+        Self {
+            m,
+            c,
+            k,
+            n,
+            step_factors: Mutex::new([None, None]),
+            factorizations: AtomicUsize::new(0),
+        }
+    }
+
+    /// Number of LU factorisations of a step matrix performed so far.
+    ///
+    /// Stepping repeatedly with the same `dt` and scheme parameters leaves this
+    /// count unchanged after the first step; it grows only when a step matrix
+    /// actually changes.
+    pub fn factorization_count(&self) -> usize {
+        self.factorizations.load(Ordering::Relaxed)
     }
 
     /// Dense matrix-vector product.
@@ -823,52 +921,73 @@ impl DynamicAnalysis {
         y
     }
 
-    /// Solve dense n×n system A·x = b (Gaussian elim with partial pivot).
-    fn solve(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
-        let cols = n + 1;
-        let mut aug = vec![0.0; n * cols];
-        for i in 0..n {
-            for j in 0..n {
-                aug[i * cols + j] = a[i * n + j];
-            }
-            aug[i * cols + n] = b[i];
+    /// Check the system matrices against `n`.
+    fn validate_system(&self) -> Result<(), FemError> {
+        dense::validate_square("mass matrix M", &self.m, self.n)?;
+        dense::validate_square("damping matrix C", &self.c, self.n)?;
+        dense::validate_square("stiffness matrix K", &self.k, self.n)?;
+        Ok(())
+    }
+
+    /// Check that a state / load vector has `n` finite entries.
+    fn validate_vector(&self, name: &str, values: &[f64]) -> Result<(), FemError> {
+        if values.len() != self.n {
+            return Err(FemError::InvalidInput(format!(
+                "{name} has {} entries but the system has {} DOFs",
+                values.len(),
+                self.n
+            )));
         }
-        for col in 0..n {
-            let mut max_val = aug[col * cols + col].abs();
-            let mut max_row = col;
-            for row in (col + 1)..n {
-                let v = aug[row * cols + col].abs();
-                if v > max_val {
-                    max_val = v;
-                    max_row = row;
-                }
-            }
-            if max_val < 1e-15 {
-                continue;
-            }
-            if max_row != col {
-                for k in 0..cols {
-                    aug.swap(col * cols + k, max_row * cols + k);
-                }
-            }
-            let piv = aug[col * cols + col];
-            for row in (col + 1)..n {
-                let fac = aug[row * cols + col] / piv;
-                for k in col..cols {
-                    let sub = fac * aug[col * cols + k];
-                    aug[row * cols + k] -= sub;
-                }
-            }
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err(FemError::InvalidInput(format!(
+                "{name} contains a non-finite entry"
+            )));
         }
-        let mut x = vec![0.0; n];
-        for i in (0..n).rev() {
-            let mut s = aug[i * cols + n];
-            for j in (i + 1)..n {
-                s -= aug[i * cols + j] * x[j];
-            }
-            x[i] = s / aug[i * cols + i];
+        Ok(())
+    }
+
+    /// Factors of `matrix` for `scheme`, reusing the cached factorisation when
+    /// `matrix` is exactly the one it was computed from.
+    fn step_factors_for(
+        &self,
+        scheme: StepScheme,
+        matrix: Vec<f64>,
+    ) -> Result<Arc<dense::LuFactors>, FemError> {
+        // The cache holds whole `Option` values that are replaced atomically, so
+        // the data is consistent even if another thread panicked while holding
+        // the lock; a poisoned lock is therefore safe to recover.
+        let mut cache = match self.step_factors.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let slot = scheme.slot();
+        if let Some(entry) = &cache[slot]
+            && entry.matrix == matrix
+        {
+            return Ok(Arc::clone(&entry.factors));
         }
-        x
+        let factors = Arc::new(dense::LuFactors::factor(&matrix, self.n)?);
+        self.factorizations.fetch_add(1, Ordering::Relaxed);
+        cache[slot] = Some(CachedFactorization {
+            matrix,
+            factors: Arc::clone(&factors),
+        });
+        Ok(factors)
+    }
+
+    /// Reject a step result that contains a non-finite number.
+    fn finite_state(state: StepState) -> Result<StepState, FemError> {
+        let all_finite = state
+            .0
+            .iter()
+            .chain(state.1.iter())
+            .chain(state.2.iter())
+            .all(|value| value.is_finite());
+        if all_finite {
+            Ok(state)
+        } else {
+            Err(FemError::SingularSystem)
+        }
     }
 
     /// One step of the Newmark-β method.
@@ -883,12 +1002,25 @@ impl DynamicAnalysis {
     ///
     /// `(M + γ·dt·C + β·dt²·K) · a₊ = f₊ − K·ũ − C·ṽ`.
     ///
+    /// The matrix on the left is constant while `dt`, `β`, `γ` and the system
+    /// matrices are unchanged; its LU factors are cached and reused.
+    ///
     /// Typical parameter choices:
     /// - Constant average acceleration (unconditionally stable): β = 0.25, γ = 0.5
     /// - Linear acceleration (conditionally stable): β = 1/6, γ = 0.5
+    /// - Central difference (explicit, conditionally stable): β = 0, γ = 0.5
     ///
     /// # Returns
     /// `(u_{n+1}, v_{n+1}, a_{n+1})`
+    ///
+    /// # Errors
+    ///
+    /// - [`FemError::InvalidInput`] — a system matrix or a state / load vector
+    ///   with the wrong size or a non-finite entry, `dt` not finite and
+    ///   positive, `β` negative or non-finite, or a non-finite `γ`;
+    /// - [`FemError::SingularSystem`] — the step matrix
+    ///   `M + γ·dt·C + β·dt²·K` is singular to working precision, or the step
+    ///   overflowed.
     pub fn newmark_beta_step(
         &self,
         u: &[f64],
@@ -898,8 +1030,24 @@ impl DynamicAnalysis {
         dt: f64,
         beta: f64,
         gamma: f64,
-    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    ) -> Result<StepState, FemError> {
         let n = self.n;
+        self.validate_system()?;
+        self.validate_vector("displacement u", u)?;
+        self.validate_vector("velocity v", v)?;
+        self.validate_vector("acceleration a", a)?;
+        self.validate_vector("external load f_ext", f_ext)?;
+        if !(dt.is_finite() && dt > 0.0) {
+            return Err(FemError::InvalidInput(format!(
+                "time step must be finite and positive, got {dt}"
+            )));
+        }
+        if !(beta.is_finite() && beta >= 0.0 && gamma.is_finite()) {
+            return Err(FemError::InvalidInput(format!(
+                "Newmark parameters must be finite with β >= 0, got β = {beta}, γ = {gamma}"
+            )));
+        }
+
         // Predictors
         let u_pred: Vec<f64> = (0..n)
             .map(|i| u[i] + dt * v[i] + dt * dt * (0.5 - beta) * a[i])
@@ -909,28 +1057,23 @@ impl DynamicAnalysis {
         // System matrix for the acceleration: A = M + γ·dt·C + β·dt²·K
         let c_damping = gamma * dt;
         let c_stiffness = beta * dt * dt;
-
-        let mut a_eff = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                a_eff[i * n + j] = self.m[i * n + j]
-                    + c_damping * self.c[i * n + j]
-                    + c_stiffness * self.k[i * n + j];
-            }
-        }
+        let a_eff: Vec<f64> = (0..n * n)
+            .map(|idx| self.m[idx] + c_damping * self.c[idx] + c_stiffness * self.k[idx])
+            .collect();
+        let factors = self.step_factors_for(StepScheme::Newmark, a_eff)?;
 
         // Right-hand side: f₊ − K·ũ − C·ṽ
         let ku_pred = Self::mv(&self.k, &u_pred, n);
         let cv_pred = Self::mv(&self.c, &v_pred, n);
         let rhs: Vec<f64> = (0..n).map(|i| f_ext[i] - ku_pred[i] - cv_pred[i]).collect();
 
-        let a_new = Self::solve(&a_eff, &rhs, n);
+        let a_new = factors.solve(&rhs)?;
         let u_new: Vec<f64> = (0..n)
             .map(|i| u_pred[i] + beta * dt * dt * a_new[i])
             .collect();
         let v_new: Vec<f64> = (0..n).map(|i| v_pred[i] + gamma * dt * a_new[i]).collect();
 
-        (u_new, v_new, a_new)
+        Self::finite_state((u_new, v_new, a_new))
     }
 
     /// One step of the Wilson-θ method (Bathe, *Finite Element Procedures*, ch. 9).
@@ -945,6 +1088,9 @@ impl DynamicAnalysis {
     /// `a₊ = 6/(θ·τ²)·(u_τ − u) − 6/(θ·τ)·v + (1 − 3/θ)·a`,
     /// `v₊ = v + dt/2·(a + a₊)`, `u₊ = u + dt·v + dt²/6·(2a + a₊)`.
     ///
+    /// The matrix on the left is constant while `dt`, `θ` and the system
+    /// matrices are unchanged; its LU factors are cached and reused.
+    ///
     /// `theta` must be at least 1.366 for unconditional stability (1.37–1.42 is
     /// typical); `theta = 1` reduces to the linear-acceleration method.
     ///
@@ -955,6 +1101,15 @@ impl DynamicAnalysis {
     ///
     /// # Returns
     /// `(u_{n+1}, v_{n+1}, a_{n+1})`
+    ///
+    /// # Errors
+    ///
+    /// - [`FemError::InvalidInput`] — a system matrix or a state / load vector
+    ///   with the wrong size or a non-finite entry, `dt` not finite and
+    ///   positive, or `theta` non-finite or below 1;
+    /// - [`FemError::SingularSystem`] — the effective stiffness
+    ///   `K + 6/τ²·M + 3/τ·C` is singular to working precision, or the step
+    ///   overflowed.
     pub fn wilson_theta_step(
         &self,
         u: &[f64],
@@ -964,21 +1119,33 @@ impl DynamicAnalysis {
         f_ext: &[f64],
         dt: f64,
         theta: f64,
-    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    ) -> Result<StepState, FemError> {
         let n = self.n;
+        self.validate_system()?;
+        self.validate_vector("displacement u", u)?;
+        self.validate_vector("velocity v", v)?;
+        self.validate_vector("acceleration a", a)?;
+        self.validate_vector("previous external load f_prev", f_prev)?;
+        self.validate_vector("external load f_ext", f_ext)?;
+        if !(dt.is_finite() && dt > 0.0) {
+            return Err(FemError::InvalidInput(format!(
+                "time step must be finite and positive, got {dt}"
+            )));
+        }
+        if !(theta.is_finite() && theta >= 1.0) {
+            return Err(FemError::InvalidInput(format!(
+                "Wilson parameter θ must be finite and at least 1, got {theta}"
+            )));
+        }
         let tau = theta * dt;
 
         // Effective stiffness K̂ = K + 6/τ²·M + 3/τ·C
         let c_mass = 6.0 / (tau * tau);
         let c_damping = 3.0 / tau;
-
-        let mut k_hat = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                k_hat[i * n + j] =
-                    self.k[i * n + j] + c_mass * self.m[i * n + j] + c_damping * self.c[i * n + j];
-            }
-        }
+        let k_hat: Vec<f64> = (0..n * n)
+            .map(|idx| self.k[idx] + c_mass * self.m[idx] + c_damping * self.c[idx])
+            .collect();
+        let factors = self.step_factors_for(StepScheme::Wilson, k_hat)?;
 
         // Effective load at t + τ:
         //   f̂ = f_prev + θ(f_ext − f_prev) + M(6/τ²·u + 6/τ·v + 2a) + C(3/τ·u + 2v + τ/2·a)
@@ -995,7 +1162,7 @@ impl DynamicAnalysis {
             .collect();
 
         // Displacement at t + τ
-        let u_tau = Self::solve(&k_hat, &rhs, n);
+        let u_tau = factors.solve(&rhs)?;
 
         // Acceleration, velocity and displacement at t + dt
         let a_new: Vec<f64> = (0..n)
@@ -1011,7 +1178,7 @@ impl DynamicAnalysis {
             .map(|i| u[i] + dt * v[i] + dt * dt / 6.0 * (2.0 * a[i] + a_new[i]))
             .collect();
 
-        (u_new, v_new, a_new)
+        Self::finite_state((u_new, v_new, a_new))
     }
 }
 
@@ -1456,7 +1623,8 @@ mod tests {
         let k = vec![k_val];
         let m = vec![m_val];
         let _ma = ModalAnalysis::default();
-        let freqs = ModalAnalysis::compute_natural_frequencies(&k, &m, 1, 1, 200);
+        let freqs = ModalAnalysis::compute_natural_frequencies(&k, &m, 1, 1, 200)
+            .expect("1-DOF modal analysis");
         let expected = k_val.sqrt();
         assert!(
             (freqs[0] - expected).abs() / expected < 1e-5,
@@ -1471,17 +1639,20 @@ mod tests {
         let k = vec![1.0, 0.0, 0.0, 9.0];
         let m = vec![1.0, 0.0, 0.0, 1.0];
         let _ma = ModalAnalysis::default();
-        let mut freqs = ModalAnalysis::compute_natural_frequencies(&k, &m, 2, 2, 500);
-        freqs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert!((freqs[0] - 1.0).abs() < 0.05, "ω₁ = {}", freqs[0]);
-        assert!((freqs[1] - 3.0).abs() < 0.05, "ω₂ = {}", freqs[1]);
+        // No sorting here: the frequencies must already come out ascending.
+        let freqs = ModalAnalysis::compute_natural_frequencies(&k, &m, 2, 2, 500)
+            .expect("2-DOF modal analysis");
+        assert!((freqs[0] - 1.0).abs() < 1e-12, "ω₁ = {}", freqs[0]);
+        assert!((freqs[1] - 3.0).abs() < 1e-12, "ω₂ = {}", freqs[1]);
     }
 
     #[test]
     fn test_mode_shape_1dof() {
         let k = vec![25.0_f64];
         let m = vec![1.0_f64];
-        let phi = ModalAnalysis::compute_mode_shapes(&k, &m, 1, 5.0, 100);
+        // ω = 5 is exactly the natural frequency, so K − ω²·M is singular.
+        let phi =
+            ModalAnalysis::compute_mode_shapes(&k, &m, 1, 5.0, 100).expect("1-DOF mode shape");
         // Mass-normalised: φᵀ·M·φ = 1 → |φ| = 1
         let norm: f64 = phi.iter().map(|x| x * x).sum::<f64>().sqrt();
         assert!((norm - 1.0).abs() < 1e-6, "mass norm = {norm}");

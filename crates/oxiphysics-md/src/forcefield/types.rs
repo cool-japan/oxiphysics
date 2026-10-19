@@ -2,6 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use std::collections::BTreeSet;
+
+use crate::neighbor::ExclusionList;
 use crate::potential::Potential;
 
 use super::functions::PotentialClone;
@@ -361,6 +364,31 @@ impl IntraEnergyDecomposition {
     }
 }
 /// AMBER-like force field combining pair, bond, angle, and dihedral terms.
+///
+/// The non-bonded part follows the AMBER conventions:
+///
+/// * atoms joined by one or two bonds (1-2 and 1-3 neighbours) do not interact
+///   through the pair potentials or the electrostatics
+///   ([`AmberForceField::exclusions`]);
+/// * atoms separated by exactly three bonds (1-4 neighbours,
+///   [`AmberForceField::pairs_14`]) interact with their Lennard-Jones and
+///   Coulomb energies scaled by [`AmberForceField::scaling_14`]
+///   ([`OneFourScaling::amber`]: 1/2 and 1/1.2);
+/// * every other pair interacts with the full pair potential;
+/// * the partial charges in `AtomSet::charges` interact through a cutoff
+///   Coulomb potential in reaction-field form, whose energy vanishes at the
+///   cutoff (see [`AmberForceField::coulomb_k`]).
+///
+/// An excluded pair contributes nothing at all: unlike codes that keep the
+/// `k_rf r² − c_rf` term of the reaction field for excluded pairs inside the
+/// cutoff, no correction term is applied to it, so two bonded atoms have zero
+/// non-bonded energy and force.
+///
+/// The exclusions and 1-4 pairs are derived from the bonded terms by
+/// [`AmberForceField::build_topology`].  Call it once all bonds, angles and
+/// dihedrals have been added; a force field whose bonded terms changed after
+/// the last call falls back on the topology derived on the fly, so forgetting
+/// the call never reinstates full Lennard-Jones forces between bonded atoms.
 #[derive(Debug, Clone)]
 pub struct AmberForceField {
     /// Pair (non-bonded) force field.
@@ -371,15 +399,48 @@ pub struct AmberForceField {
     pub angle: AngleForceField,
     /// Dihedral force field.
     pub dihedral: DihedralForceField,
+    /// Atom pairs that do not interact at all (1-2 and 1-3 neighbours).
+    pub exclusions: ExclusionList,
+    /// 1-4 pairs `(i, j)` with `i < j`, interacting with the scaled energies.
+    ///
+    /// A pair that is also excluded (ring closures) is treated as excluded.
+    pub pairs_14: BTreeSet<(usize, usize)>,
+    /// Scale factors applied to the 1-4 Lennard-Jones and Coulomb energies.
+    pub scaling_14: OneFourScaling,
+    /// Coulomb constant `k` of the charge-charge energy `k q_i q_j / r`, in the
+    /// energy-length-charge units of the simulation.
+    ///
+    /// The default is [`crate::electrostatics::COULOMB_K`],
+    /// 1389.354576 kJ Å / (mol e²); set it to 332.0637 for kcal/mol, Å and
+    /// elementary charges, or to `0.0` to switch the electrostatics off.
+    pub coulomb_k: f64,
+    /// Cutoff radius of the Coulomb interaction.  Zero or a negative value
+    /// selects the largest cutoff of the pair potentials.
+    pub coulomb_cutoff: f64,
+    /// Relative permittivity of the continuum beyond the Coulomb cutoff in the
+    /// reaction-field correction.  A non-finite or non-positive value selects a
+    /// conducting boundary (infinite permittivity), the default.
+    pub reaction_field_epsilon: f64,
+    /// Numbers of bonds, angles and dihedrals at the last
+    /// [`AmberForceField::build_topology`] call.
+    pub(super) topology_term_counts: Option<(usize, usize, usize)>,
 }
 impl AmberForceField {
-    /// Create a new empty AMBER force field.
+    /// Create a new empty AMBER force field with AMBER 1-4 scaling and a
+    /// conducting-boundary reaction-field Coulomb interaction.
     pub fn new() -> Self {
         Self {
             pair: PairForceField::new(),
             bonded: BondedForceField::new(),
             angle: AngleForceField::new(),
             dihedral: DihedralForceField::new(),
+            exclusions: ExclusionList::new(),
+            pairs_14: BTreeSet::new(),
+            scaling_14: OneFourScaling::amber(),
+            coulomb_k: crate::electrostatics::COULOMB_K,
+            coulomb_cutoff: 0.0,
+            reaction_field_epsilon: f64::INFINITY,
+            topology_term_counts: None,
         }
     }
 }

@@ -5,10 +5,18 @@
 //!
 //! Splits the stable Neo-Hookean energy into a deviatoric distortion
 //! constraint `C_dev = ||F||_F - sqrt(3)` and a hydrostatic volume constraint
-//! `C_hyd = det(F) - alpha`, each projected with XPBD compliance so the
-//! material is stable at near-incompressible Poisson ratios and through
-//! inversion. Operates on raw `[[f64; 3]]` position arrays with a parallel
-//! `inv_mass` slice so it is self-contained and easy to test.
+//! `C_hyd = det(F) - 1`, each projected with XPBD compliance so the material is
+//! stable at near-incompressible Poisson ratios and through inversion.
+//!
+//! Both constraints vanish at `F = I` (and at every rotation), so the
+//! undeformed element is a fixed point of the projection. The `-sqrt(3)` offset
+//! of `C_dev` is what fixes the hydrostatic target at `1`: Macklin's
+//! `gamma = 1 + mu / lambda` (or Smith's `alpha`) belongs to a deviatoric term
+//! without the offset and would leave a resting tet with `C_hyd != 0`, i.e.
+//! inflate it (and diverge for `lambda -> 0`).
+//!
+//! Operates on raw `[[f64; 3]]` position arrays with a parallel `inv_mass` slice
+//! so it is self-contained and easy to test.
 
 use crate::fem_soft::math_helpers::{det3x3, edge_matrix_raw, inv3x3, mul3x3, transpose3x3};
 
@@ -192,7 +200,8 @@ impl StableNeoHookeanXpbdConstraint {
     }
 
     /// Compliance of the hydrostatic constraint, `1 / (lambda * rest_volume)`,
-    /// with a large fallback when the product underflows.
+    /// with a large fallback when the product underflows (`lambda = 0`, i.e. a
+    /// Poisson ratio of zero, makes the volume constraint effectively inactive).
     fn hydrostatic_compliance(&self) -> f64 {
         if self.lambda * self.rest_volume > 1e-30 {
             1.0 / (self.lambda * self.rest_volume)
@@ -243,17 +252,22 @@ impl StableNeoHookeanXpbdConstraint {
         self.lambda_dev = lambda_acc;
     }
 
-    /// Project the deviatoric constraint and then the hydrostatic volume
-    /// constraint. `F` is recomputed before the hydrostatic solve because the
-    /// deviatoric projection moves the vertices.
-    pub fn project(&mut self, positions: &mut [[f64; 3]], inv_mass: &[f64], dt: f64) {
-        // Deviatoric pass.
-        self.project_deviatoric_only(positions, inv_mass, dt);
-
-        // Hydrostatic pass: recompute F since positions moved.
+    /// Project only the hydrostatic (volume) constraint `C_hyd = det(F) - 1`.
+    /// Useful on its own for testing the volume convergence in isolation.
+    ///
+    /// The deviatoric constraint `C_dev = ||F||_F - sqrt(3)` is already zero at
+    /// `F = I`, so the volume constraint must be zero there too. A target
+    /// `alpha != 1` (for example `1 + mu / lambda`) would make the rest shape
+    /// violate `C_hyd`, inflate an undeformed tet, and become infinite for
+    /// `lambda = 0`.
+    pub fn project_hydrostatic_only(
+        &mut self,
+        positions: &mut [[f64; 3]],
+        inv_mass: &[f64],
+        dt: f64,
+    ) {
         let f = self.deformation_gradient(positions);
-        let alpha = 1.0 + self.mu / self.lambda - self.mu / (4.0 * self.lambda);
-        let c_hyd = det3x3(f) - alpha;
+        let c_hyd = det3x3(f) - 1.0;
         let g_hyd = cofactor3(f);
 
         let constraint = ScalarConstraint {
@@ -272,6 +286,14 @@ impl StableNeoHookeanXpbdConstraint {
             &mut lambda_acc,
         );
         self.lambda_hyd = lambda_acc;
+    }
+
+    /// Project the deviatoric constraint and then the hydrostatic volume
+    /// constraint. `F` is recomputed before the hydrostatic solve because the
+    /// deviatoric projection moves the vertices.
+    pub fn project(&mut self, positions: &mut [[f64; 3]], inv_mass: &[f64], dt: f64) {
+        self.project_deviatoric_only(positions, inv_mass, dt);
+        self.project_hydrostatic_only(positions, inv_mass, dt);
     }
 }
 
@@ -347,5 +369,186 @@ mod tests {
         }
         let f = c.deformation_gradient(&pos);
         assert!(det3x3(f) > 0.0, "volume must stay positive: {}", det3x3(f));
+    }
+
+    const UNIT_TET: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+
+    /// Skewed tetrahedron: neither `Dm` nor `Dm^-1` is symmetric.
+    const SKEWED_TET: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.2, 0.1],
+        [0.3, 1.1, 0.0],
+        [0.2, 0.4, 0.9],
+    ];
+
+    fn max_displacement(a: &[[f64; 3]; 4], b: &[[f64; 3]; 4]) -> f64 {
+        a.iter()
+            .flatten()
+            .zip(b.iter().flatten())
+            .fold(0.0_f64, |acc, (x, y)| acc.max((x - y).abs()))
+    }
+
+    fn rotate(points: &[[f64; 3]; 4], axis: [f64; 3], angle: f64) -> [[f64; 3]; 4] {
+        let norm = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        let k = [axis[0] / norm, axis[1] / norm, axis[2] / norm];
+        let (s, c) = angle.sin_cos();
+        points.map(|p| {
+            // Rodrigues: p c + (k x p) s + k (k . p)(1 - c)
+            let kxp = [
+                k[1] * p[2] - k[2] * p[1],
+                k[2] * p[0] - k[0] * p[2],
+                k[0] * p[1] - k[1] * p[0],
+            ];
+            let kdp = k[0] * p[0] + k[1] * p[1] + k[2] * p[2];
+            [
+                p[0] * c + kxp[0] * s + k[0] * kdp * (1.0 - c),
+                p[1] * c + kxp[1] * s + k[1] * kdp * (1.0 - c),
+                p[2] * c + kxp[2] * s + k[2] * kdp * (1.0 - c),
+            ]
+        })
+    }
+
+    #[test]
+    fn rest_tet_is_a_fixed_point_of_the_projection() {
+        // C_dev and C_hyd both vanish at F = I, for every Poisson ratio. The old
+        // target alpha = 1 + mu/lambda - mu/(4 lambda) (1.5 for nu = 0.3) made
+        // C_hyd = -0.75 mu/lambda at rest and inflated the undeformed tet.
+        let inv_mass = [1.0, 1.0, 1.0, 1.0];
+        for poisson in [0.0, 0.1, 0.3, 0.45, 0.49] {
+            for rest in [UNIT_TET, SKEWED_TET] {
+                let mut c =
+                    StableNeoHookeanXpbdConstraint::new([0, 1, 2, 3], &rest, 1.0e4, poisson);
+                let mut pos = rest;
+                for _ in 0..20 {
+                    c.reset_lambda();
+                    c.project(&mut pos, &inv_mass, 1.0e-2);
+                }
+                let moved = max_displacement(&pos, &rest);
+                assert!(
+                    moved < 1.0e-12,
+                    "nu = {poisson}: the undeformed tet moved by {moved}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rigidly_rotated_tet_is_also_a_fixed_point() {
+        let inv_mass = [1.0, 1.0, 1.0, 1.0];
+        let rotated = rotate(&SKEWED_TET, [1.0, 2.0, 3.0], 0.9);
+        let mut c = StableNeoHookeanXpbdConstraint::new([0, 1, 2, 3], &SKEWED_TET, 1.0e4, 0.3);
+        let mut pos = rotated;
+        for _ in 0..20 {
+            c.reset_lambda();
+            c.project(&mut pos, &inv_mass, 1.0e-2);
+        }
+        assert!(
+            max_displacement(&pos, &rotated) < 1.0e-12,
+            "a rigid rotation carries no strain"
+        );
+    }
+
+    #[test]
+    fn zero_poisson_ratio_stays_finite_and_barely_moves() {
+        // nu = 0 gives lambda = 0: the old target alpha was infinite and every
+        // position became inf/NaN. The hydrostatic constraint now simply falls
+        // back to its (practically infinite) compliance.
+        let inv_mass = [1.0, 1.0, 1.0, 1.0];
+        let mut c = StableNeoHookeanXpbdConstraint::new([0, 1, 2, 3], &UNIT_TET, 1.0e4, 0.0);
+        let mut pos = UNIT_TET;
+        for _ in 0..50 {
+            c.reset_lambda();
+            c.project(&mut pos, &inv_mass, 1.0e-2);
+        }
+        for p in &pos {
+            assert!(p.iter().all(|v| v.is_finite()), "position must stay finite");
+        }
+        assert!(max_displacement(&pos, &UNIT_TET) < 1.0e-12);
+
+        // A strained tet still relaxes through the deviatoric constraint.
+        pos[1][0] = 1.3;
+        pos[2][1] = 1.2;
+        pos[3][2] = 1.15;
+        for _ in 0..300 {
+            c.reset_lambda();
+            c.project(&mut pos, &inv_mass, 1.0e-2);
+        }
+        for p in &pos {
+            assert!(p.iter().all(|v| v.is_finite()), "position must stay finite");
+        }
+        let f = c.deformation_gradient(&pos);
+        let i_c: f64 = f.iter().flat_map(|r| r.iter()).map(|x| x * x).sum();
+        assert!(
+            (i_c.sqrt() - 3.0f64.sqrt()).abs() < 0.05,
+            "C_dev must converge for nu = 0: {}",
+            i_c.sqrt() - 3.0f64.sqrt()
+        );
+        assert!(det3x3(f) > 0.0);
+    }
+
+    fn scaled_tet(scale: f64) -> [[f64; 3]; 4] {
+        UNIT_TET.map(|p| [scale * p[0], scale * p[1], scale * p[2]])
+    }
+
+    #[test]
+    fn hydrostatic_pass_alone_restores_unit_volume() {
+        // The volume constraint on its own is a single smooth constraint, so the
+        // projection converges geometrically to `det F = 1`. The old target
+        // alpha = 1 + mu/lambda - mu/(4 lambda) (1.5 for nu = 0.3) froze an
+        // inflated tet at det F = 1.5 instead.
+        let inv_mass = [1.0, 1.0, 1.0, 1.0];
+        for (scale, start_det) in [(1.2, 1.728), (0.8, 0.512)] {
+            let mut c = StableNeoHookeanXpbdConstraint::new([0, 1, 2, 3], &UNIT_TET, 1.0e4, 0.3);
+            let mut pos = scaled_tet(scale);
+            assert!((det3x3(c.deformation_gradient(&pos)) - start_det).abs() < 1.0e-12);
+            for _ in 0..100 {
+                c.reset_lambda();
+                c.project_hydrostatic_only(&mut pos, &inv_mass, 1.0e-2);
+            }
+            let det = det3x3(c.deformation_gradient(&pos));
+            assert!(
+                (det - 1.0).abs() < 1.0e-9,
+                "scale {scale}: the volume constraint must settle at det F = 1, got {det}"
+            );
+        }
+    }
+
+    #[test]
+    fn combined_projection_converges_towards_the_rest_state() {
+        // F = 1.2 I violates both constraints. At F = I the gradients of
+        // C_dev = ||F|| - sqrt(3) and C_hyd = det F - 1 are both proportional to
+        // I, i.e. the two constraint surfaces are tangent at the rest state, and
+        // by the AM-GM inequality ||F||_F^2 >= 3 det(F)^(2/3) they only meet at
+        // the rotations F^T F = I. Alternating projections onto tangent surfaces
+        // converge sublinearly (the residual falls roughly like 1/k, with no
+        // geometric rate), so a few hundred iterations leave a residual of a few
+        // 1e-3 and the tolerances below must not be tightened. What they pin
+        // down is the fixed point: the old target alpha = 1.5 stopped at
+        // det F = 1.5.
+        let inv_mass = [1.0, 1.0, 1.0, 1.0];
+        let mut c = StableNeoHookeanXpbdConstraint::new([0, 1, 2, 3], &UNIT_TET, 1.0e4, 0.3);
+        let mut pos = scaled_tet(1.2);
+        assert!((det3x3(c.deformation_gradient(&pos)) - 1.728).abs() < 1.0e-12);
+        for _ in 0..500 {
+            c.reset_lambda();
+            c.project(&mut pos, &inv_mass, 1.0e-2);
+        }
+        let f = c.deformation_gradient(&pos);
+        let det = det3x3(f);
+        assert!(
+            (det - 1.0).abs() < 5.0e-3 && det < 1.01,
+            "the rest volume is det F = 1, got {det}"
+        );
+        let i_c: f64 = f.iter().flat_map(|r| r.iter()).map(|x| x * x).sum();
+        assert!(
+            (i_c.sqrt() - 3.0f64.sqrt()).abs() < 1.0e-2,
+            "C_dev residual {}",
+            i_c.sqrt() - 3.0f64.sqrt()
+        );
     }
 }

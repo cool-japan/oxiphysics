@@ -820,43 +820,97 @@ pub fn photonic_crystal_1d_bandgap(n1: f64, n2: f64, d1: f64, d2: f64) -> (f64, 
     (lambda_center, fractional_gap)
 }
 
-/// Transfer matrix for a single dielectric layer at normal incidence.
-///
-/// M = \[\[cos δ, -i/n · sin δ\\], \[-i·n · sin δ, cos δ\]]
-///
-/// Returns the 2×2 matrix as `[m11, m12, m21, m22]` (complex components as pairs).
-/// For simplicity returns the real transfer matrix ignoring phase for
-/// a λ/4 layer where δ = π/2 and cos δ = 0.
-///
-/// For a quarter-wave layer: M_real = \[\[0, -1/n\\], \[-n, 0\]].
-///
-/// # Arguments
-/// * `n` – Refractive index of the layer.
-/// * `delta` – Round-trip phase δ = 2πnd/λ \[rad\].
-pub fn transfer_matrix_layer(n: f64, delta: f64) -> [f64; 4] {
-    let cos_d = delta.cos();
-    let sin_d = delta.sin();
-    // Real part of transfer matrix components.
-    [cos_d, -sin_d / n, -n * sin_d, cos_d]
+/// A complex 2×2 transfer matrix `[m11, m12, m21, m22]`; every entry is a
+/// `(re, im)` pair (the workspace has no complex-number dependency).
+pub type TransferMatrix = [(f64, f64); 4];
+
+/// The 2×2 identity transfer matrix (an empty stack).
+pub const TRANSFER_MATRIX_IDENTITY: TransferMatrix =
+    [(1.0, 0.0), (0.0, 0.0), (0.0, 0.0), (1.0, 0.0)];
+
+/// Product of two complex numbers.
+fn complex_mul(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
 }
 
-/// Multiply two 2×2 transfer matrices.
+/// Sum of two complex numbers.
+fn complex_add(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    (a.0 + b.0, a.1 + b.1)
+}
+
+/// Characteristic (transfer) matrix of a single lossless dielectric layer at
+/// normal incidence (Born & Wolf / Macleod convention).
 ///
-/// Returns M = A × B.
+/// M = \[\[cos δ, i·sin δ / n\], \[i·n·sin δ, cos δ\]\]
+///
+/// Returns the 2×2 complex matrix as `[m11, m12, m21, m22]` with `(re, im)`
+/// entries.  The matrix has unit determinant, `cos²δ + sin²δ = 1`, for every
+/// phase; the factor `i` between the diagonal and the off-diagonal entries is
+/// what makes a multilayer interfere correctly away from the quarter-wave
+/// condition.  (The opposite sign convention for `i` gives the complex
+/// conjugate matrix and the same reflectance.)
+///
+/// # Arguments
+/// * `n` – Refractive index of the layer (must be positive).
+/// * `delta` – Phase thickness δ = 2πnd/λ of one pass through the layer \[rad\]
+///   (the round-trip phase is 2δ).
+pub fn transfer_matrix_layer(n: f64, delta: f64) -> TransferMatrix {
+    let (sin_d, cos_d) = delta.sin_cos();
+    [
+        (cos_d, 0.0),
+        (0.0, sin_d / n),
+        (0.0, n * sin_d),
+        (cos_d, 0.0),
+    ]
+}
+
+/// Multiply two complex 2×2 transfer matrices.
+///
+/// Returns M = A × B.  Layers are multiplied in the order light meets them,
+/// from the incident medium towards the substrate.
 ///
 /// # Arguments
 /// * `a` – First matrix \[m11, m12, m21, m22\].
 /// * `b` – Second matrix.
-pub fn transfer_matrix_multiply(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+pub fn transfer_matrix_multiply(a: TransferMatrix, b: TransferMatrix) -> TransferMatrix {
     [
-        a[0] * b[0] + a[1] * b[2],
-        a[0] * b[1] + a[1] * b[3],
-        a[2] * b[0] + a[3] * b[2],
-        a[2] * b[1] + a[3] * b[3],
+        complex_add(complex_mul(a[0], b[0]), complex_mul(a[1], b[2])),
+        complex_add(complex_mul(a[0], b[1]), complex_mul(a[1], b[3])),
+        complex_add(complex_mul(a[2], b[0]), complex_mul(a[3], b[2])),
+        complex_add(complex_mul(a[2], b[1]), complex_mul(a[3], b[3])),
     ]
 }
 
-/// Reflectance of an N-period Bragg mirror using transfer matrix method.
+/// Power reflectance `R = |r|²` at normal incidence of a layer stack with
+/// characteristic matrix `stack`, between an incident medium of index `n0` and
+/// a substrate of index `ns`.
+///
+/// With `[B, C]ᵀ = M·[1, ns]ᵀ` the amplitude reflection coefficient is
+/// `r = (n0·B − C) / (n0·B + C)`.  An empty stack (the identity matrix) gives
+/// the bare interface `((n0 − ns)/(n0 + ns))²`.  A degenerate (vanishing)
+/// denominator is reported as total reflection.
+pub fn stack_reflectance(n0: f64, ns: f64, stack: &TransferMatrix) -> f64 {
+    let b = (stack[0].0 + stack[1].0 * ns, stack[0].1 + stack[1].1 * ns);
+    let c = (stack[2].0 + stack[3].0 * ns, stack[2].1 + stack[3].1 * ns);
+    let num = (n0 * b.0 - c.0, n0 * b.1 - c.1);
+    let den = (n0 * b.0 + c.0, n0 * b.1 + c.1);
+    let den_sq = den.0 * den.0 + den.1 * den.1;
+    if den_sq < 1e-60 {
+        1.0
+    } else {
+        (num.0 * num.0 + num.1 * num.1) / den_sq
+    }
+}
+
+/// Reflectance of an N-period Bragg mirror using the complex transfer matrix
+/// method at normal incidence.
+///
+/// Layer 1 (`n1`, `d1`) faces the incident medium and layer 2 (`n2`, `d2`) the
+/// substrate; the bilayer is repeated `n_periods` times.  The result is valid at
+/// every wavelength, not only at the quarter-wave design wavelength, and lies in
+/// `[0, 1]` for lossless layers.  For a quarter-wave stack it reduces to
+/// `((n0 − ns·(n1/n2)^{2N}) / (n0 + ns·(n1/n2)^{2N}))²`, and `n_periods = 0`
+/// gives the bare interface `((n0 − ns)/(n0 + ns))²`.
 ///
 /// # Arguments
 /// * `n0` – Refractive index of incident medium.
@@ -884,7 +938,7 @@ pub fn bragg_mirror_reflectance(
     let bilayer = transfer_matrix_multiply(m1, m2);
 
     // Raise bilayer to the n_periods power by repeated squaring.
-    let mut result = [1.0_f64, 0.0, 0.0, 1.0]; // identity
+    let mut result = TRANSFER_MATRIX_IDENTITY;
     let mut base = bilayer;
     let mut exp = n_periods;
     while exp > 0 {
@@ -895,15 +949,7 @@ pub fn bragg_mirror_reflectance(
         exp /= 2;
     }
 
-    // Compute reflectance: r = (n0*M11 + n0*ns*M12 - M21 - ns*M22) /
-    //                          (n0*M11 + n0*ns*M12 + M21 + ns*M22)
-    let num = n0 * result[0] + n0 * ns * result[1] - result[2] - ns * result[3];
-    let den = n0 * result[0] + n0 * ns * result[1] + result[2] + ns * result[3];
-    if den.abs() < 1e-30 {
-        1.0
-    } else {
-        (num / den) * (num / den)
-    }
+    stack_reflectance(n0, ns, &result)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1349,6 +1395,239 @@ mod tests {
             r10 >= r5,
             "More periods → higher Bragg reflectance: R5={r5:.4}, R10={r10:.4}"
         );
+    }
+
+    // ── Transfer-matrix (thin-film) regression tests ────────────────────────
+
+    /// Airy formula for a single lossless film; `delta` is the one-pass phase
+    /// thickness, the round-trip phase is `2·delta`.
+    fn airy_single_film(n0: f64, n: f64, ns: f64, delta: f64) -> f64 {
+        let r01 = (n0 - n) / (n0 + n);
+        let r12 = (n - ns) / (n + ns);
+        let cross = 2.0 * r01 * r12 * (2.0 * delta).cos();
+        (r01 * r01 + r12 * r12 + cross) / (1.0 + r01 * r01 * r12 * r12 + cross)
+    }
+
+    /// Independent reference: the Abelès/Airy recursion of the amplitude
+    /// reflection coefficient from the substrate upwards (no transfer matrices).
+    ///
+    /// `indices` is `[n0, n_layer_1, …, n_layer_K, n_substrate]` and `phases`
+    /// holds the one-pass phase thickness of the K layers.
+    fn reflectance_by_fresnel_recursion(indices: &[f64], phases: &[f64]) -> f64 {
+        let k = phases.len();
+        let fresnel = |a: f64, b: f64| (a - b) / (a + b);
+        let mut gamma = (fresnel(indices[k], indices[k + 1]), 0.0_f64);
+        for j in (0..k).rev() {
+            let r_j = fresnel(indices[j], indices[j + 1]);
+            let (sin_2d, cos_2d) = (2.0 * phases[j]).sin_cos();
+            let g = (
+                gamma.0 * cos_2d - gamma.1 * sin_2d,
+                gamma.0 * sin_2d + gamma.1 * cos_2d,
+            );
+            let num = (r_j + g.0, g.1);
+            let den = (1.0 + r_j * g.0, r_j * g.1);
+            let den_sq = den.0 * den.0 + den.1 * den.1;
+            gamma = (
+                (num.0 * den.0 + num.1 * den.1) / den_sq,
+                (num.1 * den.0 - num.0 * den.1) / den_sq,
+            );
+        }
+        gamma.0 * gamma.0 + gamma.1 * gamma.1
+    }
+
+    // Layer matrix has unit determinant for every phase (cos² + sin² = 1).
+    #[test]
+    fn test_transfer_matrix_layer_unit_determinant() {
+        for &n in &[1.2, 1.5, 2.3, 3.5] {
+            for &delta in &[0.0, 0.3, PI / 4.0, 1.0, PI / 2.0, 2.0, PI, 4.5] {
+                let m = transfer_matrix_layer(n, delta);
+                let p = complex_mul(m[0], m[3]);
+                let q = complex_mul(m[1], m[2]);
+                assert!(
+                    (p.0 - q.0 - 1.0).abs() < 1e-12 && (p.1 - q.1).abs() < 1e-12,
+                    "det M = ({}, {}) for n = {n}, δ = {delta}",
+                    p.0 - q.0,
+                    p.1 - q.1
+                );
+            }
+        }
+    }
+
+    // The off-diagonal entries are purely imaginary: M = [[cos δ, i sin δ / n],
+    // [i n sin δ, cos δ]].
+    #[test]
+    fn test_transfer_matrix_layer_entries() {
+        let (n, delta) = (1.7, 0.9);
+        let m = transfer_matrix_layer(n, delta);
+        assert!((m[0].0 - delta.cos()).abs() < 1e-15 && m[0].1 == 0.0);
+        assert!(m[1].0 == 0.0 && (m[1].1 - delta.sin() / n).abs() < 1e-15);
+        assert!(m[2].0 == 0.0 && (m[2].1 - n * delta.sin()).abs() < 1e-15);
+        assert!((m[3].0 - delta.cos()).abs() < 1e-15 && m[3].1 == 0.0);
+        // Quarter-wave layer: [[0, i/n], [i n, 0]].
+        let qw = transfer_matrix_layer(n, PI / 2.0);
+        assert!(qw[0].0.abs() < 1e-15 && (qw[1].1 - 1.0 / n).abs() < 1e-15);
+        assert!((qw[2].1 - n).abs() < 1e-15 && qw[3].0.abs() < 1e-15);
+    }
+
+    // Quarter-wave anti-reflection film: R = ((n0 ns − n²) / (n0 ns + n²))².
+    #[test]
+    fn test_quarter_wave_film_reflectance() {
+        let (n0, n, ns) = (1.0, 1.38, 1.52);
+        let r = stack_reflectance(n0, ns, &transfer_matrix_layer(n, PI / 2.0));
+        let expected = ((n0 * ns - n * n) / (n0 * ns + n * n)).powi(2);
+        assert!((r - expected).abs() < 1e-12, "R = {r}, expected {expected}");
+        assert!(r < 0.02, "a MgF2-like film on glass reflects about 1.3 %");
+    }
+
+    // A single film must follow the Airy formula at ANY phase, in particular
+    // off the quarter-wave condition (δ = π/4 made the old matrix singular).
+    #[test]
+    fn test_single_film_matches_airy_formula_off_quarter_wave() {
+        for &(n0, n, ns) in &[(1.0, 1.38, 1.52), (1.0, 2.3, 1.5), (1.5, 2.0, 1.0)] {
+            for &delta in &[
+                0.1,
+                PI / 4.0,
+                0.9,
+                PI / 3.0,
+                1.3,
+                PI / 2.0,
+                2.0,
+                2.7,
+                PI,
+                3.5,
+            ] {
+                let r = stack_reflectance(n0, ns, &transfer_matrix_layer(n, delta));
+                let airy = airy_single_film(n0, n, ns, delta);
+                assert!(
+                    (r - airy).abs() < 1e-12,
+                    "n = ({n0}, {n}, {ns}), δ = {delta}: TMM {r} vs Airy {airy}"
+                );
+            }
+        }
+    }
+
+    // A half-wave film is absent: the stack reflects like the bare interface.
+    #[test]
+    fn test_half_wave_film_is_absentee() {
+        let (n0, n, ns) = (1.0, 2.1, 1.5);
+        let r = stack_reflectance(n0, ns, &transfer_matrix_layer(n, PI));
+        let bare = ((n0 - ns) / (n0 + ns)).powi(2);
+        assert!((r - bare).abs() < 1e-12, "R = {r}, bare interface {bare}");
+    }
+
+    // Zero periods: the bare interface ((n0 − ns)/(n0 + ns))².
+    #[test]
+    fn test_bragg_mirror_zero_periods_is_bare_interface() {
+        let r = bragg_mirror_reflectance(1.0, 1.5, 2.3, 1.5, 60e-9, 90e-9, 600e-9, 0);
+        let bare = ((1.0_f64 - 1.5) / (1.0 + 1.5)).powi(2);
+        assert!((r - bare).abs() < 1e-15, "R = {r}, bare {bare}");
+    }
+
+    // d2 = 0 turns the Bragg mirror into a single film; compare against the
+    // Airy formula and against the independent AntiReflectionCoating model.
+    #[test]
+    fn test_bragg_mirror_single_film_matches_airy_and_ar_coating() {
+        let (n_c, n_s) = (1.38, 1.52);
+        let thickness_nm = 99.6;
+        let coating = AntiReflectionCoating::new(n_s, n_c, thickness_nm, 550.0);
+        for &wl_nm in &[400.0, 450.0, 550.0, 650.0, 800.0] {
+            let wl_m = wl_nm * 1e-9;
+            let r = bragg_mirror_reflectance(1.0, n_s, n_c, 1.0, thickness_nm * 1e-9, 0.0, wl_m, 1);
+            let delta = 2.0 * PI * n_c * thickness_nm * 1e-9 / wl_m;
+            let airy = airy_single_film(1.0, n_c, n_s, delta);
+            assert!((r - airy).abs() < 1e-12, "λ = {wl_nm}: {r} vs Airy {airy}");
+            let ar = coating.reflectance(wl_nm);
+            assert!((r - ar).abs() < 1e-12, "λ = {wl_nm}: {r} vs AR model {ar}");
+        }
+    }
+
+    // Quarter-wave stack at the design wavelength:
+    // R = ((n0 − ns (n1/n2)^{2N}) / (n0 + ns (n1/n2)^{2N}))².
+    #[test]
+    fn test_bragg_mirror_quarter_wave_stack_closed_form() {
+        let (n0, ns, n1, n2): (f64, f64, f64, f64) = (1.0, 1.5, 2.3, 1.5);
+        let wl0 = 600e-9;
+        let (d1, d2) = (wl0 / (4.0 * n1), wl0 / (4.0 * n2));
+        let mut previous = 0.0;
+        for periods in 1..=6_usize {
+            let y = ns * (n1 / n2).powi(2 * periods as i32);
+            let expected = ((n0 - y) / (n0 + y)).powi(2);
+            let r = bragg_mirror_reflectance(n0, ns, n1, n2, d1, d2, wl0, periods);
+            assert!(
+                (r - expected).abs() < 1e-9,
+                "N = {periods}: R = {r}, closed form {expected}"
+            );
+            assert!(r > previous, "reflectance must grow with the period count");
+            previous = r;
+        }
+        assert!(previous > 0.98);
+    }
+
+    // Off the design wavelength the matrix result must agree with the
+    // independent Fresnel recursion (the old real-matrix code did not).
+    #[test]
+    fn test_bragg_mirror_matches_fresnel_recursion_off_design() {
+        let (n0, ns, n1, n2) = (1.0, 1.52, 2.3, 1.5);
+        let (d1, d2) = (60e-9, 90e-9);
+        for &periods in &[1_usize, 2, 5] {
+            for &wl_nm in &[
+                350.0, 420.0, 500.0, 560.0, 600.0, 680.0, 800.0, 1000.0, 1500.0,
+            ] {
+                let wl_m = wl_nm * 1e-9;
+                let mut indices = vec![n0];
+                let mut phases = Vec::new();
+                for _ in 0..periods {
+                    indices.extend([n1, n2]);
+                    phases.extend([2.0 * PI * n1 * d1 / wl_m, 2.0 * PI * n2 * d2 / wl_m]);
+                }
+                indices.push(ns);
+                let reference = reflectance_by_fresnel_recursion(&indices, &phases);
+                let r = bragg_mirror_reflectance(n0, ns, n1, n2, d1, d2, wl_m, periods);
+                assert!(
+                    (r - reference).abs() < 1e-10,
+                    "N = {periods}, λ = {wl_nm} nm: TMM {r} vs recursion {reference}"
+                );
+            }
+        }
+    }
+
+    // A lossless dielectric stack reflects between 0 and 1 over a full
+    // wavelength sweep (the old real matrix could exceed 1).
+    #[test]
+    fn test_bragg_mirror_reflectance_stays_in_unit_interval() {
+        for &periods in &[1_usize, 3, 8, 20] {
+            let mut wl_nm = 300.0;
+            while wl_nm <= 1500.0 {
+                let r = bragg_mirror_reflectance(
+                    1.0,
+                    1.52,
+                    2.3,
+                    1.5,
+                    60e-9,
+                    90e-9,
+                    wl_nm * 1e-9,
+                    periods,
+                );
+                assert!(
+                    (0.0..=1.0 + 1e-12).contains(&r),
+                    "R = {r} outside [0, 1] at λ = {wl_nm} nm, N = {periods}"
+                );
+                wl_nm += 7.0;
+            }
+        }
+    }
+
+    // The stop band: a quarter-wave stack reflects strongly at the design
+    // wavelength and much more weakly far outside the band.
+    #[test]
+    fn test_bragg_mirror_has_a_stop_band_around_the_design_wavelength() {
+        let (n0, ns, n1, n2) = (1.0, 1.5, 2.3, 1.5);
+        let wl0 = 600e-9;
+        let (d1, d2) = (wl0 / (4.0 * n1), wl0 / (4.0 * n2));
+        let centre = bragg_mirror_reflectance(n0, ns, n1, n2, d1, d2, wl0, 8);
+        let far = bragg_mirror_reflectance(n0, ns, n1, n2, d1, d2, 0.45 * wl0, 8);
+        assert!(centre > 0.99, "centre R = {centre}");
+        assert!(far < 0.8 * centre, "off-band R = {far}");
     }
 
     // 34. etalon_transmission is in [0, 1].

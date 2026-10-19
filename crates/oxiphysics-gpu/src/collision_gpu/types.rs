@@ -1,4 +1,5 @@
 use super::functions::*;
+use std::collections::HashSet;
 // Auto-generated module
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
@@ -146,10 +147,17 @@ impl AabbGpu {
         }
     }
 }
+/// Default [`PersistentManifoldGpu::merge_radius`]: a contact detected within
+/// this world-space distance of a stored point is the same physical contact.
+pub const DEFAULT_MANIFOLD_MERGE_RADIUS: f32 = 0.02;
+
 /// Persistent 4-point contact manifold with warm-start impulse data.
 ///
 /// Retains up to 4 contact points between a pair of bodies across frames,
-/// selecting the deepest/most-separated subset for stability.
+/// selecting the deepest/most-separated subset for stability.  A contact that
+/// is detected again at (nearly) the same place is the same physical point: it
+/// refreshes the stored point instead of being appended as a duplicate, see
+/// [`add_contact`](Self::add_contact).
 #[derive(Debug, Clone)]
 pub struct PersistentManifoldGpu {
     /// Index of body A.
@@ -160,6 +168,10 @@ pub struct PersistentManifoldGpu {
     pub points: [Option<ManifoldPoint>; 4],
     /// Number of active contact points.
     pub num_points: usize,
+    /// World-space distance below which a new contact counts as the stored
+    /// point it is closest to (default [`DEFAULT_MANIFOLD_MERGE_RADIUS`]).
+    /// A radius of zero merges only contacts at exactly the same position.
+    pub merge_radius: f32,
 }
 impl PersistentManifoldGpu {
     /// Create an empty manifold for the given body pair.
@@ -169,17 +181,57 @@ impl PersistentManifoldGpu {
             body_b,
             points: [None, None, None, None],
             num_points: 0,
+            merge_radius: DEFAULT_MANIFOLD_MERGE_RADIUS,
         }
     }
-    /// Add or replace a contact point.
+    /// Return the manifold with its [`merge_radius`](Self::merge_radius) set to
+    /// `merge_radius`.
+    pub fn with_merge_radius(mut self, merge_radius: f32) -> Self {
+        self.merge_radius = merge_radius;
+        self
+    }
+    /// Index of the stored point nearest to `position`, if one lies within the
+    /// merge radius.
+    fn point_to_merge_with(&self, position: [f32; 3]) -> Option<usize> {
+        let radius = self.merge_radius.max(0.0);
+        let limit = radius * radius;
+        let mut best: Option<(usize, f32)> = None;
+        for (i, slot) in self.points.iter().enumerate() {
+            let Some(point) = slot else {
+                continue;
+            };
+            let dist_sq = len_sq3f(sub3f(point.position, position));
+            if dist_sq <= limit && best.is_none_or(|(_, best_sq)| dist_sq < best_sq) {
+                best = Some((i, dist_sq));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+    /// Add a contact point, merging it with the stored point it re-detects.
     ///
-    /// If there are fewer than 4 points the new point is simply appended.
-    /// Otherwise the shallowest existing point is replaced if it is shallower
-    /// than the new one.
+    /// * A point within [`merge_radius`](Self::merge_radius) of `new_pt` is the
+    ///   same physical contact seen again in a later frame: it is replaced by
+    ///   `new_pt` (fresh position, normal and depth).  The replaced point's warm
+    ///   impulses survive unless `new_pt` brings warm-start data of its own.
+    /// * Otherwise `new_pt` fills the first free slot.
+    /// * With all 4 slots in use, the shallowest stored point is replaced if it
+    ///   is shallower than the new one.
     pub fn add_contact(&mut self, new_pt: ManifoldPoint) {
-        if self.num_points < 4 {
-            self.points[self.num_points] = Some(new_pt);
-            self.num_points += 1;
+        if let Some(index) = self.point_to_merge_with(new_pt.position) {
+            let mut refreshed = new_pt;
+            if let Some(previous) = &self.points[index]
+                && !refreshed.has_warm_start()
+            {
+                refreshed.warm_impulse_normal = previous.warm_impulse_normal;
+                refreshed.warm_impulse_t1 = previous.warm_impulse_t1;
+                refreshed.warm_impulse_t2 = previous.warm_impulse_t2;
+            }
+            self.points[index] = Some(refreshed);
+            return;
+        }
+        if let Some(free) = self.points.iter().position(Option::is_none) {
+            self.points[free] = Some(new_pt);
+            self.num_points = self.points.iter().flatten().count();
             return;
         }
         let mut shallowest_idx = 0;
@@ -359,11 +411,61 @@ impl ManifoldPoint {
             warm_impulse_t2: 0.0,
         }
     }
+    /// Whether any of the accumulated warm-start impulses is non-zero.
+    fn has_warm_start(&self) -> bool {
+        self.warm_impulse_normal != 0.0
+            || self.warm_impulse_t1 != 0.0
+            || self.warm_impulse_t2 != 0.0
+    }
 }
-/// Narrowphase collision detection kernel (CPU mock with simplified GJK/SAT).
+
+/// Body pair of a contact or manifold in canonical `(min, max)` order.
+fn pair_key(a: u32, b: u32) -> (u32, u32) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// Drop the manifolds whose body pair has no contact in `contacts`.
 ///
-/// For AABB vs AABB pairs the kernel uses SAT (Separating Axis Theorem) which
-/// is exact.  For more general shapes a GJK iteration would be used.
+/// A manifold only has a meaning while its pair is in contact.  Without this
+/// pass a pair that separated would keep its manifold (and its stale contact
+/// points) for ever.
+fn retain_touching_manifolds(
+    manifolds: &mut Vec<PersistentManifoldGpu>,
+    contacts: &[ContactResult],
+) {
+    let touching: HashSet<(u32, u32)> = contacts
+        .iter()
+        .map(|c| pair_key(c.prim_a, c.prim_b))
+        .collect();
+    manifolds.retain(|m| touching.contains(&pair_key(m.body_a, m.body_b)));
+}
+
+/// Add `point` to the manifold of `contact`'s body pair, creating the manifold
+/// if the pair has none yet.
+fn add_to_manifold(
+    manifolds: &mut Vec<PersistentManifoldGpu>,
+    contact: &ContactResult,
+    point: ManifoldPoint,
+) {
+    let key = pair_key(contact.prim_a, contact.prim_b);
+    if let Some(manifold) = manifolds
+        .iter_mut()
+        .find(|m| pair_key(m.body_a, m.body_b) == key)
+    {
+        manifold.add_contact(point);
+    } else {
+        let mut manifold = PersistentManifoldGpu::new(contact.prim_a, contact.prim_b);
+        manifold.add_contact(point);
+        manifolds.push(manifold);
+    }
+}
+/// Narrowphase collision kernel for pairs of axis-aligned boxes (CPU
+/// implementation).
+///
+/// [`test_aabb_pair`](Self::test_aabb_pair) uses the Separating Axis Theorem,
+/// which is exact for boxes.  [`gjk_intersect`](Self::gjk_intersect) runs GJK on
+/// the Minkowski difference of the two boxes and reports the exact box-to-box
+/// distance of a separated pair.
 #[derive(Debug, Default)]
 pub struct NarrowphaseGpuKernel;
 impl NarrowphaseGpuKernel {
@@ -524,21 +626,15 @@ impl CollisionGpuPipeline {
         self.update_manifolds();
     }
     /// Update the persistent manifold list from the current contact set.
+    ///
+    /// Manifolds of pairs that are no longer in contact are dropped; a contact
+    /// re-detected at the place of a stored point refreshes that point instead
+    /// of adding a duplicate (see [`PersistentManifoldGpu::add_contact`]).
     fn update_manifolds(&mut self) {
-        self.manifolds.retain(|m| m.num_points > 0);
+        retain_touching_manifolds(&mut self.manifolds, &self.contacts);
         for contact in &self.contacts {
-            let existing = self.manifolds.iter_mut().find(|m| {
-                (m.body_a == contact.prim_a && m.body_b == contact.prim_b)
-                    || (m.body_a == contact.prim_b && m.body_b == contact.prim_a)
-            });
             let pt = ManifoldPoint::from_contact(contact);
-            if let Some(manifold) = existing {
-                manifold.add_contact(pt);
-            } else {
-                let mut new_m = PersistentManifoldGpu::new(contact.prim_a, contact.prim_b);
-                new_m.add_contact(pt);
-                self.manifolds.push(new_m);
-            }
+            add_to_manifold(&mut self.manifolds, contact, pt);
         }
     }
     /// Clear all manifolds and contact data.
@@ -626,24 +722,22 @@ impl GpuCollisionPipeline {
         step_stats.accumulate(&self.narrowphase.stats);
         self.cumulative_stats.accumulate(&step_stats);
     }
+    /// Update the persistent manifolds from the current contacts.
+    ///
+    /// Manifolds of pairs that are no longer in contact are dropped; a contact
+    /// re-detected at the place of a stored point refreshes that point instead
+    /// of adding a duplicate.  Each new point first receives the warm-start
+    /// impulses cached for its body pair; those cached impulses take precedence
+    /// over the ones of the stored point they replace, so an update of the cache
+    /// by the solver is not lost (see [`PersistentManifoldGpu::add_contact`]).
     fn update_manifolds(&mut self) {
-        self.manifolds.retain(|m| m.num_points > 0);
+        retain_touching_manifolds(&mut self.manifolds, &self.contacts);
         for contact in &self.contacts {
-            let existing = self.manifolds.iter_mut().find(|m| {
-                (m.body_a == contact.prim_a && m.body_b == contact.prim_b)
-                    || (m.body_a == contact.prim_b && m.body_b == contact.prim_a)
-            });
             let mut pt = ManifoldPoint::from_contact(contact);
             if let Some(entry) = self.contact_cache.find(contact.prim_a, contact.prim_b) {
                 entry.apply_warm_start(&mut pt);
             }
-            if let Some(manifold) = existing {
-                manifold.add_contact(pt);
-            } else {
-                let mut new_m = PersistentManifoldGpu::new(contact.prim_a, contact.prim_b);
-                new_m.add_contact(pt);
-                self.manifolds.push(new_m);
-            }
+            add_to_manifold(&mut self.manifolds, contact, pt);
         }
     }
     /// Clear all contacts, manifolds, and the contact cache.

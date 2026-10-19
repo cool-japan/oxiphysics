@@ -1,8 +1,9 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-//! Nonlinear FEM solvers: Newton-Raphson, line search, arc-length (Riks),
-//! modified Newton, quasi-Newton (BFGS), and convergence criteria.
+//! Nonlinear FEM solvers: Newton-Raphson, line search, load stepping and the
+//! Crisfield arc-length method for proportional loading, modified Newton,
+//! quasi-Newton (BFGS), and convergence criteria.
 //!
 //! Provides iterative solution methods for systems of nonlinear equations
 //! arising in finite element analysis, using plain `f64` arrays throughout.
@@ -240,12 +241,14 @@ impl ModifiedNewtonRaphson {
                 });
             }
 
-            // Refresh tangent when scheduled.
-            if iter % self.update_tangent_every == 0 {
+            // Refresh tangent when scheduled (and on the first iteration).
+            if iter % self.update_tangent_every.max(1) == 0 || cached_k.is_none() {
                 cached_k = Some(problem.tangent_stiffness(&u));
             }
 
-            let k_ref = cached_k.as_ref().expect("cached_k initialized at iter 0");
+            let Some(k_ref) = cached_k.as_ref() else {
+                return Err("tangent stiffness is not available".to_string());
+            };
             let mut k_copy = k_ref.clone();
             let mut rhs = r.clone();
             let delta = gauss_elimination(&mut k_copy, &mut rhs)?;
@@ -371,209 +374,11 @@ impl BfgsSolver {
     }
 }
 
-// ─── Load stepper ────────────────────────────────────────────────────────────
+// ─── Load control: load stepping and arc length ──────────────────────────────
 
-/// Incremental load stepping: solves at a sequence of load factors using a
-/// Newton-Raphson solver at each step.
-#[derive(Debug, Clone)]
-pub struct LoadStepper {
-    /// Number of load increments.
-    pub n_steps: usize,
-    /// Starting load factor.
-    pub load_factor_start: f64,
-    /// Ending load factor.
-    pub load_factor_end: f64,
-}
+mod path_following;
 
-impl LoadStepper {
-    /// Create a new load stepper.
-    pub fn new(n_steps: usize, start: f64, end: f64) -> Self {
-        Self {
-            n_steps,
-            load_factor_start: start,
-            load_factor_end: end,
-        }
-    }
-
-    /// Return evenly-spaced load factors.
-    pub fn step_factors(&self) -> Vec<f64> {
-        if self.n_steps == 0 {
-            return vec![];
-        }
-        if self.n_steps == 1 {
-            return vec![self.load_factor_start];
-        }
-        let range = self.load_factor_end - self.load_factor_start;
-        (0..self.n_steps)
-            .map(|i| self.load_factor_start + range * (i as f64) / ((self.n_steps - 1) as f64))
-            .collect()
-    }
-
-    /// Solve at each load increment.
-    pub fn solve<F: ResidualFn>(
-        &self,
-        base_problem: &F,
-        u0: &[f64],
-        solver: &NewtonRaphson,
-    ) -> Vec<(f64, Vec<f64>)> {
-        let mut results = Vec::new();
-        let mut u = u0.to_vec();
-
-        for &lf in &self.step_factors() {
-            let scaled = ScaledProblem {
-                inner: base_problem,
-                scale: lf,
-            };
-            match solver.solve(&scaled, &u) {
-                Ok(nr) => {
-                    u = nr.solution.clone();
-                    results.push((lf, nr.solution));
-                }
-                Err(_) => {
-                    results.push((lf, u.clone()));
-                }
-            }
-        }
-        results
-    }
-}
-
-/// Helper wrapper that scales external forces by a load factor.
-struct ScaledProblem<'a, F> {
-    inner: &'a F,
-    scale: f64,
-}
-
-impl<F: ResidualFn> ResidualFn for ScaledProblem<'_, F> {
-    fn residual(&self, u: &[f64]) -> Vec<f64> {
-        let r = self.inner.residual(u);
-        vec_scale(&r, self.scale)
-    }
-
-    fn tangent_stiffness(&self, u: &[f64]) -> Vec<Vec<f64>> {
-        self.inner.tangent_stiffness(u)
-    }
-}
-
-// ─── Arc-length method (Crisfield / Riks) ─────────────────────────────────
-
-/// Crisfield arc-length method for tracing equilibrium paths through limit
-/// points and snap-back behaviour.
-#[derive(Debug, Clone)]
-pub struct ArcLengthMethod {
-    /// Constraint radius in the (u, λ) space.
-    pub arc_length: f64,
-    /// Maximum iterations per step.
-    pub max_iterations: usize,
-    /// Convergence tolerance.
-    pub tolerance: f64,
-}
-
-impl ArcLengthMethod {
-    /// Create a new arc-length solver.
-    pub fn new(arc_length: f64, max_iter: usize, tol: f64) -> Self {
-        Self {
-            arc_length,
-            max_iterations: max_iter,
-            tolerance: tol,
-        }
-    }
-
-    /// Perform a single arc-length predictor-corrector step.
-    pub fn solve_step<F: ResidualFn>(
-        &self,
-        problem: &F,
-        u0: &[f64],
-        lambda0: f64,
-        du_ref: &[f64],
-    ) -> Result<(Vec<f64>, f64), String> {
-        let n = u0.len();
-        let ds = self.arc_length;
-
-        // Predictor
-        let ref_norm = norm_l2(du_ref);
-        let scale = if ref_norm > 1e-14 { ds / ref_norm } else { ds };
-        let mut u = {
-            let du_pred = vec_scale(du_ref, scale);
-            u0.iter()
-                .zip(&du_pred)
-                .map(|(a, b)| a + b)
-                .collect::<Vec<_>>()
-        };
-        let mut lambda = lambda0 + scale;
-
-        // Corrector iterations
-        for _iter in 0..self.max_iterations {
-            let r_unit = problem.residual(&u);
-            let du_cur: Vec<f64> = u.iter().zip(u0).map(|(a, b)| a - b).collect();
-            let g = norm_l2(&du_cur).powi(2) + (lambda - lambda0).powi(2) - ds * ds;
-
-            let r_scaled = vec_scale(&r_unit, lambda);
-            if norm_l2(&r_scaled) < self.tolerance && g.abs() < self.tolerance {
-                return Ok((u, lambda));
-            }
-
-            let mut k = problem.tangent_stiffness(&u);
-            let mut rhs_t = r_unit.clone();
-            let du_t = gauss_elimination(&mut k, &mut rhs_t)?;
-
-            let f_ref_neg: Vec<f64> = r_unit.iter().map(|v| -*v).collect();
-            let mut k2 = problem.tangent_stiffness(&u);
-            let mut rhs_r = f_ref_neg;
-            let du_r = gauss_elimination(&mut k2, &mut rhs_r)?;
-
-            let dot_r: f64 = du_cur.iter().zip(&du_r).map(|(a, b)| a * b).sum();
-            let dot_t: f64 = du_cur.iter().zip(&du_t).map(|(a, b)| a * b).sum();
-            let denom = 2.0 * dot_r + 2.0 * (lambda - lambda0);
-            if denom.abs() < 1e-14 {
-                return Err("Arc-length denominator near zero".to_string());
-            }
-            let d_lambda = (-g - 2.0 * dot_t) / denom;
-
-            let d_u: Vec<f64> = (0..n).map(|i| d_lambda * du_r[i] + du_t[i]).collect();
-            for i in 0..n {
-                u[i] -= d_u[i];
-            }
-            lambda += d_lambda;
-        }
-
-        Err(format!(
-            "Arc-length method did not converge in {} iterations",
-            self.max_iterations
-        ))
-    }
-
-    /// Trace an equilibrium path over multiple arc-length steps.
-    pub fn trace_path<F: ResidualFn>(
-        &self,
-        problem: &F,
-        u0: &[f64],
-        lambda0: f64,
-        n_steps: usize,
-    ) -> Vec<(Vec<f64>, f64)> {
-        let mut path = Vec::new();
-        let mut u = u0.to_vec();
-        let mut lambda = lambda0;
-        let mut du_ref = vec![1.0; u0.len()]; // initial direction
-
-        for _ in 0..n_steps {
-            match self.solve_step(problem, &u, lambda, &du_ref) {
-                Ok((u_new, lambda_new)) => {
-                    du_ref = vec_sub(&u_new, &u);
-                    let du_norm = norm_l2(&du_ref);
-                    if du_norm > 1e-14 {
-                        du_ref = vec_scale(&du_ref, 1.0 / du_norm);
-                    }
-                    u = u_new.clone();
-                    lambda = lambda_new;
-                    path.push((u_new, lambda_new));
-                }
-                Err(_) => break,
-            }
-        }
-        path
-    }
-}
+pub use path_following::{ArcLengthMethod, LoadStepper, LoadedResidualFn};
 
 // ─── Convergence criteria ────────────────────────────────────────────────────
 
@@ -653,13 +458,14 @@ pub fn gauss_elimination(a: &mut [Vec<f64>], b: &mut [f64]) -> Result<Vec<f64>, 
     }
 
     for col in 0..n {
-        let pivot_row = (col..n).max_by(|&i, &j| {
+        let Some(pivot_row) = (col..n).max_by(|&i, &j| {
             a[i][col]
                 .abs()
                 .partial_cmp(&a[j][col].abs())
                 .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let pivot_row = pivot_row.expect("range col..n is non-empty");
+        }) else {
+            return Err(format!("No pivot candidate at column {col}"));
+        };
 
         if a[pivot_row][col].abs() < 1e-14 {
             return Err(format!("Singular matrix detected at column {col}"));
@@ -1290,7 +1096,7 @@ impl ResidualFn for NonlinearSpring {
 ///
 /// R1(u) = u1^2 + u2 - 3
 /// R2(u) = u1 + u2^2 - 3
-/// Solution: u1 = 1, u2 = 1 (among others)
+/// Solutions: the symmetric one u1 = u2 = (√13 - 1)/2 ≈ 1.3028 (among others).
 pub struct CoupledNonlinearProblem;
 
 impl ResidualFn for CoupledNonlinearProblem {
@@ -1365,11 +1171,37 @@ mod tests {
     }
 
     #[test]
+    fn test_modified_newton_raphson_zero_update_interval_means_every_iteration() {
+        // The public field can be set to 0 by a struct literal; that must behave like
+        // the full Newton-Raphson method (refresh every iteration) instead of
+        // dividing by zero.
+        let problem = NonlinearSpring {
+            k1: 1.0,
+            k3: 0.1,
+            force: 1.1,
+        };
+        let solver = ModifiedNewtonRaphson {
+            max_iterations: 100,
+            tolerance: 1e-10,
+            update_tangent_every: 0,
+        };
+        let result = solver.solve(&problem, &[0.5]).expect("solves");
+        assert!(result.converged);
+        let full = NewtonRaphson::new(100, 1e-10)
+            .solve(&problem, &[0.5])
+            .expect("solves");
+        assert_eq!(result.iterations, full.iterations);
+        assert!(norm_l2(&problem.residual(&result.solution)) < 1e-9);
+    }
+
+    #[test]
     fn test_load_stepper_returns_n_steps() {
         let problem = SimpleLinearProblem { k: 1.0, f: 1.0 };
         let stepper = LoadStepper::new(5, 0.0, 1.0);
         let solver = NewtonRaphson::new(20, 1e-10);
-        let results = stepper.solve(&problem, &[0.0], &solver);
+        let results = stepper
+            .solve(&problem, &[0.0], &solver)
+            .expect("linear problem converges");
         assert_eq!(results.len(), 5, "Should have n_steps results");
     }
 
@@ -1591,20 +1423,22 @@ mod tests {
 
     #[test]
     fn test_arc_length_trace_path() {
+        // f_int = u + 0.01 u^3 loaded by f_ref = 1, started in equilibrium at the
+        // origin: every step must produce an equilibrium state and the whole path.
         let problem = NonlinearSpring {
             k1: 1.0,
             k3: 0.01,
             force: 1.0,
         };
-        let arc = ArcLengthMethod::new(0.1, 50, 1e-4);
-        let path = arc.trace_path(&problem, &[0.5], 0.5, 5);
-        // Arc-length tracing should produce at least some steps
-        // (may not produce all steps if corrector fails for some)
-        assert!(
-            path.len() <= 5,
-            "Path should have at most n_steps entries, got {}",
-            path.len()
-        );
+        let arc = ArcLengthMethod::new(0.1, 50, 1e-10);
+        let path = arc.trace_path(&problem, &[0.0], 0.0, 5);
+        assert_eq!(path.len(), 5, "all five arc-length steps must converge");
+        for (u, lambda) in &path {
+            let residual = problem.residual_at(u, *lambda);
+            assert!(residual[0].abs() < 1e-9, "residual {}", residual[0]);
+        }
+        // Monotonically increasing load along a hardening branch.
+        assert!(path.windows(2).all(|p| p[1].1 > p[0].1));
     }
 
     // ─── Trust region tests ───────────────────────────────────────────────────

@@ -196,13 +196,22 @@ mod tests {
     fn test_sif_weight_function_uniform_stress() {
         let stress = 100.0e6;
         let a = 0.01;
-        let k_wf = sif_weight_function(&|_| stress, a, 0.6147, -0.1244, 0.0, 1000);
+        let (m1, m2, m3) = (0.6147, -0.1244, 0.0);
+        let k_wf = sif_weight_function(&|_| stress, a, m1, m2, m3, 1000);
         assert!(k_wf > 0.0, "Weight function SIF should be positive");
         assert!(k_wf.is_finite(), "Weight function SIF should be finite");
+        // Closed form for uniform stress: sigma * 4 sqrt(a)/sqrt(2 pi) * (1 + M1/2 + M2/3 + M3/4).
+        let k_exact =
+            stress * 4.0 * a.sqrt() / (2.0 * PI).sqrt() * (1.0 + m1 / 2.0 + m2 / 3.0 + m3 / 4.0);
+        assert!(
+            (k_wf - k_exact).abs() < 1e-12 * k_exact,
+            "k_wf={k_wf}, closed form={k_exact}"
+        );
+        // The standard edge-crack value 1.12 sigma sqrt(pi a) is reproduced to ~2 %.
         let k_ref = 1.12 * stress * (PI * a).sqrt();
         assert!(
-            k_wf > k_ref * 0.5,
-            "Weight function SIF should be at least half the reference: k_wf={k_wf}, k_ref={k_ref}"
+            (k_wf - k_ref).abs() < 0.02 * k_ref,
+            "Weight function SIF should match the edge-crack value: k_wf={k_wf}, k_ref={k_ref}"
         );
     }
     #[test]
@@ -508,17 +517,27 @@ mod tests {
     }
     #[test]
     fn test_senb_critical_crack_length() {
-        let k_ic = 1.0e6;
-        let result = senb_critical_crack_length(5000.0, 0.1, 0.01, 0.025, k_ic, 64);
+        // Round trip: the toughness that a known crack length produces must be
+        // inverted back to that crack length (K scales as W^-1.5, so a fixed
+        // literal toughness cannot be used to probe the root location).
+        let (force, span, thickness, width) = (5000.0, 0.1, 0.01, 0.025);
+        let a_target = 0.4 * width;
+        let k_ic = sif_three_point_bend(force, span, thickness, width, a_target);
+        let result = senb_critical_crack_length(force, span, thickness, width, k_ic, 200);
         assert!(
             result.is_some(),
             "Should find a critical crack length for K_Ic={k_ic}"
         );
         let a_crit = result.unwrap();
         assert!(
-            a_crit > 0.0 && a_crit < 0.025,
-            "Critical length should be in valid range [0, W]"
+            (a_crit - a_target).abs() < 1e-9 * width,
+            "a_crit={a_crit}, a_target={a_target}"
         );
+        // Toughness outside the bracketed K range has no root.
+        let k_low = sif_three_point_bend(force, span, thickness, width, 0.005 * width);
+        assert!(senb_critical_crack_length(force, span, thickness, width, k_low, 64).is_none());
+        let k_high = sif_three_point_bend(force, span, thickness, width, 0.95 * width);
+        assert!(senb_critical_crack_length(force, span, thickness, width, k_high, 64).is_none());
     }
     #[test]
     fn test_sif_mixed_mode_pure_mode_i() {

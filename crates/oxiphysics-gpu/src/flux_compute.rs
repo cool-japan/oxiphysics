@@ -936,6 +936,18 @@ pub fn characteristic_recompose_2wave(w_plus: f64, w_minus: f64, a: f64) -> (f64
 /// Projects to characteristic variables, limits each wave separately, then
 /// reconstructs in physical space.  This is important for multi-component
 /// systems to prevent spurious oscillations across contact waves.
+///
+/// `u0` and `u1` hold the two conserved components of every cell and `a` is
+/// the wave speed of the system `[a, -a]` (see
+/// [`characteristic_decompose_2wave`]).  The result is the pair of states
+/// `([u0, u1]_left, [u0, u1]_right)` on the two sides of the interface
+/// `i + 1/2`: the right face of cell `i` and the left face of cell `i + 1`.
+/// Cell indices outside the grid are clamped to the nearest cell, i.e. the
+/// domain ends have a zero-gradient boundary.
+///
+/// There is no characteristic decomposition for degenerate input, so
+/// both states are returned as zeros when `u0` is empty, when `u1` does not
+/// have the same length as `u0`, or when `a` is zero or not finite.
 pub fn characteristic_limited_reconstruct(
     u0: &[f64],
     u1: &[f64],
@@ -944,26 +956,23 @@ pub fn characteristic_limited_reconstruct(
     limiter: fn(f64, f64) -> f64,
 ) -> ([f64; 2], [f64; 2]) {
     let n = u0.len();
-    let get = |arr: &[f64], j: usize| -> f64 { arr[j.min(n - 1)] };
+    if n == 0 || u1.len() != n || a == 0.0 || !a.is_finite() {
+        return ([0.0; 2], [0.0; 2]);
+    }
 
-    // Project cell values around i to characteristic space
-    let (wm_im, _) = characteristic_decompose_2wave(
-        get(u0, i.saturating_sub(1)),
-        get(u1, i.saturating_sub(1)),
-        a,
-    );
-    let (wm_i, wp_i) = characteristic_decompose_2wave(get(u0, i), get(u1, i), a);
-    let (wm_ip, wp_ip) = characteristic_decompose_2wave(get(u0, i + 1), get(u1, i + 1), a);
-    let (wm_ipp, wp_ipp) = if i + 2 < n {
-        characteristic_decompose_2wave(get(u0, i + 2), get(u1, i + 2), a)
-    } else {
-        (wm_ip, wp_ip)
+    // Characteristic amplitudes `(w_plus, w_minus)` of the cell `j`, clamped
+    // into the grid.  `characteristic_decompose_2wave` returns `w_plus`
+    // first; every binding below keeps that order.
+    let waves = |j: usize| -> (f64, f64) {
+        let cell = j.min(n - 1);
+        characteristic_decompose_2wave(u0[cell], u1[cell], a)
     };
-    let (_, wp_im) = characteristic_decompose_2wave(
-        get(u0, i.saturating_sub(1)),
-        get(u1, i.saturating_sub(1)),
-        a,
-    );
+
+    // Project the cells i-1 .. i+2 around the interface to characteristic space
+    let (wp_im, wm_im) = waves(i.saturating_sub(1));
+    let (wp_i, wm_i) = waves(i);
+    let (wp_ip, wm_ip) = waves(i.saturating_add(1));
+    let (wp_ipp, wm_ipp) = waves(i.saturating_add(2));
 
     // Limit each characteristic wave
     let sig_p_l = limiter(wp_i - wp_im, wp_ip - wp_i);
@@ -1761,12 +1770,18 @@ mod flux_compute_tests {
     }
 
     #[test]
-    fn test_characteristic_limited_reconstruct_finite() {
+    fn test_characteristic_limited_reconstruct_linear_ramp() {
+        // u0 rises linearly (slope 0.1 per cell) while u1 stays constant, so the
+        // second-order reconstruction is exact: both faces of the interface
+        // i + 1/2 = 3.5 carry u0 = 0.35 and u1 = 0.5 (the sign of u1 included).
         let u0: Vec<f64> = (0..8).map(|i| i as f64 * 0.1).collect();
         let u1: Vec<f64> = vec![0.5; 8];
         let (left, right) = characteristic_limited_reconstruct(&u0, &u1, 3, 1.0, minmod);
-        for &v in left.iter().chain(right.iter()) {
-            assert!(v.is_finite(), "characteristic reconstruct not finite: {v}");
+        for (side, state) in [("left", left), ("right", right)] {
+            assert!(
+                (state[0] - 0.35).abs() < 1e-12 && (state[1] - 0.5).abs() < 1e-12,
+                "{side} face {state:?} should be [0.35, 0.5]"
+            );
         }
     }
 
@@ -1837,3 +1852,6 @@ mod flux_compute_tests {
 
 #[cfg(test)]
 mod roe_tests;
+
+#[cfg(test)]
+mod characteristic_tests;

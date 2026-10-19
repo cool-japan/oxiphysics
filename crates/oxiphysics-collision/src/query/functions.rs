@@ -725,52 +725,6 @@ pub fn compute_time_of_impact_aabbs(
     }
     Some(t_enter)
 }
-/// Project a point onto the surface of a convex shape represented by a set of
-/// support vertices (convex hull vertices).
-///
-/// Returns the closest point on the convex hull surface to `point`.
-///
-/// **Algorithm**: finds the closest vertex, then checks each edge and face
-/// (triangle fan from centroid) to refine.  For a full convex hull this is a
-/// simplified GJK-like approach; here we use the closest-point-to-triangle
-/// test on the convex polygon formed by adjacent vertices.
-pub fn project_point_convex(point: [f64; 3], vertices: &[[f64; 3]]) -> [f64; 3] {
-    if vertices.is_empty() {
-        return point;
-    }
-    if vertices.len() == 1 {
-        return vertices[0];
-    }
-    if vertices.len() == 2 {
-        let (cp, _) = closest_point_on_segment(point, vertices[0], vertices[1]);
-        return cp;
-    }
-    let n = vertices.len() as f64;
-    let mut centroid = [0.0_f64; 3];
-    for v in vertices {
-        centroid[0] += v[0];
-        centroid[1] += v[1];
-        centroid[2] += v[2];
-    }
-    centroid[0] /= n;
-    centroid[1] /= n;
-    centroid[2] /= n;
-    let mut best_dist_sq = f64::INFINITY;
-    let mut best_pt = vertices[0];
-    let nv = vertices.len();
-    for i in 0..nv {
-        let a = vertices[i];
-        let b = vertices[(i + 1) % nv];
-        let cp = closest_point_on_triangle_local(point, centroid, a, b);
-        let d = sub(point, cp);
-        let dsq = dot(d, d);
-        if dsq < best_dist_sq {
-            best_dist_sq = dsq;
-            best_pt = cp;
-        }
-    }
-    best_pt
-}
 /// Closest point on a triangle `(v0, v1, v2)` to `point` (internal helper).
 pub(super) fn closest_point_on_triangle_local(
     point: [f64; 3],

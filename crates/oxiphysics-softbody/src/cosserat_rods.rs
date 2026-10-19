@@ -485,21 +485,51 @@ impl InternalForces {
         let gamma1 = vec3_dot(t, d1_m);
         let gamma2 = vec3_dot(t, d2_m);
 
-        // Curvature and twist via finite rotation between adjacent directors
-        let d3a = a.d3;
-        let d3b = b.d3;
-        // Curvature vector: (d3b - d3a) / rest_len projected onto d1, d2
-        let dd3 = vec3_sub(d3b, d3a);
-        let dkappa1 = vec3_dot(dd3, d1_m) / rest_len - rod.kappa1_0[seg];
-        let dkappa2 = vec3_dot(dd3, d2_m) / rest_len - rod.kappa2_0[seg];
-
-        // Twist: rate of rotation of d1 around d3
-        let d1a = a.d1;
-        let d1b = b.d1;
-        let dd1 = vec3_sub(d1b, d1a);
-        let dtau = vec3_dot(dd1, d2_m) / rest_len - rod.tau_0[seg];
+        // Curvature and twist from the relative rotation of the end frames.
+        let [kappa1, kappa2, tau] = Self::darboux_vector(rod, seg);
+        let dkappa1 = kappa1 - rod.kappa1_0[seg];
+        let dkappa2 = kappa2 - rod.kappa2_0[seg];
+        let dtau = tau - rod.tau_0[seg];
 
         (eps, gamma1, gamma2, dkappa1, dkappa2, dtau)
+    }
+
+    /// Material-frame Darboux vector `[κ₁, κ₂, τ]` of segment `seg` (curvature
+    /// about **d**₁, curvature about **d**₂ and twist about **d**₃, all in 1/m).
+    ///
+    /// The Darboux vector `Ω = κ₁ d₁ + κ₂ d₂ + τ d₃` generates the directors along
+    /// the arc length, `dᵢ' = Ω × dᵢ`, that is
+    ///
+    /// ```text
+    /// d₃' = κ₂ d₁ − κ₁ d₂,    d₁' = τ d₂ − κ₂ d₃,    d₂' = κ₁ d₃ − τ d₁.
+    /// ```
+    ///
+    /// A bend about **d**₁ therefore tilts **d**₃ towards **−d**₂ (it is invisible
+    /// in `d₃'·d₁`), and a bend about **d**₂ tilts it towards **+d**₁.  The three
+    /// components are read from the antisymmetric part of the relative rotation
+    /// `R_aᵀ R_b` of the end frames, whose entries are the dot products
+    /// `dᵢᵃ · dⱼᵇ`:
+    ///
+    /// ```text
+    /// κ₁ = (d₃ᵃ·d₂ᵇ − d₂ᵃ·d₃ᵇ) / (2 ℓ₀)
+    /// κ₂ = (d₁ᵃ·d₃ᵇ − d₃ᵃ·d₁ᵇ) / (2 ℓ₀)
+    /// τ  = (d₂ᵃ·d₁ᵇ − d₁ᵃ·d₂ᵇ) / (2 ℓ₀)
+    /// ```
+    ///
+    /// This is the antisymmetric (`sin θ`) part of the relative rotation and so
+    /// accurate to first order in the relative rotation angle `θ` per segment.  The
+    /// discrete rod of [`cosserat_softbody`](crate::cosserat_softbody) uses the
+    /// exact rotation vector (`θ` instead of `sin θ`) in its own `darboux_vector`;
+    /// the two agree up to terms of order `θ³`.
+    pub fn darboux_vector(rod: &CosseratRod, seg: usize) -> Vec3 {
+        let a = &rod.nodes[seg];
+        let b = &rod.nodes[seg + 1];
+        let scale = 0.5 / rod.rest_lengths[seg];
+        [
+            (vec3_dot(a.d3, b.d2) - vec3_dot(a.d2, b.d3)) * scale,
+            (vec3_dot(a.d1, b.d3) - vec3_dot(a.d3, b.d1)) * scale,
+            (vec3_dot(a.d2, b.d1) - vec3_dot(a.d1, b.d2)) * scale,
+        ]
     }
 
     /// Compute internal loads at segment `seg` from the constitutive law.
@@ -516,15 +546,26 @@ impl InternalForces {
     }
 
     /// Compute the vector of generalized elastic forces on both nodes of segment `seg`.
-    /// Returns `(f_a, m_a, f_b, m_b)` where `f` are forces and `m` are moments.
+    /// Returns `(f_a, m_a, f_b, m_b)` where `f` are forces \[N\] and `m` are moments
+    /// \[N·m\] acting on the two end nodes.
     ///
     /// The forces are restoring: a stretched segment pulls node `a` towards `b`
-    /// (`f_a = +n`) and node `b` towards `a` (`f_b = -n`).
+    /// (`f_a = +n`) and node `b` towards `a` (`f_b = -n`).  The moments are the sum
+    /// of two parts:
+    ///
+    /// - the joint moment `M = M₁ d₁ + M₂ d₂ + T d₃` of the bending and twist
+    ///   strain, which turns node `a` towards the orientation of node `b`
+    ///   (`+M`) and node `b` back (`−M`), and
+    /// - the couple `Δx × n` of the force pair, shared half and half by the two
+    ///   frames, which turns the directors towards the tangent and so relaxes the
+    ///   shear strain.
+    ///
+    /// Forces and moments together carry no net force and no net torque
+    /// (`f_a + f_b = 0` and `x_a × f_a + x_b × f_b + m_a + m_b = 0`).
     pub fn nodal_forces(rod: &CosseratRod, seg: usize) -> (Vec3, Vec3, Vec3, Vec3) {
         let loads = Self::compute(rod, seg);
         let a = &rod.nodes[seg];
         let b = &rod.nodes[seg + 1];
-        let rest_len = rod.rest_lengths[seg];
         let (d1_m, d2_m, d3_m) = rod.segment_directors(seg);
 
         // Force in world frame: N along tangent + Q along cross-section directors
@@ -544,15 +585,16 @@ impl InternalForces {
             vec3_scale(d2_m, loads.shear2),
         );
 
-        // Moment on node a (reaction) divided by element length
-        let m_a_body = vec3_add(
+        // Joint moment of the bending/twist strain in the world frame.  It is a
+        // couple (N·m), not a moment per unit length: the balance law
+        // `ρI α ds = M(s + ds) − M(s) + ...` has the jump of M on its right-hand side.
+        let m_a = vec3_add(
             vec3_add(
                 vec3_scale(d1_m, loads.moment1),
                 vec3_scale(d2_m, loads.moment2),
             ),
             vec3_scale(d3_m, loads.torsion),
         );
-        let m_a = vec3_scale(m_a_body, 1.0 / rest_len);
 
         // The internal force n is the pull the segment exerts on its end nodes.  For
         // a stretched segment (N > 0) it draws node a towards b (+n) and node b
@@ -563,14 +605,12 @@ impl InternalForces {
         let f_b = vec3_scale(f_internal, -1.0);
         let m_b = vec3_scale(m_a, -1.0);
 
-        // Torque arm of the same force couple, d3 x n, shared half and half: both
-        // nodes receive +(ds / 2) d3 x n, which turns the directors towards the
-        // tangent and so relaxes the shear strain.
-        let half_len = rest_len * 0.5;
-        let torque_a = vec3_scale(vec3_cross(a.d3, f_internal), half_len);
-        let torque_b = vec3_scale(vec3_cross(b.d3, f_internal), half_len);
+        // The forces +n at x_a and -n at x_b exert the torque -Δx × n about the
+        // origin; the frames must take up +Δx × n to conserve angular momentum.
+        // Shared half and half, both nodes receive +(Δx / 2) × n.
+        let torque = vec3_scale(vec3_cross(diff, f_internal), 0.5);
 
-        (f_a, vec3_add(m_a, torque_a), f_b, vec3_add(m_b, torque_b))
+        (f_a, vec3_add(m_a, torque), f_b, vec3_add(m_b, torque))
     }
 }
 
@@ -582,7 +622,11 @@ impl InternalForces {
 ///
 /// Implements the balance laws:
 /// - Linear: ∂F/∂s + f_ext = ρA · **ü**
-/// - Angular: ∂M/∂s + **d**₃ × F + m_ext = ρI · **α̈**
+/// - Angular: ∂M/∂s + **r**′ × F + m_ext = ρI · **α̈**
+///
+/// where **r**′ = ∂**r**/∂s is the tangent of the centreline (the segment vector
+/// Δ**x** / ℓ₀ in the discrete rod; it equals **d**₃ for an unshearable,
+/// inextensible rod).
 pub struct CosseratDynamics;
 
 impl CosseratDynamics {
@@ -990,6 +1034,9 @@ pub fn end_moment_tip_rotation(moment: f64, length: f64, ei: f64) -> f64 {
 pub fn torsion_angle(torque: f64, length: f64, gj: f64) -> f64 {
     torque * length / gj
 }
+
+#[cfg(test)]
+mod strain_tests;
 
 // ---------------------------------------------------------------------------
 // Tests

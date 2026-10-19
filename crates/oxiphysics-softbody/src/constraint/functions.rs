@@ -274,6 +274,7 @@ mod tests {
             make_particle(Vec3::new(0.0, 0.0, 1.0), 1.0),
         ];
         let indices = vec![0, 1, 2, 3];
+        let rest: Vec<Vec3> = particles.iter().map(|q| q.position).collect();
         let mut c = ShapeMatchingConstraint::from_particles(indices, &particles, 1.0);
         particles[1].position = Vec3::new(1.5, 0.3, -0.1);
         let p1_before = particles[1].position;
@@ -284,6 +285,17 @@ mod tests {
             moved > 1e-4,
             "Shape matching should correct deformation: moved={moved}"
         );
+        // Full stiffness turns the group into a rigid copy of its rest shape.
+        for i in 0..particles.len() {
+            for j in 0..i {
+                let rest_distance = (rest[i] - rest[j]).norm();
+                let distance = (particles[i].position - particles[j].position).norm();
+                assert!(
+                    (distance - rest_distance).abs() < 1e-12,
+                    "distance {i}-{j} is {distance}, rest {rest_distance}"
+                );
+            }
+        }
     }
     #[test]
     fn shape_matching_preserves_com() {
@@ -301,8 +313,8 @@ mod tests {
         let com_after = c.current_com(&test_particles);
         let com_diff = (com_after - com_before).norm();
         assert!(
-            com_diff < 0.5,
-            "CoM should be approximately preserved: diff={com_diff}"
+            com_diff < 1e-12,
+            "equal masses, no pinned particle: the CoM must be conserved, diff={com_diff}"
         );
     }
     #[test]
@@ -575,8 +587,6 @@ mod new_constraint_tests {
 
     use crate::SoftParticle;
 
-    use crate::constraint::BalloonPressureConstraint;
-
     use crate::constraint::IsometricBendingConstraintV2;
     use crate::constraint::LraConstraint;
     use crate::constraint::MotorConstraint;
@@ -716,38 +726,6 @@ mod new_constraint_tests {
             "rest_volume={}",
             c.rest_volume
         );
-    }
-    #[test]
-    fn balloon_triangle_volume_contribution_sign() {
-        let p0 = Vec3::new(1.0, 0.0, 0.0);
-        let p1 = Vec3::new(0.0, 1.0, 0.0);
-        let p2 = Vec3::new(0.0, 0.0, 1.0);
-        let v = BalloonPressureConstraint::triangle_volume_contribution(&p0, &p1, &p2);
-        assert!(v.abs() > 1e-10, "non-zero volume contribution: {v}");
-    }
-    #[test]
-    fn balloon_project_moves_particles() {
-        let mut particles = vec![
-            p(1.0, 0.0, 0.0, 1.0),
-            p(0.0, 1.0, 0.0, 1.0),
-            p(0.0, 0.0, 1.0, 1.0),
-        ];
-        let before: Vec<Vec3> = particles.iter().map(|p| p.position).collect();
-        let mut c = BalloonPressureConstraint::new([0, 1, 2], 2.0, 0.5, 0.0);
-        c.project(&mut particles, 0.01);
-        let moved: f64 = particles
-            .iter()
-            .zip(before.iter())
-            .map(|(a, &b)| (a.position - b).norm())
-            .sum();
-        assert!(moved.is_finite(), "positions should remain finite");
-    }
-    #[test]
-    fn balloon_reset_lambda() {
-        let mut c = BalloonPressureConstraint::new([0, 1, 2], 1.0, 0.1, 0.0);
-        c.lambda = 5.0;
-        c.reset_lambda();
-        assert_eq!(c.lambda, 0.0);
     }
     #[test]
     fn surface_tension_energy_zero_at_rest() {

@@ -63,9 +63,10 @@ pub enum ScfStatus {
 pub struct DftResult {
     /// Total DFT energy \[Hartree\].
     pub energy: f64,
-    /// Exchange-correlation energy \[Hartree\].
+    /// Exchange-correlation energy \[Hartree\] (semilocal part plus the exact
+    /// exchange −(a₀/4) Tr(PK) of hybrid functionals).
     pub xc_energy: f64,
-    /// Kinetic energy \[Hartree\].
+    /// Non-interacting kinetic energy Tr(P T) \[Hartree\].
     pub kinetic_energy: f64,
     /// Kohn-Sham orbital energies \[Hartree\].
     pub orbital_energies: Vec<f64>,
@@ -73,6 +74,14 @@ pub struct DftResult {
     pub density_matrix: Vec<Vec<f64>>,
     /// SCF status.
     pub status: ScfStatus,
+    /// Kohn–Sham MO coefficients: `mo_coefficients[i][μ]` = C_μi (rows ordered
+    /// by ascending orbital energy).
+    pub mo_coefficients: Vec<Vec<f64>>,
+    /// Number of SCF iterations performed.
+    pub iterations: usize,
+    /// Number of electrons obtained by integrating the density on the grid
+    /// (a check of the grid quality).
+    pub integrated_electrons: f64,
 }
 /// A molecular orbital described in the LCAO basis.
 #[derive(Debug, Clone)]
@@ -213,7 +222,8 @@ pub struct HartreeFockResult {
     pub nuclear_repulsion: f64,
     /// Orbital energies (eigenvalues) \[Hartree\].
     pub orbital_energies: Vec<f64>,
-    /// MO coefficient matrix (columns = MOs, rows = AOs).
+    /// MO coefficients: `mo_coefficients[i][μ]` = C_μi, i.e. each row is one MO
+    /// expanded in the AO basis, rows ordered by ascending orbital energy.
     pub mo_coefficients: Vec<Vec<f64>>,
     /// Density matrix elements.
     pub density_matrix: Vec<Vec<f64>>,

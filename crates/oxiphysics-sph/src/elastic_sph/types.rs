@@ -606,9 +606,13 @@ impl SphElasticStress {
             bulk_modulus: k,
         }
     }
-    /// Jaumann stress-rate: Ṡᵢⱼ = 2G ε̇ᵢⱼᵈᵉᵛ + K ε̇ₖₖ δᵢⱼ + σᵢₖ Ωₖⱼ − Ωᵢₖ σₖⱼ
+    /// Jaumann stress-rate: Ṡᵢⱼ = 2G ε̇ᵢⱼᵈᵉᵛ + K ε̇ₖₖ δᵢⱼ + Ωᵢₖ σₖⱼ − σᵢₖ Ωₖⱼ
     ///
-    /// where Ω = ½(L − Lᵀ) is the spin tensor.
+    /// where Ω = ½(L − Lᵀ) is the spin tensor and `L_ab = ∂v_a/∂x_b` is the
+    /// velocity gradient (the convention of [`StrainRateTensor::compute_sph`]).
+    /// The last two terms are the co-rotation `Ω σ − σ Ω = Ω σ + σ Ωᵀ` that makes
+    /// the stress of a rigidly rotating body rotate with it
+    /// (`σ = R σ₀ Rᵀ ⇒ σ̇ = Ω σ − σ Ω`).
     /// Returns the incremental stress dσ = Ṡ * dt.
     pub fn jaumann_stress_increment(
         &self,
@@ -627,7 +631,7 @@ impl SphElasticStress {
                     ds[i][j] += self.bulk_modulus * vol_rate;
                 }
                 for k in 0..3 {
-                    ds[i][j] += stress[i][k] * spin[k][j] - spin[i][k] * stress[k][j];
+                    ds[i][j] += spin[i][k] * stress[k][j] - stress[i][k] * spin[k][j];
                 }
                 ds[i][j] *= dt;
             }

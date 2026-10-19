@@ -3,7 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
-use rand::RngExt;
+use crate::rng_util::uniform;
 use std::f64::consts::PI;
 
 /// Workspace analysis: reachable workspace sampling and singularity detection.
@@ -31,7 +31,7 @@ impl WorkspaceAnalysis {
         };
         for _ in 0..self.n_samples {
             for (i, (lo, hi)) in chain.limits.iter().enumerate().take(n) {
-                local_chain.q[i] = rng.random_range(*lo..*hi);
+                local_chain.q[i] = uniform(&mut rng, *lo, *hi);
             }
             samples.push(local_chain.end_effector_position());
         }
@@ -81,7 +81,7 @@ impl WorkspaceAnalysis {
         };
         for _ in 0..self.n_samples {
             for (i, (lo, hi)) in chain.limits.iter().enumerate().take(n) {
-                local_chain.q[i] = rng.random_range(*lo..*hi);
+                local_chain.q[i] = uniform(&mut rng, *lo, *hi);
             }
             if local_chain.manipulability() < threshold {
                 singular_configs.push(local_chain.q.clone());
@@ -113,7 +113,7 @@ impl WorkspaceAnalysis {
         };
         for _ in 0..self.n_samples {
             for (i, (lo, hi)) in chain.limits.iter().enumerate().take(n) {
-                local_chain.q[i] = rng.random_range(*lo..*hi);
+                local_chain.q[i] = uniform(&mut rng, *lo, *hi);
             }
             if local_chain.manipulability() > min_manipulability {
                 count += 1;

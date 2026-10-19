@@ -595,13 +595,69 @@ pub fn plate_buckling_factor(shell: &KirchhoffShell, nx_applied: f64, a: f64, b:
     PI * PI * d * k_cr / (nx_applied * a * a)
 }
 
-/// Compute the buckling pressure for a cylindrical shell (Donnell theory, simplified).
+/// Critical external pressure of a long thin cylindrical shell (Bresse's
+/// ring-collapse formula).
 ///
-/// p_cr = 2E / (sqrt(3(1-ν²))) * (t/R)² for long cylinders.
+/// ```text
+/// p_cr = E t³ / (4 (1 - ν²) R³) = E / (4 (1 - ν²)) · (t/R)³
+/// ```
+///
+/// This is the two-lobe buckling pressure of an infinitely long tube (or,
+/// equivalently, of a ring under plane-strain bending) and is the lower bound
+/// for tubes of any length; end supports of a finite tube can only raise it
+/// (see [`cylinder_buckling_pressure_finite`]).  The cubic dependence on `t/R`
+/// distinguishes it from the *spherical* shell value `2E/√(3(1-ν²)) (t/R)²`
+/// (Zoelly), which is larger by two orders of magnitude for thin walls and must
+/// not be used for cylinders.
 ///
 /// `radius` is the shell radius, `t` the thickness.
 pub fn cylinder_buckling_pressure(e: f64, nu: f64, t: f64, radius: f64) -> f64 {
-    2.0 * e / (3.0_f64 * (1.0 - nu * nu)).sqrt() * (t / radius).powi(2)
+    e * (t / radius).powi(3) / (4.0 * (1.0 - nu * nu))
+}
+
+/// Critical external pressure of a finite-length thin cylindrical shell with
+/// simply supported (or ring-stiffened) ends.
+///
+/// Uses the Windenburg-Trilling (1934) formula for intermediate-length tubes,
+///
+/// ```text
+///                     2.42 E (t/D)^(5/2)
+/// p_WT = ------------------------------------------------   (D = 2R)
+///         (1 - ν²)^(3/4) · (L/D - 0.45 (t/D)^(1/2))
+/// ```
+///
+/// and never returns less than the long-tube Bresse value
+/// [`cylinder_buckling_pressure`], which is where the buckling pressure of a
+/// long tube levels off (`p_WT` alone would decay like `1/L` without bound).
+/// The two branches meet continuously at the length where `p_WT` falls to the
+/// Bresse pressure.
+///
+/// Returns `NaN` when an input is non-finite or non-positive, `|ν| ≥ 1`, or the
+/// tube is so short that `L/D - 0.45 √(t/D) ≤ 0`, where the Windenburg-Trilling
+/// formula is outside its range of validity.
+///
+/// `radius` is the shell radius, `t` the thickness, `length` the unsupported
+/// length `L`.
+pub fn cylinder_buckling_pressure_finite(e: f64, nu: f64, t: f64, radius: f64, length: f64) -> f64 {
+    let positive_finite = |v: f64| v.is_finite() && v > 0.0;
+    if !(positive_finite(e)
+        && positive_finite(t)
+        && positive_finite(radius)
+        && positive_finite(length)
+        && nu.is_finite()
+        && nu.abs() < 1.0)
+    {
+        return f64::NAN;
+    }
+    let diameter = 2.0 * radius;
+    let t_over_d = t / diameter;
+    let effective_length = length / diameter - 0.45 * t_over_d.sqrt();
+    if effective_length <= 0.0 {
+        return f64::NAN;
+    }
+    let windenburg_trilling =
+        2.42 * e * t_over_d.powf(2.5) / ((1.0 - nu * nu).powf(0.75) * effective_length);
+    windenburg_trilling.max(cylinder_buckling_pressure(e, nu, t, radius))
 }
 
 /// Compute eigenvalue (critical load multiplier) by inverse iteration.
@@ -1143,6 +1199,102 @@ mod tests {
     fn test_cylinder_buckling_pressure_positive() {
         let p = cylinder_buckling_pressure(200.0e9, 0.3, 0.01, 1.0);
         assert!(p > 0.0);
+    }
+
+    #[test]
+    fn test_cylinder_buckling_pressure_long_tube_is_bresse_54_9_kpa() {
+        // E = 200 GPa, nu = 0.3, t/R = 0.01:
+        // p = E (t/R)^3 / (4 (1 - nu^2)) = 200e9 * 1e-6 / 3.64 = 54.945 kPa.
+        let p = cylinder_buckling_pressure(200.0e9, 0.3, 0.01, 1.0);
+        let expected = 200.0e9 * 1.0e-6 / (4.0 * 0.91);
+        assert!((p - expected).abs() < 1.0e-9 * expected, "p = {p}");
+        assert!((p - 54.9e3).abs() < 0.1e3, "p = {p}");
+    }
+
+    #[test]
+    fn test_cylinder_buckling_pressure_is_not_the_spherical_zoelly_value() {
+        // The previous implementation returned the Zoelly spherical-shell
+        // pressure 2E/sqrt(3(1-nu^2)) (t/R)^2 = 24.2 MPa, ~440x too high.
+        let p = cylinder_buckling_pressure(200.0e9, 0.3, 0.01, 1.0);
+        let zoelly = 2.0 * 200.0e9 / (3.0_f64 * 0.91).sqrt() * 1.0e-4;
+        assert!(zoelly > 400.0 * p, "zoelly = {zoelly}, p = {p}");
+    }
+
+    #[test]
+    fn test_cylinder_buckling_pressure_scales_with_t_cubed_over_r_cubed() {
+        let base = cylinder_buckling_pressure(70.0e9, 0.33, 0.002, 0.5);
+        let thicker = cylinder_buckling_pressure(70.0e9, 0.33, 0.004, 0.5);
+        let wider = cylinder_buckling_pressure(70.0e9, 0.33, 0.002, 1.0);
+        assert!((thicker / base - 8.0).abs() < 1.0e-12);
+        assert!((wider / base - 0.125).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn test_cylinder_buckling_pressure_agrees_with_shell_module() {
+        // Bresse's formula is E t^3 / (4 (1-nu^2) R^3) = 2E/(1-nu^2) (t/2R)^3;
+        // the crate's other cylindrical-shell routines must agree with it.
+        let (e, nu, t, r) = (210.0e9, 0.29, 0.008, 0.75);
+        let here = cylinder_buckling_pressure(e, nu, t, r);
+        let element = crate::shell::CylindricalShellElement::new(e, nu, 7850.0, t, 3.0, r)
+            .critical_pressure_external();
+        let free_fn = crate::shell::cylindrical_shell_buckling(e, nu, r, t);
+        assert!((here - element).abs() < 1.0e-12 * here);
+        assert!((here - free_fn).abs() < 1.0e-12 * here);
+    }
+
+    #[test]
+    fn test_cylinder_buckling_pressure_finite_matches_windenburg_trilling() {
+        // E = 200 GPa, nu = 0.3, R = 1 m, t = 10 mm, L = 4 D = 8 m.
+        let (e, nu, t, r, l) = (200.0e9, 0.3, 0.01, 1.0, 8.0);
+        let p = cylinder_buckling_pressure_finite(e, nu, t, r, l);
+        let d = 2.0_f64;
+        let t_over_d = t / d;
+        let expected = 2.42 * e * t_over_d.powf(2.5)
+            / (0.91_f64.powf(0.75) * (l / d - 0.45 * t_over_d.sqrt()));
+        assert!((p - expected).abs() < 1.0e-12 * expected, "p = {p}");
+        // Intermediate-length tubes are stiffer than the infinite tube.
+        assert!(p > 3.0 * cylinder_buckling_pressure(e, nu, t, r), "p = {p}");
+    }
+
+    #[test]
+    fn test_cylinder_buckling_pressure_finite_levels_off_at_bresse() {
+        let (e, nu, t, r) = (200.0e9, 0.3, 0.01, 1.0);
+        let bresse = cylinder_buckling_pressure(e, nu, t, r);
+        // Far beyond the crossover length (L/D = 16.75) the end effect is gone.
+        for l in [60.0, 400.0, 1.0e4] {
+            let p = cylinder_buckling_pressure_finite(e, nu, t, r, l);
+            assert!((p - bresse).abs() < 1.0e-12 * bresse, "L = {l}: p = {p}");
+        }
+    }
+
+    #[test]
+    fn test_cylinder_buckling_pressure_finite_is_continuous_and_non_increasing() {
+        let (e, nu, t, r) = (200.0e9, 0.3, 0.01, 1.0);
+        let bresse = cylinder_buckling_pressure(e, nu, t, r);
+        let mut previous = f64::INFINITY;
+        let mut length = 0.5;
+        while length < 200.0 {
+            let p = cylinder_buckling_pressure_finite(e, nu, t, r, length);
+            assert!(p.is_finite() && p >= bresse, "L = {length}: p = {p}");
+            assert!(p <= previous * (1.0 + 1.0e-12), "L = {length}: p = {p}");
+            previous = p;
+            length *= 1.05;
+        }
+        // Continuity across the crossover (L/D = 16.75, L = 33.5 m, for these inputs).
+        let below = cylinder_buckling_pressure_finite(e, nu, t, r, 33.4);
+        let above = cylinder_buckling_pressure_finite(e, nu, t, r, 33.6);
+        assert!((below - above).abs() < 0.02 * bresse, "{below} vs {above}");
+    }
+
+    #[test]
+    fn test_cylinder_buckling_pressure_finite_rejects_invalid_input() {
+        // L/D - 0.45 sqrt(t/D) <= 0: formula out of range.
+        let tiny = cylinder_buckling_pressure_finite(200.0e9, 0.3, 0.01, 1.0, 0.01);
+        assert!(tiny.is_nan());
+        assert!(cylinder_buckling_pressure_finite(200.0e9, 0.3, 0.0, 1.0, 5.0).is_nan());
+        assert!(cylinder_buckling_pressure_finite(f64::NAN, 0.3, 0.01, 1.0, 5.0).is_nan());
+        assert!(cylinder_buckling_pressure_finite(200.0e9, 1.0, 0.01, 1.0, 5.0).is_nan());
+        assert!(cylinder_buckling_pressure_finite(200.0e9, 0.3, 0.01, -1.0, 5.0).is_nan());
     }
 
     #[test]

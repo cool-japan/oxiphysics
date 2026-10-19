@@ -1018,6 +1018,8 @@ pub struct LbmConfig {
     /// Lattice type: D2Q9, D3Q19, or D3Q27.
     pub lattice_type: LatticeType,
     /// Optional body-force vector `[Fx, Fy, Fz]` applied every step.
+    ///
+    /// Two-dimensional (D2Q9) simulations have no z direction and ignore `Fz`.
     pub body_force: Option<[f64; 3]>,
     /// Optional Smagorinsky constant for turbulence modelling.
     /// When `None`, plain BGK collision is used.
@@ -1102,6 +1104,12 @@ impl LbmConfig {
 /// This controller recomputes the physical dt every `adjust_interval` steps
 /// so that the maximum Mach number in the simulation stays close to
 /// `ma_target`.
+///
+/// [`FullStepLoop::run`] passes [`AdaptiveDtController::dt_current`] to
+/// [`LbmSimulation::step`], which re-expresses the lattice units of the
+/// simulation for that time step.  The lattice velocity is proportional to
+/// `dt`, so shortening `dt` lowers the lattice Mach number of an unchanged
+/// physical flow.
 #[derive(Debug, Clone)]
 pub struct AdaptiveDtController {
     /// Target Mach number (dimensionless).
@@ -1212,6 +1220,10 @@ impl FullStepLoop {
         }
     }
     /// Enable adaptive time-step control with the given target Mach number.
+    ///
+    /// From then on every step of [`FullStepLoop::run`] uses the time step of
+    /// the [`AdaptiveDtController`], which is updated every `check_interval`
+    /// steps from the maximum velocity of the simulation.
     pub fn enable_adaptive_dt(&mut self, ma_target: f64) {
         self.adaptive_dt = Some(AdaptiveDtController::new(ma_target, self.check_interval));
     }

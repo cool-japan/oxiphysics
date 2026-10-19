@@ -166,10 +166,10 @@ Verified: 269 (critical 10, high 70, medium 148, low 41); 32 further raw finding
 ### Critical (10)
 - [ ] **F3833** (critical, bug, easy/small) `granular_media.rs:189` — GranularPacking normal spring is attractive; tangential sign reversed
 - [ ] **F3838** (critical, bug, easy/trivial) `granular_rigid.rs:525` — Hertz-Mindlin force_j breaks Newton's third law (-3x tangential)
-- [ ] **F3862** (critical, bug, easy/trivial) `impulse/types.rs:601` — Sequential-impulse friction (t1/t2) pushes sliding faster
-- [ ] **F3898** (critical, bug, easy/trivial) `multibody_dynamics.rs:435` — gravity_torques omits joint position and has inverted sign
+- [x] **F3862** (critical, bug, easy/trivial) `impulse/types.rs:601` — Sequential-impulse friction (t1/t2) pushes sliding faster
+- [x] **F3898** (critical, bug, easy/trivial) `multibody_dynamics.rs:435` — gravity_torques omits joint position and has inverted sign
 - [ ] **F3914** (critical, bug, hard/medium) `orbital_mechanics.rs:654` — lambert_problem uses wrong λ, ρ and T(x); test vacuous
-- [ ] **F3941** (critical, bug, easy/trivial) `satellite_dynamics.rs:565` — AttitudeControl::pd_controller torque sign drives attitude away from target
+- [x] **F3941** (critical, bug, easy/trivial) `satellite_dynamics.rs:565` — AttitudeControl::pd_controller torque sign drives attitude away from target
 - [x] **F4017** (critical, fabrication, hard/large) `world/types.rs:969` — PhysicsWorld ignores colliders; mass-cbrt spheres and sign-inverted contact solve
 - [x] **F4018** (critical, fabrication, hard/large) `world/types.rs:979` — PhysicsWorld ignores Collider shapes; contact radius fabricated from mass
 - [x] **F4019** (critical, fabrication, hard/large) `world/types.rs:1007` — PhysicsWorld collision ignores colliders, uses mass-cube-root spheres
@@ -182,16 +182,16 @@ Verified: 269 (critical 10, high 70, medium 148, low 41); 32 further raw finding
 - [x] **F3733** (high, fabrication, medium/medium) `articulated/functions.rs:775` — Joint-space inertia, Coriolis and kinetic energy ignore configuration
 - [x] **F3735** (high, bug, medium/small) `articulated/functions.rs:1034` — rnea_3d_revolute_z drops child-force moment and uses wrong parent accel
 - [x] **F3736** (high, fabrication, hard/medium) `articulated/functions.rs:1470` — forward_dynamics_full uses diagonal, configuration-independent H and fake Coriolis
-- [ ] **F3739** (high, bug, hard/medium) `articulated/types.rs:722` — ArticulatedChain2D dynamics: wrong lever arm, gravity sign, decoupled joints
+- [x] **F3739** (high, bug, hard/medium) `articulated/types.rs:722` — ArticulatedChain2D dynamics: wrong lever arm, gravity sign, decoupled joints
 - [x] **F3742** (high, bug, easy/small) `body/rigidbody_kinetic_energy_group.rs:17` — kinetic_energy and angular_momentum use local inertia with world-frame ω
 - [x] **F3745** (high, bug, easy/small) `body/rigidbody_predicates.rs:59` — Per-step multiplicative damping is dt-dependent and on by default
-- [ ] **F3755** (high, bug, hard/medium) `ccd/functions.rs:407` — gjk_distance has no simplex; misreports distance and overlap
-- [ ] **F3756** (high, fabrication, medium/small) `ccd/functions.rs:432` — gjk_distance has no simplex; reports deep overlap as separated
-- [ ] **F3758** (high, bug, medium/small) `ccd/types.rs:608` — CCD resolve_event indexes by user ID; touching pairs stall loop
-- [ ] **F3760** (high, bug, easy/trivial) `cfd_coupling.rs:715` — VIV structural EOM divides damping and stiffness accelerations by mass
-- [ ] **F3761** (high, bug, medium/small) `cfd_coupling.rs:851` — Mooring catenary solve_static residual has no root
-- [ ] **F3772** (high, fabrication, medium/small) `contact_dynamics.rs:335` — ImpulseResolver ignores friction and the Baumgarte penetration bias
-- [ ] **F3785** (high, fabrication, medium/medium) `deformable_coupling/types.rs:229` — CoupledSimulation::step fabricates coupling force direction and reaction
+- [x] **F3755** (high, bug, hard/medium) `ccd/functions.rs:407` — gjk_distance has no simplex; misreports distance and overlap
+- [x] **F3756** (high, fabrication, medium/small) `ccd/functions.rs:432` — gjk_distance has no simplex; reports deep overlap as separated
+- [x] **F3758** (high, bug, medium/small) `ccd/types.rs:608` — CCD resolve_event indexes by user ID; touching pairs stall loop
+- [x] **F3760** (high, bug, easy/trivial) `cfd_coupling.rs:715` — VIV structural EOM divides damping and stiffness accelerations by mass
+- [x] **F3761** (high, bug, medium/small) `cfd_coupling.rs:851` — Mooring catenary solve_static residual has no root
+- [x] **F3772** (high, fabrication, medium/small) `contact_dynamics.rs:335` — ImpulseResolver ignores friction and the Baumgarte penetration bias
+- [x] **F3785** (high, fabrication, medium/medium) `deformable_coupling/types.rs:229` — CoupledSimulation::step fabricates coupling force direction and reaction
 - [ ] **F3792** (high, fabrication, easy/small) `destruction_rigid.rs:291` — Documented RNG seed parameter silently ignored in fracture generators
 - [ ] **F3797** (high, panic, easy/small) `destruction_rigid.rs:707` — random_range on empty f64 ranges panics in public APIs
 - [ ] **F3805** (high, bug, easy/trivial) `fluid_coupling/types.rs:451` — Cylinder partial buoyancy: wrong acos argument
@@ -211,32 +211,32 @@ Verified: 269 (critical 10, high 70, medium 148, low 41); 32 further raw finding
 - [ ] **F3850** (high, bug, easy/trivial) `impact_dynamics.rs:476` — Hertz impact duration has wrong exponents; peak force lacks 5/4
 - [ ] **F3854** (high, fabrication, easy/small) `impact_mechanics.rs:791` — Taylor dynamic yield always returns rho*c*v0 (ignores final length)
 - [ ] **F3856** (high, bug, easy/small) `impulse/functions.rs:49` — Local inverse inertia applied to world-space vectors; orientation ignored
-- [ ] **F3857** (high, bug, easy/trivial) `impulse/types.rs:212` — ImpulseSolver::apply_coulomb_friction accelerates sliding (wrong sign)
-- [ ] **F3859** (high, bug, easy/small) `impulse/types.rs:353` — Normal convention contradicts code; ContactConstraint friction accelerates sliding
-- [ ] **F3861** (high, panic, easy/small) `impulse/types.rs:414` — Sequential impulse solvers panic when body_a >= body_b
-- [ ] **F3865** (high, panic, easy/small) `kinematics/types.rs:430` — Jacobian::manipulability panics for 7+ joints and mixes units for 4-5
-- [ ] **F3867** (high, stub, medium/small) `kinematics/types_2.rs:90` — Pfaffian project_velocity silently skips projection for m>1
-- [ ] **F3872** (high, bug, medium/medium) `marine_dynamics.rs:701` — Mooring catenary solver solves non-catenary equations
-- [ ] **F3877** (high, fabrication, easy/trivial) `marine_rigid.rs:996` — marine_rigid::jonswap_spectrum discards Hs; output independent of sea state
+- [x] **F3857** (high, bug, easy/trivial) `impulse/types.rs:212` — ImpulseSolver::apply_coulomb_friction accelerates sliding (wrong sign)
+- [x] **F3859** (high, bug, easy/small) `impulse/types.rs:353` — Normal convention contradicts code; ContactConstraint friction accelerates sliding
+- [x] **F3861** (high, panic, easy/small) `impulse/types.rs:414` — Sequential impulse solvers panic when body_a >= body_b
+- [x] **F3865** (high, panic, easy/small) `kinematics/types.rs:430` — Jacobian::manipulability panics for 7+ joints and mixes units for 4-5
+- [x] **F3867** (high, stub, medium/small) `kinematics/types_2.rs:90` — Pfaffian project_velocity silently skips projection for m>1
+- [x] **F3872** (high, bug, medium/medium) `marine_dynamics.rs:701` — Mooring catenary solver solves non-catenary equations
+- [x] **F3877** (high, fabrication, easy/trivial) `marine_rigid.rs:996` — marine_rigid::jonswap_spectrum discards Hs; output independent of sea state
 - [ ] **F3893** (high, fabrication, hard/medium) `multibody/types.rs:758` — FeatherstoneABA adds mass to inertia; gravity torque is a force
 - [ ] **F3894** (high, fabrication, hard/large) `multibody/types.rs:1108` — MultibodySystem dynamics fabricated: kg+kg·m², sin(q)q̇², +0.1 fudge
 - [ ] **F3895** (high, bug, easy/trivial) `multibody/types.rs:1366` — ArticulatedBody::clamp_angles shifts every angle by −π
 - [ ] **F3896** (high, fabrication, hard/large) `multibody/types.rs:1588` — FeatherstoneAba/RecursiveNewtonEuler/JointSpaceInertia are fake decoupled pendulums
-- [ ] **F3897** (high, fabrication, hard/medium) `multibody_dynamics.rs:394` — CRBA mass_matrix lacks parallel-axis terms; M(q) wrong
-- [ ] **F3899** (high, bug, medium/small) `multibody_dynamics.rs:483` — coriolis_vector uses wrong Christoffel derivative; n clones per call
+- [x] **F3897** (high, fabrication, hard/medium) `multibody_dynamics.rs:394` — CRBA mass_matrix lacks parallel-axis terms; M(q) wrong
+- [x] **F3899** (high, bug, medium/small) `multibody_dynamics.rs:483` — coriolis_vector uses wrong Christoffel derivative; n clones per call
 - [ ] **F3910** (high, bug, medium/medium) `neural_control/types.rs:1234` — RRT* reparents without a collision check and never rewires
 - [ ] **F3911** (high, bug, medium/small) `neural_control/types.rs:1246` — RRT* reparents without collision check and never rewires
 - [ ] **F3913** (high, bug, medium/small) `orbital_mechanics.rs:437` — cartesian_to_kepler: circular orbits always return true anomaly π/2
 - [ ] **F3915** (high, bug, hard/medium) `orbital_mechanics.rs:667` — Lambert solver uses garbled Izzo equations; test vacuous
-- [ ] **F3926** (high, fabrication, medium/medium) `planetary_mechanics.rs:450` — NBodyGravity Barnes-Hut never used; integrator is Euler, not RK4/leapfrog
-- [ ] **F3927** (high, bug, easy/small) `planetary_mechanics.rs:800` — Piecewise density model discontinuous by up to nine orders
-- [ ] **F3928** (high, bug, easy/trivial) `planetary_mechanics.rs:833` — AtmosphericDrag::decay_rate off by a factor of 2πa (wrong units)
-- [ ] **F3932** (high, fabrication, medium/small) `planetary_mechanics.rs:1213` — two_impulse_rendezvous uses invented formulas, ignores initial velocity
-- [ ] **F3933** (high, fabrication, medium/small) `ragdoll/functions.rs:101` — Ragdoll forward_kinematics ignores joint angles and root orientation
-- [ ] **F3936** (high, bug, easy/small) `ragdoll/types.rs:897` — Ragdoll position projection never updates velocities
-- [ ] **F3944** (high, fabrication, medium/small) `satellite_dynamics.rs:968` — fuel_optimal_maneuver returns fabricated error·n/sin(nt), pointing away from target
-- [ ] **F3945** (high, bug, easy/small) `satellite_dynamics.rs:1043` — set_circular_orbit drifts/offset; is_bounded_orbit test wrong
-- [ ] **F3962** (high, fabrication, hard/medium) `space_mechanics.rs:802` — lambert_solver iterates on wrong residual, never fails, vacuous test
+- [x] **F3926** (high, fabrication, medium/medium) `planetary_mechanics.rs:450` — NBodyGravity Barnes-Hut never used; integrator is Euler, not RK4/leapfrog
+- [x] **F3927** (high, bug, easy/small) `planetary_mechanics.rs:800` — Piecewise density model discontinuous by up to nine orders
+- [x] **F3928** (high, bug, easy/trivial) `planetary_mechanics.rs:833` — AtmosphericDrag::decay_rate off by a factor of 2πa (wrong units)
+- [x] **F3932** (high, fabrication, medium/small) `planetary_mechanics.rs:1213` — two_impulse_rendezvous uses invented formulas, ignores initial velocity
+- [x] **F3933** (high, fabrication, medium/small) `ragdoll/functions.rs:101` — Ragdoll forward_kinematics ignores joint angles and root orientation
+- [x] **F3936** (high, bug, easy/small) `ragdoll/types.rs:897` — Ragdoll position projection never updates velocities
+- [x] **F3944** (high, fabrication, medium/small) `satellite_dynamics.rs:968` — fuel_optimal_maneuver returns fabricated error·n/sin(nt), pointing away from target
+- [x] **F3945** (high, bug, easy/small) `satellite_dynamics.rs:1043` — set_circular_orbit drifts/offset; is_bounded_orbit test wrong
+- [x] **F3962** (high, fabrication, hard/medium) `space_mechanics.rs:802` — lambert_solver iterates on wrong residual, never fails, vacuous test
 - [ ] **F3983** (high, bug, easy/trivial) `thruster_dynamics.rs:270` — BrushlessMotor back-EMF multiplies by Kv instead of dividing
 - [ ] **F3985** (high, bug, medium/small) `train_dynamics.rs:131` — TrainConsist couplers anti-restoring; brakes reverse a stopped train
 - [ ] **F3986** (high, bug, easy/trivial) `train_dynamics.rs:172` — TrainConsist::step applies coupler force with anti-restoring sign

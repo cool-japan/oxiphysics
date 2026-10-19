@@ -300,7 +300,11 @@ fn simple_to_py(result: SimpleMesh) -> PyTriangleMesh {
 
 #[pymethods]
 impl PyCsg {
-    /// Boolean union of two closed triangle meshes using winding-number classification.
+    /// Boolean union of two closed, outward-oriented triangle meshes.
+    ///
+    /// Faces are split along the intersection curves and re-triangulated, so the
+    /// result is the closed boundary of the union (see
+    /// `oxiphysics::geometry::mesh_boolean::mesh_boolean`).
     #[staticmethod]
     pub fn union(a: &PyTriangleMesh, b: &PyTriangleMesh) -> PyTriangleMesh {
         let sa = py_to_simple(a);
@@ -308,7 +312,8 @@ impl PyCsg {
         simple_to_py(mesh_boolean(&sa, &sb, MeshBooleanOp::Union))
     }
 
-    /// Boolean intersection of two closed triangle meshes.
+    /// Boolean intersection of two closed, outward-oriented triangle meshes,
+    /// split along the intersection curves.
     #[staticmethod]
     pub fn intersection(a: &PyTriangleMesh, b: &PyTriangleMesh) -> PyTriangleMesh {
         let sa = py_to_simple(a);
@@ -316,7 +321,8 @@ impl PyCsg {
         simple_to_py(mesh_boolean(&sa, &sb, MeshBooleanOp::Intersection))
     }
 
-    /// Boolean difference (A minus B) of two closed triangle meshes.
+    /// Boolean difference (A minus B) of two closed, outward-oriented triangle
+    /// meshes, split along the intersection curves.
     #[staticmethod]
     pub fn subtraction(a: &PyTriangleMesh, b: &PyTriangleMesh) -> PyTriangleMesh {
         let sa = py_to_simple(a);

@@ -9,11 +9,15 @@
 //!
 //! # Included solvers
 //! - [`PowerIteration`] — dominant eigenvalue via power method with deflation
-//! - [`InverseIteration`] — smallest eigenvalue via inverse iteration (LU)
-//! - [`LanczosMethod`] — Lanczos tridiagonalization for k eigenvalues
-//! - [`GeneralizedEigenvalue`] — K·φ = λM·φ via Cholesky of M
+//! - [`InverseIteration`] — eigenvalue nearest a shift via inverse iteration
+//!   (pivoted LU)
+//! - [`LanczosMethod`] — Lanczos with full reorthogonalization for the k
+//!   smallest eigenvalues of a symmetric matrix
+//! - [`GeneralizedEigenvalue`] — K·φ = λM·φ via Cholesky of M and a dense
+//!   symmetric eigendecomposition
 //! - [`ModalAnalysis`] — natural frequencies, mode shapes, modal participation
-//! - [`FrequencyResponse`] — steady-state harmonic response
+//! - [`FrequencyResponse`] — steady-state harmonic response with hysteretic
+//!   damping
 //! - [`RayleighQuotient`] — upper bound on fundamental frequency
 //! - [`EigensolverConfig`] — iteration / convergence configuration
 //! - [`SpectralNorm`] — largest singular value via power iteration
@@ -59,119 +63,270 @@ fn dense_matvec(a: &[f64], x: &[f64], n: usize) -> Vec<f64> {
     y
 }
 
-/// Dense symmetric tridiagonal eigenvalues via implicit QL algorithm (0-based).
-/// Returns eigenvalues in ascending order for an n×n symmetric tridiagonal
-/// matrix with diagonal `diag` (length n) and sub-diagonal `off` (length n-1).
+/// Largest absolute row sum (the infinity norm) of a dense row-major `n × n`
+/// matrix.  For a symmetric matrix this bounds the spectral radius from above.
+fn infinity_norm(a: &[f64], n: usize) -> f64 {
+    a.chunks_exact(n.max(1))
+        .map(|row| row.iter().map(|v| v.abs()).sum::<f64>())
+        .fold(0.0_f64, f64::max)
+}
+
+/// Maximum number of QL iterations spent on one eigenvalue of a tridiagonal
+/// matrix before the routine gives up.
+const TRIDIAGONAL_MAX_ITER: usize = 60;
+
+/// Eigenvalues of a symmetric tridiagonal matrix together with the last
+/// component of each eigenvector.
 ///
-/// Adapted from the standard Numerical Recipes / LAPACK `dstev` approach.
-fn tridiagonal_eigenvalues(diag: &[f64], off: &[f64]) -> Vec<f64> {
+/// `diag` is the diagonal (length `n`) and `off` the sub-diagonal (length
+/// `n − 1`).  The implicit QL algorithm with Wilkinson-type shifts (EISPACK
+/// `tql2`) is run while only the last row of the accumulated rotations is
+/// tracked, which costs `O(n²)` instead of the `O(n³)` of a full eigenvector
+/// computation.  The last components are exactly what the residual of a Ritz
+/// pair needs: for a Lanczos step with residual coupling `β`, the residual norm
+/// of the Ritz pair `(θᵢ, sᵢ)` is `β·|sᵢ[n−1]|`.
+///
+/// Returns `(eigenvalues ascending, matching last eigenvector components)`, or
+/// `None` if an eigenvalue does not converge within
+/// [`TRIDIAGONAL_MAX_ITER`] iterations.
+fn tridiagonal_eigen(diag: &[f64], off: &[f64]) -> Option<(Vec<f64>, Vec<f64>)> {
     let n = diag.len();
     if n == 0 {
-        return vec![];
+        return Some((Vec::new(), Vec::new()));
     }
-    if n == 1 {
-        return vec![diag[0]];
-    }
-
     let mut d = diag.to_vec();
-    // e[i] = off-diagonal below row i, e[0] = 0 (unused), e[i] = off[i-1] for i>=1
+    // e[i] couples rows i and i + 1; e[n - 1] is a zero sentinel.
     let mut e = vec![0.0_f64; n];
-    for i in 1..n {
-        e[i] = if (i - 1) < off.len() { off[i - 1] } else { 0.0 };
+    for (slot, &value) in e.iter_mut().zip(off.iter().take(n - 1)) {
+        *slot = value;
     }
+    // Last row of the eigenvector matrix; starts as the last row of the identity.
+    let mut z = vec![0.0_f64; n];
+    z[n - 1] = 1.0;
 
-    // Iterate over each unreduced sub-matrix
+    let mut shift_total = 0.0_f64;
+    let mut tst1 = 0.0_f64;
     for l in 0..n {
-        let mut iter = 0usize;
-        loop {
-            // Find the largest m ∈ [l, n-1) such that e[m+1] is small.
-            // Convention: m is the index of the last diagonal in the active block.
-            let mut m = l;
-            while m < n - 1 {
-                let thresh = 1e-15 * (d[m].abs() + d[m + 1].abs());
-                if e[m + 1].abs() <= thresh {
-                    break;
-                }
-                m += 1;
-            }
-            if m == l {
-                break;
-            } // already diagonal
-            if iter >= 30 * n {
-                break;
-            } // give up
-            iter += 1;
-
-            // Wilkinson shift: use the eigenvalue of the bottom 2×2
-            // sub-matrix (d[m-1], e[m]; e[m], d[m]) closer to d[m]
-            let shift = {
-                let b = (d[m - 1] - d[m]) / 2.0;
-                let sign_b = if b >= 0.0 { 1.0_f64 } else { -1.0_f64 };
-                d[m] - e[m] * e[m] / (b + sign_b * b.hypot(e[m]))
-            };
-
-            // Chase the bulge from index l to m
-            let mut g = d[l] - shift;
-            let mut s = 1.0_f64;
-            let mut c = 1.0_f64;
-            let mut p = 0.0_f64;
-
-            for i in l..m {
-                let f = s * e[i + 1];
-                let bb = c * e[i + 1];
-                let r = f.hypot(g);
-                e[i] = r; // Note: e[l] will be overwritten at the end
-                if r.abs() < 1e-300 {
-                    d[i] -= p;
-                    e[m] = 0.0;
-                    break;
-                }
-                s = f / r;
-                c = g / r;
-                g = d[i] - p;
-                let r2 = (d[i + 1] - g) * s + 2.0 * c * bb;
-                p = s * r2;
-                d[i] = g + p;
-                g = c * r2 - bb;
-            }
-            d[m] -= p;
-            e[m] = g;
-            e[l] = 0.0;
+        tst1 = tst1.max(d[l].abs() + e[l].abs());
+        let mut m = l;
+        while m < n - 1 && e[m].abs() > f64::EPSILON * tst1 {
+            m += 1;
         }
+        if m > l {
+            let mut iterations = 0usize;
+            loop {
+                iterations += 1;
+                if iterations > TRIDIAGONAL_MAX_ITER {
+                    return None;
+                }
+                // Implicit shift.
+                let mut g = d[l];
+                let mut p = (d[l + 1] - g) / (2.0 * e[l]);
+                let mut r = p.hypot(1.0);
+                if p < 0.0 {
+                    r = -r;
+                }
+                d[l] = e[l] / (p + r);
+                d[l + 1] = e[l] * (p + r);
+                let dl1 = d[l + 1];
+                let mut h = g - d[l];
+                for value in d.iter_mut().skip(l + 2) {
+                    *value -= h;
+                }
+                shift_total += h;
+
+                // Implicit QL transformation.
+                p = d[m];
+                let mut c = 1.0_f64;
+                let mut c2 = c;
+                let mut c3 = c;
+                let el1 = e[l + 1];
+                let mut s = 0.0_f64;
+                let mut s2 = 0.0_f64;
+                for i in (l..m).rev() {
+                    c3 = c2;
+                    c2 = c;
+                    s2 = s;
+                    g = c * e[i];
+                    h = c * p;
+                    r = p.hypot(e[i]);
+                    e[i + 1] = s * r;
+                    s = e[i] / r;
+                    c = p / r;
+                    p = c * d[i] - s * g;
+                    d[i + 1] = h + s * (c * g + s * d[i]);
+                    let z_next = z[i + 1];
+                    z[i + 1] = s * z[i] + c * z_next;
+                    z[i] = c * z[i] - s * z_next;
+                }
+                p = -s * s2 * c3 * el1 * e[l] / dl1;
+                e[l] = s * p;
+                d[l] = c * p;
+                if e[l].abs() <= f64::EPSILON * tst1 {
+                    break;
+                }
+            }
+        }
+        d[l] += shift_total;
+        e[l] = 0.0;
     }
-    d.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    d
+    if d.iter().chain(z.iter()).any(|v| !v.is_finite()) {
+        return None;
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| d[a].total_cmp(&d[b]));
+    let values = order.iter().map(|&i| d[i]).collect();
+    let last = order.iter().map(|&i| z[i]).collect();
+    Some((values, last))
 }
 
-/// In-place dense LU factorization (no pivoting) for an n×n row-major matrix.
-/// Returns `Err(())` if a zero pivot is encountered.
-fn lu_factor(a: &mut [f64], n: usize) -> Result<(), ()> {
+/// Ritz values (ascending) and the last components of the matching Ritz vectors
+/// of the symmetric tridiagonal matrix with diagonal `alpha` and sub-diagonal
+/// `beta`, computed with the dense Jacobi method.  Slower than
+/// [`tridiagonal_eigen`] but unconditionally convergent; used as its fallback.
+fn ritz_pairs_jacobi(alpha: &[f64], beta: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let m = alpha.len();
+    if m == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let scale = alpha
+        .iter()
+        .chain(beta.iter())
+        .fold(0.0_f64, |s, v| s.max(v.abs()));
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let mut t = vec![vec![0.0_f64; m]; m];
+    for (i, &a) in alpha.iter().enumerate() {
+        t[i][i] = a / scale;
+    }
+    for (i, &b) in beta.iter().enumerate().take(m - 1) {
+        t[i][i + 1] = b / scale;
+        t[i + 1][i] = b / scale;
+    }
+    let (values, vectors) = crate::eigen::jacobi_eigen_dense(&t, m);
+    let last = vectors
+        .iter()
+        .map(|v| v.last().copied().unwrap_or(0.0))
+        .collect();
+    (values.iter().map(|v| v * scale).collect(), last)
+}
+
+/// Ritz values (ascending) and last Ritz-vector components of a Lanczos
+/// tridiagonal matrix (see [`tridiagonal_eigen`]).
+fn ritz_pairs(alpha: &[f64], beta: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    tridiagonal_eigen(alpha, beta).unwrap_or_else(|| ritz_pairs_jacobi(alpha, beta))
+}
+
+/// Deterministic pseudo-random vector with entries in `[-1, 1)` (xorshift64*),
+/// used for the Lanczos start and restart vectors.
+fn pseudo_random_vector(n: usize, seed: u64) -> Vec<f64> {
+    let mut state = seed | 1;
+    (0..n)
+        .map(|_| {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            let bits = state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11;
+            (bits as f64) / ((1u64 << 52) as f64) - 1.0
+        })
+        .collect()
+}
+
+/// Remove from `w` its components along every (orthonormal) vector of `basis`.
+/// Gram–Schmidt is applied twice so that the result is orthogonal to working
+/// precision even when `w` is nearly in the span of the basis.
+fn orthogonalize_against(w: &mut [f64], basis: &[Vec<f64>]) {
+    for _ in 0..2 {
+        for q in basis {
+            let h = dot(w, q);
+            for (wi, qi) in w.iter_mut().zip(q) {
+                *wi -= h * qi;
+            }
+        }
+    }
+}
+
+/// A fresh unit vector orthogonal to `basis`, or `None` if `basis` already
+/// spans the whole `n`-dimensional space.
+fn restart_vector(n: usize, basis: &[Vec<f64>], seed: &mut u64) -> Option<Vec<f64>> {
+    if basis.len() >= n {
+        return None;
+    }
+    for _ in 0..8 {
+        *seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut v = pseudo_random_vector(n, *seed);
+        let before = norm2(&v);
+        orthogonalize_against(&mut v, basis);
+        let after = norm2(&v);
+        if after > 1e-8 * before {
+            for x in v.iter_mut() {
+                *x /= after;
+            }
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Relative pivot threshold (times `max|A|`) below which the dynamic stiffness
+/// matrix of the frequency-response solver is declared singular.
+const FRF_PIVOT_TOL: f64 = 1e-14;
+
+/// In-place dense LU factorization with partial (row) pivoting of an `n × n`
+/// row-major matrix: `P·A = L·U`.
+///
+/// `L` (unit lower triangle) and `U` overwrite `a`.  The returned vector is the
+/// row permutation: row `i` of `P·A` is row `perm[i]` of `A`.  `None` means the
+/// matrix is singular to working precision: it holds a non-finite entry, or a
+/// pivot is not larger than `rel_tol · max|A|` (with `rel_tol = 0` only an exact
+/// zero pivot is rejected).
+fn lu_factor(a: &mut [f64], n: usize, rel_tol: f64) -> Option<Vec<usize>> {
+    if a.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let threshold = rel_tol * a.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    let mut perm: Vec<usize> = (0..n).collect();
     for k in 0..n {
-        let pivot = a[k * n + k];
-        if pivot.abs() < 1e-300 {
-            return Err(());
-        }
+        let mut pivot_row = k;
+        let mut pivot_abs = a[k * n + k].abs();
         for i in (k + 1)..n {
-            a[i * n + k] /= pivot;
+            let candidate = a[i * n + k].abs();
+            if candidate > pivot_abs {
+                pivot_abs = candidate;
+                pivot_row = i;
+            }
+        }
+        if pivot_abs <= threshold {
+            return None;
+        }
+        if pivot_row != k {
+            for j in 0..n {
+                a.swap(k * n + j, pivot_row * n + j);
+            }
+            perm.swap(k, pivot_row);
+        }
+        let pivot = a[k * n + k];
+        for i in (k + 1)..n {
+            let factor = a[i * n + k] / pivot;
+            a[i * n + k] = factor;
             for j in (k + 1)..n {
-                let m = a[i * n + k];
-                a[i * n + j] -= m * a[k * n + j];
+                let upper = a[k * n + j];
+                a[i * n + j] -= factor * upper;
             }
         }
     }
-    Ok(())
+    Some(perm)
 }
 
-/// Solve L·U·x = b in-place.  `lu` contains the factored matrix.
-fn lu_solve(lu: &[f64], b: &[f64], n: usize) -> Vec<f64> {
-    let mut x = b.to_vec();
-    // Forward substitution L·y = b
+/// Solve `A·x = b` from the factors and permutation returned by [`lu_factor`].
+fn lu_solve(lu: &[f64], perm: &[usize], b: &[f64], n: usize) -> Vec<f64> {
+    let mut x: Vec<f64> = perm.iter().map(|&p| b[p]).collect();
+    // Forward substitution L·y = P·b (unit lower triangle).
     for i in 1..n {
         for j in 0..i {
             x[i] -= lu[i * n + j] * x[j];
         }
     }
-    // Back substitution U·x = y
+    // Back substitution U·x = y.
     for i in (0..n).rev() {
         for j in (i + 1)..n {
             x[i] -= lu[i * n + j] * x[j];
@@ -292,7 +447,8 @@ impl PowerIteration {
 
 /// Inverse iteration for the smallest (or nearest-to-shift) eigenvalue.
 ///
-/// Uses LU factorization of (A − σ·I) and iterates with back-substitution.
+/// Uses LU factorization with partial pivoting of (A − σ·I) and iterates with
+/// back-substitution.
 pub struct InverseIteration {
     /// Row-major n×n stiffness matrix.
     pub a: Vec<f64>,
@@ -321,28 +477,28 @@ impl InverseIteration {
         for i in 0..n {
             lu[i * n + i] -= sigma;
         }
-        lu_factor(&mut lu, n).map_err(|_| "singular shifted matrix".to_string())?;
+        // Only an exactly singular shifted matrix is rejected: a shift that is
+        // merely very close to an eigenvalue is what makes the iteration fast.
+        let perm =
+            lu_factor(&mut lu, n, 0.0).ok_or_else(|| "singular shifted matrix".to_string())?;
 
         // Non-axis-aligned starting vector
         let scale = (n as f64).sqrt().recip();
         let mut v: Vec<f64> = (0..n).map(|i| (i + 1) as f64 * scale).collect();
         normalize(&mut v);
-        let mut prev_v = v.clone();
 
         for _ in 0..self.config.max_iter {
-            let w = lu_solve(&lu, &v, n);
+            let w = lu_solve(&lu, &perm, &v, n);
             let mut new_v = w;
             normalize(&mut new_v);
             // Check convergence: angle between successive iterates
             let angle_cos = dot(&new_v, &v).abs();
             let converged = (1.0 - angle_cos) < self.config.tolerance;
-            prev_v = v;
             v = new_v;
             if converged {
                 break;
             }
         }
-        let _ = prev_v; // suppress unused warning
         // Rayleigh quotient: λ = vᵀ A v / vᵀ v (vᵀv = 1 since normalized)
         let av = dense_matvec(&self.a, &v, n);
         let eigenvalue = dot(&v, &av);
@@ -354,16 +510,38 @@ impl InverseIteration {
 // LanczosMethod
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Lanczos tridiagonalization for extracting k eigenvalues of a symmetric matrix.
+/// Breakdown threshold of the Lanczos recurrence, relative to `‖A‖∞`: a
+/// residual vector shorter than this means the Krylov space is invariant.
+const LANCZOS_BREAKDOWN_TOL: f64 = 1e-13;
+
+/// Floor of the Ritz residual test, relative to `‖A‖∞`: residuals cannot be
+/// pushed below the rounding level of the matrix-vector products.
+const LANCZOS_RESIDUAL_FLOOR: f64 = 1e-14;
+
+/// Seed of the deterministic pseudo-random Lanczos start vector.
+const LANCZOS_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// Lanczos tridiagonalization for extracting the k smallest eigenvalues of a
+/// symmetric matrix.
 ///
-/// Builds a Krylov basis and extracts eigenvalues from the resulting
-/// tridiagonal matrix.  Suitable for large sparse problems.
+/// Builds a Krylov basis with **full reorthogonalization** and extracts the Ritz
+/// values from the resulting tridiagonal matrix.  The basis is grown from
+/// `min(n, max(2k + 20, 3k))` vectors until the `k` smallest Ritz values have
+/// converged (Ritz residual `β·|s_last| ≤ tolerance·|θ|`) or the basis spans the
+/// whole space, in which case the Ritz values are the exact eigenvalues.
+///
+/// A single-vector Krylov method resolves each *distinct* eigenvalue once, so a
+/// multiple eigenvalue is reported with its full multiplicity only when the
+/// Krylov space closes early and the recurrence restarts, or when the basis
+/// reaches dimension `n`.  Use [`GeneralizedEigenvalue`] when exact
+/// multiplicities of the lowest modes are required.
 pub struct LanczosMethod {
     /// Row-major n×n symmetric matrix.
     pub a: Vec<f64>,
     /// Matrix dimension.
     pub n: usize,
-    /// Solver configuration (`n_modes` determines k).
+    /// Solver configuration (`n_modes` determines k, `tolerance` the Ritz
+    /// residual tolerance; the basis size is bounded by `n`, not by `max_iter`).
     pub config: EigensolverConfig,
 }
 
@@ -374,64 +552,88 @@ impl LanczosMethod {
         Self { a, n, config }
     }
 
-    /// Run Lanczos iteration and return up to `config.n_modes` eigenvalues.
+    /// Run Lanczos iteration and return `min(config.n_modes, n)` eigenvalues.
     ///
-    /// Returns eigenvalues sorted ascending.
+    /// Returns the smallest eigenvalues sorted ascending.  A matrix with
+    /// non-finite entries yields NaN values.
     pub fn eigenvalues(&self) -> Vec<f64> {
         let n = self.n;
         let k = self.config.n_modes.min(n);
-        // Non-axis-aligned starting vector so all eigenspaces are represented
-        let scale = (n as f64).sqrt().recip();
-        let mut v0: Vec<f64> = (0..n).map(|i| (i + 1) as f64 * scale).collect();
-        normalize(&mut v0);
-        let mut q: Vec<Vec<f64>> = Vec::with_capacity(k + 1);
-        q.push(v0);
-
-        let mut alpha_vec = Vec::with_capacity(k);
-        let mut beta_vec = Vec::with_capacity(k); // beta_vec[j] = β_{j+1}
-        let mut steps = 0usize;
-
-        for j in 0..k {
-            let w_raw = dense_matvec(&self.a, &q[j], n);
-            let a_j: f64 = dot(&w_raw, &q[j]);
-            alpha_vec.push(a_j);
-
-            // w = A q_j - a_j q_j - b_j q_{j-1}
-            let mut w: Vec<f64> = w_raw
-                .iter()
-                .enumerate()
-                .map(|(idx, &wi)| {
-                    let mut val = wi - a_j * q[j][idx];
-                    if j > 0 {
-                        val -= beta_vec[j - 1] * q[j - 1][idx];
-                    }
-                    val
-                })
-                .collect();
-
-            steps += 1;
-            let b = norm2(&w);
-            beta_vec.push(b);
-
-            if j + 1 < k {
-                if b < 1e-14 {
-                    // Invariant subspace found — stop early
-                    break;
-                }
-                for x in w.iter_mut() {
-                    *x /= b;
-                }
-                q.push(w);
-            }
+        if k == 0 {
+            return Vec::new();
         }
+        if self.a.iter().any(|v| !v.is_finite()) {
+            return vec![f64::NAN; k];
+        }
+        let a_norm = infinity_norm(&self.a, n);
+        if a_norm == 0.0 {
+            return vec![0.0; k];
+        }
+        let breakdown_tol = LANCZOS_BREAKDOWN_TOL * a_norm;
+        let mut seed = LANCZOS_SEED;
+        let mut basis: Vec<Vec<f64>> = Vec::new();
+        let Some(start) = restart_vector(n, &basis, &mut seed) else {
+            return vec![f64::NAN; k];
+        };
+        basis.push(start);
+        let mut alpha: Vec<f64> = Vec::new();
+        // beta[j] couples q_j and q_{j+1}; it is zero where the Krylov space
+        // closed and the recurrence was restarted with a fresh vector.
+        let mut beta: Vec<f64> = Vec::new();
+        let mut m_limit = n.min((2 * k + 20).max(3 * k));
+        let mut exhausted = false;
 
-        let m = steps.min(alpha_vec.len());
-        // off-diagonal: beta_vec[0..m-1]
-        let off: Vec<f64> = beta_vec[..m.saturating_sub(1)].to_vec();
-        let mut eigs = tridiagonal_eigenvalues(&alpha_vec[..m], &off);
-        eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        eigs.truncate(k);
-        eigs
+        loop {
+            while alpha.len() < m_limit {
+                let j = alpha.len();
+                let Some(q_j) = basis.get(j) else {
+                    exhausted = true;
+                    break;
+                };
+                let mut w = dense_matvec(&self.a, q_j, n);
+                let a_j = dot(&w, q_j);
+                alpha.push(a_j);
+                for (wi, qi) in w.iter_mut().zip(q_j) {
+                    *wi -= a_j * qi;
+                }
+                if j > 0 && beta[j - 1] != 0.0 {
+                    let b_prev = beta[j - 1];
+                    for (wi, qi) in w.iter_mut().zip(&basis[j - 1]) {
+                        *wi -= b_prev * qi;
+                    }
+                }
+                orthogonalize_against(&mut w, &basis);
+                let b_j = norm2(&w);
+                if b_j > breakdown_tol {
+                    for wi in w.iter_mut() {
+                        *wi /= b_j;
+                    }
+                    beta.push(b_j);
+                    basis.push(w);
+                } else {
+                    // Invariant subspace: close the block and restart with a
+                    // vector orthogonal to everything found so far.
+                    beta.push(0.0);
+                    if let Some(next) = restart_vector(n, &basis, &mut seed) {
+                        basis.push(next);
+                    }
+                }
+            }
+
+            let m = alpha.len();
+            let (ritz, last) = ritz_pairs(&alpha, &beta[..m.saturating_sub(1)]);
+            let coupling = beta.get(m.saturating_sub(1)).copied().unwrap_or(0.0);
+            let converged = coupling > 0.0
+                && ritz.iter().zip(&last).take(k).all(|(&theta, &s_last)| {
+                    let tolerance =
+                        (self.config.tolerance * theta.abs()).max(LANCZOS_RESIDUAL_FLOOR * a_norm);
+                    coupling * s_last.abs() <= tolerance
+                });
+            if m >= n || exhausted || converged {
+                return ritz.into_iter().take(k).collect();
+            }
+            m_limit = n.min(m + (m / 2).max(10));
+        }
     }
 }
 
@@ -439,10 +641,16 @@ impl LanczosMethod {
 // GeneralizedEigenvalue
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Relative asymmetry (times `max|A|`) tolerated in a stiffness or mass matrix
+/// before [`GeneralizedEigenvalue::solve_smallest`] rejects it.
+const SYMMETRY_TOL: f64 = 1e-8;
+
 /// Generalized eigenvalue solver for K·φ = λM·φ.
 ///
 /// Uses Cholesky factorization of M to convert to a standard eigenvalue problem:
-/// `L⁻¹ K L⁻ᵀ ỹ = λ ỹ`, where M = L Lᵀ.
+/// `L⁻¹ K L⁻ᵀ ỹ = λ ỹ`, where M = L Lᵀ, and solves that problem with a dense
+/// symmetric eigendecomposition (`O(n³)`), so every requested mode is exact and
+/// multiple eigenvalues keep their multiplicity.
 pub struct GeneralizedEigenvalue {
     /// Row-major n×n stiffness matrix K.
     pub k_mat: Vec<f64>,
@@ -513,12 +721,48 @@ impl GeneralizedEigenvalue {
         x
     }
 
+    /// Check that `a` (row-major `n × n`) is finite and symmetric to within
+    /// [`SYMMETRY_TOL`] of its largest entry.
+    fn check_symmetric(a: &[f64], n: usize, name: &str) -> Result<(), String> {
+        if a.iter().any(|v| !v.is_finite()) {
+            return Err(format!("{name} matrix contains non-finite entries"));
+        }
+        let tolerance = SYMMETRY_TOL * a.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if (a[i * n + j] - a[j * n + i]).abs() > tolerance {
+                    return Err(format!(
+                        "{name} matrix is not symmetric: entries ({i},{j}) and ({j},{i}) differ"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Compute the `config.n_modes` smallest generalized eigenvalues.
     ///
-    /// Returns `(eigenvalues, eigenvectors)` where each eigenvector has length n.
+    /// Returns `(eigenvalues, eigenvectors)`: the eigenvalues λ = ω² ascending
+    /// and the matching eigenvectors φ of length `n`, normalised to unit modal
+    /// mass (`φᵀ M φ = 1`, hence `φᵀ K φ = λ`) with the component of largest
+    /// magnitude positive.  The standard problem `C ỹ = λ ỹ`, `C = L⁻¹ K L⁻ᵀ`,
+    /// is solved completely by a dense symmetric eigendecomposition and the
+    /// eigenvectors are mapped back with `φ = L⁻ᵀ ỹ`; `config.tolerance` and
+    /// `config.max_iter` are therefore not used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if K or M is not finite or not symmetric, or if M is not
+    /// positive definite.
     pub fn solve_smallest(&self) -> Result<(Vec<f64>, Vec<Vec<f64>>), String> {
         let n = self.n;
+        Self::check_symmetric(&self.k_mat, n, "stiffness")?;
+        Self::check_symmetric(&self.m_mat, n, "mass")?;
         let l = Self::cholesky(&self.m_mat, n)?;
+        let k = self.config.n_modes.min(n);
+        if k == 0 {
+            return Ok((Vec::new(), Vec::new()));
+        }
 
         // Form C = L⁻¹ K L⁻ᵀ  (standard symmetric eigenvalue problem)
         // First compute B = K L⁻ᵀ  via column operations
@@ -536,40 +780,41 @@ impl GeneralizedEigenvalue {
                 c[i * n + j] = c_col[i];
             }
         }
-
-        // Use Lanczos on C
-        let lanczos = LanczosMethod {
-            a: c.clone(),
-            n,
-            config: self.config.clone(),
-        };
-        let eigenvalues = lanczos.eigenvalues();
-
-        // Back-transform eigenvectors: φ = L⁻ᵀ ỹ
-        // Use power iteration on C to get eigenvectors for the k smallest
-        let k = self.config.n_modes.min(n).min(eigenvalues.len());
-        let mut eigenvectors = Vec::with_capacity(k);
-        for &lam in eigenvalues.iter().take(k) {
-            // Inverse iteration on C shifted by lambda
-            let inv_cfg = EigensolverConfig {
-                shift: lam - 1e-6,
-                n_modes: 1,
-                ..self.config.clone()
-            };
-            let inv = InverseIteration {
-                a: c.clone(),
-                n,
-                config: inv_cfg,
-            };
-            let phi_tilde = match inv.solve() {
-                Ok((_l, v)) => v,
-                Err(_) => vec![0.0; n],
-            };
-            let phi = Self::bwd_sub(&l, &phi_tilde, n);
-            eigenvectors.push(phi);
+        // C is symmetric in exact arithmetic; remove the rounding asymmetry.
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let mean = 0.5 * (c[i * n + j] + c[j * n + i]);
+                c[i * n + j] = mean;
+                c[j * n + i] = mean;
+            }
         }
 
-        Ok((eigenvalues[..k].to_vec(), eigenvectors))
+        // The Jacobi kernel works with absolute thresholds, so hand it a matrix
+        // whose largest entry is one and rescale the eigenvalues afterwards.
+        let scale = c.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        let scale = if scale > 0.0 { scale } else { 1.0 };
+        let scaled: Vec<Vec<f64>> = c
+            .chunks_exact(n)
+            .map(|row| row.iter().map(|v| v / scale).collect())
+            .collect();
+        let (values, vectors) = crate::eigen::jacobi_eigen_dense(&scaled, n);
+
+        // Back-transform the eigenvectors: φ = L⁻ᵀ ỹ.
+        let mut eigenvalues = Vec::with_capacity(k);
+        let mut eigenvectors = Vec::with_capacity(k);
+        for (value, y) in values.iter().zip(vectors.iter()).take(k) {
+            eigenvalues.push(value * scale);
+            let mut phi = Self::bwd_sub(&l, y, n);
+            let dominant = phi.iter().fold(
+                0.0_f64,
+                |best, &v| if v.abs() > best.abs() { v } else { best },
+            );
+            if dominant < 0.0 {
+                phi.iter_mut().for_each(|v| *v = -*v);
+            }
+            eigenvectors.push(phi);
+        }
+        Ok((eigenvalues, eigenvectors))
     }
 }
 
@@ -748,10 +993,15 @@ impl ModalAnalysis {
 // FrequencyResponse
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Steady-state frequency-response function (FRF).
+/// Steady-state frequency-response function (FRF) with hysteretic (structural)
+/// damping.
 ///
-/// Computes the displacement amplitude u(ω) = (K − ω²M)⁻¹ F for a harmonic
-/// load F at angular frequency ω, using direct factorization.
+/// For a harmonic load `F·e^{iωt}` the complex displacement amplitude is
+/// `u(ω) = (K·(1 + 2iζ) − ω²M)⁻¹ F`, i.e. the stiffness carries the loss factor
+/// `η = 2ζ`.  For a single degree of freedom this reproduces the viscous
+/// resonance amplification `1/(2ζ)`.  `ζ = 0` gives the undamped response
+/// `(K − ω²M)⁻¹ F`.  The dynamic stiffness is factorised directly by a dense LU
+/// with partial pivoting.
 pub struct FrequencyResponse {
     /// Row-major n×n stiffness matrix K.
     pub k_mat: Vec<f64>,
@@ -759,7 +1009,7 @@ pub struct FrequencyResponse {
     pub m_mat: Vec<f64>,
     /// Matrix dimension.
     pub n: usize,
-    /// Structural damping ratio ζ (0 = undamped).
+    /// Structural damping ratio ζ (0 = undamped); the loss factor is `η = 2ζ`.
     pub damping_ratio: f64,
 }
 
@@ -774,22 +1024,89 @@ impl FrequencyResponse {
         }
     }
 
-    /// Compute real-valued response u(ω) = (K − ω²M)⁻¹ F (undamped or lightly damped).
+    /// Loss factor `η = 2ζ` of the hysteretic damping model.
+    pub fn loss_factor(&self) -> f64 {
+        2.0 * self.damping_ratio
+    }
+
+    /// Complex response `u(ω) = (K(1 + iη) − ω²M)⁻¹ F` as `(real, imaginary)`
+    /// parts, with `η = 2ζ`.
+    ///
+    /// The complex system is solved as the real `2n × 2n` system
+    /// `[[K − ω²M, −ηK], [ηK, K − ω²M]]·[u_re; u_im] = [F; 0]`, which reduces to
+    /// a single `n × n` solve for an undamped structure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `force`, `K` or `M` do not match `n`, if `ω` is not
+    /// finite, if the damping ratio is negative or not finite, or if the dynamic
+    /// stiffness matrix is singular at this frequency (undamped resonance).
+    pub fn response_complex(
+        &self,
+        omega: f64,
+        force: &[f64],
+    ) -> Result<(Vec<f64>, Vec<f64>), String> {
+        let n = self.n;
+        if force.len() != n || self.k_mat.len() != n * n || self.m_mat.len() != n * n {
+            return Err(format!(
+                "force ({}), K ({}) and M ({}) must match the system size {n}",
+                force.len(),
+                self.k_mat.len(),
+                self.m_mat.len()
+            ));
+        }
+        if !omega.is_finite() {
+            return Err("angular frequency must be finite".to_string());
+        }
+        if !self.damping_ratio.is_finite() || self.damping_ratio < 0.0 {
+            return Err("damping ratio must be finite and non-negative".to_string());
+        }
+        let singular = || "dynamic stiffness matrix is singular at this frequency".to_string();
+        let omega_sq = omega * omega;
+        // Form dynamic stiffness D = K - ω²M
+        let d: Vec<f64> = self
+            .k_mat
+            .iter()
+            .zip(self.m_mat.iter())
+            .map(|(k, m)| k - omega_sq * m)
+            .collect();
+        let eta = self.loss_factor();
+        if eta == 0.0 {
+            let mut lu = d;
+            let perm = lu_factor(&mut lu, n, FRF_PIVOT_TOL).ok_or_else(singular)?;
+            return Ok((lu_solve(&lu, &perm, force, n), vec![0.0; n]));
+        }
+        let big = 2 * n;
+        let mut a = vec![0.0_f64; big * big];
+        for i in 0..n {
+            for j in 0..n {
+                let d_ij = d[i * n + j];
+                let loss = eta * self.k_mat[i * n + j];
+                a[i * big + j] = d_ij;
+                a[i * big + n + j] = -loss;
+                a[(n + i) * big + j] = loss;
+                a[(n + i) * big + n + j] = d_ij;
+            }
+        }
+        let perm = lu_factor(&mut a, big, FRF_PIVOT_TOL).ok_or_else(singular)?;
+        let mut rhs = vec![0.0_f64; big];
+        rhs[..n].copy_from_slice(force);
+        let x = lu_solve(&a, &perm, &rhs, big);
+        Ok((x[..n].to_vec(), x[n..].to_vec()))
+    }
+
+    /// Response amplitude `|u_i(ω)|` of every DOF for the harmonic load `force`
+    /// at angular frequency `omega` (rad/s).
+    ///
+    /// This is the modulus of the complex response of
+    /// [`FrequencyResponse::response_complex`], so the sign (phase) of the
+    /// undamped response is not retained; use `response_complex` when the phase
+    /// matters.
     ///
     /// Returns `Err` if the dynamic stiffness matrix is singular.
     pub fn response(&self, omega: f64, force: &[f64]) -> Result<Vec<f64>, String> {
-        let n = self.n;
-        assert_eq!(force.len(), n);
-        // Form dynamic stiffness D = K - ω²M
-        let mut d = self.k_mat.clone();
-        for i in 0..n {
-            for j in 0..n {
-                d[i * n + j] -= omega * omega * self.m_mat[i * n + j];
-            }
-        }
-        lu_factor(&mut d, n)
-            .map_err(|_| "dynamic stiffness matrix is singular at this frequency".to_string())?;
-        Ok(lu_solve(&d, force, n))
+        let (re, im) = self.response_complex(omega, force)?;
+        Ok(re.iter().zip(im.iter()).map(|(r, i)| r.hypot(*i)).collect())
     }
 
     /// Compute response over a frequency sweep (rad/s).
@@ -950,590 +1267,4 @@ impl ModalTruncation {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── Utility helpers ───────────────────────────────────────────────────────
-
-    /// 2×2 symmetric positive-definite matrix: \[\[4,1\\],\[1,3\]]
-    fn mat2_spd() -> (Vec<f64>, usize) {
-        (vec![4.0, 1.0, 1.0, 3.0], 2)
-    }
-
-    /// Identity matrix n×n
-    fn identity(n: usize) -> Vec<f64> {
-        let mut a = vec![0.0_f64; n * n];
-        for i in 0..n {
-            a[i * n + i] = 1.0;
-        }
-        a
-    }
-
-    /// Diagonal matrix with given diagonal entries
-    fn diag_mat(diag: &[f64]) -> Vec<f64> {
-        let n = diag.len();
-        let mut a = vec![0.0_f64; n * n];
-        for (i, &d) in diag.iter().enumerate() {
-            a[i * n + i] = d;
-        }
-        a
-    }
-
-    // ── EigensolverConfig ─────────────────────────────────────────────────────
-
-    #[test]
-    fn test_eigensolver_config_default() {
-        let cfg = EigensolverConfig::default();
-        assert_eq!(cfg.max_iter, 500);
-        assert_eq!(cfg.n_modes, 5);
-        assert!(cfg.tolerance < 1e-9);
-        assert_eq!(cfg.shift, 0.0);
-    }
-
-    #[test]
-    fn test_eigensolver_config_custom() {
-        let cfg = EigensolverConfig {
-            max_iter: 100,
-            tolerance: 1e-6,
-            shift: 2.0,
-            n_modes: 3,
-        };
-        assert_eq!(cfg.n_modes, 3);
-        assert_eq!(cfg.shift, 2.0);
-    }
-
-    // ── PowerIteration ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_power_iteration_identity() {
-        let (a, n) = (identity(3), 3);
-        let cfg = EigensolverConfig {
-            max_iter: 200,
-            tolerance: 1e-10,
-            ..Default::default()
-        };
-        let pi = PowerIteration::new(a, n, cfg);
-        let (lam, v) = pi.dominant();
-        assert!(
-            (lam - 1.0).abs() < 1e-6,
-            "eigenvalue of I should be 1, got {lam}"
-        );
-        assert!((norm2(&v) - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_power_iteration_diagonal() {
-        let a = diag_mat(&[1.0, 5.0, 3.0]);
-        let cfg = EigensolverConfig {
-            max_iter: 1000,
-            tolerance: 1e-10,
-            ..Default::default()
-        };
-        let pi = PowerIteration::new(a, 3, cfg);
-        let (lam, _) = pi.dominant();
-        assert!(
-            (lam - 5.0).abs() < 1e-5,
-            "dominant eigenvalue should be 5, got {lam}"
-        );
-    }
-
-    #[test]
-    fn test_power_iteration_2x2_spd() {
-        // [[4,1],[1,3]] has eigenvalues ≈ 4.618, 2.382
-        let (a, n) = mat2_spd();
-        let cfg = EigensolverConfig {
-            max_iter: 500,
-            tolerance: 1e-10,
-            ..Default::default()
-        };
-        let pi = PowerIteration::new(a, n, cfg);
-        let (lam, v) = pi.dominant();
-        assert!(
-            lam > 4.0 && lam < 5.0,
-            "dominant eigenvalue out of range: {lam}"
-        );
-        assert!((norm2(&v) - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_power_iteration_deflation_count() {
-        let a = diag_mat(&[1.0, 4.0, 9.0]);
-        let cfg = EigensolverConfig {
-            max_iter: 1000,
-            tolerance: 1e-10,
-            ..Default::default()
-        };
-        let pi = PowerIteration::new(a, 3, cfg);
-        let results = pi.deflated_eigenvalues(2);
-        assert_eq!(results.len(), 2);
-    }
-
-    #[test]
-    fn test_power_iteration_eigvec_unit_norm() {
-        let a = diag_mat(&[2.0, 7.0, 3.0]);
-        let cfg = EigensolverConfig {
-            max_iter: 500,
-            tolerance: 1e-10,
-            ..Default::default()
-        };
-        let pi = PowerIteration::new(a, 3, cfg);
-        let (_, v) = pi.dominant();
-        assert!((norm2(&v) - 1.0).abs() < 1e-9);
-    }
-
-    // ── InverseIteration ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_inverse_iteration_identity() {
-        let cfg = EigensolverConfig {
-            max_iter: 300,
-            tolerance: 1e-10,
-            shift: 0.0,
-            n_modes: 1,
-        };
-        let inv = InverseIteration::new(identity(3), 3, cfg);
-        let (lam, _) = inv.solve().unwrap();
-        assert!(
-            (lam - 1.0).abs() < 1e-5,
-            "smallest eigenvalue of I = 1, got {lam}"
-        );
-    }
-
-    #[test]
-    fn test_inverse_iteration_diagonal() {
-        let a = diag_mat(&[3.0, 1.0, 5.0]);
-        let cfg = EigensolverConfig {
-            max_iter: 500,
-            tolerance: 1e-10,
-            shift: 0.5,
-            n_modes: 1,
-        };
-        let inv = InverseIteration::new(a, 3, cfg);
-        let (lam, _) = inv.solve().unwrap();
-        // Nearest eigenvalue to shift=0.5 is 1.0
-        assert!((lam - 1.0).abs() < 1e-4, "expected 1.0, got {lam}");
-    }
-
-    #[test]
-    fn test_inverse_iteration_returns_unit_eigvec() {
-        let a = diag_mat(&[2.0, 5.0, 8.0]);
-        let cfg = EigensolverConfig {
-            max_iter: 300,
-            tolerance: 1e-10,
-            shift: 1.5,
-            n_modes: 1,
-        };
-        let inv = InverseIteration::new(a, 3, cfg);
-        let (_, v) = inv.solve().unwrap();
-        assert!((norm2(&v) - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_inverse_iteration_2x2() {
-        let (a, n) = mat2_spd();
-        let cfg = EigensolverConfig {
-            max_iter: 500,
-            tolerance: 1e-10,
-            shift: 2.0,
-            n_modes: 1,
-        };
-        let inv = InverseIteration::new(a, n, cfg);
-        let (lam, _) = inv.solve().unwrap();
-        // Smallest eigenvalue ≈ 2.382
-        assert!(lam > 2.0 && lam < 3.0, "expected ~2.38, got {lam}");
-    }
-
-    // ── LanczosMethod ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_lanczos_identity_eigenvalues() {
-        let cfg = EigensolverConfig {
-            n_modes: 3,
-            ..Default::default()
-        };
-        let lm = LanczosMethod::new(identity(4), 4, cfg);
-        let eigs = lm.eigenvalues();
-        for &e in &eigs {
-            assert!((e - 1.0).abs() < 0.1, "identity eigenvalue {e} != 1");
-        }
-    }
-
-    #[test]
-    fn test_lanczos_diagonal_sorted() {
-        let a = diag_mat(&[5.0, 2.0, 8.0, 1.0]);
-        let cfg = EigensolverConfig {
-            n_modes: 4,
-            max_iter: 300,
-            tolerance: 1e-10,
-            ..Default::default()
-        };
-        let lm = LanczosMethod::new(a, 4, cfg);
-        let eigs = lm.eigenvalues();
-        for w in eigs.windows(2) {
-            assert!(w[0] <= w[1] + 1e-10, "eigenvalues not sorted");
-        }
-    }
-
-    #[test]
-    fn test_lanczos_n_modes_limit() {
-        let a = diag_mat(&[1.0, 2.0, 3.0, 4.0, 5.0]);
-        let cfg = EigensolverConfig {
-            n_modes: 3,
-            ..Default::default()
-        };
-        let lm = LanczosMethod::new(a, 5, cfg);
-        let eigs = lm.eigenvalues();
-        assert!(eigs.len() <= 3);
-    }
-
-    #[test]
-    fn test_lanczos_2x2_spd() {
-        let (a, n) = mat2_spd();
-        let cfg = EigensolverConfig {
-            n_modes: 2,
-            max_iter: 300,
-            tolerance: 1e-10,
-            ..Default::default()
-        };
-        let lm = LanczosMethod::new(a, n, cfg);
-        let eigs = lm.eigenvalues();
-        assert!(!eigs.is_empty());
-        // Both eigenvalues should be positive
-        for &e in &eigs {
-            assert!(e > 0.0, "eigenvalue should be positive, got {e}");
-        }
-    }
-
-    // ── RayleighQuotient ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_rayleigh_quotient_identity() {
-        let k = identity(3);
-        let m = identity(3);
-        let rq = RayleighQuotient::new(k, m, 3);
-        let x = vec![1.0, 0.0, 0.0];
-        let r = rq.evaluate(&x);
-        assert!((r - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_rayleigh_quotient_diagonal() {
-        let k = diag_mat(&[1.0, 4.0, 9.0]);
-        let m = identity(3);
-        let rq = RayleighQuotient::new(k, m, 3);
-        // x aligned with first mode
-        let x = vec![1.0, 0.0, 0.0];
-        let r = rq.evaluate(&x);
-        assert!((r - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_rayleigh_quotient_upper_bound() {
-        let k = diag_mat(&[1.0, 4.0, 9.0]);
-        let m = identity(3);
-        let rq = RayleighQuotient::new(k, m, 3);
-        // Any trial vector ρ(x) >= min eigenvalue = 1.0
-        let x = vec![0.5, 0.5, 0.5f64.sqrt()];
-        let r = rq.evaluate(&x);
-        assert!(
-            r >= 1.0 - 1e-10,
-            "Rayleigh quotient must be >= min eigenvalue"
-        );
-    }
-
-    #[test]
-    fn test_rayleigh_minimise() {
-        let k = diag_mat(&[1.0, 4.0, 9.0]);
-        let m = identity(3);
-        let rq = RayleighQuotient::new(k, m, 3);
-        let (rho_min, _) = rq.minimise(100);
-        assert!(
-            rho_min >= 1.0 - 1e-6,
-            "minimised RQ must stay >= min eigenvalue"
-        );
-        assert!(rho_min <= 9.0 + 1e-6);
-    }
-
-    // ── GeneralizedEigenvalue ─────────────────────────────────────────────────
-
-    #[test]
-    fn test_generalized_eigenvalue_identity_mass() {
-        // K = diag(1,4), M = I → eigenvalues = 1, 4
-        let k = diag_mat(&[1.0, 4.0]);
-        let m = identity(2);
-        let cfg = EigensolverConfig {
-            n_modes: 2,
-            max_iter: 500,
-            tolerance: 1e-10,
-            ..Default::default()
-        };
-        let gev = GeneralizedEigenvalue::new(k, m, 2, cfg);
-        let (eigs, _) = gev.solve_smallest().unwrap();
-        assert!(!eigs.is_empty());
-        // First eigenvalue should be near 1.0
-        assert!(
-            eigs[0] > 0.5 && eigs[0] < 2.0,
-            "expected ~1, got {}",
-            eigs[0]
-        );
-    }
-
-    #[test]
-    fn test_generalized_eigenvalue_cholesky_spd() {
-        // 2×2 SPD mass matrix
-        let m = vec![4.0, 2.0, 2.0, 3.0];
-        let l = GeneralizedEigenvalue::cholesky(&m, 2).unwrap();
-        // L[0,0] should be sqrt(4) = 2
-        assert!((l[0] - 2.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_generalized_cholesky_non_spd_fails() {
-        let m = vec![-1.0, 0.0, 0.0, 1.0];
-        assert!(GeneralizedEigenvalue::cholesky(&m, 2).is_err());
-    }
-
-    // ── ModalAnalysis ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_modal_analysis_frequency_hz() {
-        let omega = 2.0 * std::f64::consts::PI; // 1 Hz
-        let f = ModalAnalysis::frequency_hz(omega);
-        assert!((f - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_modal_analysis_run_counts() {
-        let k = diag_mat(&[1.0, 4.0]);
-        let m = identity(2);
-        let cfg = EigensolverConfig {
-            n_modes: 2,
-            max_iter: 500,
-            tolerance: 1e-10,
-            ..Default::default()
-        };
-        let ma = ModalAnalysis::new(k, m, 2, cfg);
-        let result = ma.run().unwrap();
-        assert!(result.natural_frequencies.len() <= 2);
-        assert_eq!(result.natural_frequencies.len(), result.mode_shapes.len());
-        assert_eq!(result.natural_frequencies.len(), result.modal_masses.len());
-    }
-
-    #[test]
-    fn test_modal_analysis_nonnegative_frequencies() {
-        let k = diag_mat(&[1.0, 4.0, 9.0]);
-        let m = identity(3);
-        let cfg = EigensolverConfig {
-            n_modes: 3,
-            max_iter: 500,
-            tolerance: 1e-10,
-            ..Default::default()
-        };
-        let ma = ModalAnalysis::new(k, m, 3, cfg);
-        let result = ma.run().unwrap();
-        for &omega in &result.natural_frequencies {
-            assert!(omega >= 0.0, "frequency must be non-negative: {omega}");
-        }
-    }
-
-    // ── FrequencyResponse ─────────────────────────────────────────────────────
-
-    #[test]
-    fn test_frequency_response_static_limit() {
-        // At ω=0, response = K⁻¹ F  (static solution)
-        let k = diag_mat(&[2.0, 8.0]);
-        let m = identity(2);
-        let frf = FrequencyResponse::new(k, m, 2, 0.0);
-        let f = vec![2.0, 8.0];
-        let u = frf.response(0.0, &f).unwrap();
-        assert!((u[0] - 1.0).abs() < 1e-10);
-        assert!((u[1] - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_frequency_response_singular_at_resonance() {
-        // K = diag(1), M = I → resonance at ω=1
-        let k = diag_mat(&[1.0]);
-        let m = identity(1);
-        let frf = FrequencyResponse::new(k, m, 1, 0.0);
-        let result = frf.response(1.0, &[1.0]);
-        assert!(result.is_err(), "should fail at exact resonance");
-    }
-
-    #[test]
-    fn test_frequency_response_sweep_length() {
-        let k = diag_mat(&[4.0, 9.0]);
-        let m = identity(2);
-        let frf = FrequencyResponse::new(k, m, 2, 0.0);
-        let omegas: Vec<f64> = (1..=10).map(|i| i as f64 * 0.1).collect();
-        let sweep = frf.sweep(&omegas, &[1.0, 1.0]);
-        assert_eq!(sweep.len(), 10);
-    }
-
-    #[test]
-    fn test_frequency_response_peak_norm_positive() {
-        let k = diag_mat(&[4.0, 9.0]);
-        let m = identity(2);
-        let frf = FrequencyResponse::new(k, m, 2, 0.0);
-        let omegas: Vec<f64> = (1..=20).map(|i| i as f64 * 0.1).collect();
-        let peak = frf.peak_response_norm(&omegas, &[1.0, 1.0]);
-        assert!(peak > 0.0);
-    }
-
-    // ── SpectralNorm ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_spectral_norm_identity() {
-        let sn = SpectralNorm::new(identity(3), 3);
-        let norm = sn.estimate(500, 1e-10);
-        assert!(
-            (norm - 1.0).abs() < 0.1,
-            "spectral norm of I = 1, got {norm}"
-        );
-    }
-
-    #[test]
-    fn test_spectral_norm_diagonal() {
-        // diag(1,2,3) — spectral norm = 3
-        let a = diag_mat(&[1.0, 2.0, 3.0]);
-        let sn = SpectralNorm::new(a, 3);
-        let norm = sn.estimate(500, 1e-10);
-        assert!(
-            (norm - 3.0).abs() < 0.5,
-            "spectral norm should be ~3, got {norm}"
-        );
-    }
-
-    #[test]
-    fn test_spectral_norm_nonnegative() {
-        let (a, n) = mat2_spd();
-        let sn = SpectralNorm::new(a, n);
-        let norm = sn.estimate(200, 1e-8);
-        assert!(norm >= 0.0);
-    }
-
-    // ── ModalTruncation ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_modal_truncation_reconstruct_zero() {
-        let modes = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        let freqs = vec![1.0, 2.0];
-        let masses = vec![1.0, 1.0];
-        let mt = ModalTruncation::new(modes, freqs, masses, 2);
-        let u = mt.reconstruct(&[0.0, 0.0]);
-        assert_eq!(u, vec![0.0, 0.0]);
-    }
-
-    #[test]
-    fn test_modal_truncation_reconstruct_first_mode() {
-        let modes = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        let freqs = vec![1.0, 2.0];
-        let masses = vec![1.0, 1.0];
-        let mt = ModalTruncation::new(modes, freqs, masses, 2);
-        let u = mt.reconstruct(&[3.0, 0.0]);
-        assert!((u[0] - 3.0).abs() < 1e-12);
-        assert!(u[1].abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_modal_truncation_static_response() {
-        // K = diag(1,4), modes = unit, frequencies = 1,2, masses = 1,1
-        let modes = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        let freqs = vec![1.0, 2.0];
-        let masses = vec![1.0, 1.0];
-        let mt = ModalTruncation::new(modes, freqs, masses, 2);
-        // Force [1,0] → modal force = [1,0], modal k = [1,4]
-        // q = [1/1, 0/4] = [1, 0] → u = [1, 0]
-        let u = mt.static_response(&[1.0, 0.0]);
-        assert!((u[0] - 1.0).abs() < 1e-10);
-        assert!(u[1].abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_modal_truncation_mass_fraction() {
-        let modes = vec![vec![1.0, 0.0]];
-        let freqs = vec![1.0];
-        let masses = vec![3.0];
-        let mt = ModalTruncation::new(modes, freqs, masses, 2);
-        let frac = mt.modal_mass_fraction(10.0);
-        assert!((frac[0] - 0.3).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_modal_truncation_modal_force() {
-        let modes = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        let freqs = vec![1.0, 2.0];
-        let masses = vec![1.0, 1.0];
-        let mt = ModalTruncation::new(modes, freqs, masses, 2);
-        let mf = mt.modal_force(&[5.0, 7.0]);
-        assert!((mf[0] - 5.0).abs() < 1e-12);
-        assert!((mf[1] - 7.0).abs() < 1e-12);
-    }
-
-    // ── Utility functions ─────────────────────────────────────────────────────
-
-    #[test]
-    fn test_dot_product() {
-        assert!((dot(&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]) - 32.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_norm2() {
-        assert!((norm2(&[3.0, 4.0]) - 5.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_normalize() {
-        let mut v = vec![3.0, 4.0];
-        let n = normalize(&mut v);
-        assert!((n - 5.0).abs() < 1e-12);
-        assert!((norm2(&v) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_dense_matvec_identity() {
-        let a = identity(3);
-        let x = vec![1.0, 2.0, 3.0];
-        let y = dense_matvec(&a, &x, 3);
-        assert_eq!(y, x);
-    }
-
-    #[test]
-    fn test_lu_factor_solve() {
-        // [[2,1],[4,3]] x = [1,1] → x = [1,-1]
-        let mut a = vec![2.0, 1.0, 4.0, 3.0];
-        lu_factor(&mut a, 2).unwrap();
-        let x = lu_solve(&a, &[1.0, 1.0], 2);
-        assert!((x[0] - 1.0).abs() < 1e-10, "x[0]={}", x[0]);
-        assert!((x[1] + 1.0).abs() < 1e-10, "x[1]={}", x[1]);
-    }
-
-    #[test]
-    fn test_lu_factor_identity() {
-        let mut a = identity(3);
-        let res = lu_factor(&mut a, 3);
-        assert!(res.is_ok());
-    }
-
-    #[test]
-    fn test_tridiagonal_eigenvalues_sorted() {
-        let d = vec![2.0, 4.0, 6.0];
-        let e = vec![0.5, 0.5];
-        let eigs = tridiagonal_eigenvalues(&d, &e);
-        for w in eigs.windows(2) {
-            assert!(w[0] <= w[1]);
-        }
-    }
-
-    #[test]
-    fn test_tridiagonal_eigenvalues_diagonal_case() {
-        // Zero off-diagonal → eigenvalues = diagonal
-        let d = vec![1.0, 3.0, 2.0];
-        let e = vec![0.0, 0.0];
-        let eigs = tridiagonal_eigenvalues(&d, &e);
-        assert_eq!(eigs.len(), 3);
-        assert!((eigs[0] - 1.0).abs() < 1e-8);
-        assert!((eigs[1] - 2.0).abs() < 1e-8);
-        assert!((eigs[2] - 3.0).abs() < 1e-8);
-    }
-}
+mod tests;

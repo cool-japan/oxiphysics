@@ -445,6 +445,85 @@ mod tests {
         );
     }
     #[test]
+    fn test_gurson_yield_function_zero_void_is_von_mises() {
+        let model = GursonModel {
+            f: 0.0,
+            q1: 1.5,
+            q2: 1.0,
+            q3: 2.25,
+        };
+        // f = 0 -> (sigma_eq / sigma_0)^2 - 1, independent of the hydrostatic stress.
+        let y = model.yield_function(100.0e6, 50.0e6, 200.0e6);
+        assert!(
+            (y - (0.25 - 1.0)).abs() < 1e-12,
+            "f = 0 must give (sigma_eq/sigma_0)^2 - 1 = -0.75, got {y}"
+        );
+        let y_h = model.yield_function(100.0e6, -3.0e8, 200.0e6);
+        assert!(
+            (y_h - y).abs() < 1e-12,
+            "no hydrostatic dependence at f = 0"
+        );
+    }
+    #[test]
+    fn test_gurson_yield_function_void_contribution() {
+        let model = GursonModel {
+            f: 0.01,
+            q1: 1.5,
+            q2: 1.0,
+            q3: 2.25,
+        };
+        // sigma_eq = sigma_0, sigma_h = 0 -> 1 + 2 q1 f - 1 - q3 f^2 = 0.03 - 0.000225.
+        let y = model.yield_function(200.0e6, 0.0, 200.0e6);
+        assert!(
+            (y - 0.029775).abs() < 1e-12,
+            "expected 2 q1 f - q3 f^2 = 0.029775, got {y}"
+        );
+    }
+    #[test]
+    fn test_gurson_yield_function_hydrostatic_cosh_term() {
+        let model = GursonModel {
+            f: 0.02,
+            q1: 1.5,
+            q2: 1.0,
+            q3: 2.25,
+        };
+        // Pure hydrostatic loading sigma_h = sigma_0 -> 2 q1 f cosh(1.5 q2) - (1 + q3 f^2).
+        let sigma_0 = 300.0e6;
+        let expected = 2.0 * 1.5 * 0.02 * (1.5_f64).cosh() - (1.0 + 2.25 * 0.02 * 0.02);
+        let y = model.yield_function(0.0, sigma_0, sigma_0);
+        assert!((y - expected).abs() < 1e-12, "got {y}, expected {expected}");
+        // The same state expressed through phi() must agree exactly.
+        assert_eq!(y, model.phi(0.0, sigma_0, sigma_0));
+    }
+    #[test]
+    fn test_gurson_yield_function_sign_inside_and_outside() {
+        let model = GursonModel {
+            f: 0.01,
+            q1: 1.5,
+            q2: 1.0,
+            q3: 2.25,
+        };
+        let sigma_0 = 250.0e6;
+        assert!(
+            model.yield_function(0.5 * sigma_0, 0.0, sigma_0) < 0.0,
+            "half the yield stress must be elastic"
+        );
+        assert!(
+            model.yield_function(1.2 * sigma_0, 0.0, sigma_0) > 0.0,
+            "20 % above the yield stress must be plastic"
+        );
+    }
+    #[test]
+    fn test_gurson_yield_function_zero_yield_stress_is_nan() {
+        let model = GursonModel {
+            f: 0.01,
+            q1: 1.5,
+            q2: 1.0,
+            q3: 2.25,
+        };
+        assert!(model.yield_function(1.0, 1.0, 0.0).is_nan());
+    }
+    #[test]
     fn test_void_growth_rate_positive() {
         let model = GursonModel {
             f: 0.01,

@@ -425,9 +425,19 @@ fn free_flight_of_a_skewed_element_is_not_disturbed() {
     for v in body.velocities.iter_mut() {
         *v = v0;
     }
-    for _ in 0..100 {
-        body.step(0.01, [0.0; 3]);
+    // A rigid translation carries no strain and no strain rate, so all forces
+    // vanish identically and only rounding noise (~1e-16) reaches the internal
+    // modes. The explicit step keeps that noise bounded only below its stability
+    // limit omega^2 (dt^2 + 2 eta dt) < 4 (see `FemSoftBodyRaw::step`). The
+    // stiffest mode of this element has omega_max ~ 420 rad/s and eta = 0.05 s,
+    // i.e. dt < 2.2e-4 s: at dt = 1 ms the noise would grow by a factor of 8 per
+    // step and wreck the flight, at dt = 0.1 ms it decays.
+    let dt = 1.0e-4;
+    let steps = 5000;
+    for _ in 0..steps {
+        body.step(dt, [0.0; 3]);
     }
+    let flight_time = dt * steps as f64;
     for (i, x0) in rest.iter().enumerate() {
         for d in 0..3 {
             assert!(
@@ -435,7 +445,7 @@ fn free_flight_of_a_skewed_element_is_not_disturbed() {
                 "velocity of node {i} changed in flight"
             );
             assert!(
-                (body.nodes[i][d] - (x0[d] + v0[d])).abs() < 1.0e-6,
+                (body.nodes[i][d] - (x0[d] + v0[d] * flight_time)).abs() < 1.0e-6,
                 "node {i} component {d} left its ballistic path"
             );
         }

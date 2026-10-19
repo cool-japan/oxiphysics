@@ -212,15 +212,20 @@ impl LangevinDynamics {
     pub fn noise_amplitude(&self, dt: f64) -> f64 {
         (2.0 * self.friction * K_B * self.temperature / self.mass * dt).sqrt()
     }
-    /// Performs a single Euler-Langevin step.
+    /// Performs a single Euler-Maruyama Langevin step.
     ///
     /// Returns the updated `(position, velocity)` after time `dt`.
     ///
     /// Update rule:
-    /// `v_new = v + (F/m - gamma*v)*dt + noise_amp * N(0,1) / sqrt(dt)`
+    /// `v_new = v + (F/m - gamma*v)*dt + sqrt(2*gamma*k_B*T*dt/m) * N(0,1)`
     /// `x_new = x + v_new * dt`
+    ///
+    /// The random kick already carries the `sqrt(dt)` of the Wiener increment
+    /// ([`Self::noise_amplitude`]), so the stationary velocity variance of the
+    /// scheme is `(k_B*T/m) / (1 - gamma*dt/2)`, which approaches the
+    /// equipartition value `k_B*T/m` as `gamma*dt -> 0`.
     pub fn step(&self, pos: f64, vel: f64, force: f64, dt: f64, rng: &mut Rng) -> (f64, f64) {
-        let noise = self.noise_amplitude(dt) * rng.next_normal() / dt.sqrt();
+        let noise = self.noise_amplitude(dt) * rng.next_normal();
         let v_new = vel + (force / self.mass - self.friction * vel) * dt + noise;
         let x_new = pos + v_new * dt;
         (x_new, v_new)
@@ -442,11 +447,13 @@ impl SabrModel {
             let log_fk = (f / k).ln();
             let fk_mid = (f * k).powf((1.0 - beta) / 2.0);
             let z = (nu / alpha) * fk_mid * log_fk;
-            let x_z = if z.abs() < 1e-6 {
+            // Hagan's x(z) = ln[(sqrt(1 - 2*rho*z + z^2) + z - rho) / (1 - rho)];
+            // the smile factor is z / x(z), which tends to 1 as z -> 0.
+            let z_over_x = if z.abs() < 1e-6 {
                 1.0
             } else {
                 let inner = (1.0 - 2.0 * rho * z + z * z).sqrt() + z - rho;
-                (inner / (1.0 - rho)).ln() / z
+                z / (inner / (1.0 - rho)).ln()
             };
             let denom = fk_mid
                 * (1.0
@@ -455,7 +462,7 @@ impl SabrModel {
             let term1 = (1.0 - beta).powi(2) * alpha * alpha / (24.0 * (f * k).powf(1.0 - beta));
             let term2 = rho * beta * nu * alpha / (4.0 * fk_mid);
             let term3 = (2.0 - 3.0 * rho * rho) * nu * nu / 24.0;
-            let iv = alpha / denom * (z / x_z) * (1.0 + (term1 + term2 + term3) * t);
+            let iv = alpha / denom * z_over_x * (1.0 + (term1 + term2 + term3) * t);
             iv.max(1e-10)
         }
     }
@@ -944,9 +951,11 @@ impl HestonModel {
 }
 /// Fractional Brownian motion with Hurst exponent `H ∈ (0, 1)`.
 ///
-/// Uses the Davies-Harte (circulant embedding) approximation via the
-/// Cholesky decomposition of the covariance matrix for exact sampling.
-/// For simplicity this implementation uses the Hosking method (exact covariance).
+/// Samples the increments of the process (fractional Gaussian noise) with
+/// Hosking's method: the Durbin-Levinson recursion on the exact autocovariance
+/// `γ(k)` conditions every increment on all of its predecessors.  The sample is
+/// exact in distribution; it costs `O(n²)` time and `O(n)` memory.  The
+/// recursion itself is shared with [`crate::random::FractionalBrownianMotion`].
 pub struct FractionalBrownianMotion {
     /// Hurst exponent: 0 < h < 1.  h=0.5 is standard Brownian motion.
     pub h: f64,
@@ -958,20 +967,25 @@ impl FractionalBrownianMotion {
     pub fn new(h: f64, dt: f64) -> Self {
         Self { h, dt }
     }
-    /// Autocovariance of fBm increments at lag `k`:
-    /// `γ(k) = 0.5 * (|k+1|^{2h} - 2|k|^{2h} + |k-1|^{2h}) * dt^{2h}`
-    fn autocov(&self, k: usize) -> f64 {
-        let h2 = 2.0 * self.h;
-        let k = k as f64;
-        0.5 * ((k + 1.0).powf(h2) - 2.0 * k.powf(h2) + (k - 1.0).abs().powf(h2)) * self.dt.powf(h2)
-    }
     /// Sample `n` fBm increments using the Hosking method.
     ///
-    /// This is an exact simulation algorithm for fractional Gaussian noise.
+    /// The returned values are fractional Gaussian noise: a zero-mean stationary
+    /// Gaussian sequence whose autocovariance at lag `k` is
+    /// `γ(k) = 0.5 * (|k+1|^{2h} - 2|k|^{2h} + |k-1|^{2h}) * dt^{2h}`, the
+    /// covariance of fBm increments over time steps of length `dt`.
+    /// Durbin-Levinson recursion: with `φ_{i,j}` the weights of the best linear
+    /// predictor of `x_i` from `x_{i-1}, ..., x_0`,
+    ///
+    /// ```text
+    /// φ_{i,i} = (γ(i) - Σ_{j<i} φ_{i-1,j} γ(i-j)) / v_{i-1}
+    /// φ_{i,j} = φ_{i-1,j} - φ_{i,i} φ_{i-1,i-j}     (j < i)
+    /// v_i     = v_{i-1} (1 - φ_{i,i}²)
+    /// x_i     = Σ_j φ_{i,j} x_{i-j} + sqrt(v_i) z_i
+    /// ```
+    ///
+    /// `h` is clamped to the open interval the recursion is defined on
+    /// (see [`crate::random::FractionalBrownianMotion::HURST_MIN`]).
     pub fn sample(&self, n: usize, rng: &mut impl rand::Rng) -> Vec<f64> {
-        if n == 0 {
-            return vec![];
-        }
         let std_normals: Vec<f64> = (0..n)
             .map(|_| {
                 let u1: f64 = loop {
@@ -984,21 +998,25 @@ impl FractionalBrownianMotion {
                 (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
             })
             .collect();
-        let gamma0 = self.autocov(0);
-        if gamma0 == 0.0 {
-            return vec![0.0; n];
+        self.correlate_normals(&std_normals)
+    }
+    /// Turns independent standard normals into fractional Gaussian noise: the
+    /// unit-step Hosking sequence for the Hurst exponent `h`, scaled by `dt^h`
+    /// (the autocovariance scales with `dt^{2h}`).
+    ///
+    /// The result equals `L z` for the lower Cholesky factor `L` of the Toeplitz
+    /// autocovariance matrix and `z = std_normals`.
+    pub(super) fn correlate_normals(&self, std_normals: &[f64]) -> Vec<f64> {
+        let hurst = self.h.clamp(
+            crate::random::FractionalBrownianMotion::HURST_MIN,
+            crate::random::FractionalBrownianMotion::HURST_MAX,
+        );
+        let scale = self.dt.powf(hurst);
+        let mut noise = crate::random::FractionalBrownianMotion::hosking_fgn(hurst, std_normals);
+        for value in &mut noise {
+            *value *= scale;
         }
-        let mut x = vec![0.0_f64; n];
-        let mut v = vec![0.0_f64; n];
-        x[0] = gamma0.sqrt() * std_normals[0];
-        v[0] = gamma0;
-        for i in 1..n {
-            let phi = self.autocov(i) / v[i - 1];
-            v[i] = v[i - 1] * (1.0 - phi * phi);
-            let mu = phi * x[i - 1];
-            x[i] = mu + v[i].sqrt().max(0.0) * std_normals[i];
-        }
-        x
+        noise
     }
 }
 /// Overdamped Langevin integrator.

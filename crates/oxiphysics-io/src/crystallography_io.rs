@@ -4,12 +4,31 @@
 //! Crystallography file format I/O.
 //!
 //! Provides parsers and writers for common crystallography formats:
-//! - CIF (Crystallographic Information File)
-//! - VASP POSCAR/CONTCAR (stub)
-//! - XRD pattern simulation and analysis
+//! - CIF (Crystallographic Information File): cell, atom sites and
+//!   space-group symmetry expansion ([`CifParser`], [`write_cif`])
+//! - VASP POSCAR/CONTCAR, including selective dynamics, Cartesian or direct
+//!   coordinates and negative (volume) scale factors ([`VaspReader`],
+//!   [`PoscarStructure`])
+//! - powder XRD pattern simulation and analysis ([`simulate_xrd`],
+//!   [`simulate_xrd_with_fwhm`], [`XrdPattern`])
 
 use crate::{Error, Result};
 use std::collections::HashMap;
+
+mod cif_atoms;
+mod cif_syntax;
+mod lattice_math;
+mod symmetry;
+mod xrd;
+
+pub use xrd::{
+    DEFAULT_XRD_FWHM_DEG, lorentz_polarization_factor, simulate_xrd, simulate_xrd_with_fwhm,
+};
+
+#[cfg(test)]
+mod cif_tests;
+#[cfg(test)]
+mod poscar_tests;
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -64,82 +83,35 @@ impl CifParser {
 
     /// Parse a CIF file `content` and return a [`CrystalStructure`].
     ///
-    /// Handles `_cell_length_a/b/c`, `_cell_angle_alpha/beta/gamma`, and
-    /// `_atom_site_*` loop blocks.
+    /// Reads the first data block.  Handles `_cell_length_a/b/c`,
+    /// `_cell_angle_alpha/beta/gamma`, the `_atom_site_*` table (fractional or
+    /// Cartesian coordinates, `B_iso` or `U_iso` displacement) wherever it sits
+    /// among the other tables, and items that follow a table.  When the file
+    /// lists symmetry operations (`_space_group_symop_operation_xyz` or
+    /// `_symmetry_equiv_pos_as_xyz`) the atom sites are expanded to the whole
+    /// unit cell: every position is wrapped into `[0, 1)` and symmetry-equivalent
+    /// duplicates (same element within 1e-4) are merged.
+    ///
+    /// # Errors
+    ///
+    /// Fails on malformed CIF syntax, an atom coordinate or occupancy that is
+    /// not a number, a truncated atom table, or an unreadable symmetry
+    /// operation.
     pub fn parse(&self, content: &str) -> Result<CrystalStructure> {
-        let mut kv: HashMap<String, String> = HashMap::new();
-        let mut in_loop = false;
-        let mut loop_headers: Vec<String> = Vec::new();
-        let mut loop_rows: Vec<Vec<String>> = Vec::new();
-        let mut current_row: Vec<String> = Vec::new();
-
-        for raw_line in content.lines() {
-            let line = raw_line.trim();
-            // Skip comments and empty lines
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            if line.eq_ignore_ascii_case("loop_") {
-                // Flush any previous loop
-                if in_loop && !current_row.is_empty() {
-                    loop_rows.push(current_row.clone());
-                    current_row.clear();
-                }
-                in_loop = true;
-                loop_headers.clear();
-                loop_rows.clear();
-                continue;
-            }
-
-            if in_loop {
-                if line.starts_with('_') {
-                    // Still collecting header names
-                    let key = line.split_whitespace().next().unwrap_or("").to_lowercase();
-                    loop_headers.push(key);
-                    continue;
-                }
-                // Data row
-                let tokens = Self::tokenize_line(line);
-                for tok in tokens {
-                    current_row.push(tok);
-                    if current_row.len() == loop_headers.len() {
-                        loop_rows.push(current_row.clone());
-                        current_row.clear();
-                    }
-                }
-                // Check if the next line starts a new block
-                continue;
-            }
-
-            // Key-value pair
-            if line.starts_with('_') {
-                let tokens = Self::tokenize_line(line);
-                if tokens.len() >= 2 {
-                    kv.insert(tokens[0].to_lowercase(), tokens[1].clone());
-                } else if tokens.len() == 1 {
-                    // Value on next line — not handled fully; store empty
-                    kv.insert(tokens[0].to_lowercase(), String::new());
-                }
-            }
-        }
-
-        // Flush last loop row
-        if in_loop && !current_row.is_empty() {
-            loop_rows.push(current_row);
-        }
+        let block = cif_syntax::parse_block(content)?;
+        let kv = &block.items;
 
         // Extract cell parameters
-        let a = Self::parse_float_kv(&kv, "_cell_length_a").unwrap_or(1.0);
-        let b = Self::parse_float_kv(&kv, "_cell_length_b").unwrap_or(1.0);
-        let c = Self::parse_float_kv(&kv, "_cell_length_c").unwrap_or(1.0);
-        let alpha = Self::parse_float_kv(&kv, "_cell_angle_alpha")
+        let a = Self::parse_float_kv(kv, "_cell_length_a").unwrap_or(1.0);
+        let b = Self::parse_float_kv(kv, "_cell_length_b").unwrap_or(1.0);
+        let c = Self::parse_float_kv(kv, "_cell_length_c").unwrap_or(1.0);
+        let alpha = Self::parse_float_kv(kv, "_cell_angle_alpha")
             .unwrap_or(90.0)
             .to_radians();
-        let beta = Self::parse_float_kv(&kv, "_cell_angle_beta")
+        let beta = Self::parse_float_kv(kv, "_cell_angle_beta")
             .unwrap_or(90.0)
             .to_radians();
-        let gamma = Self::parse_float_kv(&kv, "_cell_angle_gamma")
+        let gamma = Self::parse_float_kv(kv, "_cell_angle_gamma")
             .unwrap_or(90.0)
             .to_radians();
 
@@ -152,8 +124,22 @@ impl CifParser {
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(1);
 
-        // Extract atoms from loop
-        let atoms = Self::extract_atoms(&loop_headers, &loop_rows);
+        // The atom-site table is the loop that carries the site coordinates;
+        // other tables (e.g. anisotropic displacement parameters) repeat the
+        // label column and must not be mistaken for it.
+        let atoms = match block
+            .loop_with_any(&cif_atoms::FRACT_X_TAGS)
+            .or_else(|| block.loop_with_any(&cif_atoms::CARTN_X_TAGS))
+        {
+            Some(table) => cif_atoms::extract_atoms(table, &lattice)?,
+            None => Vec::new(),
+        };
+        let operations = cif_atoms::collect_symmetry_ops(&block)?;
+        let atoms = if operations.is_empty() {
+            atoms
+        } else {
+            symmetry::expand_atoms(&atoms, &operations)
+        };
 
         Ok(CrystalStructure {
             lattice,
@@ -181,40 +167,6 @@ impl CifParser {
         ]
     }
 
-    /// Tokenize a CIF line, respecting quoted strings.
-    fn tokenize_line(line: &str) -> Vec<String> {
-        let mut tokens = Vec::new();
-        let mut chars = line.char_indices().peekable();
-        while let Some((_, c)) = chars.peek().copied() {
-            if c.is_whitespace() {
-                chars.next();
-                continue;
-            }
-            if c == '\'' || c == '"' {
-                chars.next(); // consume opening quote
-                let mut tok = String::new();
-                for (_, ch) in chars.by_ref() {
-                    if ch == c {
-                        break;
-                    }
-                    tok.push(ch);
-                }
-                tokens.push(tok);
-            } else {
-                let mut tok = String::new();
-                while let Some(&(_, ch)) = chars.peek() {
-                    if ch.is_whitespace() {
-                        break;
-                    }
-                    tok.push(ch);
-                    chars.next();
-                }
-                tokens.push(tok);
-            }
-        }
-        tokens
-    }
-
     /// Parse a float from a key-value map entry, ignoring standard uncertainties like "1.234(5)".
     fn parse_float_kv(kv: &HashMap<String, String>, key: &str) -> Option<f64> {
         let s = kv.get(key)?;
@@ -228,50 +180,6 @@ impl CifParser {
         } else {
             s
         }
-    }
-
-    /// Extract atom list from loop data.
-    fn extract_atoms(headers: &[String], rows: &[Vec<String>]) -> Vec<CrystalAtom> {
-        // Find column indices
-        let idx = |tag: &str| headers.iter().position(|h| h.contains(tag));
-
-        let i_type_symbol = idx("type_symbol").or_else(|| idx("label"));
-        let i_x = idx("fract_x").or_else(|| idx("x_fract"));
-        let i_y = idx("fract_y").or_else(|| idx("y_fract"));
-        let i_z = idx("fract_z").or_else(|| idx("z_fract"));
-        let i_occ = idx("occupancy");
-        let i_b = idx("b_iso").or_else(|| idx("u_iso"));
-
-        let mut atoms = Vec::new();
-        for row in rows {
-            let get = |idx: Option<usize>| -> &str {
-                idx.and_then(|i| row.get(i).map(|s| s.as_str()))
-                    .unwrap_or("0")
-            };
-
-            let element = i_type_symbol
-                .and_then(|i| row.get(i))
-                .cloned()
-                .unwrap_or_default();
-
-            if element.is_empty() {
-                continue;
-            }
-
-            let x: f64 = Self::strip_su(get(i_x)).parse().unwrap_or(0.0);
-            let y: f64 = Self::strip_su(get(i_y)).parse().unwrap_or(0.0);
-            let z: f64 = Self::strip_su(get(i_z)).parse().unwrap_or(0.0);
-            let occ: f64 = Self::strip_su(get(i_occ)).parse().unwrap_or(1.0);
-            let b: f64 = Self::strip_su(get(i_b)).parse().unwrap_or(0.0);
-
-            atoms.push(CrystalAtom {
-                element,
-                fractional_pos: [x, y, z],
-                occupancy: occ,
-                b_factor: b,
-            });
-        }
-        atoms
     }
 }
 
@@ -540,7 +448,10 @@ pub fn write_cif(crystal: &CrystalStructure) -> String {
 pub struct PoscarStructure {
     /// Comment line (first line of the POSCAR file).
     pub comment: String,
-    /// Universal scale factor (already applied to `lattice`).
+    /// Effective (positive) scale factor that [`VaspReader`] applied to
+    /// `lattice` and to any Cartesian input coordinates.  A negative factor in
+    /// the file is a target cell volume and is reported here as the equivalent
+    /// positive scale.
     pub scale: f64,
     /// Lattice vectors as row matrix (in Å after scale).
     pub lattice: [[f64; 3]; 3],
@@ -550,9 +461,13 @@ pub struct PoscarStructure {
     pub counts: Vec<usize>,
     /// Whether selective dynamics mode is active.
     pub selective_dynamics: bool,
-    /// Coordinate mode: `true` = Direct (fractional), `false` = Cartesian.
+    /// Coordinate mode of `positions`: `true` = Direct (fractional), `false` =
+    /// Cartesian in Å.  [`VaspReader`] always returns direct coordinates; a
+    /// Cartesian input block is converted with the full (possibly skewed)
+    /// lattice.
     pub is_direct: bool,
-    /// Atom fractional (or Cartesian) positions, in species order.
+    /// Atom positions in species order: fractional when `is_direct` is set,
+    /// otherwise Cartesian in Å with the lattice scale already applied.
     pub positions: Vec<[f64; 3]>,
     /// Per-atom selective-dynamics flags `[x_free, y_free, z_free]`.
     /// `None` if selective dynamics were not specified.
@@ -566,18 +481,50 @@ pub struct PoscarStructure {
 }
 
 impl PoscarStructure {
+    /// Atom positions as fractional coordinates.
+    ///
+    /// Returns the stored positions when [`is_direct`](Self::is_direct) is
+    /// set, otherwise converts the Cartesian ones (Å) with the inverse of the
+    /// full lattice.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the structure is in Cartesian mode and the lattice is
+    /// singular, so no conversion exists.
+    pub fn fractional_positions(&self) -> Result<Vec<[f64; 3]>> {
+        if self.is_direct {
+            return Ok(self.positions.clone());
+        }
+        let inverse = lattice_math::inverse(&self.lattice).ok_or_else(|| {
+            Error::Parse("POSCAR: lattice is singular, cannot convert Cartesian coordinates".into())
+        })?;
+        Ok(self
+            .positions
+            .iter()
+            .map(|&r| lattice_math::cartesian_to_fractional(r, &inverse))
+            .collect())
+    }
+
     /// Convert to a [`CrystalStructure`] (drops VASP-specific fields).
+    ///
+    /// Positions of a Cartesian-mode structure are converted to fractional
+    /// coordinates (see [`fractional_positions`](Self::fractional_positions));
+    /// when the lattice is singular no such conversion exists and the stored
+    /// positions are carried over unchanged.
     pub fn to_crystal_structure(&self) -> CrystalStructure {
+        let fractional = self
+            .fractional_positions()
+            .unwrap_or_else(|_| self.positions.clone());
         let mut element_iter = self.species.iter();
         let mut count_iter = self.counts.iter();
-        let mut atoms = Vec::with_capacity(self.positions.len());
+        let mut atoms = Vec::with_capacity(fractional.len());
         let mut current_element = element_iter
             .next()
             .cloned()
             .unwrap_or_else(|| "X".to_string());
         let mut remaining = count_iter.next().copied().unwrap_or(0);
 
-        for pos in &self.positions {
+        for pos in &fractional {
             if remaining == 0 {
                 current_element = element_iter
                     .next()
@@ -703,8 +650,10 @@ impl VaspReader {
 
     /// Parse a POSCAR/CONTCAR file and return a [`CrystalStructure`].
     ///
-    /// Handles the header, scale, lattice vectors, optional selective dynamics
-    /// flags, and Cartesian/Direct coordinate blocks.
+    /// Handles the header, scale (a negative factor is the target cell volume
+    /// in Å^3), lattice vectors, optional selective dynamics flags, and
+    /// Cartesian/Direct coordinate blocks.  The returned atoms always carry
+    /// fractional coordinates.
     pub fn parse_poscar(&self, content: &str) -> Result<CrystalStructure> {
         let ps = self.parse_poscar_full(content)?;
         Ok(ps.to_crystal_structure())
@@ -713,20 +662,38 @@ impl VaspReader {
     /// Parse a POSCAR/CONTCAR file and return a full [`PoscarStructure`],
     /// preserving selective dynamics flags, magnetic moments, and other
     /// VASP-specific information.
+    ///
+    /// The universal scale factor multiplies the lattice vectors; a negative
+    /// factor is instead the cell volume in Å^3 the lattice is scaled to.
+    /// Cartesian coordinates are multiplied by the same scale and converted to
+    /// fractional coordinates with the full lattice, so the structure is
+    /// returned in direct mode (`is_direct`) whichever mode the file used and
+    /// [`PoscarStructure::scale`] holds the effective positive scale.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a malformed header or lattice, a zero or non-finite scale, a
+    /// volume scale (or Cartesian coordinates) combined with a singular
+    /// lattice.
     pub fn parse_poscar_full(&self, content: &str) -> Result<PoscarStructure> {
         let mut lines = content.lines().peekable();
 
         // Line 1: comment
         let comment = lines.next().unwrap_or("").trim().to_string();
-        // Line 2: scale factor
-        let scale: f64 = lines
+        // Line 2: universal scaling factor
+        let scale_factor: f64 = lines
             .next()
             .unwrap_or("1.0")
             .trim()
             .parse()
             .map_err(|_| Error::Parse("POSCAR: invalid scale factor".into()))?;
+        if !scale_factor.is_finite() || scale_factor == 0.0 {
+            return Err(Error::Parse(
+                "POSCAR: scale factor must be finite and non-zero".into(),
+            ));
+        }
 
-        // Lines 3-5: lattice vectors
+        // Lines 3-5: lattice vectors (still unscaled)
         let mut lattice = [[0.0_f64; 3]; 3];
         for row in lattice.iter_mut() {
             let line = lines
@@ -739,9 +706,29 @@ impl VaspReader {
             if vals.len() < 3 {
                 return Err(Error::Parse("POSCAR: bad lattice vector".into()));
             }
-            row[0] = vals[0] * scale;
-            row[1] = vals[1] * scale;
-            row[2] = vals[2] * scale;
+            row[0] = vals[0];
+            row[1] = vals[1];
+            row[2] = vals[2];
+        }
+
+        // A positive factor multiplies the lattice.  A negative one is the
+        // target cell volume in Å^3 (VASP convention): the unscaled lattice
+        // is scaled uniformly until its volume matches.
+        let scale = if scale_factor > 0.0 {
+            scale_factor
+        } else {
+            let volume = lattice_math::determinant(&lattice).abs();
+            if volume < lattice_math::MIN_LATTICE_DET {
+                return Err(Error::Parse(
+                    "POSCAR: a negative (volume) scale factor needs a non-singular lattice".into(),
+                ));
+            }
+            (-scale_factor / volume).cbrt()
+        };
+        for row in lattice.iter_mut() {
+            for value in row.iter_mut() {
+                *value *= scale;
+            }
         }
 
         // Line 6: element symbols (VASP5+) or direct species count
@@ -778,8 +765,19 @@ impl VaspReader {
             (false, next_line)
         };
 
-        let is_direct = !coord_type_line.to_lowercase().starts_with('c')
-            && !coord_type_line.to_lowercase().starts_with('k');
+        let cartesian_input = coord_type_line.to_lowercase().starts_with('c')
+            || coord_type_line.to_lowercase().starts_with('k');
+        // Cartesian input is converted to fractional coordinates with the
+        // inverse of the full scaled lattice (not just its diagonal).
+        let lattice_inverse = if cartesian_input {
+            Some(lattice_math::inverse(&lattice).ok_or_else(|| {
+                Error::Parse(
+                    "POSCAR: lattice is singular, cannot convert Cartesian coordinates".into(),
+                )
+            })?)
+        } else {
+            None
+        };
 
         // Read atom positions (and optional selective dynamics flags)
         let mut positions: Vec<[f64; 3]> = Vec::with_capacity(n_atoms);
@@ -794,11 +792,11 @@ impl VaspReader {
             let y: f64 = toks.get(1).and_then(|s| s.parse().ok()).unwrap_or(0.0);
             let z: f64 = toks.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
             let mut pos = [x, y, z];
-            if !is_direct {
-                // Convert Cartesian → fractional (simplified: assumes orthogonal cell)
-                pos[0] /= lattice[0][0].abs().max(1e-12);
-                pos[1] /= lattice[1][1].abs().max(1e-12);
-                pos[2] /= lattice[2][2].abs().max(1e-12);
+            if let Some(inverse) = &lattice_inverse {
+                // Cartesian coordinates carry the same universal scale factor
+                // as the lattice vectors.
+                let cartesian = [pos[0] * scale, pos[1] * scale, pos[2] * scale];
+                pos = lattice_math::cartesian_to_fractional(cartesian, inverse);
             }
             positions.push(pos);
 
@@ -847,7 +845,7 @@ impl VaspReader {
             species,
             counts,
             selective_dynamics,
-            is_direct,
+            is_direct: true,
             positions,
             sd_flags: sd_opt,
             magmom,
@@ -934,91 +932,6 @@ impl XrdPattern {
             })
             .collect()
     }
-}
-
-// ---------------------------------------------------------------------------
-// XRD simulation
-// ---------------------------------------------------------------------------
-
-/// Simulate a powder XRD pattern for the given crystal.
-///
-/// `wavelength` in Å, `theta_range` in degrees (2θ_min, 2θ_max), `n_pts` sample points.
-pub fn simulate_xrd(
-    crystal: &CrystalStructure,
-    wavelength: f64,
-    theta_range: (f64, f64),
-    n_pts: usize,
-) -> XrdPattern {
-    let (two_theta_min, two_theta_max) = theta_range;
-    let step = if n_pts > 1 {
-        (two_theta_max - two_theta_min) / (n_pts - 1) as f64
-    } else {
-        0.0
-    };
-
-    let two_theta: Vec<f64> = (0..n_pts)
-        .map(|i| two_theta_min + i as f64 * step)
-        .collect();
-    let mut intensity = vec![0.0_f64; n_pts];
-
-    // Consider reflections up to h,k,l = ±max_hkl
-    let max_hkl = 5_i32;
-    let vol = crystal.volume();
-    if vol < 1e-12 {
-        return XrdPattern::new(two_theta, intensity);
-    }
-
-    for h in -max_hkl..=max_hkl {
-        for k in -max_hkl..=max_hkl {
-            for l in -max_hkl..=max_hkl {
-                if h == 0 && k == 0 && l == 0 {
-                    continue;
-                }
-                let d = crystal.d_spacing(h, k, l);
-                if d.is_infinite() || d < 0.5 {
-                    continue;
-                }
-
-                // Bragg angle
-                let sin_theta = wavelength / (2.0 * d);
-                if sin_theta > 1.0 {
-                    continue;
-                }
-                let two_theta_hkl = 2.0 * sin_theta.asin().to_degrees();
-
-                // Find nearest grid point
-                if two_theta_hkl < two_theta_min || two_theta_hkl > two_theta_max {
-                    continue;
-                }
-                let idx = ((two_theta_hkl - two_theta_min) / step.max(1e-12)) as usize;
-                if idx >= n_pts {
-                    continue;
-                }
-
-                // Structure factor intensity
-                let (fre, fim) = crystal.structure_factor(h, k, l);
-                let f2 = fre * fre + fim * fim;
-
-                // Lorentz-polarization factor
-                let theta = two_theta_hkl.to_radians() / 2.0;
-                let lp = (1.0 + (2.0 * theta).cos().powi(2))
-                    / (theta.sin().powi(2) * (2.0 * theta).cos()).abs().max(1e-12);
-
-                // Spread over a few points with a Gaussian (FWHM ~ 0.1°)
-                let sigma_pts = 2.0;
-                for di in -(3 * sigma_pts as i64)..=(3 * sigma_pts as i64) {
-                    let j = idx as i64 + di;
-                    if j < 0 || j >= n_pts as i64 {
-                        continue;
-                    }
-                    let dt = di as f64 / sigma_pts;
-                    intensity[j as usize] += f2 * lp * (-0.5 * dt * dt).exp();
-                }
-            }
-        }
-    }
-
-    XrdPattern::new(two_theta, intensity)
 }
 
 // ---------------------------------------------------------------------------
@@ -1311,13 +1224,6 @@ _symmetry_int_tables_number 225
         assert!(lat[0][1].abs() < 1e-10);
         assert!(lat[0][2].abs() < 1e-10);
         assert!((lat[1][1] - a).abs() < 1e-8, "b[1] = {}", lat[1][1]);
-    }
-
-    #[test]
-    fn test_cif_tokenize_quoted() {
-        let tokens = CifParser::tokenize_line("'hello world' 3.14");
-        assert_eq!(tokens[0], "hello world");
-        assert_eq!(tokens[1], "3.14");
     }
 
     #[test]

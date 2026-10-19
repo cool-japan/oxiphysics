@@ -109,6 +109,133 @@ mod tests {
         assert!(lam.a11() > 0.0);
     }
     #[test]
+    fn test_laminate_d11_single_ply_is_q11_t3_over_12() {
+        let t = 1.5e-4;
+        let ply = Ply::new(t, 0.0, 140e9, 10e9, 5e9, 0.3);
+        let q11 = ply.transformed_q11();
+        let lam = CompositeLaminate::new(vec![ply]);
+        let expected = q11 * t.powi(3) / 12.0;
+        assert!((lam.d11() - expected).abs() <= 1.0e-12 * expected);
+        assert!(lam.b11().abs() <= 1.0e-12 * q11 * t * t);
+    }
+    #[test]
+    fn test_laminate_d11_two_identical_plies_equals_single_layer() {
+        let t = 1.0e-4;
+        let ply = Ply::new(t, 0.0, 140e9, 10e9, 5e9, 0.3);
+        let q11 = ply.transformed_q11();
+        let lam = CompositeLaminate::new(vec![ply.clone(), ply]);
+        // Two identical plies behave as one homogeneous layer of thickness 2t.
+        let expected = q11 * (2.0 * t).powi(3) / 12.0;
+        let d11 = lam.d11();
+        assert!(
+            (d11 - expected).abs() <= 1.0e-12 * expected,
+            "D11 = {d11}, expected {expected}"
+        );
+        // Summing every ply about its own centroid (no parallel-axis term)
+        // would give 2 Q t^3 / 12, a factor 4 too small.
+        let centroid_only = 2.0 * q11 * t.powi(3) / 12.0;
+        assert!((d11 / centroid_only - 4.0).abs() < 1.0e-12);
+    }
+    #[test]
+    fn test_laminate_d11_of_n_identical_plies_grows_as_n_cubed() {
+        let t = 1.25e-4;
+        let ply = Ply::new(t, 0.0, 140e9, 10e9, 5e9, 0.3);
+        let d11_single = CompositeLaminate::new(vec![ply.clone()]).d11();
+        for n in 2_usize..=8 {
+            let lam = CompositeLaminate::new(vec![ply.clone(); n]);
+            let expected = d11_single * (n as f64).powi(3);
+            assert!(
+                (lam.d11() - expected).abs() <= 1.0e-12 * expected,
+                "n = {n}: D11 = {}, expected {expected}",
+                lam.d11()
+            );
+        }
+    }
+    #[test]
+    fn test_laminate_b11_vanishes_for_symmetric_layup() {
+        let t = 1.0e-4;
+        let ply_0 = Ply::new(t, 0.0, 140e9, 10e9, 5e9, 0.3);
+        let ply_90 = Ply::new(t, 90.0, 140e9, 10e9, 5e9, 0.3);
+        let q11 = ply_0.transformed_q11();
+        let q22 = ply_90.transformed_q11();
+        let lam = CompositeLaminate::new(vec![
+            ply_0.clone(),
+            ply_90.clone(),
+            ply_90.clone(),
+            ply_0.clone(),
+        ]);
+        assert!(
+            lam.b11().abs() <= 1.0e-12 * q11 * t * t,
+            "B11 = {}",
+            lam.b11()
+        );
+        // D11 = (14 Q11 + 2 Q22) t^3 / 3 for [0/90/90/0] with equal ply thickness.
+        let expected = (14.0 * q11 + 2.0 * q22) * t.powi(3) / 3.0;
+        assert!(
+            (lam.d11() - expected).abs() <= 1.0e-12 * expected,
+            "D11 = {}, expected {expected}",
+            lam.d11()
+        );
+    }
+    #[test]
+    fn test_laminate_cross_ply_d11_and_b11_closed_form() {
+        let t = 1.0e-4;
+        let ply_0 = Ply::new(t, 0.0, 140e9, 10e9, 5e9, 0.3);
+        let ply_90 = Ply::new(t, 90.0, 140e9, 10e9, 5e9, 0.3);
+        let q11 = ply_0.transformed_q11();
+        let q22 = ply_90.transformed_q11();
+        assert!(q11 > q22);
+        let lam = CompositeLaminate::new(vec![ply_0.clone(), ply_90.clone()]);
+        // [0/90]: mid-plane at the interface, z in {-t, 0, t}.
+        let d11_expected = (q11 + q22) * t.powi(3) / 3.0;
+        let b11_expected = 0.5 * t * t * (q22 - q11);
+        assert!((lam.d11() - d11_expected).abs() <= 1.0e-12 * d11_expected);
+        assert!((lam.b11() - b11_expected).abs() <= 1.0e-12 * b11_expected.abs());
+        assert!(
+            lam.b11() < 0.0,
+            "the stiffer 0 ply sits below the mid-plane"
+        );
+        // Reversing the stack mirrors z: D11 is unchanged, B11 changes sign.
+        let reversed = CompositeLaminate::new(vec![ply_90, ply_0]);
+        assert!((reversed.d11() - lam.d11()).abs() <= 1.0e-12 * d11_expected);
+        assert!((reversed.b11() + lam.b11()).abs() <= 1.0e-12 * b11_expected.abs());
+    }
+    #[test]
+    fn test_laminate_d11_matches_parallel_axis_theorem_for_mixed_stack() {
+        let plies = vec![
+            Ply::new(1.0e-4, 0.0, 140e9, 10e9, 5e9, 0.3),
+            Ply::new(2.0e-4, 45.0, 140e9, 10e9, 5e9, 0.3),
+            Ply::new(1.5e-4, 90.0, 140e9, 10e9, 5e9, 0.3),
+            Ply::new(0.5e-4, -30.0, 140e9, 10e9, 5e9, 0.3),
+        ];
+        let lam = CompositeLaminate::new(plies.clone());
+        // Independent evaluation: D11 = sum Qbar11 (t^3/12 + t z_c^2), B11 = sum Qbar11 t z_c
+        // with z_c the distance of each ply centroid from the laminate mid-plane.
+        let total: f64 = plies.iter().map(|p| p.thickness).sum();
+        let mut z_bottom = -0.5 * total;
+        let mut d11 = 0.0;
+        let mut b11 = 0.0;
+        for p in &plies {
+            let z_c = z_bottom + 0.5 * p.thickness;
+            let q = p.transformed_q11();
+            d11 += q * (p.thickness.powi(3) / 12.0 + p.thickness * z_c * z_c);
+            b11 += q * p.thickness * z_c;
+            z_bottom += p.thickness;
+        }
+        assert!(
+            (lam.d11() - d11).abs() <= 1.0e-10 * d11,
+            "{} vs {d11}",
+            lam.d11()
+        );
+        let scale = lam.a11() * total;
+        assert!(
+            (lam.b11() - b11).abs() <= 1.0e-10 * scale,
+            "{} vs {b11}",
+            lam.b11()
+        );
+        assert!(lam.b11().abs() > 1.0e-6 * scale, "stack is unsymmetric");
+    }
+    #[test]
     fn test_fiber_matrix_e1() {
         let fm = FiberMatrix::new(0.6, 230e9, 3.5e9, 0.2, 0.35);
         let e1 = fm.e1();
@@ -374,6 +501,38 @@ mod nano_extended_tests {
         let dm = DislocationMechanics::bcc_iron();
         let d_sigma = dm.taylor_hardening_mpa(1.0e14);
         assert!(d_sigma > 0.0);
+    }
+    #[test]
+    fn disloc_taylor_hardening_copper_is_about_99_mpa() {
+        // Annealed-to-moderately-worked Cu, rho = 1e14 m^-2: M alpha G b sqrt(rho)
+        // = 3.06 * 0.3 * 42 GPa * 0.256 nm * 1e7 m^-1 = 98.7 MPa.
+        let dm = DislocationMechanics::fcc_copper();
+        let d_sigma = dm.taylor_hardening_mpa(1.0e14);
+        assert!(
+            (d_sigma - 98.7).abs() < 0.5,
+            "Taylor hardening = {d_sigma} MPa"
+        );
+        // Independent evaluation entirely in SI units (Pa, m).
+        let sigma_pa = 3.06 * 0.3 * 42.0e9 * 0.256e-9 * 1.0e14_f64.sqrt();
+        assert!((d_sigma - sigma_pa * 1.0e-6).abs() <= 1.0e-12 * d_sigma);
+    }
+    #[test]
+    fn disloc_taylor_hardening_iron_matches_si_evaluation() {
+        let dm = DislocationMechanics::bcc_iron();
+        let rho: f64 = 4.0e13;
+        let sigma_pa = 3.06 * 0.3 * 82.0e9 * 0.248e-9 * rho.sqrt();
+        let d_sigma = dm.taylor_hardening_mpa(rho);
+        assert!((d_sigma - sigma_pa * 1.0e-6).abs() <= 1.0e-12 * d_sigma);
+        // Tens to a few hundred MPa for typical dislocation densities.
+        assert!(d_sigma > 50.0 && d_sigma < 500.0, "{d_sigma} MPa");
+    }
+    #[test]
+    fn disloc_taylor_hardening_scales_with_sqrt_of_density() {
+        let dm = DislocationMechanics::fcc_copper();
+        let base = dm.taylor_hardening_mpa(1.0e13);
+        assert!((dm.taylor_hardening_mpa(4.0e13) / base - 2.0).abs() < 1.0e-12);
+        assert!((dm.taylor_hardening_mpa(1.0e15) / base - 10.0).abs() < 1.0e-12);
+        assert_eq!(dm.taylor_hardening_mpa(0.0), 0.0);
     }
     #[test]
     fn disloc_line_energy_positive() {

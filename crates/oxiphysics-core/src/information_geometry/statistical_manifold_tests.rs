@@ -231,3 +231,34 @@ fn test_constructor_validation() {
     let dbg = format!("{wide:?}");
     assert!(dbg.contains("StatisticalManifold") && dbg.contains("2401"));
 }
+
+#[test]
+fn test_gaussian_fisher_metric_at_sigma_two() {
+    // N(0, 2^2): g = diag(1 / sigma^2, 2 / sigma^2) = diag(1/4, 1/2).
+    let m = StatisticalManifold::gaussian_1d();
+    let g = m.fisher_metric(&[0.0, 2.0]).expect("metric");
+    assert_close(g[0][0], 0.25, 1e-6, "g_mu_mu");
+    assert_close(g[1][1], 0.5, 1e-6, "g_sigma_sigma");
+    assert_close(g[0][1], 0.0, 1e-6, "g_mu_sigma");
+}
+
+#[test]
+fn test_poisson_fisher_metric_equals_rate() {
+    // Poisson family in natural coordinates: psi(theta) = e^theta, so the Fisher
+    // metric is psi''(theta) = e^theta.
+    let nodes: Vec<(Vec<f64>, f64)> = (0..=60).map(|j| (vec![j as f64], 1.0)).collect();
+    let m = StatisticalManifold::new(
+        1,
+        |x: &[f64], theta: &[f64]| {
+            let count = x[0];
+            let log_factorial: f64 = (2..=(count as u32)).map(|i| f64::from(i).ln()).sum();
+            theta[0] * count - theta[0].exp() - log_factorial
+        },
+        nodes,
+    )
+    .expect("valid manifold");
+    for theta in [-0.5, 0.0, 0.7, 1.3] {
+        let g = m.fisher_metric(&[theta]).expect("metric");
+        assert_close(g[0][0], theta.exp(), 1e-6, "g = e^theta");
+    }
+}

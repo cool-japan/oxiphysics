@@ -6,17 +6,27 @@
 //! Implements:
 //! - Forward kinematics (FK)
 //! - Geometric Jacobian computation
-//! - Composite Rigid Body (CRB) mass matrix
-//! - Recursive Newton-Euler gravity torques
-//! - Coriolis/centrifugal vector
-//! - Articulated-Body Algorithm (ABA) forward dynamics
-//! - Recursive Newton-Euler inverse dynamics (RNEA)
+//! - Composite Rigid Body (CRB) mass matrix, built from spatial inertias
+//! - Gravity torques (the holding torques `g(q) = ∂V/∂q`)
+//! - Coriolis/centrifugal vector `C(q, q̇)·q̇` from a Recursive Newton-Euler pass
+//! - Recursive Newton-Euler inverse dynamics ([`MultibodyChain::rnea`])
+//! - Forward dynamics by solving `M(q)·q̈ = τ − C(q, q̇)·q̇ − g(q)`
+//! - Inverse dynamics `τ = M(q)·q̈ + C(q, q̇)·q̇ + g(q)`
 //! - RK4 time integration
-//! - Articulated body inertia (ABI) representation
+//! - Articulated body inertia (ABI) / spatial inertia representation
 //!
 //! All quantities use SI units. Rotation matrices are row-major `[[f64;3\];3]`.
+//!
+//! The chain is a tree of revolute joints in which every link is stored after
+//! its parent (`parent[i] < i`), the same ordering that
+//! [`MultibodyChain::forward_kinematics`] relies on.
 
 use std::f64::consts::PI;
+
+mod rnea;
+
+#[cfg(test)]
+mod regression_tests;
 
 // ---------------------------------------------------------------------------
 // Internal math helpers
@@ -101,6 +111,16 @@ fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// Euclidean norm of a 3-vector.
 fn vec3_norm(a: [f64; 3]) -> f64 {
     vec3_dot(a, a).sqrt()
+}
+
+/// `a / |a|`, or the zero vector when `a` has (almost) no length.
+fn unit_vector(a: [f64; 3]) -> [f64; 3] {
+    let norm = vec3_norm(a);
+    if norm < 1e-12 {
+        [0.0; 3]
+    } else {
+        vec3_scale(a, 1.0 / norm)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -197,38 +217,65 @@ impl Link {
     }
 }
 
-/// Articulated Body Inertia (ABI) used in Featherstone's algorithm.
+/// Spatial (articulated / composite) rigid-body inertia in world-aligned axes.
 ///
-/// Stores the spatial inertia decomposed into its rotational (`h`), scalar
-/// mass (`m`), and first-moment (`c`) components.
+/// Describes the inertia of a rigid body, or of a rigid group of bodies, about
+/// a common *reference point* `O`: the rotational inertia about `O` (`h`), the
+/// total mass (`m`) and the first mass moment about `O` (`c`).  Acting on a
+/// motion vector `(ω, v_O)` (angular velocity and velocity of the body-fixed
+/// point instantaneously at `O`) it is the 6×6 matrix
+///
+/// ```text
+/// [ h      [c]× ]
+/// [ -[c]×  m·1  ]
+/// ```
+///
+/// Inertias about the same reference point add componentwise
+/// ([`ArticulatedBodyInertia::add`]); that is how the composite inertia of a
+/// subtree is formed.
 #[derive(Debug, Clone)]
 pub struct ArticulatedBodyInertia {
-    /// Rotational inertia 3×3 (kg·m²).
+    /// Rotational inertia about the reference point (kg·m²).
     pub h: [[f64; 3]; 3],
-    /// Scalar mass (kg).
+    /// Total mass (kg).
     pub m: f64,
-    /// First moment (mass × CoM offset) (kg·m).
+    /// First mass moment about the reference point, `Σ mₖ rₖ` (kg·m).
     pub c: [f64; 3],
 }
 
 impl ArticulatedBodyInertia {
-    /// Construct an ABI from a [`Link`]'s mass properties at a given world position.
+    /// Spatial inertia of a [`Link`] about a reference point `O`, in world axes.
     ///
     /// # Arguments
     /// * `link` — the rigid link.
     /// * `rot` — rotation matrix from link-local to world frame.
-    pub fn from_link(link: &Link, rot: [[f64; 3]; 3]) -> Self {
-        let c_world = mat3_vec_mul(rot, link.com);
-        let r_it = mat3_transpose(rot);
-        let i_world = mat3_mul(rot, mat3_mul(link.inertia, r_it));
+    /// * `joint_pos` — position of the link's joint origin relative to `O`
+    ///   (pass the joint's world position to express the inertia about the
+    ///   world origin, or `[0.0; 3]` for the inertia about the joint itself).
+    ///
+    /// The result is `h = R·I_c·Rᵀ + m(|r|²·1 − r rᵀ)` (parallel-axis
+    /// theorem), `m = mass` and `c = m·r`, where `r = joint_pos + R·com` is
+    /// the centre of mass relative to `O`.
+    pub fn from_link(link: &Link, rot: [[f64; 3]; 3], joint_pos: [f64; 3]) -> Self {
+        let r_com = vec3_add(joint_pos, mat3_vec_mul(rot, link.com));
+        let i_world = mat3_mul(rot, mat3_mul(link.inertia, mat3_transpose(rot)));
+        let r_sq = vec3_dot(r_com, r_com);
+        let mut h = i_world;
+        for (a, row) in h.iter_mut().enumerate() {
+            for (b, cell) in row.iter_mut().enumerate() {
+                let identity = if a == b { 1.0 } else { 0.0 };
+                *cell += link.mass * (r_sq * identity - r_com[a] * r_com[b]);
+            }
+        }
         ArticulatedBodyInertia {
-            h: i_world,
+            h,
             m: link.mass,
-            c: c_world,
+            c: vec3_scale(r_com, link.mass),
         }
     }
 
-    /// Add two ABIs together (used in composite rigid body algorithm).
+    /// Add two inertias that are expressed about the **same** reference point
+    /// (used in the composite rigid body algorithm).
     pub fn add(&self, other: &ArticulatedBodyInertia) -> ArticulatedBodyInertia {
         ArticulatedBodyInertia {
             h: mat3_add(self.h, other.h),
@@ -236,12 +283,23 @@ impl ArticulatedBodyInertia {
             c: vec3_add(self.c, other.c),
         }
     }
+
+    /// Spatial momentum for the motion `(omega, v_o)`.
+    ///
+    /// Returns `(L_O, p)`: the angular momentum about the reference point
+    /// `L_O = h·ω + c × v_O` and the linear momentum `p = m·v_O − c × ω`.
+    pub fn momentum(&self, omega: [f64; 3], v_o: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+        let angular = vec3_add(mat3_vec_mul(self.h, omega), vec3_cross(self.c, v_o));
+        let linear = vec3_sub(vec3_scale(v_o, self.m), vec3_cross(self.c, omega));
+        (angular, linear)
+    }
 }
 
 /// A serial kinematic chain of revolute joints.
 ///
 /// Links are numbered 0 … n-1. Link `i` is connected to `parent[i]`
-/// (or to the world if `parent[i] == None`).
+/// (or to the world if `parent[i] == None`).  Every link must be stored after
+/// its parent (`parent[i] < i`); branching trees are supported.
 ///
 /// All joint angles are in radians.
 #[derive(Debug, Clone)]
@@ -351,98 +409,100 @@ impl MultibodyChain {
 
     /// Compute the composite rigid body (CRB) mass matrix M(q) (n×n).
     ///
-    /// Uses the composite rigid body inertia algorithm.
-    /// Returns a row-major `n×n` matrix as `Vec<Vec`f64`>`.
+    /// The kinetic energy of the chain is `T = ½ q̇ᵀ M(q) q̇`.  The matrix is
+    /// assembled in the world frame about a fixed reference point (the first
+    /// joint origin; any fixed point gives the same `M`):
+    ///
+    /// * every link contributes its spatial inertia about that point
+    ///   ([`ArticulatedBodyInertia::from_link`], i.e. including the
+    ///   parallel-axis terms of its centre-of-mass offset);
+    /// * the composite inertia `Iᶜᵢ` of link `i` is the plain sum over the
+    ///   subtree rooted at `i`;
+    /// * with the joint motion subspace `Sᵢ = [aᵢ; pᵢ × aᵢ]` (world axis `aᵢ`
+    ///   through the joint origin `pᵢ`), `Mᵢⱼ = Sⱼᵀ Iᶜᵢ Sᵢ` for every `j` that
+    ///   is an ancestor of `i` or `i` itself, mirrored to `Mⱼᵢ`; links on
+    ///   different branches do not interact (`Mᵢⱼ = 0`).
+    ///
+    /// Returns a row-major `n×n` matrix as `Vec<Vec<f64>>`.
     pub fn mass_matrix(&self) -> Vec<Vec<f64>> {
         let n = self.n_dof();
         let poses = self.forward_kinematics();
         let mut m = vec![vec![0.0_f64; n]; n];
+        let Some(&(origin, _)) = poses.first() else {
+            return m;
+        };
 
-        // Compute composite inertias bottom-up
-        let mut c_inertia: Vec<ArticulatedBodyInertia> = self
+        // Joint motion subspaces S_i = [a_i; p_i × a_i] about the reference point.
+        let subspaces: Vec<([f64; 3], [f64; 3])> = poses
+            .iter()
+            .zip(self.links.iter())
+            .map(|((pos, rot), link)| {
+                let axis = unit_vector(mat3_vec_mul(*rot, link.joint_axis));
+                (axis, vec3_cross(vec3_sub(*pos, origin), axis))
+            })
+            .collect();
+
+        // Spatial inertia of every link about the reference point, then the
+        // subtree sums (children before parents).
+        let mut composite: Vec<ArticulatedBodyInertia> = self
             .links
             .iter()
             .zip(poses.iter())
-            .map(|(link, (_pos, rot))| ArticulatedBodyInertia::from_link(link, *rot))
+            .map(|(link, (pos, rot))| {
+                ArticulatedBodyInertia::from_link(link, *rot, vec3_sub(*pos, origin))
+            })
             .collect();
-
-        // Propagate inertias from children to parents (reverse order)
         for i in (0..n).rev() {
             if let Some(p) = self.parent[i] {
-                let ci = c_inertia[i].clone();
-                c_inertia[p] = c_inertia[p].add(&ci);
+                let child = composite[i].clone();
+                composite[p] = composite[p].add(&child);
             }
         }
 
-        // Fill mass matrix
-        for i in 0..n {
-            let (joint_pos_i, rot_i) = poses[i];
-            let axis_i_world = mat3_vec_mul(rot_i, self.links[i].joint_axis);
-
-            // H * axis_i in world, considering composite inertia at i
-            let ic = &c_inertia[i];
-            let h_ai = mat3_vec_mul(ic.h, axis_i_world);
-            // cross(c, axis) term
-            let c_cross_a = vec3_cross(ic.c, axis_i_world);
-            let f_i = [
-                h_ai[0] - c_cross_a[0],
-                h_ai[1] - c_cross_a[1],
-                h_ai[2] - c_cross_a[2],
-            ];
-
-            // Diagonal
-            let r_i = vec3_sub([0.0; 3], joint_pos_i); // simplified: use joint pos as reference
-            let f_linear_i = vec3_cross(axis_i_world, r_i);
-            m[i][i] = vec3_dot(axis_i_world, f_i) + ic.m * vec3_dot(f_linear_i, f_linear_i);
-
-            // Off-diagonal: propagate along chain
-            let mut j = i;
-            while let Some(p) = self.parent[j] {
-                let (joint_pos_j, rot_j) = poses[p];
-                let axis_j_world = mat3_vec_mul(rot_j, self.links[p].joint_axis);
-
-                let r_j = vec3_sub(joint_pos_i, joint_pos_j);
-                let linear_j = vec3_cross(axis_j_world, r_j);
-
-                let mij = vec3_dot(axis_j_world, f_i)
-                    + ic.m
-                        * vec3_dot(
-                            linear_j,
-                            vec3_cross(axis_i_world, vec3_sub([0.0; 3], joint_pos_i)),
-                        );
-
-                m[i][p] = mij;
-                m[p][i] = mij;
-                j = p;
+        for (i, (composite_i, (axis_i, linear_i))) in
+            composite.iter().zip(subspaces.iter()).enumerate()
+        {
+            let (angular_momentum, linear_momentum) = composite_i.momentum(*axis_i, *linear_i);
+            let mut cur = Some(i);
+            while let Some(j) = cur {
+                let (axis_j, linear_j) = subspaces[j];
+                let mij = vec3_dot(axis_j, angular_momentum) + vec3_dot(linear_j, linear_momentum);
+                m[i][j] = mij;
+                m[j][i] = mij;
+                cur = self.parent[j];
             }
         }
         m
     }
 
-    /// Compute gravity torques using recursive Newton-Euler (static case).
+    /// Compute the gravity torques `g(q) = ∂V/∂q` of the chain.
     ///
-    /// Returns joint torques required to hold the chain stationary against
-    /// `gravity` (expressed in world frame, e.g. `[0.0, -9.81, 0.0]`).
+    /// Returns the joint torques required to hold the chain stationary against
+    /// `gravity` (expressed in world frame, e.g. `[0.0, -9.81, 0.0]`).  They
+    /// are the negative of the torques that gravity itself exerts about the
+    /// joint axes, which is the sign expected by
+    /// `M·q̈ + C(q, q̇)·q̇ + g(q) = τ`.
     pub fn gravity_torques(&self, gravity: [f64; 3]) -> Vec<f64> {
         let n = self.n_dof();
         let poses = self.forward_kinematics();
 
-        // Compute world-frame com positions
         let mut torques = vec![0.0_f64; n];
 
         for i in 0..n {
-            let (_joint_pos, rot_i) = poses[i];
-            let com_world = mat3_vec_mul(rot_i, self.links[i].com);
+            let (joint_pos_i, rot_i) = poses[i];
+            // Centre of mass in world coordinates: joint origin + rotated offset.
+            let com_world = vec3_add(joint_pos_i, mat3_vec_mul(rot_i, self.links[i].com));
             let grav_force = vec3_scale(gravity, self.links[i].mass);
 
             // Add contribution to all ancestors
             let mut cur = Some(i);
             while let Some(idx) = cur {
                 let (joint_pos, rot_j) = poses[idx];
-                let axis_world = mat3_vec_mul(rot_j, self.links[idx].joint_axis);
+                let axis_world = unit_vector(mat3_vec_mul(rot_j, self.links[idx].joint_axis));
                 let r = vec3_sub(com_world, joint_pos);
                 let moment = vec3_cross(r, grav_force);
-                torques[idx] += vec3_dot(axis_world, moment);
+                // Holding torque: opposes the torque gravity applies about the axis.
+                torques[idx] -= vec3_dot(axis_world, moment);
                 cur = self.parent[idx];
             }
         }
@@ -451,40 +511,12 @@ impl MultibodyChain {
 
     /// Compute the Coriolis and centrifugal vector C(q, q̇)·q̇.
     ///
-    /// Uses finite differencing of the mass matrix (approximate but general).
-    /// Returns the n-vector of joint-space Coriolis/centrifugal generalized forces.
+    /// This is the joint torque a Recursive Newton-Euler pass produces for the
+    /// current velocities with zero joint accelerations and no gravity, i.e.
+    /// the velocity-product term `τ(q, q̇, q̈ = 0) − g(q)` of the equations of
+    /// motion.  It is exact (no finite differencing) and costs `O(n)`.
     pub fn coriolis_vector(&self) -> Vec<f64> {
-        let n = self.n_dof();
-        let m = self.mass_matrix();
-        let qd = &self.joint_velocities;
-
-        // C·qd via Christoffel symbols: C_ij = sum_k 0.5*(dM_ij/dq_k + dM_ik/dq_j - dM_jk/dq_i)*qd_k
-        // Use finite differences for dM/dq_k
-        let eps = 1e-6;
-        let mut c_vec = vec![0.0_f64; n];
-
-        for k in 0..n {
-            // Perturb joint k
-            let mut chain_plus = self.clone();
-            chain_plus.joint_angles[k] += eps;
-            let m_plus = chain_plus.mass_matrix();
-
-            let mut dm = vec![vec![0.0_f64; n]; n];
-            for i in 0..n {
-                for j in 0..n {
-                    dm[i][j] = (m_plus[i][j] - m[i][j]) / eps;
-                }
-            }
-
-            for i in 0..n {
-                for j in 0..n {
-                    // Christoffel symbol c_ijk = 0.5*(dM_ij/dq_k + dM_ik/dq_j - dM_jk/dq_i)
-                    // We approximate only the dM/dq_k term
-                    c_vec[i] += dm[i][j] * qd[j] * qd[k] - 0.5 * dm[j][k] * qd[j] * qd[k];
-                }
-            }
-        }
-        c_vec
+        self.rnea(&self.joint_velocities, &[], [0.0; 3])
     }
 
     /// Forward dynamics: compute joint accelerations given applied torques.
@@ -584,7 +616,7 @@ impl MultibodyChain {
 // ---------------------------------------------------------------------------
 
 /// Solve the linear system `A·x = b` using Gaussian elimination with partial
-/// pivoting. Returns `x`. Panics if `A` is singular.
+/// pivoting. Returns `x`, or the zero vector if `A` is numerically singular.
 fn solve_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {
     let n = b.len();
     for col in 0..n {
@@ -950,13 +982,22 @@ mod tests {
 
     #[test]
     fn gravity_torques_nonzero_when_joint_deflected() {
-        // Deflect the first joint 90°: the arm lies horizontal, so gravity
-        // creates a nonzero torque about the z-axis.
+        // Deflect the first joint 90°: the arm lies horizontal along -x, so the
+        // three centres of mass sit at x = -0.5, -1.5 and -2.5 from the root.
         let mut chain = simple_chain(3);
-        chain.joint_angles[0] = PI / 2.0; // arm horizontal in XZ plane
+        chain.joint_angles[0] = PI / 2.0;
         let g = chain.gravity_torques([0.0, -9.81, 0.0]);
-        // The root joint must resist gravity on all three links
-        assert!(g[0].abs() > 1e-6, "g[0]={} expected nonzero torque", g[0]);
+        // Gravity applies +9.81 * (0.5 + 1.5 + 2.5) = +44.145 N·m about +z
+        // (it swings the arm down); the holding torque is its negative.
+        assert!(
+            (g[0] + 44.145).abs() < 1e-9,
+            "g[0]={} expected -44.145",
+            g[0]
+        );
+        // Joint 2 holds links 2 and 3 (lever arms 0.5 and 1.5 from joint 2),
+        // joint 3 holds link 3 only (lever arm 0.5).
+        assert!((g[1] + 9.81 * 2.0).abs() < 1e-9, "g[1]={}", g[1]);
+        assert!((g[2] + 9.81 * 0.5).abs() < 1e-9, "g[2]={}", g[2]);
     }
 
     // ── coriolis_vector ───────────────────────────────────────────────────
@@ -993,6 +1034,8 @@ mod tests {
         let torques = vec![0.0; 2];
         let qdd = chain.forward_dynamics(&torques, [0.0, 0.0, 0.0]);
         assert_eq!(qdd.len(), 2);
+        // At rest, without torque or gravity, nothing accelerates.
+        assert!(qdd.iter().all(|a| a.abs() < 1e-12), "qdd = {qdd:?}");
     }
 
     // ── inverse_dynamics ──────────────────────────────────────────────────
@@ -1063,16 +1106,18 @@ mod tests {
     #[test]
     fn abi_from_link_mass_preserved() {
         let link = Link::new(5.0, [0.1, 0.0, 0.0]);
-        let abi = ArticulatedBodyInertia::from_link(&link, mat3_identity());
+        let abi = ArticulatedBodyInertia::from_link(&link, mat3_identity(), [0.0; 3]);
         assert!((abi.m - 5.0).abs() < 1e-12);
+        // First mass moment about the joint: m * com.
+        assert!((abi.c[0] - 0.5).abs() < 1e-12 && abi.c[1].abs() < 1e-12);
     }
 
     #[test]
     fn abi_add_sums_mass() {
         let link = Link::new(2.0, [0.0; 3]);
-        let abi1 = ArticulatedBodyInertia::from_link(&link, mat3_identity());
+        let abi1 = ArticulatedBodyInertia::from_link(&link, mat3_identity(), [0.0; 3]);
         let link2 = Link::new(3.0, [0.0; 3]);
-        let abi2 = ArticulatedBodyInertia::from_link(&link2, mat3_identity());
+        let abi2 = ArticulatedBodyInertia::from_link(&link2, mat3_identity(), [0.0; 3]);
         let total = abi1.add(&abi2);
         assert!((total.m - 5.0).abs() < 1e-12);
     }
@@ -1648,12 +1693,12 @@ mod tests_extra {
         chain.joint_angles[0] = PI / 2.0;
         let grav = [0.0, -9.81, 0.0];
         let tau = chain.gravity_torques(grav);
-        // g-torque = m * g * L/2 * cos(90°) but since arm is now horizontal,
-        // the gravity acts along -y, lever arm = link length/2 along +x
-        // tau = m * |g| * (L/2) ≈ 1 * 9.81 * 0.5 (projected onto joint z-axis)
+        // At q = 90° the link points along -x, so its centre of mass is at
+        // x = -L/2 and gravity (-y) applies +m·g·L/2 = +4.905 N·m about +z.
+        // The holding torque g(q) = dV/dq is the negative of that.
         assert!(
-            tau[0].abs() > 1e-3,
-            "Gravity torque should be nonzero for horizontal arm, got {}",
+            (tau[0] + 4.905).abs() < 1e-9,
+            "Holding torque of a horizontal link must be -m g L/2, got {}",
             tau[0]
         );
     }

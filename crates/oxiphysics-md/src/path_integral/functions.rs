@@ -358,17 +358,34 @@ mod tests {
     }
     #[test]
     fn test_centroid_md_step_moves_centroid() {
-        let n = 4;
-        let mut ring = RingPolymer::new(n, 1.0e-27, [0.0, 0.0, 0.0]);
-        let f_ext = 1.0e-12;
-        let per_bead_forces: Vec<[f64; 3]> = vec![[f_ext, 0.0, 0.0]; n];
-        let c0 = ring.centroid();
-        CentroidMD::step(&mut ring, &per_bead_forces, 1e-15);
+        // A uniform force acts on the centroid mode only (it is orthogonal to every
+        // internal mode), so from rest the centroid follows x = F dt^2 / (2 m) and
+        // v = F dt / m regardless of the bath noise on the internal modes.
+        use rand::SeedableRng;
+        let (n, mass, f_ext, dt) = (4, 1.0e-27, 1.0e-12, 1.0e-15);
+        let mut ring = RingPolymer::new(n, mass, [0.0, 0.0, 0.0]);
+        let cmd = CentroidMD::new(n, 300.0, 0.5).unwrap();
+        let mut forces = vec![[f_ext, 0.0, 0.0]; n];
+        let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+        cmd.step(
+            &mut ring,
+            &mut forces,
+            |pos| vec![[f_ext, 0.0, 0.0]; pos.len()],
+            dt,
+            &mut rng,
+        )
+        .unwrap();
         let c1 = ring.centroid();
+        let expected_x = 0.5 * f_ext / mass * dt * dt;
         assert!(
-            c1[0].abs() > c0[0].abs() || (c1[0] - c0[0]).abs() > 0.0,
-            "centroid should move after CMD step"
+            (c1[0] - expected_x).abs() < 1e-9 * expected_x,
+            "centroid x = {}, expected {expected_x}",
+            c1[0]
         );
+        assert!(c1[1].abs() < 1e-24 && c1[2].abs() < 1e-24);
+        let v1 = ring.centroid_velocity();
+        let expected_v = f_ext / mass * dt;
+        assert!((v1[0] - expected_v).abs() < 1e-9 * expected_v);
     }
     #[test]
     fn test_centroid_md_msd_zero_initial() {
@@ -699,12 +716,14 @@ pub fn wkb_tunnel_exponent(v_barrier: f64, half_width: f64, mass: f64) -> f64 {
 pub fn tunnel_splitting(omega0: f64, s_inst_over_hbar: f64) -> f64 {
     HBAR * omega0 / std::f64::consts::PI * (-s_inst_over_hbar).exp()
 }
-/// Virial kinetic energy estimator for path integral simulations.
+/// Centroid-virial kinetic energy estimator for path integral simulations.
 ///
-/// KE_vir = (3N/2) k_B T + (1/2P) Σ_{i,s} (r_{is} - r̄_i) · F_{is}
+/// KE_vir = (3N/2) k_B T − (1/2P) Σ_{i,s} (r_{is} − r̄_i) · F_{is}
 ///
-/// where r̄_i is the centroid of atom i and F_{is} is the physical force on
-/// bead s of atom i.
+/// where r̄_i is the centroid of atom i and F_{is} = −∇V(r_{is}) is the
+/// physical force on bead s of atom i.  For a harmonic well `F = −k r` the
+/// correction is `+(k/2P) Σ |r_{is} − r̄_i|²`, so a spread-out ring has a kinetic
+/// energy above the classical `3N k_B T / 2`.
 ///
 /// This estimator has lower variance than the primitive estimator.
 pub fn virial_kinetic_estimator(
@@ -732,7 +751,7 @@ pub fn virial_kinetic_estimator(
             }
         }
     }
-    classical_part + 0.5 / n_beads as f64 * quantum_correction
+    classical_part - 0.5 / n_beads as f64 * quantum_correction
 }
 #[cfg(test)]
 mod tests_pimd_ext {

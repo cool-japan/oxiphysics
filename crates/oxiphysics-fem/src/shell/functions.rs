@@ -25,11 +25,29 @@ pub fn natural_frequency_mn(m: u32, n: u32, a: f64, b: f64, d: f64, rho: f64, h:
 pub fn membrane_stiffness(e: f64, nu: f64, h: f64) -> f64 {
     e * h / (1.0 - nu * nu)
 }
-/// Classical external pressure at buckling of a thin cylindrical shell.
+/// Classical external pressure at buckling of a long thin cylindrical shell
+/// (Bresse's ring-collapse formula).
 ///
-/// p_cr = 2·E·(h/R)³ / (3·(1−ν²))
+/// p_cr = E·h³ / (4·(1−ν²)·R³) = E·(h/R)³ / (4·(1−ν²))
+///
+/// This is the two-lobe buckling pressure of an infinitely long tube and the
+/// lower bound for tubes of any length.  It is *not* the spherical-shell
+/// (Zoelly) expression of [`spherical_shell_buckling`].  For tubes of finite
+/// length see [`cylindrical_shell_buckling_finite`].
 pub fn cylindrical_shell_buckling(e: f64, nu: f64, r: f64, h: f64) -> f64 {
-    2.0 * e * (h / r).powi(3) / (3.0 * (1.0 - nu * nu))
+    e * (h / r).powi(3) / (4.0 * (1.0 - nu * nu))
+}
+/// Critical external pressure of a finite-length thin cylindrical shell with
+/// simply supported (or ring-stiffened) ends.
+///
+/// Windenburg–Trilling formula for intermediate-length tubes, bounded below by
+/// the long-tube Bresse value of [`cylindrical_shell_buckling`]; `length` is the
+/// unsupported length `L`.  Returns `NaN` for non-physical inputs or for tubes
+/// too short for the formula to apply (`L/D − 0.45·√(h/D) ≤ 0`, `D = 2R`).
+///
+/// Argument order follows [`cylindrical_shell_buckling`]: `(e, nu, r, h, length)`.
+pub fn cylindrical_shell_buckling_finite(e: f64, nu: f64, r: f64, h: f64, length: f64) -> f64 {
+    crate::shell_fem::cylinder_buckling_pressure_finite(e, nu, h, r, length)
 }
 /// Classical external pressure at buckling of a thin spherical shell.
 ///
@@ -779,8 +797,34 @@ mod tests {
         let r = 1.0;
         let h = 0.01;
         let p = cylindrical_shell_buckling(e, nu, r, h);
-        let expected = 2.0 * e * (h / r).powi(3) / (3.0 * (1.0 - nu * nu));
+        let expected = e * h * h * h / (4.0 * (1.0 - nu * nu) * r * r * r);
         assert!((p - expected).abs() / expected < 1e-12);
+        // t/R = 0.01, E = 200 GPa, nu = 0.3 gives 54.9 kPa, not the ~24 MPa of
+        // the spherical-shell expression the old code evaluated.
+        assert!((p - 54.9e3).abs() < 0.1e3, "p = {p}");
+    }
+    #[test]
+    fn test_cylindrical_shell_buckling_agrees_with_cylindrical_shell_element() {
+        let (e, nu, r, h) = (200e9, 0.3, 0.5, 0.01);
+        let element = CylindricalShellElement::new(e, nu, 7800.0, h, 1.0, r);
+        let from_element = element.critical_pressure_external();
+        let from_fn = cylindrical_shell_buckling(e, nu, r, h);
+        assert!((from_fn - from_element).abs() < 1e-12 * from_fn);
+    }
+    #[test]
+    fn test_cylindrical_shell_buckling_finite_regimes() {
+        let (e, nu, r, h) = (200e9, 0.3, 1.0, 0.01);
+        let long_tube = cylindrical_shell_buckling(e, nu, r, h);
+        let medium = cylindrical_shell_buckling_finite(e, nu, r, h, 8.0);
+        let very_long = cylindrical_shell_buckling_finite(e, nu, r, h, 500.0);
+        // Windenburg-Trilling for L/D = 4: 2.42 E (h/D)^2.5 / ((1-nu^2)^0.75 (L/D - 0.45 sqrt(h/D))).
+        let t_over_d: f64 = h / (2.0 * r);
+        let wt =
+            2.42 * e * t_over_d.powf(2.5) / (0.91_f64.powf(0.75) * (4.0 - 0.45 * t_over_d.sqrt()));
+        assert!((medium - wt).abs() < 1e-12 * wt, "medium = {medium}");
+        assert!(medium > 3.0 * long_tube);
+        assert!((very_long - long_tube).abs() < 1e-12 * long_tube);
+        assert!(cylindrical_shell_buckling_finite(e, nu, r, h, 0.001).is_nan());
     }
     #[test]
     fn test_cylindrical_shell_buckling_scales_cubic() {
@@ -1052,6 +1096,67 @@ mod tests {
         for row in &k {
             for &v in row {
                 assert!(v.is_finite(), "Stiffness entry should be finite");
+            }
+        }
+    }
+    #[test]
+    fn test_flat_shell_bending_stiffens_the_transverse_deflection_dofs() {
+        // The previous "bending" matrix had only θ columns: every w column was
+        // zero, so transverse deflection was a mechanism.
+        let fs = FlatShellElement::new(200e9, 0.3, 7800.0, 0.01);
+        let nodes = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let kb = fs.bending_stiffness(&nodes);
+        for w_dof in [0usize, 3, 6] {
+            assert!(kb[w_dof][w_dof] > 0.0, "w DOF {w_dof} has no stiffness");
+        }
+        // A unit deflection of a single node, others held, needs a real force.
+        let force_norm: f64 = (0..9).map(|r| kb[r][0] * kb[r][0]).sum::<f64>().sqrt();
+        assert!(force_norm > 1.0e3, "reaction to w1 = 1: {force_norm}");
+        // A pure rigid translation w = 1 still carries no force.
+        let rigid = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        for row in &kb {
+            let f: f64 = row.iter().zip(rigid.iter()).map(|(a, b)| a * b).sum();
+            assert!(
+                f.abs() < 1e-9 * kb[0][0].abs(),
+                "rigid translation force {f}"
+            );
+        }
+    }
+    #[test]
+    fn test_flat_shell_bending_has_rank_six() {
+        let fs = FlatShellElement::new(70e9, 0.33, 2700.0, 0.004);
+        let nodes = [[0.0, 0.0], [0.8, 0.1], [0.2, 0.6]];
+        let kb = fs.bending_stiffness(&nodes);
+        let rows: Vec<Vec<f64>> = kb.iter().map(|r| r.to_vec()).collect();
+        let (eigenvalues, _) = crate::eigen::jacobi_eigen_dense(&rows, 9);
+        let largest = eigenvalues[8];
+        let null = eigenvalues
+            .iter()
+            .filter(|l| l.abs() < 1e-9 * largest)
+            .count();
+        let positive = eigenvalues.iter().filter(|&&l| l > 1e-4 * largest).count();
+        assert_eq!((null, positive), (3, 6), "spectrum {eigenvalues:?}");
+    }
+    #[test]
+    fn test_flat_shell_bending_block_matches_dkt_formulation() {
+        let fs = FlatShellElement::new(200e9, 0.3, 7800.0, 0.01);
+        let nodes = [[0.0, 0.0], [1.0, 0.2], [0.3, 0.9]];
+        let plate = KirchhoffPlate::new(0.01, 200e9, 0.3, 7800.0);
+        let expected =
+            crate::shell::dkt::dkt_bending_stiffness(&nodes, &plate.constitutive_matrix());
+        let direct = fs.bending_stiffness(&nodes);
+        let full = fs.stiffness_triangle(&nodes);
+        let bend_map = [2usize, 3, 4, 8, 9, 10, 14, 15, 16];
+        for i in 0..9 {
+            for j in 0..9 {
+                assert_eq!(direct[i][j], expected[i][j]);
+                assert_eq!(full[bend_map[i]][bend_map[j]], expected[i][j]);
+            }
+        }
+        // The membrane DOFs (u, v) do not couple to the bending DOFs.
+        for &m in &[0usize, 1, 6, 7, 12, 13] {
+            for &b in &bend_map {
+                assert_eq!(full[m][b], 0.0);
             }
         }
     }

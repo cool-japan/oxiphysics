@@ -9,6 +9,9 @@
 //! compliant-mechanism design, frequency optimisation, and heat-conduction
 //! topology optimisation.
 
+use crate::sparse::CsrMatrix;
+use crate::topology_filter::SparseFilter;
+
 // ============================================================================
 // § 1  SIMP INTERPOLATION
 // ============================================================================
@@ -60,52 +63,30 @@ pub fn simp_compliance_sensitivity(
 ///
 /// ρ̃ᵢ = Σⱼ Hᵢⱼ ρⱼ / Σⱼ Hᵢⱼ   with  Hᵢⱼ = max(0, r_min − dᵢⱼ)
 ///
+/// The weights are built on a uniform cell list ([`SparseFilter`]), so the cost
+/// is `O(n · k)` with `k` the number of elements inside the radius instead of
+/// `O(n²)`.  Filtering repeatedly on one mesh should build the
+/// [`SparseFilter`] once and call [`SparseFilter::average`].
+///
 /// * `densities`  – raw element densities ρ
 /// * `centroids`  – (x, y) centroid of each element
 /// * `r_min`      – filter radius
 pub fn density_filter(densities: &[f64], centroids: &[(f64, f64)], r_min: f64) -> Vec<f64> {
-    let n = densities.len();
-    assert_eq!(centroids.len(), n, "centroids length mismatch");
-    let mut out = vec![0.0_f64; n];
-    for i in 0..n {
-        let (xi, yi) = centroids[i];
-        let mut num = 0.0;
-        let mut den = 0.0;
-        for j in 0..n {
-            let (xj, yj) = centroids[j];
-            let d = ((xi - xj).powi(2) + (yi - yj).powi(2)).sqrt();
-            let w = (r_min - d).max(0.0);
-            num += w * densities[j];
-            den += w;
-        }
-        out[i] = if den > 1e-30 { num / den } else { densities[i] };
-    }
-    out
+    assert_eq!(
+        centroids.len(),
+        densities.len(),
+        "centroids length mismatch"
+    );
+    SparseFilter::hat(centroids, r_min).average(densities)
 }
 
 /// Compute the filter weight matrix H (row-normalised).
 ///
-/// Returns a flat `n×n` row-major vector of weights.
-pub fn density_filter_matrix(centroids: &[(f64, f64)], r_min: f64) -> Vec<f64> {
-    let n = centroids.len();
-    let mut h = vec![0.0_f64; n * n];
-    for i in 0..n {
-        let (xi, yi) = centroids[i];
-        let mut row_sum = 0.0;
-        for j in 0..n {
-            let (xj, yj) = centroids[j];
-            let d = ((xi - xj).powi(2) + (yi - yj).powi(2)).sqrt();
-            let w = (r_min - d).max(0.0);
-            h[i * n + j] = w;
-            row_sum += w;
-        }
-        if row_sum > 1e-30 {
-            for j in 0..n {
-                h[i * n + j] /= row_sum;
-            }
-        }
-    }
-    h
+/// Returns the `n × n` matrix in CSR form: only the `O(n · k)` weights of
+/// elements within `r_min` of each other are stored (a dense matrix of a
+/// 200 × 100 element mesh would need 3.2 GB).  Every row sums to one.
+pub fn density_filter_matrix(centroids: &[(f64, f64)], r_min: f64) -> CsrMatrix {
+    SparseFilter::hat(centroids, r_min).normalised()
 }
 
 // ============================================================================
@@ -115,6 +96,8 @@ pub fn density_filter_matrix(centroids: &[(f64, f64)], r_min: f64) -> Vec<f64> {
 /// Density-weighted sensitivity filter.
 ///
 /// s̃ᵢ = Σⱼ Hᵢⱼ ρⱼ sⱼ / Σⱼ Hᵢⱼ ρⱼ
+///
+/// Cost `O(n · k)` (see [`SparseFilter`]).
 pub fn filter_sensitivities_density_weighted(
     sensitivities: &[f64],
     densities: &[f64],
@@ -124,30 +107,14 @@ pub fn filter_sensitivities_density_weighted(
     let n = sensitivities.len();
     assert_eq!(densities.len(), n);
     assert_eq!(centroids.len(), n);
-    let mut out = vec![0.0_f64; n];
-    for i in 0..n {
-        let (xi, yi) = centroids[i];
-        let mut num = 0.0;
-        let mut den = 0.0;
-        for j in 0..n {
-            let (xj, yj) = centroids[j];
-            let d = ((xi - xj).powi(2) + (yi - yj).powi(2)).sqrt();
-            let w = (r_min - d).max(0.0);
-            num += w * densities[j] * sensitivities[j];
-            den += w * densities[j];
-        }
-        out[i] = if den.abs() > 1e-30 {
-            num / den
-        } else {
-            sensitivities[i]
-        };
-    }
-    out
+    SparseFilter::hat(centroids, r_min).density_weighted_average(sensitivities, densities)
 }
 
 /// Plain hat-function sensitivity filter (no density weighting).
 ///
 /// s̃ᵢ = Σⱼ Hᵢⱼ sⱼ / Σⱼ Hᵢⱼ
+///
+/// Cost `O(n · k)` (see [`SparseFilter`]).
 pub fn filter_sensitivities_hat(
     sensitivities: &[f64],
     centroids: &[(f64, f64)],
@@ -155,25 +122,7 @@ pub fn filter_sensitivities_hat(
 ) -> Vec<f64> {
     let n = sensitivities.len();
     assert_eq!(centroids.len(), n);
-    let mut out = vec![0.0_f64; n];
-    for i in 0..n {
-        let (xi, yi) = centroids[i];
-        let mut num = 0.0;
-        let mut den = 0.0;
-        for j in 0..n {
-            let (xj, yj) = centroids[j];
-            let d = ((xi - xj).powi(2) + (yi - yj).powi(2)).sqrt();
-            let w = (r_min - d).max(0.0);
-            num += w * sensitivities[j];
-            den += w;
-        }
-        out[i] = if den.abs() > 1e-30 {
-            num / den
-        } else {
-            sensitivities[i]
-        };
-    }
-    out
+    SparseFilter::hat(centroids, r_min).average(sensitivities)
 }
 
 // ============================================================================
@@ -273,10 +222,20 @@ impl MmaAsymptote {
         }
     }
 
-    /// Update asymptotes using the sign-change heuristic.
+    /// Update the asymptotes with Svanberg's sign-change rule.
     ///
-    /// If xₖ − xₖ₋₁ and xₖ₋₁ − xₖ₋₂ have the same sign, expand; otherwise
-    /// contract.
+    /// The distance of an asymptote from the iterate evolves geometrically,
+    ///
+    /// ```text
+    /// Lᵏ⁺¹ = xᵏ⁺¹ − γ (xᵏ − Lᵏ),     Uᵏ⁺¹ = xᵏ⁺¹ + γ (Uᵏ − xᵏ),
+    /// ```
+    ///
+    /// with `γ = s_incr` (> 1, expand) while the iterate keeps moving in one
+    /// direction (xᵏ⁺¹ − xᵏ and xᵏ − xᵏ⁻¹ have the same sign), `γ = s_decr`
+    /// (< 1, contract) when it oscillates and `γ = 1` otherwise.  The
+    /// distances are kept within \[0.01, 10\] · (`x_hi` − `x_lo`).  Repeated
+    /// oscillation therefore tightens the asymptotes geometrically, which makes the
+    /// sub-problems ever more conservative and drives the iteration to convergence.
     pub fn update_asymptotes(
         &mut self,
         x_cur: f64,
@@ -287,10 +246,19 @@ impl MmaAsymptote {
     ) {
         let d1 = x_cur - self.x_prev;
         let d2 = self.x_prev - self.x_prev2;
-        let s = if d1 * d2 > 0.0 { s_incr } else { s_decr };
-        let range = x_hi - x_lo;
-        self.lower = x_cur - s * range;
-        self.upper = x_cur + s * range;
+        let gamma = if d1 * d2 > 0.0 {
+            s_incr
+        } else if d1 * d2 < 0.0 {
+            s_decr
+        } else {
+            1.0
+        };
+        let range = (x_hi - x_lo).max(1e-30);
+        let (min_dist, max_dist) = (0.01 * range, 10.0 * range);
+        let dist_lower = (gamma * (self.x_prev - self.lower)).clamp(min_dist, max_dist);
+        let dist_upper = (gamma * (self.upper - self.x_prev)).clamp(min_dist, max_dist);
+        self.lower = x_cur - dist_lower;
+        self.upper = x_cur + dist_upper;
         self.x_prev2 = self.x_prev;
         self.x_prev = x_cur;
     }
@@ -298,28 +266,82 @@ impl MmaAsymptote {
 
 /// Solve a single-variable MMA sub-problem analytically.
 ///
-/// Minimise  f(x) ≈ p/(U − x) + q/(x − L)  subject to  x ∈ \[α, β\].
+/// Minimise  f(x) ≈ p/(U − x) + q/(x − L)  subject to  x ∈ \[α, β\]
+/// (with `L < α ≤ β < U`, `p, q ≥ 0`).
 ///
-/// Returns the optimal x.
+/// Setting `f'(x) = p/(U − x)² − q/(x − L)² = 0` gives
+/// `(x − L)/(U − x) = √(q/p)`, i.e. with `r = √(q/p)` the unconstrained minimiser
+///
+/// ```text
+/// x* = (L + r U) / (1 + r),
+/// ```
+///
+/// which is then clamped to `[α, β]`.  The limits are handled explicitly:
+///
+/// * `p ≈ 0` (the objective decreases with x, ∂f/∂x < 0): `q/(x − L)` is strictly
+///   decreasing, so the minimiser is the upper bound `β`;
+/// * `q ≈ 0` (∂f/∂x > 0): `p/(U − x)` is strictly increasing, so it is `α`;
+/// * `p ≈ q ≈ 0` (no information): the centre of the asymptotes, i.e. the current
+///   iterate for symmetric asymptotes;
+/// * non-finite `p` or `q`: the centre of the trust region `[α, β]`.
+///
+/// The result is always finite for finite bounds and never panics, also for an
+/// empty interval (`α > β`, which returns `β`).
 pub fn mma_single_variable(p: f64, q: f64, lower: f64, upper: f64, alpha: f64, beta: f64) -> f64 {
+    let confine = |x: f64| x.max(alpha).min(beta);
     let range = upper - lower;
-    if range < 1e-30 {
-        return alpha.max(beta.min(0.5 * (lower + upper)));
+    if range.is_nan() || range < 1e-30 {
+        return confine(0.5 * (lower + upper));
     }
-    // Unconstrained minimiser of the convex approximation
-    let x_unc = if p + q > 1e-30 {
-        let ratio = (q / p).max(0.0).sqrt();
-        (lower * ratio + upper) / (1.0 + ratio)
-    } else {
+    if !(p.is_finite() && q.is_finite()) {
+        return confine(0.5 * (alpha + beta));
+    }
+    // A negative coefficient would make the approximation concave: treat it as zero.
+    let (p, q) = (p.max(0.0), q.max(0.0));
+    let x = if p <= 1e-30 && q <= 1e-30 {
         0.5 * (lower + upper)
+    } else if p <= 1e-30 {
+        beta
+    } else if q <= 1e-30 {
+        alpha
+    } else {
+        let ratio = (q / p).sqrt();
+        if ratio.is_finite() {
+            (lower + ratio * upper) / (1.0 + ratio)
+        } else {
+            // q ≫ p: the minimiser sits against the upper asymptote.
+            beta
+        }
     };
-    x_unc.clamp(alpha, beta)
+    confine(x)
 }
 
-/// One MMA iteration step for a vector of design variables.
+/// One Svanberg-MMA iteration for a vector of design variables with a single
+/// volume constraint `mean(x) ≤ volume_fraction`.
 ///
-/// Assumes sensitivities `dc` have been pre-filtered.
-/// Returns updated densities.
+/// Assumes the sensitivities `dc` of the objective have been pre-filtered.
+///
+/// For every variable the objective is replaced by the convex separable
+/// approximation `p/(U − x) + q/(x − L)` with
+///
+/// ```text
+/// p = (U − xᵏ)² (max(g, 0) + 0.001 |g| + ρ),   q = (xᵏ − L)² (max(−g, 0) + 0.001 |g| + ρ),
+/// ```
+///
+/// (`g = dc`, `ρ = 10⁻⁵ max|dc| / (x_hi − x_lo)` the usual regularisation that keeps
+/// the approximation strictly convex; it leaves the gradient at `xᵏ`
+/// unchanged).  Its minimiser within the move limits and Svanberg's safeguard
+/// `L + 0.1 (xᵏ − L) ≤ x ≤ U − 0.1 (U − xᵏ)` is [`mma_single_variable`].
+///
+/// The volume constraint is handled by its Lagrange multiplier `λ ≥ 0`: the
+/// MMA-style linearisation of the constraint, `λ ∂V/∂xᵢ (Uᵢ − xᵢᵏ)²` with
+/// `∂V/∂xᵢ = 1/n`, is added to `pᵢ`, and `λ` is bisected until
+/// `mean(x) = volume_fraction`.  If the unconstrained design already satisfies
+/// the constraint `λ = 0`.  When even the lowest design reachable within the move
+/// limits violates the constraint, that lowest design is returned.
+///
+/// The asymptotes are updated in place for the next iteration (see
+/// [`MmaAsymptote::update_asymptotes`]).  Returns the updated design variables.
 pub fn mma_step(
     x: &[f64],
     dc: &[f64],
@@ -327,29 +349,105 @@ pub fn mma_step(
     x_lo: f64,
     x_hi: f64,
     move_limit: f64,
+    volume_fraction: f64,
 ) -> Vec<f64> {
     let n = x.len();
     assert_eq!(dc.len(), n);
     assert_eq!(asymptotes.len(), n);
-    let mut x_new = vec![0.0_f64; n];
-    for i in 0..n {
-        let alpha = (x[i] - move_limit).max(x_lo);
-        let beta = (x[i] + move_limit).min(x_hi);
-        let l = asymptotes[i].lower;
-        let u = asymptotes[i].upper;
-        let dci = dc[i];
-        let p = if dci < 0.0 {
-            0.0
+    let range = x_hi - x_lo;
+    if n == 0 || range.is_nan() || range <= 0.0 {
+        return x.to_vec();
+    }
+    let inv_n = 1.0 / n as f64;
+    let max_abs_dc = dc.iter().fold(0.0_f64, |acc, g| acc.max(g.abs()));
+    let scale = if max_abs_dc > 0.0 && max_abs_dc.is_finite() {
+        max_abs_dc
+    } else {
+        1.0
+    };
+    let regularisation = 1.0e-5 * scale / range;
+
+    let mut lower = Vec::with_capacity(n);
+    let mut upper = Vec::with_capacity(n);
+    let mut alpha = Vec::with_capacity(n);
+    let mut beta = Vec::with_capacity(n);
+    let mut p_coeff = Vec::with_capacity(n);
+    let mut q_coeff = Vec::with_capacity(n);
+    let mut volume_coeff = Vec::with_capacity(n);
+    for ((&xi, &g), asym) in x.iter().zip(dc.iter()).zip(asymptotes.iter_mut()) {
+        // Asymptotes must bracket the current design strictly.
+        if !(asym.lower.is_finite() && asym.upper.is_finite() && asym.lower < xi && xi < asym.upper)
+        {
+            asym.lower = xi - 0.5 * range;
+            asym.upper = xi + 0.5 * range;
+        }
+        let (l, u) = (asym.lower, asym.upper);
+        alpha.push(x_lo.max(xi - move_limit).max(l + 0.1 * (xi - l)));
+        beta.push(x_hi.min(xi + move_limit).min(u - 0.1 * (u - xi)));
+        let mixed = 0.001 * g.abs() + regularisation;
+        p_coeff.push((u - xi).powi(2) * (g.max(0.0) + mixed));
+        q_coeff.push((xi - l).powi(2) * ((-g).max(0.0) + mixed));
+        volume_coeff.push((u - xi).powi(2) * inv_n);
+        lower.push(l);
+        upper.push(u);
+    }
+
+    // Design minimising the sub-problem for a given volume multiplier λ.
+    let design = |lambda: f64| -> Vec<f64> {
+        (0..n)
+            .map(|i| {
+                mma_single_variable(
+                    p_coeff[i] + lambda * volume_coeff[i],
+                    q_coeff[i],
+                    lower[i],
+                    upper[i],
+                    alpha[i],
+                    beta[i],
+                )
+            })
+            .collect()
+    };
+    let mean = |v: &[f64]| v.iter().sum::<f64>() * inv_n;
+
+    let mut x_new = design(0.0);
+    if mean(&x_new) > volume_fraction {
+        // Bracket a feasible multiplier, then bisect on the (monotone) volume.
+        let mut hi = scale * n as f64;
+        let mut feasible = design(hi);
+        let mut doublings = 0;
+        while mean(&feasible) > volume_fraction && doublings < 200 {
+            hi *= 2.0;
+            feasible = design(hi);
+            doublings += 1;
+        }
+        if mean(&feasible) > volume_fraction {
+            // Infeasible within the move limits: the lowest reachable design.
+            x_new = feasible;
         } else {
-            dci * (u - x[i]).powi(2)
-        };
-        let q = if dci > 0.0 {
-            0.0
-        } else {
-            -dci * (x[i] - l).powi(2)
-        };
-        x_new[i] = mma_single_variable(p, q, l, u, alpha, beta);
-        asymptotes[i].update_asymptotes(x_new[i], x_lo, x_hi, 1.2, 0.7);
+            let mut lo = 0.0_f64;
+            for _ in 0..200 {
+                let mid = 0.5 * (lo + hi);
+                let trial = design(mid);
+                let volume = mean(&trial);
+                if volume > volume_fraction {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                    feasible = trial;
+                    if volume_fraction - volume <= 1.0e-14 {
+                        break;
+                    }
+                }
+                if hi - lo <= 1.0e-15 * hi {
+                    break;
+                }
+            }
+            x_new = feasible;
+        }
+    }
+
+    for (asym, &xn) in asymptotes.iter_mut().zip(x_new.iter()) {
+        asym.update_asymptotes(xn, x_lo, x_hi, 1.2, 0.7);
     }
     x_new
 }
@@ -1192,6 +1290,8 @@ impl TopologyConfig {
 /// a compliance-like behaviour for testing purposes).
 pub fn run_mock_topology_optimisation(cfg: &TopologyConfig) -> TopologyResult {
     let centroids = regular_grid_centroids(cfg.nx, cfg.ny, cfg.h);
+    // The mesh does not change: build the sparse filter once and reuse it.
+    let filter = SparseFilter::hat(&centroids, cfg.r_min);
     let mut densities = cfg.initial_densities();
     let mut compliance_history = Vec::with_capacity(cfg.max_iter);
     let e0 = 1.0_f64;
@@ -1199,8 +1299,8 @@ pub fn run_mock_topology_optimisation(cfg: &TopologyConfig) -> TopologyResult {
     for _iter in 0..cfg.max_iter {
         // Mock sensitivities: ∂c/∂ρ ≈ −1/ρ
         let raw_sens: Vec<f64> = densities.iter().map(|&r| -1.0 / r.max(1e-6)).collect();
-        let filt_sens = filter_sensitivities_hat(&raw_sens, &centroids, cfg.r_min);
-        let filt_dens = density_filter(&densities, &centroids, cfg.r_min);
+        let filt_sens = filter.average(&raw_sens);
+        let filt_dens = filter.average(&densities);
         let se: Vec<f64> = filt_dens
             .iter()
             .map(|&r| simp_modulus(r, e0, e_min, cfg.penalty))
@@ -1222,6 +1322,9 @@ pub fn run_mock_topology_optimisation(cfg: &TopologyConfig) -> TopologyResult {
 // ============================================================================
 // TESTS
 // ============================================================================
+
+#[cfg(test)]
+mod mma_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1540,8 +1643,9 @@ mod tests {
         let cents: Vec<(f64, f64)> = vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)];
         let h = density_filter_matrix(&cents, 1.5);
         let n = cents.len();
+        assert_eq!((h.nrows, h.ncols), (n, n));
         for i in 0..n {
-            let row_sum: f64 = (0..n).map(|j| h[i * n + j]).sum();
+            let row_sum: f64 = h.values[h.row_ptr[i]..h.row_ptr[i + 1]].iter().sum();
             assert!(
                 (row_sum - 1.0).abs() < 1e-12,
                 "row {} sum={:.6}",

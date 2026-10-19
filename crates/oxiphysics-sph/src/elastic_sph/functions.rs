@@ -197,13 +197,25 @@ pub fn compute_stress(particle: &mut ElasticParticle, model: &ConstitutiveModel)
 }
 /// Compute the SPH acceleration from the stress divergence for all particles.
 ///
-/// Uses the symmetric SPH approximation:
+/// Uses the symmetric SPH approximation of the momentum equation
+/// `ρ a = ∇·σ`:
 ///
 /// ```text
-/// aᵢ = Σⱼ mⱼ (Pᵢ/ρᵢ² + Pⱼ/ρⱼ²) · ∇Wᵢⱼ
+/// aᵢ = Σⱼ mⱼ (σᵢ/ρᵢ² + σⱼ/ρⱼ²) · ∇ᵢWᵢⱼ
 /// ```
 ///
-/// where `Pᵢ` is the first Piola-Kirchhoff stress tensor.
+/// where `σ` is the **Cauchy** stress (`particle.stress`, tension positive, as
+/// filled by [`compute_stress`]) and `∇ᵢWᵢⱼ = ` [`kernel_gradient`]`(xᵢ − xⱼ, h̄ᵢⱼ)`
+/// is the kernel gradient with respect to `xᵢ`. For `σ = −p I` this reduces to
+/// the familiar pressure acceleration `−Σⱼ mⱼ (pᵢ/ρᵢ² + pⱼ/ρⱼ²) ∇ᵢWᵢⱼ`, so
+/// compressed particles (`p > 0`) repel and stretched particles attract.
+///
+/// The positions, masses and densities entering the sum are
+/// current-configuration quantities, which is why the Cauchy stress is used and
+/// not the first Piola-Kirchhoff stress `pk1_stress`; the latter would require
+/// the total-Lagrangian form (reference positions and reference volumes).
+/// The sum is antisymmetric in each pair, so the total momentum is conserved.
+///
 /// Results are written into `particle.acceleration`.
 ///
 /// # Arguments
@@ -214,10 +226,10 @@ pub fn stress_divergence(particles: &mut [ElasticParticle]) {
     let mass: Vec<f64> = particles.iter().map(|p| p.mass).collect();
     let rho: Vec<f64> = particles.iter().map(|p| p.density).collect();
     let h_sph: Vec<f64> = particles.iter().map(|p| p.h).collect();
-    let pk1: Vec<[[f64; 3]; 3]> = particles.iter().map(|p| p.pk1_stress).collect();
+    let sigma: Vec<[[f64; 3]; 3]> = particles.iter().map(|p| p.stress).collect();
     let mut accel = vec![[0.0f64; 3]; n];
     for i in 0..n {
-        let pi_rho2 = mat_scale(pk1[i], 1.0 / (rho[i] * rho[i]));
+        let si_rho2 = mat_scale(sigma[i], 1.0 / (rho[i] * rho[i]));
         for j in 0..n {
             if i == j {
                 continue;
@@ -228,12 +240,12 @@ pub fn stress_divergence(particles: &mut [ElasticParticle]) {
             if grad_w == [0.0; 3] {
                 continue;
             }
-            let pj_rho2 = mat_scale(pk1[j], 1.0 / (rho[j] * rho[j]));
-            let sum_p = mat_add(pi_rho2, pj_rho2);
-            let force = mat_vec(sum_p, grad_w);
+            let sj_rho2 = mat_scale(sigma[j], 1.0 / (rho[j] * rho[j]));
+            let sum_s = mat_add(si_rho2, sj_rho2);
+            let force = mat_vec(sum_s, grad_w);
             let mj = mass[j];
             for d in 0..3 {
-                accel[i][d] -= mj * force[d];
+                accel[i][d] += mj * force[d];
             }
         }
     }
@@ -243,11 +255,22 @@ pub fn stress_divergence(particles: &mut [ElasticParticle]) {
 }
 /// Hourglass (zero-energy mode) control correction.
 ///
-/// Applies an artificial hourglass viscosity following Randles & Libersky (1996):
+/// Applies an artificial hourglass viscosity in the spirit of Randles &
+/// Libersky (1996): every particle is accelerated towards the velocity of its
+/// neighbours, which damps the short-wavelength (checkerboard) velocity modes
+/// that the stress divergence cannot see:
 ///
 /// ```text
-/// aᵢ_hg = α_hg · cₛ · Σⱼ mⱼ/ρⱼ · (vᵢ−vⱼ) · W(rᵢⱼ, h)
+/// aᵢ_hg = (α_hg · cₛ / h̄ᵢⱼ) · Σⱼ (mⱼ/ρ̄ᵢⱼ) · W(rᵢⱼ, h̄ᵢⱼ) · (vⱼ − vᵢ)
 /// ```
+///
+/// with the pair smoothing length `h̄ᵢⱼ = ½(hᵢ + hⱼ)` and the pair density
+/// `ρ̄ᵢⱼ = ½(ρᵢ + ρⱼ)` (for equal densities `mⱼ/ρ̄ᵢⱼ = mⱼ/ρⱼ` is the neighbour
+/// volume). The prefactor `α_hg cₛ / h̄` is a rate (1/s), the weight
+/// `(mⱼ/ρ̄) W` is dimensionless, so `aᵢ_hg` is an acceleration (m/s²). The pair
+/// exchange `mᵢ aᵢ|ⱼ = −mⱼ aⱼ|ᵢ` is antisymmetric, so the correction conserves
+/// momentum, and the power `Σᵢ mᵢ vᵢ·aᵢ_hg = −Σ_pairs (α_hg cₛ/h̄) (mᵢ mⱼ/ρ̄) W |vᵢ − vⱼ|²`
+/// is never positive: it can only remove kinetic energy.
 ///
 /// Adds the hourglass correction to `particle.acceleration`.
 ///
@@ -275,8 +298,9 @@ pub fn hourglass_control(particles: &mut [ElasticParticle], alpha_hg: f64, sound
             if w == 0.0 {
                 continue;
             }
-            let dv = sub3(vel[i], vel[j]);
-            let factor = alpha_hg * sound_speed * mass[j] / rho[j] * w;
+            let rho_avg = (0.5 * (rho[i] + rho[j])).max(1e-30);
+            let dv = sub3(vel[j], vel[i]);
+            let factor = alpha_hg * sound_speed / h_avg * mass[j] / rho_avg * w;
             for d in 0..3 {
                 corrections[i][d] += factor * dv[d];
             }
@@ -595,9 +619,14 @@ mod tests {
             ElasticParticle::new([0.04, 0.0, 0.0], 1e-3, 2700.0, 0.05, 70e9, 0.33),
         ];
         for p in &mut particles {
-            p.pk1_stress[0][0] = 1e6;
+            p.stress[0][0] = 1e6;
         }
         stress_divergence(&mut particles);
+        assert!(
+            particles[0].acceleration[0].abs() > 1.0,
+            "the pair must actually interact: a = {:?}",
+            particles[0].acceleration
+        );
         for d in 0..3 {
             assert!(
                 (particles[0].acceleration[d] + particles[1].acceleration[d]).abs() < 1e-6,

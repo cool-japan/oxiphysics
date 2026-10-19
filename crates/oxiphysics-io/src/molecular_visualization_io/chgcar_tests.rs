@@ -61,6 +61,26 @@ fn density_uses_x_fastest_index() {
 }
 
 #[test]
+fn density_of_a_grid_written_x_fastest_is_not_transposed() {
+    // Value ix + 10*iy + 100*iz at every point of a 2x3x4 grid, written the way
+    // VASP writes it: the x index runs fastest.
+    let mut values = Vec::new();
+    for iz in 0..4 {
+        for iy in 0..3 {
+            for ix in 0..2 {
+                values.push((ix + 10 * iy + 100 * iz) as f64);
+            }
+        }
+    }
+    let chg = ChgcarFile::parse(&chgcar_text("2 3 4", &values)).unwrap();
+    let vol = lattice_volume(chg.poscar.lattice);
+    assert!((chg.density(1, 2, 3).unwrap() * vol - 321.0).abs() < 1e-9);
+    assert!((chg.density(0, 2, 3).unwrap() * vol - 320.0).abs() < 1e-9);
+    assert!((chg.density(1, 0, 2).unwrap() * vol - 201.0).abs() < 1e-9);
+    assert!((chg.density(0, 1, 0).unwrap() * vol - 10.0).abs() < 1e-9);
+}
+
+#[test]
 fn density_outside_grid_is_none() {
     let chg = ChgcarFile::parse(&chgcar_text("2 3 4", &ramp(24))).unwrap();
     assert!(chg.density(2, 0, 0).is_none());

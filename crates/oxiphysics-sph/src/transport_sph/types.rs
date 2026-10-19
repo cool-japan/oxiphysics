@@ -3,13 +3,9 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::{
-    ReactionFn, cubic_kernel, cubic_kernel_grad, dot3, heat_exchange_rate, len3, sub3,
+    MORRIS_ETA_SQ_FACTOR, ReactionFn, cubic_kernel, cubic_kernel_grad, dot3, heat_exchange_rate,
+    len3, morris_laplacian, sub3,
 };
-
-/// Morris regularisation factor: the Brookshaw/Morris SPH Laplacians divide by
-/// `r_ij² + η²` with `η² = 0.01 h²`, which keeps the pair term bounded as
-/// `r_ij → 0` without changing it at the usual particle spacings.
-const MORRIS_ETA_SQ_FACTOR: f64 = 0.01;
 
 /// Advection-dominated scalar transport with stabilisation.
 ///
@@ -29,6 +25,26 @@ impl AdvectionScheme {
             epsilon_upwind,
         }
     }
+    /// SPH gradient `∇φ_i = Σ_j V_j (φ_j − φ_i) ∇_iW_ij` of the first concentration.
+    fn sph_gradient(particles: &[TransportParticle], i: usize) -> [f64; 3] {
+        let pi = &particles[i];
+        let mut gradient = [0.0f64; 3];
+        for (j, pj) in particles.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let r_ij = sub3(pi.position, pj.position);
+            if len3(r_ij) < 1e-12 {
+                continue;
+            }
+            let grad_w = cubic_kernel_grad(r_ij, 0.5 * (pi.h + pj.h));
+            let weight = pj.volume() * (pj.conc() - pi.conc());
+            for (g, gw) in gradient.iter_mut().zip(grad_w.iter()) {
+                *g += weight * gw;
+            }
+        }
+        gradient
+    }
     /// Compute the stabilised advection rate dφ/dt for particle `i`.
     ///
     /// The central term is `−v·∇φ` with the SPH gradient
@@ -37,8 +53,20 @@ impl AdvectionScheme {
     /// `ε Σ_j V_j 2 (φ_i − φ_j) (r_ij·∇_iW_ij) / (r_ij² + η²)` is added for every
     /// neighbour with `v·r_ij < 0`.  Because `r_ij·∇_iW_ij < 0`, this term pulls
     /// `φ_i` towards its neighbours (it damps, rather than amplifies, extrema).
+    ///
+    /// For [`AdvectionSchemeKind::WenoSph`] the first pass computes `∇φ_i`; the
+    /// second pass scales each pair difference by the van Leer limiter
+    /// `ψ(r)`, `r = 2 ∇φ_i·(x_j − x_i)/(φ_j − φ_i) − 1`:
+    /// `dφ_i/dt = −Σ_j V_j ψ(r_ij) (φ_j − φ_i) (v·∇_iW_ij)`.  The limiter is 1 for a
+    /// linear profile (the scheme then equals the standard one) and 0 where `φ_i` is
+    /// a local extremum with respect to `j`, which suppresses the overshoots the
+    /// central scheme produces next to steep gradients.
     pub fn compute_rate_i(&self, particles: &[TransportParticle], i: usize) -> f64 {
         let pi = &particles[i];
+        let gradient = match self.kind {
+            AdvectionSchemeKind::WenoSph => Self::sph_gradient(particles, i),
+            AdvectionSchemeKind::Standard | AdvectionSchemeKind::Upwind => [0.0; 3],
+        };
         let mut rate = 0.0f64;
         for (j, pj) in particles.iter().enumerate() {
             if i == j {
@@ -70,13 +98,14 @@ impl AdvectionScheme {
                 AdvectionSchemeKind::WenoSph => {
                     let v_dot_gradw = dot3(pi.velocity, grad_w);
                     let dphi = pj.conc() - pi.conc();
-                    let r_ratio = if dphi.abs() > 1e-15 {
-                        dphi / (dphi + 1e-6 * dphi.signum())
+                    let phi_lim = if dphi.abs() > 1e-15 {
+                        let gradient_ratio =
+                            2.0 * dot3(gradient, sub3(pj.position, pi.position)) / dphi - 1.0;
+                        van_leer_limiter(gradient_ratio)
                     } else {
                         1.0
                     };
-                    let phi_lim = 2.0 * r_ratio / (1.0 + r_ratio);
-                    rate -= vj * dphi * phi_lim * v_dot_gradw;
+                    rate -= vj * phi_lim * dphi * v_dot_gradw;
                 }
             }
         }
@@ -541,22 +570,36 @@ impl SPHHeatTransfer {
         }
         self.thermal_conductivity / rho_cp
     }
-    /// Heat exchange from particle i to particle j.
+    /// Heat exchange of particle i with particle j: the contribution of the pair to
+    /// the conduction power density `k ∇²T_i` (W/m³).
     ///
-    /// Simplified SPH conduction: `dQ_i = -2k (T_i - T_j) m_j W(r, h) / ρ_j`.
+    /// Brookshaw/Morris SPH conduction:
+    /// `dQ_i = 2 k (m_j/ρ_j) (T_i − T_j) (r_ij · ∇_iW_ij) / (r_ij² + η²)`, with
+    /// `η² = 0.01 h²`.  Because `r_ij · ∇_iW_ij < 0`, the value is negative when
+    /// `T_i > T_j`: heat leaves the hotter particle.
     ///
     /// # Arguments
     /// * `t_i`, `t_j` – Temperatures of particles i and j \[K\].
     /// * `mass_j`     – Mass of particle j \[kg\].
     /// * `rho_j`      – Density of particle j \[kg/m³\].
-    /// * `w`          – Kernel weight W(r, h).
-    pub fn heat_exchange(&self, t_i: f64, t_j: f64, mass_j: f64, rho_j: f64, w: f64) -> f64 {
+    /// * `r_ij`       – Separation `x_i − x_j` \[m\] (its sign convention is irrelevant).
+    /// * `h`          – Smoothing length of the cubic-spline kernel \[m\].
+    pub fn heat_exchange(
+        &self,
+        t_i: f64,
+        t_j: f64,
+        mass_j: f64,
+        rho_j: f64,
+        r_ij: [f64; 3],
+        h: f64,
+    ) -> f64 {
         if rho_j <= 0.0_f64 {
             return 0.0_f64;
         }
-        -2.0_f64 * self.thermal_conductivity * (t_i - t_j) * mass_j / rho_j * w
+        self.thermal_conductivity * morris_laplacian(t_i, t_j, r_ij, mass_j / rho_j, h)
     }
-    /// Rate of temperature change dT/dt for particle i from all neighbours.
+    /// Rate of temperature change dT/dt = α ∇²T (K/s) for particle i from all
+    /// neighbours, with the Brookshaw/Morris Laplacian of [`morris_laplacian`].
     ///
     /// # Arguments
     /// * `t_i`         – Temperature of particle i \[K\].
@@ -566,9 +609,7 @@ impl SPHHeatTransfer {
         let alpha = self.thermal_diffusivity();
         let mut sum = 0.0_f64;
         for &(t_j, r_ij, mass_j, rho_j) in neighbours {
-            let r = len3(r_ij);
-            let w = cubic_kernel(r, h);
-            sum += heat_exchange_rate(alpha, t_i, t_j, mass_j, rho_j, w);
+            sum += heat_exchange_rate(alpha, t_i, t_j, mass_j, rho_j, r_ij, h);
         }
         sum
     }
@@ -591,11 +632,14 @@ impl SPHDiffusion {
             smoothing_length,
         }
     }
-    /// SPH Laplacian approximation: `∇²c_i ≈ Σ_j 2 (c_j - c_i) m_j W / ρ_j`.
+    /// Brookshaw/Morris SPH Laplacian:
+    /// `∇²c_i ≈ Σ_j 2 (m_j/ρ_j) (c_i − c_j) (r_ij · ∇_iW_ij) / (r_ij² + η²)` with
+    /// `η² = 0.01 h²` (see [`morris_laplacian`]); it is positive where `c_i` is below
+    /// its neighbours and negative at a concentration peak.
     ///
     /// # Arguments
     /// * `c_i`        – Concentration at particle i.
-    /// * `neighbours` – Slice of `(c_j, r_ij, mass_j, rho_j)`.
+    /// * `neighbours` – Slice of `(c_j, r_ij, mass_j, rho_j)` with `r_ij = x_i − x_j`.
     pub fn concentration_laplacian(
         &self,
         c_i: f64,
@@ -604,10 +648,8 @@ impl SPHDiffusion {
         let h = self.smoothing_length;
         let mut lap = 0.0_f64;
         for &(c_j, r_ij, mass_j, rho_j) in neighbours {
-            let r = len3(r_ij);
-            let w = cubic_kernel(r, h);
             if rho_j > 0.0_f64 {
-                lap += 2.0_f64 * (c_j - c_i) * mass_j / rho_j * w;
+                lap += morris_laplacian(c_i, c_j, r_ij, mass_j / rho_j, h);
             }
         }
         lap
@@ -807,7 +849,8 @@ impl SPHMultispeciesTransport {
     }
     /// SPH diffusion flux for species α at particle i.
     ///
-    /// `dc_α/dt = D_α Σ_j 2(c_αj - c_αi) m_j W / ρ_j`
+    /// `dc_α/dt = D_α Σ_j 2 (m_j/ρ_j) (c_αi − c_αj) (r_ij · ∇_iW_ij) / (r_ij² + η²) + S_α`
+    /// with `r_ij = x_i − x_j` and `η² = 0.01 h²` (see [`morris_laplacian`]).
     pub fn dcdt(
         &self,
         alpha: usize,
@@ -818,10 +861,8 @@ impl SPHMultispeciesTransport {
     ) -> f64 {
         let mut lap = 0.0_f64;
         for &(c_j, r_ij, mass_j, rho_j) in neighbours {
-            let r = len3(r_ij);
-            let w = cubic_kernel(r, h);
             if rho_j > 0.0_f64 {
-                lap += 2.0_f64 * (c_j - c_i) * mass_j / rho_j * w;
+                lap += morris_laplacian(c_i, c_j, r_ij, mass_j / rho_j, h);
             }
         }
         self.diffusivities[alpha] * lap + source
@@ -930,15 +971,24 @@ impl DiffusionSph {
 }
 /// Advection scheme for SPH scalar transport.
 ///
-/// Supports pure Lagrangian advection (particles move with fluid) and a
-/// semi-Lagrangian correction for upwind stabilisation.
+/// Supports pure Lagrangian advection (particles move with the fluid, so the scalar
+/// needs no convective term) and semi-Lagrangian back-tracing for particles that do
+/// not follow the flow, both with an upwind-style artificial diffusion that
+/// stabilises the scalar.
 #[derive(Debug, Clone)]
 pub struct AdvectionSPH {
-    /// CFL-limited time step \[s\].
+    /// CFL-limited time step \[s\]; also the back-tracing interval of the
+    /// semi-Lagrangian scheme.
     pub dt: f64,
     /// Artificial diffusion coefficient for upwind correction.
     pub artificial_diffusion: f64,
-    /// Use semi-Lagrangian back-tracing instead of pure Lagrangian.
+    /// Use semi-Lagrangian back-tracing instead of pure Lagrangian advection.
+    ///
+    /// `false`: the particles are assumed to move with the fluid (see
+    /// [`AdvectionSPH::update_positions`]); the scalar is carried along and only the
+    /// artificial diffusion contributes to the rate.  `true`: the particles stay in
+    /// place and the scalar is advected by back-tracing, see
+    /// [`AdvectionSPH::advect_scalar`].
     pub semi_lagrangian: bool,
 }
 impl AdvectionSPH {
@@ -950,10 +1000,29 @@ impl AdvectionSPH {
             semi_lagrangian,
         }
     }
-    /// Advect a single scalar `c` at particle `i` using the material derivative.
+    /// Rate of change dc/dt (1/s times the concentration unit) of the first
+    /// concentration `c` at particle `i`.
     ///
-    /// Dc/Dt = ∂c/∂t + u·∇c = 0 (in Lagrangian frame = 0).
-    /// In practice, adds an upwind diffusion term if requested.
+    /// The material derivative is `Dc/Dt = ∂c/∂t + u·∇c`; for particles that move with
+    /// the fluid it vanishes and `semi_lagrangian = false` returns only the stabilising
+    /// diffusion `ε_art |v_i| h_i ∇²c`.  With `semi_lagrangian = true` the particles
+    /// are fixed in space and `c` is advected by back-tracing: the value at the
+    /// departure point `x_dep = x_i − v_i Δt` is the Shepard interpolation
+    /// `c_dep = Σ_j V_j c_j W(|x_dep − x_j|, h_ij) / Σ_j V_j W(|x_dep − x_j|, h_ij)`
+    /// (all particles including `i`, `V_j = m_j/ρ_j`) and the convective rate is
+    /// `(c_dep − ĉ_i)/Δt`, where `ĉ_i` is the same interpolant evaluated at the
+    /// particle itself (the interpolant is not nodally exact, so comparing with the
+    /// raw `c_i` would turn its smoothing error into a spurious rate `∝ 1/Δt`; for
+    /// a symmetric neighbourhood `ĉ_i = c_i`).  A particle at rest, or a uniform
+    /// field, therefore gives exactly zero.  The convective rate is also zero for
+    /// `Δt ≤ 0` and when the departure point lies outside the support of every particle.
+    ///
+    /// The artificial diffusion uses the Brookshaw/Morris Laplacian
+    /// `∇²c_i ≈ Σ_j V_j 2 (c_i − c_j)(r_ij·∇_iW_ij)/(r_ij² + η²)`, `η² = 0.01 h²`, which
+    /// pulls `c_i` towards its neighbours and so damps extrema.
+    ///
+    /// * `kernel_fn(r, h)` – kernel value `W(r, h)` of the back-tracing interpolation
+    /// * `kernel_grad_fn(r_ij, h)` – kernel gradient `∇_iW_ij` for `r_ij = x_i − x_j`
     pub fn advect_scalar(
         &self,
         particles: &[TransportParticle],
@@ -963,21 +1032,6 @@ impl AdvectionSPH {
     ) -> f64 {
         let pi = &particles[i];
         let ci = pi.concentration.first().copied().unwrap_or(0.0);
-        let mut grad_c = [0.0_f64; 3];
-        for (j, pj) in particles.iter().enumerate() {
-            if j == i {
-                continue;
-            }
-            let r_ij = sub3(pi.position, pj.position);
-            let r = len3(r_ij);
-            let grad_w = kernel_grad_fn(r_ij, 0.5 * (pi.h + pj.h));
-            let cj = pj.concentration.first().copied().unwrap_or(0.0);
-            let vol_j = pj.mass / pj.density.max(1e-300);
-            grad_c[0] += vol_j * (cj - ci) * grad_w[0];
-            grad_c[1] += vol_j * (cj - ci) * grad_w[1];
-            grad_c[2] += vol_j * (cj - ci) * grad_w[2];
-            let _ = r;
-        }
         let speed = len3(pi.velocity);
         let upwind_diff = self.artificial_diffusion * speed * pi.h;
         let mut laplacian_c = 0.0_f64;
@@ -997,13 +1051,60 @@ impl AdvectionSPH {
             laplacian_c += pj.mass / pj.density.max(1e-300) * (ci - cj) * 2.0 * rdotgw
                 / (r * r + MORRIS_ETA_SQ_FACTOR * h_ij * h_ij);
         }
-        let conv = if self.semi_lagrangian {
-            -(pi.velocity[0] * grad_c[0] + pi.velocity[1] * grad_c[1] + pi.velocity[2] * grad_c[2])
+        let convective = if self.semi_lagrangian {
+            self.back_traced_rate(particles, i, &kernel_fn)
         } else {
             0.0
         };
-        let _ = kernel_fn;
-        conv + upwind_diff * laplacian_c
+        convective + upwind_diff * laplacian_c
+    }
+    /// Shepard interpolation `Σ_j V_j c_j W / Σ_j V_j W` of the first concentration at
+    /// `point`, seen from particle `i` (pair smoothing lengths `(h_i + h_j)/2`);
+    /// `None` when no particle has a support covering the point.
+    fn shepard_at(
+        particles: &[TransportParticle],
+        i: usize,
+        point: [f64; 3],
+        kernel_fn: &impl Fn(f64, f64) -> f64,
+    ) -> Option<f64> {
+        let pi = &particles[i];
+        let mut weighted_sum = 0.0_f64;
+        let mut weight_total = 0.0_f64;
+        for pj in particles.iter() {
+            let r = len3(sub3(point, pj.position));
+            let w = pj.mass / pj.density.max(1e-300) * kernel_fn(r, 0.5 * (pi.h + pj.h));
+            weighted_sum += w * pj.concentration.first().copied().unwrap_or(0.0);
+            weight_total += w;
+        }
+        if weight_total > 1e-300 {
+            Some(weighted_sum / weight_total)
+        } else {
+            None
+        }
+    }
+    /// Semi-Lagrangian convective rate `(c_dep − ĉ_i)/Δt` of particle `i`, see
+    /// [`AdvectionSPH::advect_scalar`].
+    fn back_traced_rate(
+        &self,
+        particles: &[TransportParticle],
+        i: usize,
+        kernel_fn: &impl Fn(f64, f64) -> f64,
+    ) -> f64 {
+        if !self.dt.is_finite() || self.dt <= 0.0 {
+            return 0.0;
+        }
+        let pi = &particles[i];
+        let departure = [
+            pi.position[0] - pi.velocity[0] * self.dt,
+            pi.position[1] - pi.velocity[1] * self.dt,
+            pi.position[2] - pi.velocity[2] * self.dt,
+        ];
+        let Some(c_departure) = Self::shepard_at(particles, i, departure, kernel_fn) else {
+            return 0.0;
+        };
+        let c_arrival = Self::shepard_at(particles, i, pi.position, kernel_fn)
+            .unwrap_or_else(|| pi.concentration.first().copied().unwrap_or(0.0));
+        (c_departure - c_arrival) / self.dt
     }
     /// Update particle positions by Lagrangian advection: x ← x + v Δt.
     pub fn update_positions(&self, particles: &mut [TransportParticle]) {
@@ -1084,8 +1185,20 @@ pub enum AdvectionSchemeKind {
     Standard,
     /// Upwind-biased: add numerical diffusion in the upwind direction.
     Upwind,
-    /// WENO-inspired: use a flux limiter based on concentration gradient.
+    /// Flux-limited (TVD-style) central scheme: every pair difference `φ_j − φ_i` is
+    /// scaled by the van Leer limiter of the gradient ratio
+    /// `r = 2 ∇φ_i·(x_j − x_i)/(φ_j − φ_i) − 1`, so the scheme reduces to
+    /// [`AdvectionSchemeKind::Standard`] on smooth monotone data (`r ≈ 1`, limiter 1)
+    /// and drops the pair at local extrema (`r ≤ 0`, limiter 0).
     WenoSph,
+}
+/// van Leer flux limiter `ψ(r) = (r + |r|)/(1 + |r|)`.
+///
+/// `ψ(r) = 0` for `r ≤ 0` (a local extremum, where the gradient and the pair
+/// difference disagree in sign), `ψ(1) = 1` (smooth monotone data) and `ψ(r) < 2` for
+/// all `r`; it satisfies the symmetry `ψ(r)/r = ψ(1/r)` of second-order TVD limiters.
+pub(super) fn van_leer_limiter(r: f64) -> f64 {
+    (r + r.abs()) / (1.0 + r.abs())
 }
 /// Multi-species transport particle for reactive-flow SPH.
 ///
@@ -1515,16 +1628,17 @@ impl SPHReactiveTransport {
     ///
     /// # Arguments
     /// * `c_i`        – Concentration at particle i.
-    /// * `neighbours` – Slice of `(c_j, r_ij, mass_j, rho_j)`.
+    /// * `neighbours` – Slice of `(c_j, r_ij, mass_j, rho_j)` with `r_ij = x_i − x_j`.
     /// * `source`     – External source S \[mol/(m³·s)\].
+    ///
+    /// The Laplacian is the Brookshaw/Morris SPH form of [`morris_laplacian`] with
+    /// the model's smoothing length.
     pub fn dcdt(&self, c_i: f64, neighbours: &[(f64, [f64; 3], f64, f64)], source: f64) -> f64 {
         let h = self.smoothing_length;
         let mut lap = 0.0_f64;
         for &(c_j, r_ij, mass_j, rho_j) in neighbours {
-            let r = len3(r_ij);
-            let w = cubic_kernel(r, h);
             if rho_j > 0.0_f64 {
-                lap += 2.0_f64 * (c_j - c_i) * mass_j / rho_j * w;
+                lap += morris_laplacian(c_i, c_j, r_ij, mass_j / rho_j, h);
             }
         }
         self.diffusivity * lap - self.reaction_rate * c_i + source

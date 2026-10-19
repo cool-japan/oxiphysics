@@ -3,6 +3,8 @@
 pub mod contactphase_traits;
 pub mod functions;
 pub mod inversekinematics_traits;
+#[cfg(test)]
+mod regression_tests;
 pub mod types;
 
 // Re-export all types

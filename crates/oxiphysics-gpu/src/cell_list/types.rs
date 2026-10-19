@@ -559,6 +559,22 @@ impl OccupancyStats {
         self.max_occupancy <= 1
     }
 }
+/// Error returned by the fallible updates of a [`CellList`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CellListError {
+    /// A position slice does not hold one entry per atom of the cell list.
+    ///
+    /// The cell list stores atom indices; a slice of a different length would
+    /// leave indices that point past the end of the positions (or atoms that
+    /// are never binned), so the update is refused and the list is unchanged.
+    #[error("position count mismatch: the cell list holds {expected} atoms, got {got} positions")]
+    LengthMismatch {
+        /// Number of atoms the cell list tracks.
+        expected: usize,
+        /// Number of positions that were supplied.
+        got: usize,
+    },
+}
 /// A simpler cell-list API that hides grid-dimension bookkeeping.
 pub struct CellList {
     pub(super) inner: GpuCellList,
@@ -635,51 +651,75 @@ impl CellList {
         pairs.sort_unstable();
         pairs
     }
-    /// Incrementally update the cell list when particles have moved slightly.
+    /// Update the cell list after the atoms have moved.
     ///
-    /// Re-inserts particles whose displacement from `old_positions` exceeds
-    /// `move_threshold` without rebuilding the entire data structure.
-    /// Returns the number of particles that were relocated.
+    /// `new_positions` are the current coordinates and `old_positions` the ones
+    /// the previous update (or [`CellList::build`]) saw.  An atom *moved* when
+    /// its displacement exceeds `move_threshold`; the number of such atoms is
+    /// returned.
+    ///
+    /// The atoms are stored in a compressed (CSR) layout without spare slots:
+    /// cell `c` owns `sorted_indices[cell_starts[c] .. cell_starts[c] +
+    /// cell_counts[c]]` and the next cell's atoms start right behind them, so an
+    /// atom cannot be inserted into another cell in place without overwriting a
+    /// neighbouring cell's data.  Whenever an atom enters a different cell the
+    /// layout is therefore re-binned from the stored positions on the existing
+    /// grid with a counting sort (`O(n)`), which keeps every atom in exactly one
+    /// cell.  An atom that stays in its cell needs no re-binning however far it
+    /// moved, and an atom that crosses a cell boundary is re-binned however
+    /// little it moved, so neighbour queries are always exact for
+    /// `new_positions`.  Positions outside the grid are binned into the nearest
+    /// boundary cell, as in [`GpuCellList::cell_index`].
+    ///
+    /// # Errors
+    ///
+    /// [`CellListError::LengthMismatch`] if `new_positions` or `old_positions`
+    /// does not hold exactly one entry per atom of the list; the list is left
+    /// unchanged.
     pub fn update_incremental(
         &mut self,
         new_positions: &[[f64; 3]],
         old_positions: &[[f64; 3]],
         move_threshold: f64,
-    ) -> usize {
-        assert_eq!(new_positions.len(), old_positions.len());
+    ) -> Result<usize, CellListError> {
+        let expected = self.positions.len();
+        for supplied in [new_positions.len(), old_positions.len()] {
+            if supplied != expected {
+                return Err(CellListError::LengthMismatch {
+                    expected,
+                    got: supplied,
+                });
+            }
+        }
         let thresh2 = move_threshold * move_threshold;
-        let mut relocated = 0usize;
-        for (i, (np, op)) in new_positions.iter().zip(old_positions.iter()).enumerate() {
+        let mut moved = 0usize;
+        let mut entered_other_cell = false;
+        for ((stored, np), op) in self
+            .positions
+            .iter()
+            .zip(new_positions.iter())
+            .zip(old_positions.iter())
+        {
             let dx = np[0] - op[0];
             let dy = np[1] - op[1];
             let dz = np[2] - op[2];
             if dx * dx + dy * dy + dz * dz > thresh2 {
-                let old_cell = self.inner.cell_index(*op);
-                let start = self.inner.cell_starts[old_cell] as usize;
-                let count = self.inner.cell_counts[old_cell] as usize;
-                if let Some(pos) = self.inner.sorted_indices[start..start + count]
-                    .iter()
-                    .position(|&idx| idx == i)
-                {
-                    let abs_pos = start + pos;
-                    let last = self.inner.sorted_indices[start + count - 1];
-                    self.inner.sorted_indices[abs_pos] = last;
-                    self.inner.cell_counts[old_cell] -= 1;
-                }
-                let new_cell = self.inner.cell_index(*np);
-                let new_start = self.inner.cell_starts[new_cell] as usize;
-                let new_count = self.inner.cell_counts[new_cell] as usize;
-                if new_start + new_count < self.inner.sorted_indices.len() {
-                    self.inner.sorted_indices[new_start + new_count] = i;
-                    self.inner.cell_counts[new_cell] += 1;
-                }
-                relocated += 1;
+                moved += 1;
+            }
+            if !entered_other_cell && self.inner.cell_index(*stored) != self.inner.cell_index(*np) {
+                entered_other_cell = true;
             }
         }
-        if new_positions.len() == self.positions.len() {
-            self.positions.copy_from_slice(new_positions);
+        self.positions.copy_from_slice(new_positions);
+        if entered_other_cell {
+            self.inner = GpuCellList::build(
+                &self.positions,
+                [self.inner.nx, self.inner.ny, self.inner.nz],
+                self.inner.cell_size,
+                self.inner.box_lengths,
+            );
         }
-        relocated
+        Ok(moved)
     }
     /// Compute a pair-density histogram: count atom pairs in distance bins.
     ///

@@ -8,13 +8,15 @@
 //! - **Bounce-back** (full and half-way): no-slip solid walls.
 //! - **Zou-He**: velocity or pressure inlet/outlet (Zou & He 1997).
 //! - **Equilibrium BC**: prescribe equilibrium at boundary nodes.
-//! - **Interpolated BC**: biquadratic interpolation for curved walls (Yu et al.).
+//! - **Interpolated BC**: linear Bouzidi-Firdaouss-Lallemand interpolated bounce-back for
+//!   curved walls that cut the lattice links at an arbitrary distance fraction `q`.
 //! - **Open BC** (convective): non-reflecting outflow.
 //! - **Periodic BC**: wrap-around periodic connectivity.
 //!
 //! References:
 //! - Zou, Q., & He, X. (1997). *Phys. Fluids* 9, 1591.
-//! - Yu, D., Mei, R., & Shyy, W. (2003). Curved wall interpolation.
+//! - Bouzidi, M., Firdaouss, M., & Lallemand, P. (2001). Momentum transfer of a
+//!   Boltzmann-lattice fluid with boundaries. *Phys. Fluids* 13, 3452.
 
 use crate::lattice::{D2Q9_OPPOSITES, D2Q9_VELOCITIES, D2Q9_WEIGHTS};
 
@@ -200,10 +202,23 @@ impl EquilibriumBc {
 // InterpolatedBc
 // ---------------------------------------------------------------------------
 
-/// Biquadratic interpolation BC for curved walls (Yu et al. 2003).
+/// Linear interpolated bounce-back for curved walls (Bouzidi, Firdaouss & Lallemand 2001).
 ///
-/// Uses a linear interpolation factor `q ∈ [0, 1]` representing the fraction
-/// of the link length from the fluid node to the solid wall.
+/// A wall that cuts the lattice link from the fluid node `x_f` along `c_i` at the distance
+/// `q |c_i|` from the fluid node (`0 < q ≤ 1`) is represented by choosing the population
+/// `f_ī(x_f)` that streams from the wall into the fluid node so that the no-slip condition holds
+/// at the wall position. With every population taken *post-collision, pre-streaming*:
+///
+/// - `q < 1/2` (the wall is closer to the fluid node than the half-way point):
+///   `f_ī(x_f) = 2q f_i(x_f) + (1 − 2q) f_i(x_f − c_i)`,
+/// - `q ≥ 1/2`:
+///   `f_ī(x_f) = f_i(x_f) / (2q) + (2q − 1) / (2q) f_ī(x_f)`.
+///
+/// Here `f_i(x_f)` is the population leaving the fluid node towards the wall, `f_i(x_f − c_i)`
+/// the same population one node further away from the wall and, on the right-hand side of the
+/// `q ≥ 1/2` branch, `f_ī(x_f)` the post-collision population at `x_f` that points away from the
+/// wall. Both branches reduce to the half-way bounce-back `f_ī = f_i(x_f)` at `q = 1/2`.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InterpolatedBc {
     /// Distance fraction from fluid node to wall (0 < q ≤ 1).
     pub q: f64,
@@ -211,26 +226,59 @@ pub struct InterpolatedBc {
 
 impl InterpolatedBc {
     /// Create a new interpolated BC with the given distance fraction q.
+    ///
+    /// The fraction is stored as given; it must lie in `(0, 1]` for the scheme to be
+    /// meaningful. Use [`try_new`](Self::try_new) to have it validated.
     pub fn new(q: f64) -> Self {
         Self { q }
     }
 
-    /// Apply interpolated bounce-back for direction `i` on a fluid node.
+    /// Create a new interpolated BC, rejecting a distance fraction outside `(0, 1]`
+    /// (including NaN).
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::BoundaryConditionError`] when `q` is not in `(0, 1]`.
+    pub fn try_new(q: f64) -> crate::Result<Self> {
+        if q > 0.0 && q <= 1.0 {
+            Ok(Self { q })
+        } else {
+            Err(crate::Error::BoundaryConditionError {
+                face: "interpolated".to_string(),
+                reason: format!("distance fraction q must lie in (0, 1], got {q}"),
+            })
+        }
+    }
+
+    /// Population `f_ī(x_f)` that the wall sends into the fluid node.
     ///
     /// # Arguments
-    /// * `f` — post-streaming distributions at the fluid node (modified in-place)
-    /// * `f_opp_old` — pre-streaming value at the fluid node in direction ī
-    /// * `i` — direction hitting the curved wall
-    pub fn apply(&self, f: &mut [f64; 9], f_opp_old: f64, i: usize) {
-        let i_opp = D2Q9_OPPOSITES[i];
+    /// * `f_i_xf` — post-collision `f_i(x_f)`, leaving the fluid node towards the wall
+    /// * `f_i_upstream` — post-collision `f_i(x_f − c_i)`, the same direction one node further
+    ///   from the wall (only used for `q < 1/2`)
+    /// * `f_opp_xf` — post-collision `f_ī(x_f)`, pointing away from the wall (only used for
+    ///   `q ≥ 1/2`)
+    pub fn reflected_population(&self, f_i_xf: f64, f_i_upstream: f64, f_opp_xf: f64) -> f64 {
         let q = self.q;
-        if q >= 0.5 {
-            // Linear interpolation for q ≥ 0.5
-            f[i_opp] = q * f[i] + (1.0 - q) * f_opp_old;
+        if q < 0.5 {
+            2.0 * q * f_i_xf + (1.0 - 2.0 * q) * f_i_upstream
         } else {
-            // Extrapolation from fluid side for q < 0.5
-            f[i_opp] = 2.0 * q * f[i] + (1.0 - 2.0 * q) * f_opp_old;
+            f_i_xf / (2.0 * q) + (2.0 * q - 1.0) / (2.0 * q) * f_opp_xf
         }
+    }
+
+    /// Apply interpolated bounce-back for direction `i` on a fluid node.
+    ///
+    /// Overwrites the unknown population `f[ī]` (the one entering the fluid node from the wall)
+    /// with [`reflected_population`](Self::reflected_population).
+    ///
+    /// # Arguments
+    /// * `f` — distributions at the fluid node after streaming (modified in-place)
+    /// * `f_i_xf` — post-collision, pre-streaming `f_i(x_f)`
+    /// * `f_i_upstream` — post-collision, pre-streaming `f_i(x_f − c_i)`
+    /// * `f_opp_xf` — post-collision, pre-streaming `f_ī(x_f)`
+    /// * `i` — direction (`< 9`) from the fluid node into the curved wall
+    pub fn apply(&self, f: &mut [f64; 9], f_i_xf: f64, f_i_upstream: f64, f_opp_xf: f64, i: usize) {
+        f[D2Q9_OPPOSITES[i]] = self.reflected_population(f_i_xf, f_i_upstream, f_opp_xf);
     }
 }
 
@@ -422,6 +470,9 @@ fn zou_he_north(f: &mut [f64; 9], rho: f64, ux: f64, uy: f64) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod interpolated_bc_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -608,34 +659,34 @@ mod tests {
 
     #[test]
     fn test_interpolated_bc_q_one() {
-        // q = 1.0 → f[i_opp] = f[i] (full BB from opposite)
+        // q = 1: f_ī = f_i / 2 + f_ī(x_f) / 2 (wall on the neighbouring node)
         let bc = InterpolatedBc::new(1.0);
         let mut f = init_eq(1.0, 0.1, 0.0);
-        let f_i = f[1]; // eastward
-        let f_opp_old = f[3];
-        bc.apply(&mut f, f_opp_old, 1);
+        let f_i = f[1]; // eastward, towards the wall
+        let f_opp_xf = f[3];
+        bc.apply(&mut f, f_i, 0.0, f_opp_xf, 1);
+        assert!((f[3] - 0.5 * (f_i + f_opp_xf)).abs() < EPS);
+    }
+
+    #[test]
+    fn test_interpolated_bc_q_half_is_halfway_bounce_back() {
+        // At q = 1/2 the wall is half-way: f_ī = f_i(x_f) whatever the other samples are.
+        let bc = InterpolatedBc::new(0.5);
+        let mut f = init_eq(1.0, 0.0, 0.0);
+        let f_i = 0.17;
+        bc.apply(&mut f, f_i, 0.9, 0.3, 1);
         assert!((f[3] - f_i).abs() < EPS);
     }
 
     #[test]
-    fn test_interpolated_bc_q_half() {
-        let bc = InterpolatedBc::new(0.5);
-        let mut f = init_eq(1.0, 0.0, 0.0);
-        let f_i = f[1];
-        let f_opp_old = f[3];
-        bc.apply(&mut f, f_opp_old, 1);
-        let expected = 0.5 * f_i + 0.5 * f_opp_old;
-        assert!((f[3] - expected).abs() < EPS);
-    }
-
-    #[test]
     fn test_interpolated_bc_q_quarter() {
+        // q < 1/2: f_ī = 2q f_i(x_f) + (1 − 2q) f_i(x_f − c_i)
         let bc = InterpolatedBc::new(0.25);
         let mut f = init_eq(1.0, 0.05, 0.0);
         let f_i = f[1];
-        let f_opp_old = f[3];
-        bc.apply(&mut f, f_opp_old, 1);
-        let expected = 2.0 * 0.25 * f_i + (1.0 - 2.0 * 0.25) * f_opp_old;
+        let f_i_upstream = 0.21;
+        bc.apply(&mut f, f_i, f_i_upstream, 0.77, 1);
+        let expected = 0.5 * f_i + 0.5 * f_i_upstream;
         assert!((f[3] - expected).abs() < EPS);
     }
 

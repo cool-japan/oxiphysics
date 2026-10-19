@@ -166,7 +166,8 @@ impl SweptSphere {
     /// miss.
     ///
     /// The capsule is the Minkowski sum of the line segment
-    /// `[center_start, center_end]` with a ball of `radius`.
+    /// `[center_start, center_end]` with a ball of `radius`. A zero-length
+    /// segment (a stationary sphere) is handled as a plain sphere.
     pub fn ray_intersect(&self, ray_origin: [f64; 3], ray_dir: [f64; 3]) -> Option<f64> {
         let pa = self.center_start;
         let pb = self.center_end;
@@ -174,6 +175,22 @@ impl SweptSphere {
         let d = sub3(pb, pa);
         let ro = sub3(ray_origin, pa);
         let dd = dot3(d, d);
+        if dd < 1e-14 {
+            let qa = dot3(ray_dir, ray_dir);
+            if qa == 0.0 {
+                return None;
+            }
+            let qb = 2.0 * dot3(ro, ray_dir);
+            let qc = dot3(ro, ro) - r * r;
+            let disc = qb * qb - 4.0 * qa * qc;
+            if disc < 0.0 {
+                return None;
+            }
+            let sq = disc.sqrt();
+            return [(-qb - sq) / (2.0 * qa), (-qb + sq) / (2.0 * qa)]
+                .into_iter()
+                .find(|&t| t >= 0.0);
+        }
         let rd = dot3(ray_dir, d);
         let ro_d = dot3(ro, d);
         let ro_ro = dot3(ro, ro);
@@ -373,33 +390,32 @@ impl SweptCapsule {
         let h = 2.0 * self.half_height;
         std::f64::consts::PI * r * r * h + (4.0 / 3.0) * std::f64::consts::PI * r * r * r
     }
-    /// Time of impact against a static sphere using conservative advancement.
+    /// Exact time of impact against a static sphere.
     ///
-    /// Returns `t` in `[0, 1]` or `None`.
+    /// The capsule translates from `position_start` to `position_end` while
+    /// keeping its Y-aligned axis (the segment of half-length `half_height`
+    /// around the position) and `radius`. In the capsule's frame the sphere
+    /// centre therefore moves by `-(position_end - position_start)` towards a
+    /// fixed capsule, and contact is the first time that path enters the
+    /// capsule of radius `radius + sphere_radius` around the start-pose axis
+    /// (see [`ccd_sphere_vs_capsule`]). The capsule is *not* approximated by
+    /// its bounding sphere, so a sphere that passes beside the cylindrical
+    /// part is not reported as a hit.
+    ///
+    /// Returns `t` in `[0, 1]`, `Some(0.0)` if the shapes already overlap at
+    /// the start pose, or `None` if they never touch during the sweep.
     pub fn toi_vs_sphere(&self, sphere_center: [f64; 3], sphere_radius: f64) -> Option<f64> {
-        let effective_radius = self.radius + self.half_height;
-        let combined = effective_radius + sphere_radius;
         let vel = sub3(self.position_end, self.position_start);
-        let rel = sub3(self.position_start, sphere_center);
-        let a = dot3(vel, vel);
-        let b = 2.0 * dot3(rel, vel);
-        let c = dot3(rel, rel) - combined * combined;
-        if a < 1e-14 {
-            return if c <= 0.0 { Some(0.0) } else { None };
-        }
-        let disc = b * b - 4.0 * a * c;
-        if disc < 0.0 {
-            return None;
-        }
-        let sq = disc.sqrt();
-        let t1 = (-b - sq) / (2.0 * a);
-        let t2 = (-b + sq) / (2.0 * a);
-        let t = if t1 >= 0.0 { t1 } else { t2 };
-        if (0.0..=1.0).contains(&t) {
-            Some(t)
-        } else {
-            None
-        }
+        let axis_half = [0.0, self.half_height, 0.0];
+        ccd_sphere_vs_capsule(
+            sphere_center,
+            sub3(sphere_center, vel),
+            sphere_radius,
+            sub3(self.position_start, axis_half),
+            add3(self.position_start, axis_half),
+            self.radius,
+        )
+        .map(|hit| hit.toi)
     }
 }
 /// A box swept along a path defined by a start and end transform.

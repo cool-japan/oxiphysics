@@ -6,6 +6,8 @@
 type NpArrayResult<T> = Option<Result<(Vec<usize>, Vec<T>), String>>;
 use super::functions::*;
 use super::functions::{NPY_MAGIC, NPY_MAJOR, NPY_MINOR};
+use super::layout::parse_simple_descr;
+use crate::util::bounded_capacity;
 
 /// A non-owning view into a contiguous slice of `f64` data with shape metadata.
 ///
@@ -227,15 +229,18 @@ impl NpyRecordArray {
     }
 }
 /// Element type stored in a `.npy` file.
+///
+/// The writers of this crate always emit little-endian data (`<f8`, ...); the
+/// readers also accept big-endian (`>f8`) and native (`=f8`) arrays.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NpyDtype {
-    /// 64-bit IEEE 754 float (little-endian `<f8`).
+    /// 64-bit IEEE 754 float (`<f8` when written).
     Float64,
-    /// 32-bit IEEE 754 float (little-endian `<f4`).
+    /// 32-bit IEEE 754 float (`<f4` when written).
     Float32,
-    /// 32-bit signed integer (little-endian `<i4`).
+    /// 32-bit signed integer (`<i4` when written).
     Int32,
-    /// 64-bit signed integer (little-endian `<i8`).
+    /// 64-bit signed integer (`<i8` when written).
     Int64,
     /// Boolean (`?`).
     Bool,
@@ -266,15 +271,22 @@ impl NpyDtype {
         }
     }
     /// Parse a NumPy dtype string into an `NpyDtype`.
+    ///
+    /// The element type is decided by the kind and size; the byte-order
+    /// marker is accepted in all NumPy spellings (`<`, `>`, `=`, `|` for
+    /// one-byte types, or none) and is not part of the result.  Booleans may be
+    /// written `?` or `|b1`.
     pub fn from_numpy_str(s: &str) -> Result<Self, String> {
-        match s {
-            "<f8" => Ok(NpyDtype::Float64),
-            "<f4" => Ok(NpyDtype::Float32),
-            "<i4" => Ok(NpyDtype::Int32),
-            "<i8" => Ok(NpyDtype::Int64),
-            "?" => Ok(NpyDtype::Bool),
-            "|u1" => Ok(NpyDtype::Uint8),
-            _ => Err(format!("unsupported dtype: '{s}'")),
+        let unsupported = || format!("unsupported dtype: '{s}'");
+        let descr = parse_simple_descr(s).map_err(|_| unsupported())?;
+        match (descr.kind, descr.size) {
+            ('f', 8) => Ok(NpyDtype::Float64),
+            ('f', 4) => Ok(NpyDtype::Float32),
+            ('i', 4) => Ok(NpyDtype::Int32),
+            ('i', 8) => Ok(NpyDtype::Int64),
+            ('b' | '?', 1) => Ok(NpyDtype::Bool),
+            ('u', 1) => Ok(NpyDtype::Uint8),
+            _ => Err(unsupported()),
         }
     }
 }
@@ -609,7 +621,13 @@ impl NpzWriter {
     pub fn from_bytes(data: &[u8]) -> Result<Self, String> {
         let mut pos = 0usize;
         let count = read_u32(data, &mut pos)? as usize;
-        let mut files = Vec::with_capacity(count);
+        // The entry count comes from the file: each entry needs at least its
+        // two length fields, which bounds what can honestly be present.
+        let mut files = Vec::with_capacity(bounded_capacity(
+            count as u64,
+            data.len().saturating_sub(pos),
+            2 * std::mem::size_of::<u32>(),
+        ));
         for _ in 0..count {
             let name_len = read_u32(data, &mut pos)? as usize;
             if pos + name_len > data.len() {

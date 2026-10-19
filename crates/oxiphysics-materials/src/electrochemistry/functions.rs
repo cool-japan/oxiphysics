@@ -55,8 +55,11 @@ pub fn exchange_current_from_tafel(eta_1: f64, log_i_1: f64, eta_2: f64, log_i_2
 }
 /// Corrosion penetration rate \[mm/year\] from corrosion current density.
 ///
-/// Uses the Faraday equation: `CPR = (i_corr * M) / (n * F * ρ) * K`
-/// where K converts to mm/year (SI input units: A/m², g/mol, g/cm³).
+/// Uses Faraday's law, `CPR = (i_corr · M) / (n · F · ρ)`, converted to
+/// mm/year.  This is the same relation as the ASTM G102 form
+/// `CR = 3.27×10⁻³ · i[µA/cm²] · EW / ρ` (1 A/m² = 100 µA/cm²) and delegates
+/// to [`crate::corrosion::corrosion_rate_mm_per_year`] so that every corrosion
+/// rate in the crate shares one implementation.
 ///
 /// # Arguments
 /// * `i_corr`     — corrosion current density \[A/m²\]
@@ -69,8 +72,7 @@ pub fn corrosion_penetration_rate(
     n_electrons: u32,
     density: f64,
 ) -> f64 {
-    let i_ua_cm2 = i_corr * 0.1;
-    0.00327 * i_ua_cm2 * molar_mass / (n_electrons as f64 * density)
+    crate::corrosion::corrosion_rate_mm_per_year(i_corr, molar_mass, n_electrons as f64, density)
 }
 #[cfg(test)]
 mod tests {
@@ -301,12 +303,129 @@ mod tests {
     }
     #[test]
     fn test_impedance_z_real_dc_limit() {
-        let imp = ImpedanceModel::new(1.0, 10.0, 1e-3, 0.01);
+        // Without diffusion the DC resistance is R_s + R_ct and Z'' vanishes.
+        let imp = ImpedanceModel::new(1.0, 10.0, 1e-3, 0.0);
         let z_r = imp.z_real(0.0);
         assert!(
             (z_r - 11.0).abs() < 1e-6,
             "DC Z_real = R_s + R_ct, got {z_r}"
         );
+        assert_eq!(imp.z_imag(0.0), 0.0);
+        // With a semi-infinite Warburg element the DC impedance diverges along
+        // the -45 degree line.
+        let diffusive = ImpedanceModel::new(1.0, 10.0, 1e-3, 0.01);
+        assert_eq!(diffusive.z_real(0.0), f64::INFINITY);
+        assert_eq!(diffusive.z_imag(0.0), f64::NEG_INFINITY);
+        assert!(
+            (diffusive.phase_angle(0.0) + std::f64::consts::FRAC_PI_4).abs() < 1e-12,
+            "Warburg phase is -45 degrees"
+        );
+    }
+    /// Independent complex arithmetic: Z = R_s + Z_f Z_c / (Z_f + Z_c).
+    fn randles_reference(rs: f64, rct: f64, cdl: f64, sigma: f64, omega: f64) -> (f64, f64) {
+        let sw = sigma / omega.sqrt();
+        let (fr, fi) = (rct + sw, -sw);
+        let (cr, ci) = (0.0, -1.0 / (omega * cdl));
+        let (nr, ni) = (fr * cr - fi * ci, fr * ci + fi * cr);
+        let (dr, di) = (fr + cr, fi + ci);
+        let den = dr * dr + di * di;
+        (rs + (nr * dr + ni * di) / den, (ni * dr - nr * di) / den)
+    }
+    #[test]
+    fn test_impedance_pure_rc_known_values() {
+        // sigma = 0, R_s = 1, R_ct = 10, C = 1e-3 at omega = 100:
+        // Z_par = 10 / (1 + j) = 5 - 5j  ->  Z = 6 - 5j.
+        let imp = ImpedanceModel::new(1.0, 10.0, 1e-3, 0.0);
+        assert!((imp.z_real(100.0) - 6.0).abs() < 1e-12);
+        assert!((imp.z_imag(100.0) + 5.0).abs() < 1e-12);
+        // The top of the semicircle: omega R_ct C = 1.
+        let top = imp.z_imag(100.0);
+        assert!((top + 0.5 * imp.r_ct).abs() < 1e-12);
+    }
+    #[test]
+    fn test_impedance_imag_vanishes_at_both_frequency_limits_without_diffusion() {
+        let imp = ImpedanceModel::new(1.0, 10.0, 1e-3, 0.0);
+        // Low frequency: Z'' -> 0 (the old expression diverged to -infinity).
+        assert!(
+            imp.z_imag(1e-6).abs() < 1e-6,
+            "Z''(1e-6) = {}",
+            imp.z_imag(1e-6)
+        );
+        assert!((imp.z_real(1e-6) - 11.0).abs() < 1e-9);
+        // High frequency: Z -> (R_s, 0).
+        assert!((imp.z_real(1e9) - 1.0).abs() < 1e-9);
+        assert!(imp.z_imag(1e9).abs() < 1e-5);
+        assert_eq!(imp.z_real(f64::INFINITY), 1.0);
+        assert_eq!(imp.z_imag(f64::INFINITY), 0.0);
+    }
+    #[test]
+    fn test_impedance_low_frequency_limit_not_divergent_for_large_resistance() {
+        // R = 100, C = 1e-5, omega = 1: the exact value is -0.1 ohm
+        // (the previous formula returned -1e5 ohm).
+        let imp = ImpedanceModel::new(0.0, 100.0, 1e-5, 0.0);
+        let z_i = imp.z_imag(1.0);
+        assert!((z_i + 0.1).abs() < 1e-3, "Z'' = {z_i}");
+    }
+    #[test]
+    fn test_impedance_warburg_point_matches_complex_arithmetic() {
+        // sigma = 2, R_s = 1, R_ct = 10, C = 1e-3, omega = 4 (hand computed):
+        // Z_f = 11 - j, Z_c = -250 j, Z_f Z_c = -250 - 2750 j,
+        // Z_f + Z_c = 11 - 251 j, so Z_f || Z_c = (687500 - 93000 j) / 63122.
+        let imp = ImpedanceModel::new(1.0, 10.0, 1e-3, 2.0);
+        let (re, im) = (imp.z_real(4.0), imp.z_imag(4.0));
+        assert!(
+            (re - (1.0 + 687_500.0 / 63_122.0)).abs() < 1e-12,
+            "Z' = {re}"
+        );
+        assert!((im + 93_000.0 / 63_122.0).abs() < 1e-12, "Z'' = {im}");
+        let (rr, ri) = randles_reference(1.0, 10.0, 1e-3, 2.0, 4.0);
+        assert!((re - rr).abs() < 1e-12 && (im - ri).abs() < 1e-12);
+    }
+    #[test]
+    fn test_impedance_matches_complex_arithmetic_over_sweep() {
+        for &(rs, rct, cdl, sigma) in &[
+            (0.5, 20.0, 2e-5, 0.0),
+            (0.5, 20.0, 2e-5, 3.5),
+            (2.0, 5.0, 1e-3, 0.4),
+        ] {
+            let imp = ImpedanceModel::new(rs, rct, cdl, sigma);
+            for exp in -4..=8 {
+                let omega = 10f64.powi(exp) * 1.3;
+                let (rr, ri) = randles_reference(rs, rct, cdl, sigma, omega);
+                let (re, im) = (imp.z_real(omega), imp.z_imag(omega));
+                assert!(
+                    (re - rr).abs() <= 1e-9 * rr.abs().max(1.0),
+                    "omega {omega}: Z' {re} vs {rr}"
+                );
+                assert!(
+                    (im - ri).abs() <= 1e-9 * ri.abs().max(1e-9) + 1e-12,
+                    "omega {omega}: Z'' {im} vs {ri}"
+                );
+                // Passive, capacitive cell: Z' >= R_s and Z'' <= 0.
+                assert!(re >= rs - 1e-12 && im <= 1e-12);
+            }
+        }
+    }
+    #[test]
+    fn test_impedance_warburg_line_at_low_frequency() {
+        // Far below the RC corner the faradaic branch dominates:
+        // Z' - R_s - R_ct = -Z'' = sigma / sqrt(omega) (45 degree Warburg line).
+        let imp = ImpedanceModel::new(1.0, 10.0, 1e-3, 2.0);
+        let omega: f64 = 1e-6;
+        let warburg = 2.0 / omega.sqrt();
+        let re = imp.z_real(omega) - 1.0 - 10.0;
+        let im = -imp.z_imag(omega);
+        assert!((re - warburg).abs() < 1e-2 * warburg, "re = {re}");
+        assert!((im - warburg).abs() < 1e-2 * warburg, "im = {im}");
+        assert!((re - im).abs() < 1e-2 * warburg);
+    }
+    #[test]
+    fn test_impedance_without_capacitor_is_series_faradaic_branch() {
+        let imp = ImpedanceModel::new(1.0, 10.0, 0.0, 2.0);
+        let omega = 9.0;
+        let sw = 2.0 / 3.0;
+        assert!((imp.z_real(omega) - (1.0 + 10.0 + sw)).abs() < 1e-12);
+        assert!((imp.z_imag(omega) + sw).abs() < 1e-12);
     }
     #[test]
     fn test_impedance_z_real_high_frequency() {
@@ -629,6 +748,37 @@ mod tests {
     fn test_corrosion_penetration_rate_positive() {
         let cpr = corrosion_penetration_rate(1.0e-3, 55.85, 2, 7.87);
         assert!(cpr > 0.0, "CPR should be positive, got {cpr}");
+    }
+    #[test]
+    fn test_corrosion_rate_iron_one_amp_per_square_metre() {
+        // Fe: M = 55.845 g/mol, n = 2, rho = 7.87 g/cm3 at 1 A/m2 (= 100 uA/cm2)
+        // corrodes at about 1.16 mm/year.
+        let cpr = corrosion_penetration_rate(1.0, 55.845, 2, 7.87);
+        let cr = CorrosionRate::new(1.0, 55.845, 2, 7.87).mm_per_year();
+        let reference = crate::corrosion::corrosion_rate_mm_per_year(1.0, 55.845, 2.0, 7.87);
+        for (name, value) in [
+            ("corrosion_penetration_rate", cpr),
+            ("CorrosionRate::mm_per_year", cr),
+            ("corrosion::corrosion_rate_mm_per_year", reference),
+        ] {
+            assert!((value - 1.16).abs() < 0.01, "{name} = {value} mm/year");
+        }
+        assert!((cpr - reference).abs() <= 1.0e-3 * reference);
+        assert!((cr - reference).abs() <= 1.0e-3 * reference);
+    }
+    #[test]
+    fn test_corrosion_rate_matches_astm_g102_constant() {
+        // ASTM G102: CR [mm/year] = 3.27e-3 * i [uA/cm2] * EW / rho, with
+        // EW = M / n and 1 A/m2 = 100 uA/cm2 (copper, 0.25 A/m2).
+        let (i_corr, molar_mass, n, density) = (0.25, 63.546, 2_u32, 8.96);
+        let astm = 3.27e-3 * (i_corr * 100.0) * (molar_mass / n as f64) / density;
+        let cpr = corrosion_penetration_rate(i_corr, molar_mass, n, density);
+        assert!(
+            (cpr - astm).abs() <= 1.0e-3 * astm,
+            "penetration rate {cpr} vs ASTM G102 {astm}"
+        );
+        let cr = CorrosionRate::new(i_corr, molar_mass, n, density).mm_per_year();
+        assert!((cr - astm).abs() <= 1.0e-3 * astm);
     }
     #[test]
     fn test_corrosion_penetration_rate_proportional_to_current() {

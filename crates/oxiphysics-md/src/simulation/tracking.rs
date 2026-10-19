@@ -7,7 +7,10 @@
 
 use rand::RngExt;
 
-use super::config::{Ensemble, KB_REDUCED, MdConfig, MdState};
+use super::config::{
+    ACCEL_PER_FORCE_OVER_MASS, Ensemble, KB_REDUCED, KJMOL_PER_AMU_A2_PS2, MdConfig, MdState,
+    thermal_velocity_sigma,
+};
 
 // ---------------------------------------------------------------------------
 // EnergyDriftTracker
@@ -386,7 +389,12 @@ impl PressureTensor {
         Self { tensor }
     }
 
-    /// Compute the kinetic part of the pressure tensor: Σᵢ mᵢ vᵢₐ vᵢᵦ / V.
+    /// Compute the kinetic part of the pressure tensor, `Σᵢ mᵢ vᵢₐ vᵢᵦ / V`, in
+    /// kJ mol⁻¹ Å⁻³ (masses in amu, velocities in Å ps⁻¹, volume in Å³).
+    ///
+    /// The mechanical product `m v v` (amu Å² ps⁻²) is converted to kJ mol⁻¹ with
+    /// `0.01` ([`KJMOL_PER_AMU_A2_PS2`]), so that the trace gives `2 KE / V`
+    /// with the kinetic energy in kJ mol⁻¹.  Multiply by 16 605.4 for bar.
     pub fn kinetic_contribution(
         velocities: &[[f64; 3]],
         masses: &[f64],
@@ -402,7 +410,7 @@ impl PressureTensor {
         }
         for row in kt.iter_mut() {
             for v in row.iter_mut() {
-                *v /= volume;
+                *v *= KJMOL_PER_AMU_A2_PS2 / volume;
             }
         }
         kt
@@ -961,12 +969,18 @@ impl HarmonicWell {
         (total_e, forces)
     }
 
-    /// Angular frequency ω = sqrt(k/m) for a particle of mass `m`.
+    /// Angular frequency ω (ps⁻¹) for a particle of mass `m` (amu):
+    /// `ω = sqrt(100 · k / m)` with `k` in kJ mol⁻¹ Å⁻².
+    ///
+    /// The factor 100 is the unit conversion
+    /// [`ACCEL_PER_FORCE_OVER_MASS`] (1 kJ mol⁻¹ = 100 amu Å² ps⁻²): a spring with
+    /// `k = 100 kJ mol⁻¹ Å⁻²` and `m = 1 amu` has `ω = 100 ps⁻¹`.
     pub fn omega(&self, m: f64) -> f64 {
-        (self.k / m).sqrt()
+        (ACCEL_PER_FORCE_OVER_MASS * self.k / m).sqrt()
     }
 
-    /// Period T = 2π/ω for a particle of mass `m`.
+    /// Period T = 2π/ω (ps) for a particle of mass `m` (amu), see
+    /// [`HarmonicWell::omega`]: `T = 0.2π sqrt(m / k)`.
     pub fn period(&self, m: f64) -> f64 {
         2.0_f64 * std::f64::consts::PI / self.omega(m)
     }
@@ -1003,7 +1017,7 @@ impl AndersenThermostat {
         let n = state.n_atoms();
         for i in 0..n {
             if rng.random::<f64>() < prob {
-                let sigma = (KB_REDUCED * self.temperature / state.masses[i]).sqrt();
+                let sigma = thermal_velocity_sigma(self.temperature, state.masses[i]);
                 for a in 0..3 {
                     // Box-Muller transform
                     let u1: f64 = rng.random_range(1e-15_f64..1.0_f64);
@@ -1041,14 +1055,16 @@ impl LangevinThermostat {
 
     /// Apply one Langevin O-step (velocity modification) with time step `dt`.
     ///
-    /// v ← c1 * v + c2 * noise,  where c1 = exp(-γ dt) and c2 = sqrt((1-c1²) kBT/m).
+    /// v ← c1 * v + c2 * noise,  where c1 = exp(-γ dt) and
+    /// c2 = sqrt((1-c1²) kBT/m) in the MD unit system (Å ps⁻¹; the factor
+    /// `100 · kBT / m` is [`thermal_velocity_sigma`] squared).
     pub fn apply_o_step(&self, state: &mut MdState, dt: f64) {
         let mut rng = rand::rng();
         let c1 = (-self.gamma * dt).exp();
         let n = state.n_atoms();
         for i in 0..n {
             let m = state.masses[i];
-            let sigma = ((1.0_f64 - c1 * c1) * KB_REDUCED * self.temperature / m).sqrt();
+            let sigma = (1.0_f64 - c1 * c1).sqrt() * thermal_velocity_sigma(self.temperature, m);
             for a in 0..3 {
                 let u1: f64 = rng.random_range(1e-15_f64..1.0_f64);
                 let u2: f64 = rng.random_range(0.0_f64..1.0_f64);
@@ -1114,15 +1130,19 @@ impl VolumeFluctuationMonitor {
 
     /// Isothermal compressibility estimate κ_T ≈ `δV²` / (k_B T `V`).
     ///
-    /// `temperature` in K. Returns in bar⁻¹ (using internal unit conversion).
+    /// `temperature` in K. Returns κ_T in bar⁻¹, the unit expected by the
+    /// `compressibility` parameter of the barostats of the module.
+    ///
+    /// The fluctuation formula gives `Å⁶ / (kJ mol⁻¹ · Å³) = Å³ kJ⁻¹ mol`, i.e. the
+    /// reciprocal of a pressure in kJ mol⁻¹ Å⁻³; dividing by
+    /// 16 605.4 bar per kJ mol⁻¹ Å⁻³ converts it to bar⁻¹.  For the
+    /// isothermal-isobaric ideal gas the result is `1 / P`.
     pub fn isothermal_compressibility(&self, temperature: f64) -> f64 {
         let mean_v = self.mean_volume();
         if mean_v < 1e-20 || temperature < 1e-10 {
             return 0.0;
         }
-        // Unit: Å^6 / (kJ mol^-1 * Å^3) = Å^3 / kJ mol^-1
-        // Convert: 1 kJ/mol = 1e3 / 6.022e23 J; 1 Å = 1e-10 m
-        // κ_T in Å^3/kJ·mol = var_v / (kb_reduced * T * mean_v)
-        self.variance_volume() / (KB_REDUCED * temperature * mean_v)
+        let kappa_per_kj_mol_ang3 = self.variance_volume() / (KB_REDUCED * temperature * mean_v);
+        kappa_per_kj_mol_ang3 / KJ_MOL_PER_ANG3_TO_BAR
     }
 }

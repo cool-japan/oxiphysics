@@ -20,7 +20,10 @@
 //! - **Multi-fraction** transport with hiding/exposure corrections
 //! - **Cohesive sediment** flocculation and hindered settling
 
+use std::collections::HashMap;
 use std::f64::consts::PI;
+
+use crate::neighbor::SpatialHash3D;
 
 // ---------------------------------------------------------------------------
 // Physical constants
@@ -127,7 +130,18 @@ pub fn settling_velocity_stokes(d: f64, rho_s: f64, rho_f: f64, nu: f64) -> f64 
 
 /// Ferguson-Church settling velocity, valid across all grain Reynolds numbers.
 ///
-/// Uses the universal drag relation of Ferguson & Church (2004).
+/// Uses the universal drag relation of Ferguson & Church (2004):
+///
+/// `w_s = R g d^2 / (C1 nu + sqrt(0.75 C2 R g d^3))`,  `R = rho_s / rho_f - 1`,
+/// with `C1 = 18` and `C2 = 1` for natural grains.  The formula itself lives in
+/// [`crate::sediment_transport::settling_velocity_ferguson_church`], which this
+/// function delegates to so that there is a single implementation.  It reduces
+/// to Stokes' law for fine grains and to a `sqrt(d)` law for coarse ones.
+///
+/// A grain lighter than the fluid (`rho_s < rho_f`) rises: the result is then the
+/// negative rise velocity, matching the sign convention of
+/// [`settling_velocity_stokes`].  Non-positive diameters, viscosities or fluid
+/// densities give `0.0`.
 ///
 /// # Arguments
 /// * `d` - Grain diameter (m)
@@ -135,11 +149,21 @@ pub fn settling_velocity_stokes(d: f64, rho_s: f64, rho_f: f64, nu: f64) -> f64 
 /// * `rho_f` - Fluid density (kg/m^3)
 /// * `nu` - Kinematic viscosity (m^2/s)
 pub fn settling_velocity_ferguson_church(d: f64, rho_s: f64, rho_f: f64, nu: f64) -> f64 {
-    let c1 = 18.0;
-    let c2 = 1.0;
-    let rgd = (rho_s / rho_f - 1.0) * G * d;
-    let rep = d * rgd.abs().sqrt() / nu;
-    rgd * d / (c1 * nu + (0.75 * c2 * rgd.abs() * d * d * d).sqrt()) * (1.0 / (1.0 + 0.0 * rep)) // simplified; keep rep for generality
+    if rho_f <= 0.0 {
+        return 0.0;
+    }
+    if rho_s >= rho_f {
+        crate::sediment_transport::settling_velocity_ferguson_church(d, rho_s, rho_f, nu)
+    } else {
+        // The drag law is symmetric in the submerged weight: mirror the density
+        // contrast and flip the sign to obtain the rise velocity.
+        -crate::sediment_transport::settling_velocity_ferguson_church(
+            d,
+            2.0 * rho_f - rho_s,
+            rho_f,
+            nu,
+        )
+    }
 }
 
 /// Richardson-Zaki hindered settling for concentrated suspensions.
@@ -436,7 +460,12 @@ pub fn eddy_viscosity_parabolic(u_star: f64, z: f64, h: f64) -> f64 {
 ///
 /// Returns the contribution to `dc_i/dt` from neighbour j.
 /// Uses the Brookshaw (2003) formulation:
-///   `(eps_i + eps_j) * (c_j - c_i) * (r_ij . grad_W) / (|r_ij|^2 + eta^2)`
+///   `(eps_i + eps_j) * (c_i - c_j) * (r_ij . grad_W) / (|r_ij|^2 + eta^2)`
+///
+/// with `r_ij = x_i - x_j` and `grad_W = grad_i W_ij`.  Because the kernel
+/// decreases with distance, `r_ij . grad_W = r W'(r) <= 0`, so a particle that
+/// is richer in sediment than its neighbour (`c_i > c_j`) loses it (negative
+/// rate) and a poorer one gains it: diffusion flattens concentration peaks.
 ///
 /// Multiply by `m_j / rho_j` and sum over all neighbours.
 pub fn sph_diffusion_pair(
@@ -454,7 +483,7 @@ pub fn sph_diffusion_pair(
     let gw = grad_w(xi, xj, h);
     let rdotgw = dot3(rij, gw);
     let eps_avg = eps_i + eps_j;
-    eps_avg * (c_j - c_i) * rdotgw / (r2 + eta_sq)
+    eps_avg * (c_i - c_j) * rdotgw / (r2 + eta_sq)
 }
 
 /// Compute the full diffusion rate for particle i given all neighbours.
@@ -800,6 +829,20 @@ pub struct SedimentSphConfig {
     pub enable_suspended: bool,
     /// Enable bed-load.
     pub enable_bedload: bool,
+    /// Critical bed shear stress for deposition `tau_cd` (Pa) in the Krone law
+    /// `D = w_s c (1 - tau_b / tau_cd)`.
+    pub tau_cd: f64,
+    /// Pick-up coefficient `alpha` of the non-cohesive erosion law
+    /// `E = alpha w_s T^1.5` (`T` = transport-stage parameter).
+    pub erosion_coeff: f64,
+    /// Horizontal radius (m) within which neighbouring bed columns are coupled
+    /// to estimate the bed-load flux divergence by least squares.  Choose about
+    /// 1.5 column spacings so that the four face and four diagonal neighbours
+    /// of a regular grid are included.
+    pub column_radius: f64,
+    /// Height above the bed (m) up to which fluid particles are sampled for the
+    /// near-bed velocity and sediment concentration of a column.
+    pub near_bed_height: f64,
 }
 
 impl Default for SedimentSphConfig {
@@ -816,6 +859,10 @@ impl Default for SedimentSphConfig {
             dt_morph: 0.01,
             enable_suspended: true,
             enable_bedload: true,
+            tau_cd: 0.1,
+            erosion_coeff: 0.01,
+            column_radius: 0.15,
+            near_bed_height: 0.1,
         }
     }
 }
@@ -856,6 +903,151 @@ impl BedColumn {
         }
         self.z_bed += dz;
     }
+}
+
+/// Local transport state of one bed column, evaluated in the first pass of
+/// [`SedimentSphSolver::morphological_step`].
+#[derive(Debug, Clone, Copy)]
+struct ColumnTransport {
+    /// Whether fluid was found near the bed above the column.
+    active: bool,
+    /// Bed-load flux vector `q_b` in the horizontal plane (m^2/s).
+    bedload_flux: [f64; 2],
+    /// Deposition rate `D` (m/s of bed elevation, before the porosity factor).
+    deposition: f64,
+    /// Erosion rate `E` (m/s of bed elevation, before the porosity factor).
+    erosion: f64,
+}
+
+impl ColumnTransport {
+    /// A column without fluid above it.
+    fn inactive() -> Self {
+        Self {
+            active: false,
+            bedload_flux: [0.0; 2],
+            deposition: 0.0,
+            erosion: 0.0,
+        }
+    }
+}
+
+/// Horizontal bucket grid over the fluid particles.
+///
+/// A bed column only sees fluid particles whose horizontal distance is below
+/// their support radius `2 h_p`.  Bucketing the particles by `(x, y)` cell with
+/// a cell size equal to the largest support radius lets each column visit the
+/// 3 x 3 buckets around it instead of every particle.
+struct FluidBuckets {
+    cell_size: f64,
+    cells: HashMap<(i64, i64), Vec<usize>>,
+}
+
+impl FluidBuckets {
+    /// Bucket the fluid (non-bed) particles.
+    fn build(particles: &[SedimentSphParticle]) -> Self {
+        let support = particles
+            .iter()
+            .filter(|p| !p.is_bed)
+            .map(|p| 2.0 * p.h)
+            .filter(|s| s.is_finite())
+            .fold(0.0_f64, f64::max);
+        let cell_size = if support > 0.0 { support } else { 1.0 };
+        let mut cells: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        for (idx, p) in particles.iter().enumerate() {
+            if !p.is_bed {
+                cells
+                    .entry(Self::key(p.pos[0], p.pos[1], cell_size))
+                    .or_default()
+                    .push(idx);
+            }
+        }
+        Self { cell_size, cells }
+    }
+
+    /// Bucket coordinates of the horizontal position `(x, y)`.
+    fn key(x: f64, y: f64, cell_size: f64) -> (i64, i64) {
+        (
+            (x / cell_size).floor() as i64,
+            (y / cell_size).floor() as i64,
+        )
+    }
+
+    /// Indices of the fluid particles in the 3 x 3 buckets around `(x, y)`.
+    fn candidates(&self, x: f64, y: f64) -> impl Iterator<Item = usize> + '_ {
+        let (kx, ky) = Self::key(x, y, self.cell_size);
+        (-1_i64..=1).flat_map(move |ox| {
+            (-1_i64..=1).flat_map(move |oy| {
+                let key = (kx.saturating_add(ox), ky.saturating_add(oy));
+                self.cells.get(&key).into_iter().flatten().copied()
+            })
+        })
+    }
+}
+
+/// Solve `M g = rhs` for the symmetric positive semi-definite 2 x 2 matrix
+/// `M = [[a, b], [b, c]]` with the Moore-Penrose pseudo-inverse.
+///
+/// A (nearly) rank-deficient `M`, such as the moment matrix of columns on a
+/// straight line, yields the minimum-norm solution, i.e. no variation across
+/// the line.
+fn solve_symmetric_pseudo_inverse(a: f64, b: f64, c: f64, rhs: [f64; 2]) -> [f64; 2] {
+    let half_trace = 0.5 * (a + c);
+    let radius = (0.25 * (a - c) * (a - c) + b * b).sqrt();
+    let lambda_max = half_trace + radius;
+    let lambda_min = half_trace - radius;
+    if lambda_max.is_nan() || lambda_max <= 0.0 {
+        return [0.0; 2];
+    }
+    // Unit eigenvector of the dominant eigenvalue.
+    let v = if b != 0.0 {
+        let (vx, vy) = (lambda_max - c, b);
+        let norm = vx.hypot(vy);
+        [vx / norm, vy / norm]
+    } else if a >= c {
+        [1.0, 0.0]
+    } else {
+        [0.0, 1.0]
+    };
+    let w = [-v[1], v[0]];
+    let along_v = (v[0] * rhs[0] + v[1] * rhs[1]) / lambda_max;
+    let mut g = [along_v * v[0], along_v * v[1]];
+    if lambda_min > 1.0e-9 * lambda_max {
+        let along_w = (w[0] * rhs[0] + w[1] * rhs[1]) / lambda_min;
+        g[0] += along_w * w[0];
+        g[1] += along_w * w[1];
+    }
+    g
+}
+
+/// Least-squares estimate of the divergence `div(q)` of a horizontal flux field.
+///
+/// Fits `q(x) ~ q_c + J (x - x_c)` to the neighbouring `(position, flux)`
+/// samples in the least-squares sense around the `centre` sample and returns
+/// `tr(J) = dq_x/dx + dq_y/dy`.  The fit is exact for linear fields; with
+/// neighbours on a single line only the variation along that line is resolved,
+/// and without neighbours the result is `0.0`.
+fn least_squares_divergence(
+    centre: ([f64; 2], [f64; 2]),
+    neighbours: &[([f64; 2], [f64; 2])],
+) -> f64 {
+    let (x_c, q_c) = centre;
+    let (mut m_xx, mut m_xy, mut m_yy) = (0.0_f64, 0.0_f64, 0.0_f64);
+    let mut rhs_x = [0.0_f64; 2];
+    let mut rhs_y = [0.0_f64; 2];
+    for &(x, q) in neighbours {
+        let d = [x[0] - x_c[0], x[1] - x_c[1]];
+        let dq = [q[0] - q_c[0], q[1] - q_c[1]];
+        m_xx += d[0] * d[0];
+        m_xy += d[0] * d[1];
+        m_yy += d[1] * d[1];
+        rhs_x[0] += dq[0] * d[0];
+        rhs_x[1] += dq[0] * d[1];
+        rhs_y[0] += dq[1] * d[0];
+        rhs_y[1] += dq[1] * d[1];
+    }
+    let grad_qx = solve_symmetric_pseudo_inverse(m_xx, m_xy, m_yy, rhs_x);
+    let grad_qy = solve_symmetric_pseudo_inverse(m_xx, m_xy, m_yy, rhs_y);
+    grad_qx[0] + grad_qy[1]
 }
 
 /// SPH sediment transport solver.
@@ -934,100 +1126,156 @@ impl SedimentSphSolver {
 
     /// Single morphological time step for all bed columns.
     ///
-    /// Uses a simple approach: for each bed column, compute local shear stress
-    /// from nearest fluid particles, then update bed elevation.
+    /// Advances every bed column with the Exner equation
+    ///
+    /// `(1 - p) dz_b/dt = -div(q_b) + D - E`
+    ///
+    /// (see [`exner_bed_change`]) in two passes, so that the update of one
+    /// column never influences the fluxes seen by another within the step:
+    ///
+    /// 1. **Local transport** (per column).  The fluid particles whose
+    ///    horizontal distance to the column is below their support radius
+    ///    `2 h_p` and that lie above the bed give the water depth (height of
+    ///    the highest such particle above the bed); those within
+    ///    [`near_bed_height`](SedimentSphConfig::near_bed_height) give the
+    ///    near-bed horizontal velocity `u` and sediment concentration `c` as
+    ///    plain averages over the *same* set.  The Manning friction at that
+    ///    depth gives the bed shear stress `tau_b`, then the Shields parameter
+    ///    `theta`.  The bed-load flux vector is
+    ///    `q_b = q_b(theta) u / |u|` (Meyer-Peter-Muller), the deposition rate
+    ///    `D` follows the Krone law with
+    ///    [`tau_cd`](SedimentSphConfig::tau_cd) and the erosion rate `E` the
+    ///    van Rijn pick-up law with
+    ///    [`erosion_coeff`](SedimentSphConfig::erosion_coeff), both using the
+    ///    Ferguson-Church settling velocity of the grain.
+    /// 2. **Flux divergence and bed update.**  `div(q_b)` of every column is
+    ///    estimated from the fluxes of the columns within
+    ///    [`column_radius`](SedimentSphConfig::column_radius) by a local
+    ///    least-squares linear fit, and the bed changes by
+    ///    `exner_bed_change(div q_b, D, E, porosity) * morfac * dt`.
+    ///
+    /// A uniform flow over a flat bed has a uniform flux, hence no divergence,
+    /// and does not change the bed by bed-load.  Columns without fluid above
+    /// them are left untouched and do not take part in the flux stencils.
     pub fn morphological_step(&mut self, dt: f64) {
+        let transport = self.column_transport();
+        let divergence = self.bedload_flux_divergence(&transport);
         let cfg = &self.config;
-        let rho_f = cfg.rho_f;
-        let rho_s = cfg.rho_s;
-        let d = cfg.d50;
-        let theta_cr = cfg.theta_cr;
-        let porosity = cfg.porosity;
-        let morfac = cfg.morfac;
-
-        // For each bed column, find nearby fluid particles and compute shear
-        for col in &mut self.bed_columns {
-            // Gather near-bed fluid velocities (simple: average of particles
-            // within 2*d50 vertical distance of bed)
-            let mut u_sum = [0.0; 3];
-            let mut count = 0.0;
-            let depth_limit = 0.1_f64; // gather particles up to 10 cm above bed
-
-            for p in &self.particles {
-                if p.is_bed {
-                    continue;
-                }
-                let dx = p.pos[0] - col.xy[0];
-                let dy = p.pos[1] - col.xy[1];
-                let horiz_dist2 = dx * dx + dy * dy;
-                let vert = p.pos[2] - col.z_bed;
-                if horiz_dist2 < (p.h * 2.0).powi(2) && vert > 0.0 && vert < depth_limit {
-                    u_sum = add3(u_sum, p.vel);
-                    count += 1.0;
-                }
-            }
-
-            if count < 1.0 {
+        for ((col, local), div_qb) in self
+            .bed_columns
+            .iter_mut()
+            .zip(transport.iter())
+            .zip(divergence.iter())
+        {
+            if !local.active {
                 continue;
             }
-            let u_avg = scale3(u_sum, 1.0 / count);
-            let u_mag = len3(u_avg);
-            let h_water = depth_limit; // approximate
-
-            // Bed shear stress
-            let cf = friction_coeff_manning(cfg.manning_n, h_water);
-            let tau_b = bed_shear_stress(rho_f, cf, u_mag);
-            let theta = shields_parameter(tau_b, rho_s, rho_f, d);
-
-            // Bed-load contribution
-            let mut dz_dt = 0.0;
-            if cfg.enable_bedload {
-                let phi = bedload_mpm(theta, theta_cr);
-                let qb = bedload_volumetric(phi, d, rho_s, rho_f);
-                // Approximate divergence as qb / (2*h) for order of magnitude
-                let _div_qb = qb / (2.0 * 0.05); // placeholder
-                // Simplified: erosion proportional to excess Shields
-                let net = if theta > theta_cr {
-                    -qb * 0.1 // net erosion
-                } else {
-                    0.0
-                };
-                dz_dt += net;
-            }
-
-            // Suspended load contribution
-            if cfg.enable_suspended {
-                let u_star = friction_velocity(tau_b, rho_f);
-                let w_s = settling_velocity_stokes(d, rho_s, rho_f, NU_WATER);
-                // Near-bed concentration from neighbours
-                let c_avg: f64 = self
-                    .particles
-                    .iter()
-                    .filter(|p| {
-                        !p.is_bed
-                            && (p.pos[2] - col.z_bed).abs() < depth_limit
-                            && (p.pos[0] - col.xy[0]).powi(2) + (p.pos[1] - col.xy[1]).powi(2)
-                                < (0.1_f64).powi(2)
-                    })
-                    .map(|p| p.concentration)
-                    .sum::<f64>()
-                    / count.max(1.0);
-
-                let dep = deposition_krone(w_s, c_avg, tau_b, 0.1);
-                let ero = if theta > theta_cr {
-                    erosion_noncohesive(w_s, (theta - theta_cr) / theta_cr, 0.01)
-                } else {
-                    0.0
-                };
-                dz_dt += porosity_factor(porosity) * (dep - ero);
-                let _ = u_star; // used in more detailed models
-            }
-
-            let dz = morfac_scale(dz_dt, morfac) * dt;
-            col.update(dz);
+            let dz_dt = exner_bed_change(*div_qb, local.deposition, local.erosion, cfg.porosity);
+            col.update(morfac_scale(dz_dt, cfg.morfac) * dt);
         }
-
         self.time += dt;
+    }
+
+    /// Pass 1 of [`morphological_step`](Self::morphological_step): the local
+    /// bed-load flux and the erosion / deposition rates of every bed column.
+    fn column_transport(&self) -> Vec<ColumnTransport> {
+        let cfg = &self.config;
+        let buckets = FluidBuckets::build(&self.particles);
+        let w_s = settling_velocity_ferguson_church(cfg.d50, cfg.rho_s, cfg.rho_f, NU_WATER);
+        self.bed_columns
+            .iter()
+            .map(|col| {
+                let mut u_sum = [0.0_f64; 2];
+                let mut c_sum = 0.0_f64;
+                let mut count = 0.0_f64;
+                let mut depth = 0.0_f64;
+                for idx in buckets.candidates(col.xy[0], col.xy[1]) {
+                    let p = &self.particles[idx];
+                    let dx = p.pos[0] - col.xy[0];
+                    let dy = p.pos[1] - col.xy[1];
+                    let height = p.pos[2] - col.z_bed;
+                    if !(dx * dx + dy * dy < (2.0 * p.h).powi(2) && height > 0.0) {
+                        continue;
+                    }
+                    depth = depth.max(height);
+                    if height < cfg.near_bed_height {
+                        u_sum[0] += p.vel[0];
+                        u_sum[1] += p.vel[1];
+                        c_sum += p.concentration;
+                        count += 1.0;
+                    }
+                }
+                if count < 1.0 {
+                    return ColumnTransport::inactive();
+                }
+                let u_avg = [u_sum[0] / count, u_sum[1] / count];
+                let speed = u_avg[0].hypot(u_avg[1]);
+                let c_avg = c_sum / count;
+
+                let cf = friction_coeff_manning(cfg.manning_n, depth);
+                let tau_b = bed_shear_stress(cfg.rho_f, cf, speed);
+                let theta = shields_parameter(tau_b, cfg.rho_s, cfg.rho_f, cfg.d50);
+
+                let mut bedload_flux = [0.0_f64; 2];
+                if cfg.enable_bedload && speed > 0.0 {
+                    let phi = bedload_mpm(theta, cfg.theta_cr);
+                    let q_mag = bedload_volumetric(phi, cfg.d50, cfg.rho_s, cfg.rho_f);
+                    bedload_flux = [q_mag * u_avg[0] / speed, q_mag * u_avg[1] / speed];
+                }
+
+                let (deposition, erosion) = if cfg.enable_suspended {
+                    let deposition = deposition_krone(w_s, c_avg, tau_b, cfg.tau_cd);
+                    let erosion = if cfg.theta_cr > 0.0 && theta > cfg.theta_cr {
+                        let stage = (theta - cfg.theta_cr) / cfg.theta_cr;
+                        erosion_noncohesive(w_s, stage, cfg.erosion_coeff)
+                    } else {
+                        0.0
+                    };
+                    (deposition, erosion)
+                } else {
+                    (0.0, 0.0)
+                };
+                ColumnTransport {
+                    active: true,
+                    bedload_flux,
+                    deposition,
+                    erosion,
+                }
+            })
+            .collect()
+    }
+
+    /// Pass 2 of [`morphological_step`](Self::morphological_step): the
+    /// divergence of the bed-load flux at every column from a least-squares
+    /// fit over the active columns within `column_radius`.
+    fn bedload_flux_divergence(&self, transport: &[ColumnTransport]) -> Vec<f64> {
+        let radius = self.config.column_radius;
+        let n = self.bed_columns.len();
+        if !(radius > 0.0 && radius.is_finite()) {
+            return vec![0.0; n];
+        }
+        let anchors: Vec<[f64; 3]> = self
+            .bed_columns
+            .iter()
+            .map(|col| [col.xy[0], col.xy[1], 0.0])
+            .collect();
+        let neighbour_lists = SpatialHash3D::all_neighbors(&anchors, radius);
+        (0..n)
+            .map(|i| {
+                if !transport[i].active {
+                    return 0.0;
+                }
+                let stencil: Vec<([f64; 2], [f64; 2])> = neighbour_lists[i]
+                    .iter()
+                    .filter(|&&j| transport[j].active)
+                    .map(|&j| (self.bed_columns[j].xy, transport[j].bedload_flux))
+                    .collect();
+                least_squares_divergence(
+                    (self.bed_columns[i].xy, transport[i].bedload_flux),
+                    &stencil,
+                )
+            })
+            .collect()
     }
 
     /// Total sediment volume eroded across all bed columns (m).
@@ -1420,535 +1668,4 @@ pub fn transport_capacity_eh(u: f64, d50: f64, rho_s: f64, rho_f: f64, cf: f64) 
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TOL: f64 = 1.0e-10;
-
-    #[test]
-    fn test_settling_velocity_stokes() {
-        let ws = settling_velocity_stokes(0.001, RHO_S_DEFAULT, RHO_F_DEFAULT, NU_WATER);
-        // Should be positive and physically reasonable
-        assert!(ws > 0.0);
-        // Stokes: ws = (s-1)*g*d^2 / (18*nu)
-        let expected = (2650.0 / 1000.0 - 1.0) * 9.81 * 1.0e-6 / (18.0 * 1.0e-6);
-        assert!((ws - expected).abs() < TOL);
-    }
-
-    #[test]
-    fn test_settling_velocity_ferguson_church() {
-        let ws = settling_velocity_ferguson_church(0.5e-3, RHO_S_DEFAULT, RHO_F_DEFAULT, NU_WATER);
-        assert!(ws > 0.0);
-        // Should be less than Stokes for larger grains (drag correction)
-        let ws_stokes = settling_velocity_stokes(0.5e-3, RHO_S_DEFAULT, RHO_F_DEFAULT, NU_WATER);
-        // Ferguson-Church should give a finite value
-        assert!(ws.is_finite());
-        let _ = ws_stokes;
-    }
-
-    #[test]
-    fn test_settling_velocity_hindered() {
-        let ws0 = 0.05;
-        // Zero concentration => full velocity
-        assert!((settling_velocity_hindered(ws0, 0.0, 4.65) - ws0).abs() < TOL);
-        // High concentration => much lower
-        let ws_high = settling_velocity_hindered(ws0, 0.5, 4.65);
-        assert!(ws_high < ws0);
-        assert!(ws_high > 0.0);
-        // Full concentration => zero
-        assert!((settling_velocity_hindered(ws0, 1.0, 4.65)).abs() < TOL);
-    }
-
-    #[test]
-    fn test_dimensionless_diameter() {
-        let d_star = dimensionless_diameter(0.5e-3, RHO_S_DEFAULT, RHO_F_DEFAULT, NU_WATER);
-        assert!(d_star > 1.0);
-        assert!(d_star < 100.0); // D* for 0.5mm sand is ~ 12.6
-    }
-
-    #[test]
-    fn test_shields_parameter() {
-        let theta = shields_parameter(1.0, RHO_S_DEFAULT, RHO_F_DEFAULT, 0.001);
-        let expected = 1.0 / ((2650.0 - 1000.0) * 9.81 * 0.001);
-        assert!((theta - expected).abs() < 1.0e-8);
-    }
-
-    #[test]
-    fn test_critical_shields_soulsby_whitehouse() {
-        // For very small D* => approaches 0.3
-        let theta_cr_small = critical_shields_soulsby_whitehouse(0.1);
-        assert!(theta_cr_small > 0.2);
-        // For large D* => approaches 0.055
-        let theta_cr_large = critical_shields_soulsby_whitehouse(100.0);
-        assert!(theta_cr_large > 0.04 && theta_cr_large < 0.07);
-    }
-
-    #[test]
-    fn test_is_motion_initiated() {
-        assert!(is_motion_initiated(0.06, 0.047));
-        assert!(!is_motion_initiated(0.03, 0.047));
-    }
-
-    #[test]
-    fn test_bed_shear_stress() {
-        let tau = bed_shear_stress(1000.0, 0.003, 1.0);
-        assert!((tau - 3.0).abs() < TOL);
-    }
-
-    #[test]
-    fn test_friction_coeff_manning() {
-        let cf = friction_coeff_manning(0.025, 1.0);
-        // Cf = g * n^2 / h^(1/3) = 9.81 * 0.000625 / 1.0 = 0.0061...
-        let expected = 9.81 * 0.025 * 0.025;
-        assert!((cf - expected).abs() < 1.0e-8);
-    }
-
-    #[test]
-    fn test_friction_velocity() {
-        let u_star = friction_velocity(4.0, 1000.0);
-        assert!((u_star - 0.0632455532).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn test_bedload_mpm() {
-        // Below threshold => 0
-        assert!((bedload_mpm(0.04, 0.047)).abs() < TOL);
-        // Above threshold => positive
-        let phi = bedload_mpm(0.1, 0.047);
-        let expected = 8.0 * (0.1 - 0.047_f64).powf(1.5);
-        assert!((phi - expected).abs() < 1.0e-10);
-    }
-
-    #[test]
-    fn test_bedload_van_rijn() {
-        let phi = bedload_van_rijn(0.1, 0.047, 12.0);
-        assert!(phi > 0.0);
-        // Below threshold => 0
-        assert!((bedload_van_rijn(0.03, 0.047, 12.0)).abs() < TOL);
-    }
-
-    #[test]
-    fn test_bedload_einstein() {
-        let phi = bedload_einstein(0.1);
-        assert!(phi > 0.0);
-        assert!(phi.is_finite());
-        assert!((bedload_einstein(0.0)).abs() < TOL);
-    }
-
-    #[test]
-    fn test_slope_correction() {
-        let theta_cr = slope_correction(0.047, 0.0, std::f64::consts::FRAC_PI_6); // flat bed
-        assert!((theta_cr - 0.047).abs() < 1.0e-6);
-        // Steep slope => lower critical
-        let theta_steep = slope_correction(0.047, 0.3, std::f64::consts::FRAC_PI_6);
-        assert!(theta_steep < 0.047);
-    }
-
-    #[test]
-    fn test_rouse_number() {
-        let z = rouse_number(0.01, 0.05);
-        // Z = 0.01 / (0.41 * 0.05)
-        let expected = 0.01 / (0.41 * 0.05);
-        assert!((z - expected).abs() < 1.0e-10);
-    }
-
-    #[test]
-    fn test_rouse_profile() {
-        let c = rouse_profile(0.5, 1.0, 0.05, 0.01, 1.0);
-        assert!(c > 0.0);
-        assert!(c <= 0.01);
-        // At reference height => c_a
-        let c_ref = rouse_profile(0.05, 1.0, 0.05, 0.01, 1.0);
-        assert!((c_ref - 0.01).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn test_rouse_depth_averaged() {
-        let c_avg = rouse_depth_averaged(1.0, 0.05, 0.01, 1.0, 100);
-        assert!(c_avg > 0.0);
-        assert!(c_avg < 0.01); // averaged should be less than reference
-    }
-
-    #[test]
-    fn test_erosion_deposition() {
-        // Erosion above critical
-        let e = erosion_partheniades(1.0, 0.5, 0.001);
-        assert!((e - 0.001).abs() < 1.0e-10);
-        // No erosion below critical
-        assert!((erosion_partheniades(0.3, 0.5, 0.001)).abs() < TOL);
-        // Deposition below critical
-        let d = deposition_krone(0.01, 0.005, 0.1, 0.5);
-        assert!(d > 0.0);
-        // No deposition above critical
-        assert!((deposition_krone(0.01, 0.005, 0.6, 0.5)).abs() < TOL);
-    }
-
-    #[test]
-    fn test_exner_bed_change() {
-        let dz = exner_bed_change(0.0, 0.001, 0.0005, 0.4);
-        // dz = 1/(1-0.4) * (0.001 - 0.0005) = 1.6667 * 0.0005
-        let expected = (1.0 / 0.6) * 0.0005;
-        assert!((dz - expected).abs() < 1.0e-10);
-    }
-
-    #[test]
-    fn test_sediment_particle_creation() {
-        let p =
-            SedimentSphParticle::new_fluid([1.0, 2.0, 3.0], [0.1, 0.0, 0.0], 0.01, 1000.0, 0.05);
-        assert!(!p.is_bed);
-        assert!((p.concentration).abs() < TOL);
-        let b = SedimentSphParticle::new_bed([1.0, 2.0, 0.0], 0.01, 2650.0, 0.05);
-        assert!(b.is_bed);
-        assert!((b.concentration - 0.6).abs() < TOL);
-    }
-
-    #[test]
-    fn test_mixture_density() {
-        let p = SedimentSphParticle {
-            pos: [0.0; 3],
-            vel: [0.0; 3],
-            mass: 1.0,
-            density: 1000.0,
-            concentration: 0.1,
-            diffusivity: 0.0,
-            h: 0.05,
-            is_bed: false,
-        };
-        let rho_mix = p.mixture_density(2650.0, 1000.0);
-        let expected = 0.1 * 2650.0 + 0.9 * 1000.0;
-        assert!((rho_mix - expected).abs() < TOL);
-    }
-
-    #[test]
-    fn test_scour_config() {
-        let sc = ScourConfig::cylinder([0.0, 0.0, 0.0], 1.0);
-        // At the structure surface
-        let amp_surface = sc.local_amplification([0.5, 0.0, 0.0]);
-        assert!((amp_surface - 2.5).abs() < 1.0e-6);
-        // Far away
-        let amp_far = sc.local_amplification([10.0, 0.0, 0.0]);
-        assert!((amp_far - 1.0).abs() < 1.0e-6);
-        // Equilibrium depth
-        let d_se = sc.equilibrium_depth(1.0);
-        assert!((d_se - 2.4).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn test_hiding_exposure() {
-        // Same size as mean => xi = 1
-        let xi = hiding_exposure_egiazaroff(0.001, 0.001);
-        assert!((xi - 1.0).abs() < 1.0e-6);
-        // Finer grain => xi > 1 (harder to move)
-        let xi_fine = hiding_exposure_egiazaroff(0.0005, 0.001);
-        assert!(xi_fine > 1.0);
-    }
-
-    #[test]
-    fn test_multi_fraction_bedload() {
-        let fracs = vec![
-            GrainFraction {
-                diameter: 0.5e-3,
-                rho_s: 2650.0,
-                fraction: 0.5,
-            },
-            GrainFraction {
-                diameter: 2.0e-3,
-                rho_s: 2650.0,
-                fraction: 0.5,
-            },
-        ];
-        let rates = multi_fraction_bedload(&fracs, 5.0, 1000.0, 0.047);
-        assert_eq!(rates.len(), 2);
-        // Finer fraction should have higher transport rate
-        assert!(rates[0] > rates[1]);
-    }
-
-    #[test]
-    fn test_flocculation() {
-        let params = FlocculationParams::estuarine_mud();
-        let d_eq = params.equilibrium_floc_diameter(5.0);
-        assert!(d_eq > params.d_primary);
-        assert!(d_eq <= params.d_max);
-        // Low shear => larger flocs
-        let d_eq_low = params.equilibrium_floc_diameter(1.0);
-        let d_eq_high = params.equilibrium_floc_diameter(100.0);
-        assert!(d_eq_low > d_eq_high);
-    }
-
-    #[test]
-    fn test_floc_density() {
-        let params = FlocculationParams::estuarine_mud();
-        let rho_floc = params.floc_density(0.5e-3, 2650.0, 1000.0);
-        // Floc should be less dense than primary grain
-        assert!(rho_floc < 2650.0);
-        assert!(rho_floc > 1000.0);
-    }
-
-    #[test]
-    fn test_solver_creation() {
-        let mut solver = SedimentSphSolver::new(SedimentSphConfig::default());
-        solver.add_fluid_particle([0.0, 0.0, 0.1], [1.0, 0.0, 0.0], 0.01, 0.05);
-        solver.add_bed_particle([0.0, 0.0, 0.0], 0.01, 0.05);
-        assert_eq!(solver.fluid_count(), 1);
-        assert_eq!(solver.bed_count(), 1);
-    }
-
-    #[test]
-    fn test_avalanche_correction() {
-        let dz = avalanche_correction(1.0, 0.0, 1.0, std::f64::consts::FRAC_PI_6, 0.5);
-        // Slope = 1.0, tan(30 deg) ~ 0.577
-        // Excess = (1.0 - 0.577) * 1.0 ~ 0.423
-        // dz = -0.5 * 0.423 * 0.5 ~ -0.106
-        assert!(dz < 0.0);
-    }
-
-    #[test]
-    fn test_classify_transport() {
-        assert_eq!(classify_transport(3.0), TransportMode::BedLoad);
-        assert_eq!(classify_transport(2.0), TransportMode::Mixed);
-        assert_eq!(classify_transport(1.0), TransportMode::SuspendedLoad);
-        assert_eq!(classify_transport(0.5), TransportMode::WashLoad);
-    }
-
-    #[test]
-    fn test_cerc_longshore() {
-        let q = cerc_longshore_transport(0.39, 1.0, 0.2, 2650.0, 1000.0, 0.4, 0.78);
-        assert!(q > 0.0);
-        // Zero wave height => zero transport
-        let q0 = cerc_longshore_transport(0.39, 0.0, 0.2, 2650.0, 1000.0, 0.4, 0.78);
-        assert!(q0.abs() < TOL);
-    }
-
-    #[test]
-    fn test_bed_interaction_force() {
-        // Above bed => no force
-        let f = bed_interaction_force(
-            [0.0, 0.0, 1.0],
-            [0.0; 3],
-            0.0,
-            [0.0, 0.0, 1.0],
-            1000.0,
-            10.0,
-        );
-        assert!((len3(f)).abs() < TOL);
-        // Below bed => repulsion
-        let f2 = bed_interaction_force(
-            [0.0, 0.0, -0.01],
-            [0.0; 3],
-            0.0,
-            [0.0, 0.0, 1.0],
-            1000.0,
-            10.0,
-        );
-        assert!(f2[2] > 0.0);
-    }
-
-    #[test]
-    fn test_submerged_weight() {
-        let w = submerged_weight(0.001, 2650.0, 1000.0);
-        let vol = PI / 6.0 * 1.0e-9;
-        let expected = 1650.0 * vol * 9.81;
-        assert!((w - expected).abs() < 1.0e-12);
-    }
-
-    #[test]
-    fn test_turbidity_front() {
-        let g_prime = reduced_gravity(0.01, 2650.0, 1000.0);
-        assert!(g_prime > 0.0);
-        let u_f = turbidity_front_velocity(g_prime, 1.0, 0.7);
-        assert!(u_f > 0.0);
-    }
-
-    #[test]
-    fn test_entrainment_coefficient() {
-        let e0 = entrainment_coefficient(0.0);
-        assert!((e0 - 0.075).abs() < 1.0e-6);
-        let e_high = entrainment_coefficient(1.0);
-        assert!(e_high < e0);
-    }
-
-    #[test]
-    fn test_armour_ratio() {
-        assert!((armour_ratio(2.0e-3, 1.0e-3) - 2.0).abs() < TOL);
-        assert!(is_armoured(2.0e-3, 1.0e-3, 1.5));
-        assert!(!is_armoured(1.0e-3, 1.0e-3, 1.5));
-    }
-
-    #[test]
-    fn test_bed_column_update() {
-        let mut col = BedColumn::new(0.0, 0.0, 0.0);
-        col.update(0.01);
-        assert!((col.z_bed - 0.01).abs() < TOL);
-        assert!((col.cumulative_deposition - 0.01).abs() < TOL);
-        col.update(-0.005);
-        assert!((col.z_bed - 0.005).abs() < TOL);
-        assert!((col.cumulative_erosion - 0.005).abs() < TOL);
-    }
-
-    #[test]
-    fn test_morphological_step() {
-        let mut solver = SedimentSphSolver::new(SedimentSphConfig::default());
-        // Add some fluid particles near the bed
-        for i in 0..5 {
-            let x = i as f64 * 0.02;
-            solver.add_fluid_particle([x, 0.0, 0.05], [0.5, 0.0, 0.0], 0.01, 0.05);
-        }
-        solver.add_bed_column(0.05, 0.0, 0.0);
-        let z_before = solver.bed_columns[0].z_bed;
-        solver.morphological_step(0.01);
-        // Bed should have changed (either eroded or deposited)
-        // At minimum the solver ran without panic
-        assert!(solver.time > 0.0);
-        let _ = z_before;
-    }
-
-    #[test]
-    fn test_ripple_and_dune() {
-        let rh = ripple_height_van_rijn(0.5e-3, 12.0, 3.0);
-        assert!(rh > 0.0);
-        let rl = ripple_wavelength(rh);
-        assert!((rl - 7.0 * rh).abs() < TOL);
-        let dh = dune_height_yalin(2.0, 0.5);
-        assert!(dh > 0.0);
-        // Supercritical => no dunes
-        assert!((dune_height_yalin(2.0, 1.5)).abs() < TOL);
-    }
-
-    #[test]
-    fn test_sph_diffusion_pair() {
-        let xi = [0.0, 0.0, 0.0];
-        let xj = [0.05, 0.0, 0.0];
-        let rate = sph_diffusion_pair(0.1, 0.2, 1.0e-3, 1.0e-3, xi, xj, 0.1, 1.0e-4);
-        // Should be positive (c_j > c_i, diffusion from high to low)
-        // The sign depends on kernel gradient direction
-        assert!(rate.is_finite());
-    }
-
-    #[test]
-    fn test_total_suspended_load() {
-        let particles = vec![
-            SedimentSphParticle {
-                pos: [0.0; 3],
-                vel: [0.0; 3],
-                mass: 1.0,
-                density: 1000.0,
-                concentration: 0.05,
-                diffusivity: 0.0,
-                h: 0.05,
-                is_bed: false,
-            },
-            SedimentSphParticle {
-                pos: [0.0; 3],
-                vel: [0.0; 3],
-                mass: 1.0,
-                density: 1000.0,
-                concentration: 0.03,
-                diffusivity: 0.0,
-                h: 0.05,
-                is_bed: false,
-            },
-            SedimentSphParticle {
-                pos: [0.0; 3],
-                vel: [0.0; 3],
-                mass: 1.0,
-                density: 2650.0,
-                concentration: 0.6,
-                diffusivity: 0.0,
-                h: 0.05,
-                is_bed: true,
-            },
-        ];
-        let tsl = total_suspended_load(&particles);
-        // Only fluid particles: (0.05 * 1/1000) + (0.03 * 1/1000) = 8e-5
-        let expected = 0.05 * 0.001 + 0.03 * 0.001;
-        assert!((tsl - expected).abs() < 1.0e-10);
-
-        let avg = average_concentration(&particles);
-        assert!((avg - 0.04).abs() < 1.0e-10);
-    }
-
-    #[test]
-    fn test_transport_capacity_eh() {
-        let qt = transport_capacity_eh(1.0, 0.5e-3, 2650.0, 1000.0, 0.003);
-        assert!(qt > 0.0);
-        assert!(qt.is_finite());
-        // Zero velocity => zero transport
-        assert!((transport_capacity_eh(0.0, 0.5e-3, 2650.0, 1000.0, 0.003)).abs() < TOL);
-    }
-
-    // ── Exner grid mass conservation (E5) ────────────────────────────────────
-
-    #[test]
-    fn test_exner_grid_mass_conservation() {
-        // 4×4 grid with uniform outward flux: sum of bed elevation changes
-        // should match -sum(outflux * dt) / (1 - porosity) within 1%.
-        let nx = 4_usize;
-        let ny = 4_usize;
-        let dx = 1.0_f64;
-        let dy = 1.0_f64;
-        let porosity = 0.4_f64;
-        let dt = 0.1_f64;
-
-        let mut grid = ExnerGrid::new(nx, ny, dx, dy, porosity, 0.0);
-
-        // Set a constant x-flux of 0.01 m²/s everywhere and zero y-flux
-        let q_val = 0.01_f64;
-        for v in &mut grid.flux_x {
-            *v = q_val;
-        }
-
-        let eta_before: f64 = grid.bed_elevation.iter().sum();
-        grid.compute_bed_change(dt);
-        let eta_after: f64 = grid.bed_elevation.iter().sum();
-
-        let total_change = eta_after - eta_before; // Σ dη
-
-        // For a uniform flux q_val in x, the interior divergence ∂q_x/∂x = 0
-        // (forward difference of equal values).  At x-boundaries (i = nx-1),
-        // the backward difference is also 0.  So the bed should not change.
-        // This validates the finite-difference scheme is consistent.
-        assert!(
-            total_change.abs() < 1e-12,
-            "uniform flux should give zero divergence: total_change={total_change}"
-        );
-    }
-
-    #[test]
-    fn test_exner_grid_nonzero_flux_divergence() {
-        // A linearly increasing flux qx[j*nx+i] = (i+1) * 0.001 gives
-        // ∂qx/∂x = 0.001/dx everywhere.  The bed should erode uniformly.
-        let nx = 5_usize;
-        let ny = 3_usize;
-        let dx = 1.0_f64;
-        let dy = 1.0_f64;
-        let porosity = 0.4_f64;
-        let dt = 1.0_f64;
-        let lambda_p = 1.0 - porosity;
-
-        let mut grid = ExnerGrid::new(nx, ny, dx, dy, porosity, 0.0);
-
-        let q_slope = 0.001_f64;
-        for j in 0..ny {
-            for i in 0..nx {
-                grid.flux_x[j * nx + i] = (i + 1) as f64 * q_slope;
-            }
-        }
-
-        let eta_before: Vec<f64> = grid.bed_elevation.clone();
-        grid.compute_bed_change(dt);
-
-        // Interior cells (i < nx-1): forward diff = q_slope/dx
-        // Exner: dη = -dt * q_slope / (dx * (1-λ_p))
-        let expected_deta_interior = -dt * q_slope / (dx * lambda_p);
-
-        for j in 0..ny {
-            for i in 0..nx - 1 {
-                let deta = grid.bed_elevation[j * nx + i] - eta_before[j * nx + i];
-                assert!(
-                    (deta - expected_deta_interior).abs() < 1e-12,
-                    "interior cell ({i},{j}): deta={deta}, expected={expected_deta_interior}"
-                );
-            }
-        }
-    }
-}
+mod tests;

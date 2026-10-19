@@ -2,6 +2,7 @@
 
 pub mod andersenthermostat_traits;
 pub mod berendsenthermostat_traits;
+mod bussi;
 pub mod csvrthermostat_traits;
 pub mod functions;
 pub mod langevinthermostat_traits;

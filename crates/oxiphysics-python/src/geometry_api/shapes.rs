@@ -289,6 +289,11 @@ impl From<ConvexHullError> for PyErr {
     }
 }
 
+/// Relative slack of the bounding-sphere rejection in
+/// [`PyConvexHull::gjk_overlap`], so that rounding in the sphere test can never
+/// reject hulls that touch or overlap.
+const SPHERE_REJECT_SLACK: f64 = 1e-12;
+
 /// A convex hull computed from a point cloud.
 ///
 /// The hull is the Quickhull of the input: `vertices` are the extreme points
@@ -362,10 +367,18 @@ impl PyConvexHull {
 
     /// Test whether two convex hulls overlap.
     ///
-    /// Runs the GJK algorithm (`oxiphysics.geometry.convex_hull.gjk_intersect`)
-    /// on the hull vertices, so the answer concerns the hulls themselves and
-    /// not their bounding spheres.
+    /// Hulls whose bounding spheres are disjoint cannot overlap and are
+    /// rejected without further work. Otherwise the GJK algorithm
+    /// (`oxiphysics.geometry.convex_hull.gjk_intersect`) decides on the hulls
+    /// themselves, so overlapping bounding spheres alone never report an
+    /// overlap.
     pub fn gjk_overlap(&self, other: &PyConvexHull) -> bool {
+        if let (Some((centre_a, radius_a)), Some((centre_b, radius_b))) =
+            (self.bounding_sphere(), other.bounding_sphere())
+            && len3(sub3(centre_a, centre_b)) > (radius_a + radius_b) * (1.0 + SPHERE_REJECT_SLACK)
+        {
+            return false;
+        }
         gjk_intersect(&self.engine_hull(), &other.engine_hull())
     }
 
@@ -394,6 +407,21 @@ impl PyConvexHull {
             vertices: hull.vertices,
             faces: hull.faces.into_iter().flatten().collect(),
         })
+    }
+
+    /// Bounding sphere `(centre, radius)` of the hull: the centroid of its
+    /// vertices and the largest vertex distance from it. `None` without vertices.
+    fn bounding_sphere(&self) -> Option<([f64; 3], f64)> {
+        if self.vertices.is_empty() {
+            return None;
+        }
+        let centre = centroid(&self.vertices);
+        let radius = self
+            .vertices
+            .iter()
+            .map(|&v| len3(sub3(v, centre)))
+            .fold(0.0, f64::max);
+        Some((centre, radius))
     }
 
     /// The same hull as an engine [`ConvexHull3D`] (for GJK).

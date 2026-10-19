@@ -2,7 +2,6 @@
 
 pub mod areaconstraint_traits;
 pub mod balloon_volume;
-pub mod balloonpressureconstraint_traits;
 mod bending_hinge;
 pub mod bendingconstraint_traits;
 pub mod collisionconstraint_traits;
@@ -26,6 +25,8 @@ mod bending_tests;
 mod neohookean_tests;
 #[cfg(test)]
 mod reset_lambda_tests;
+#[cfg(test)]
+mod shape_matching_tests;
 
 // Re-export all types
 pub use balloon_volume::BalloonVolumeConstraint;

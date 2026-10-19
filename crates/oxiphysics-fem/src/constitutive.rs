@@ -259,27 +259,65 @@ impl ConstitutiveModel for NeoHookean {
 // MooneyRivlin hyperelastic
 // ---------------------------------------------------------------------------
 
-/// Mooney-Rivlin hyperelastic material (incompressible form).
+/// Default ratio κ / (c10 + c01) used by [`MooneyRivlin::new`].
 ///
-/// Strain energy density:
-/// W = c10·(I₁ − 3) + c01·(I₂ − 3)
+/// With the small-strain shear modulus μ = 2(c10 + c01) this is κ = 1000·μ, i.e.
+/// a Poisson ratio of about 0.4997 (nearly incompressible, yet well conditioned).
+const MOONEY_RIVLIN_DEFAULT_BULK_RATIO: f64 = 2000.0;
+
+/// Smallest Jacobian J = det F still treated as an admissible deformation.
+const MIN_ADMISSIBLE_JACOBIAN: f64 = 1.0e-12;
+
+/// Mooney-Rivlin hyperelastic material (nearly incompressible).
+///
+/// Strain energy density with a volumetric–isochoric split:
+///
+/// W = c10·(Ī₁ − 3) + c01·(Ī₂ − 3) + κ/2·(J − 1)²
+///
+/// where J = det F, Ī₁ = J^(−2/3)·I₁ and Ī₂ = J^(−4/3)·I₂ are the invariants of
+/// the isochoric right Cauchy–Green tensor C̄ = J^(−2/3)·C.  The undeformed
+/// configuration is stress free; for small strains the model is isotropic with
+/// shear modulus μ = 2(c10 + c01) and bulk modulus κ (Lamé λ = κ − 2μ/3).
 #[derive(Debug, Clone)]
 pub struct MooneyRivlin {
     /// Material parameter c10 (Pa).
     pub c10: f64,
     /// Material parameter c01 (Pa).
     pub c01: f64,
+    /// Bulk modulus κ (Pa) of the volumetric term κ/2·(J − 1)².
+    pub kappa: f64,
 }
 
 impl MooneyRivlin {
-    /// Create a new Mooney-Rivlin material.
+    /// Create a new Mooney-Rivlin material with the default (nearly
+    /// incompressible) bulk modulus κ = 2000·(c10 + c01).
+    ///
+    /// Use [`MooneyRivlin::new_with_bulk`] to choose κ explicitly.
     pub fn new(c10: f64, c01: f64) -> Self {
-        Self { c10, c01 }
+        Self::new_with_bulk(c10, c01, MOONEY_RIVLIN_DEFAULT_BULK_RATIO * (c10 + c01))
     }
 
-    /// Strain energy density as a function of principal invariants I₁ and I₂.
+    /// Create a Mooney-Rivlin material with an explicit bulk modulus κ (Pa).
+    pub fn new_with_bulk(c10: f64, c01: f64, kappa: f64) -> Self {
+        Self { c10, c01, kappa }
+    }
+
+    /// Small-strain shear modulus μ = 2(c10 + c01).
+    pub fn shear_modulus(&self) -> f64 {
+        2.0 * (self.c10 + self.c01)
+    }
+
+    /// Small-strain Lamé parameter λ = κ − 2μ/3.
+    pub fn lame_lambda(&self) -> f64 {
+        self.kappa - 2.0 * self.shear_modulus() / 3.0
+    }
+
+    /// Isochoric strain energy density as a function of the (isochoric)
+    /// invariants Ī₁ and Ī₂.
     ///
-    /// W = c10·(I₁ − 3) + c01·(I₂ − 3)
+    /// W_iso = c10·(Ī₁ − 3) + c01·(Ī₂ − 3)
+    ///
+    /// The volumetric part κ/2·(J − 1)² is added by [`MooneyRivlin::strain_energy`].
     pub fn strain_energy_density(&self, i1: f64, i2: f64) -> f64 {
         self.c10 * (i1 - 3.0) + self.c01 * (i2 - 3.0)
     }
@@ -298,35 +336,138 @@ impl MooneyRivlin {
         let i2 = (i1 * i1 - tr_c2) / 2.0;
         (i1, i2)
     }
+
+    /// Total strain energy density W(F) = c10(Ī₁ − 3) + c01(Ī₂ − 3) + κ/2 (J − 1)².
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::InvalidInput`] if `f` is not an admissible
+    /// deformation gradient (non-finite entries, or J = det F not positive).
+    pub fn strain_energy(&self, f: [[f64; 3]; 3]) -> crate::Result<f64> {
+        let kin = admissible_kinematics(f)?;
+        let (i1, i2) = Self::invariants(f);
+        let i1_bar = kin.j.powf(-2.0 / 3.0) * i1;
+        let i2_bar = kin.j.powf(-4.0 / 3.0) * i2;
+        let volumetric = 0.5 * self.kappa * (kin.j - 1.0) * (kin.j - 1.0);
+        Ok(self.strain_energy_density(i1_bar, i2_bar) + volumetric)
+    }
+
+    /// Second Piola–Kirchhoff stress S = 2·∂W/∂C.
+    ///
+    /// With C̄ = J^(−2/3)·C and Ī₁ = tr C̄:
+    ///
+    /// S̃ = 2·\[(c10 + c01·Ī₁)·I − c01·C̄\]
+    ///
+    /// S = J^(−2/3)·(S̃ − ⅓·(S̃ : C)·C⁻¹) + κ·J·(J − 1)·C⁻¹
+    ///
+    /// The deviatoric projection removes the spurious hydrostatic stress of the
+    /// isochoric part, so S = 0 for F = I.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::InvalidInput`] if `f` is not an admissible
+    /// deformation gradient (non-finite entries, or J = det F not positive).
+    pub fn try_pk2_stress(&self, f: [[f64; 3]; 3]) -> crate::Result<[[f64; 3]; 3]> {
+        let kin = admissible_kinematics(f)?;
+        let j = kin.j;
+        let j_m23 = j.powf(-2.0 / 3.0);
+        let i1_bar = j_m23 * (kin.c[0][0] + kin.c[1][1] + kin.c[2][2]);
+        let mut s_tilde = [[0.0f64; 3]; 3];
+        let mut s_tilde_dot_c = 0.0;
+        for (i, (s_row, c_row)) in s_tilde.iter_mut().zip(kin.c.iter()).enumerate() {
+            for (k, (s_ik, &c_ik)) in s_row.iter_mut().zip(c_row.iter()).enumerate() {
+                let delta = if i == k { 1.0 } else { 0.0 };
+                let v = 2.0 * ((self.c10 + self.c01 * i1_bar) * delta - self.c01 * j_m23 * c_ik);
+                *s_ik = v;
+                s_tilde_dot_c += v * c_ik;
+            }
+        }
+        let hydrostatic = s_tilde_dot_c / 3.0;
+        let volumetric = self.kappa * j * (j - 1.0);
+        let mut s = [[0.0f64; 3]; 3];
+        for ((s_row, tilde_row), c_inv_row) in
+            s.iter_mut().zip(s_tilde.iter()).zip(kin.c_inv.iter())
+        {
+            for ((s_ik, &tilde_ik), &c_inv_ik) in
+                s_row.iter_mut().zip(tilde_row.iter()).zip(c_inv_row.iter())
+            {
+                *s_ik = j_m23 * (tilde_ik - hydrostatic * c_inv_ik) + volumetric * c_inv_ik;
+            }
+        }
+        Ok(s)
+    }
+
+    /// Second Piola–Kirchhoff stress, see [`MooneyRivlin::try_pk2_stress`].
+    ///
+    /// Returns a tensor filled with `NaN` if `f` is not an admissible
+    /// deformation gradient (collapsed or inverted material).
+    pub fn pk2_stress(&self, f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+        self.try_pk2_stress(f).unwrap_or([[f64::NAN; 3]; 3])
+    }
+
+    /// Cauchy stress σ = F·S·Fᵀ / J.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::InvalidInput`] if `f` is not an admissible
+    /// deformation gradient (non-finite entries, or J = det F not positive).
+    pub fn try_cauchy_stress(&self, f: [[f64; 3]; 3]) -> crate::Result<[[f64; 3]; 3]> {
+        let s = self.try_pk2_stress(f)?;
+        let j = det3(f);
+        let mut sigma = mat3_mul(mat3_mul(f, s), mat3_transpose(f));
+        for row in &mut sigma {
+            for v in row.iter_mut() {
+                *v /= j;
+            }
+        }
+        Ok(sigma)
+    }
+}
+
+/// Determinant, right Cauchy–Green tensor and its inverse for an admissible
+/// deformation gradient.
+struct Kinematics {
+    /// J = det F.
+    j: f64,
+    /// C = Fᵀ·F.
+    c: [[f64; 3]; 3],
+    /// C⁻¹.
+    c_inv: [[f64; 3]; 3],
+}
+
+/// Validate `f` (finite, J > [`MIN_ADMISSIBLE_JACOBIAN`]) and derive C and C⁻¹.
+fn admissible_kinematics(f: [[f64; 3]; 3]) -> crate::Result<Kinematics> {
+    let j = det3(f);
+    if !j.is_finite() || j <= MIN_ADMISSIBLE_JACOBIAN {
+        return Err(crate::Error::InvalidInput(format!(
+            "deformation gradient is not admissible: J = det F = {j:e} must be finite and exceed {MIN_ADMISSIBLE_JACOBIAN:e}"
+        )));
+    }
+    let c = ftf(f);
+    let c_inv = inv3_checked(c).ok_or_else(|| {
+        crate::Error::InvalidInput(
+            "right Cauchy-Green tensor C = FᵀF is singular or not finite".to_string(),
+        )
+    })?;
+    Ok(Kinematics { j, c, c_inv })
 }
 
 impl ConstitutiveModel for MooneyRivlin {
+    /// Second Piola–Kirchhoff stress for the deformation gradient F = I + ε,
+    /// returned in Voigt notation \[S11, S22, S33, S12, S23, S13\].
+    ///
+    /// To first order in ε this coincides with the Cauchy stress.  The result is
+    /// `NaN` if the strain collapses or inverts the material (J ≤ 0).
     fn stress(&self, strain: Stress6) -> Stress6 {
         let f = voigt_strain_to_f(strain);
-        let (i1, i2) = MooneyRivlin::invariants(f);
-        let c = ftf(f);
-        let c2 = mat3_mul(c, c);
-        // S = 2·(∂W/∂I1·I + ∂W/∂I2·(I1·I − C))
-        // For incompressible: simplified PK2 (pressure excluded here)
-        let dw_di1 = self.c10;
-        let dw_di2 = self.c01;
-        let mut s = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for k in 0..3 {
-                let delta = if i == k { 1.0 } else { 0.0 };
-                s[i][k] = 2.0 * (dw_di1 * delta + dw_di2 * (i1 * delta - c[i][k]));
-            }
-        }
-        // Suppress unused warning
-        let _ = (i2, c2);
+        let s = self.pk2_stress(f);
         [s[0][0], s[1][1], s[2][2], s[0][1], s[1][2], s[0][2]]
     }
 
+    /// Tangent stiffness of the undeformed configuration (small-strain limit),
+    /// the isotropic stiffness with μ = 2(c10 + c01) and λ = κ − 2μ/3.
     fn tangent_stiffness(&self, _strain: Stress6) -> [f64; 36] {
-        // Linearised at reference config: reduces to isotropic with mu = 2*(c10+c01)
-        let mu = 2.0 * (self.c10 + self.c01);
-        let le = LinearElastic::new(3.0 * mu, 0.5 - 1e-9); // near incompressible
-        le.isotropic_stiffness_voigt()
+        isotropic_voigt_stiffness(self.lame_lambda(), self.shear_modulus())
     }
 }
 
@@ -479,6 +620,58 @@ fn mat3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
             }
         }
     }
+    c
+}
+
+/// Transpose of a 3×3 matrix.
+fn mat3_transpose(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut t = [[0.0f64; 3]; 3];
+    for (i, row) in m.iter().enumerate() {
+        for (j, &v) in row.iter().enumerate() {
+            t[j][i] = v;
+        }
+    }
+    t
+}
+
+/// Inverse of a 3×3 matrix, or `None` if it is singular or not finite.
+fn inv3_checked(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let d = det3(m);
+    if !d.is_finite() || d.abs() <= 1e-30 {
+        return None;
+    }
+    let inv_d = 1.0 / d;
+    Some([
+        [
+            (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * inv_d,
+            (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * inv_d,
+            (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inv_d,
+        ],
+        [
+            (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * inv_d,
+            (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * inv_d,
+            (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * inv_d,
+        ],
+        [
+            (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * inv_d,
+            (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * inv_d,
+            (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * inv_d,
+        ],
+    ])
+}
+
+/// Isotropic 6×6 stiffness in Voigt notation (row-major, engineering shear
+/// strains) from the Lamé parameters λ and μ.
+fn isotropic_voigt_stiffness(lambda: f64, mu: f64) -> [f64; 36] {
+    let mut c = [0.0f64; 36];
+    for i in 0..3 {
+        for j in 0..3 {
+            c[i * 6 + j] = if i == j { lambda + 2.0 * mu } else { lambda };
+        }
+    }
+    c[21] = mu;
+    c[28] = mu;
+    c[35] = mu;
     c
 }
 
@@ -679,6 +872,227 @@ mod tests {
             w.abs() < 1e-30,
             "W should be 0 at reference config, got {w}"
         );
+    }
+
+    #[test]
+    fn test_mooney_rivlin_stress_free_at_zero_strain() {
+        // Regression: the old "simplified" PK2 returned 2(c10 + 2 c01) I != 0 at C = I.
+        let mat = MooneyRivlin::new(0.5e6, 0.1e6);
+        let mu = mat.shear_modulus();
+        let s = mat.stress([0.0; 6]);
+        for (k, &v) in s.iter().enumerate() {
+            assert!(
+                v.abs() < 1e-9 * mu,
+                "stress[{k}] = {v} must vanish at zero strain (mu = {mu})"
+            );
+        }
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let pk2 = mat.try_pk2_stress(identity).unwrap();
+        let cauchy = mat.try_cauchy_stress(identity).unwrap();
+        for (pk2_row, cauchy_row) in pk2.iter().zip(cauchy.iter()) {
+            for (&p, &c) in pk2_row.iter().zip(cauchy_row.iter()) {
+                assert!(p.abs() < 1e-9 * mu, "PK2 entry {p} must vanish at F = I");
+                assert!(c.abs() < 1e-9 * mu, "Cauchy entry {c} must vanish at F = I");
+            }
+        }
+        // Independent of the bulk modulus and of the c10/c01 split.
+        for (c10, c01, kappa) in [
+            (1.0e5, 0.0, 1.0e8),
+            (0.0, 3.0e5, 2.0e7),
+            (2.0e5, 1.0e5, 0.0),
+        ] {
+            let m = MooneyRivlin::new_with_bulk(c10, c01, kappa);
+            for &v in &m.stress([0.0; 6]) {
+                assert!(v.abs() < 1e-9 * m.shear_modulus().max(1.0));
+            }
+        }
+    }
+
+    #[test]
+    fn test_mooney_rivlin_default_and_explicit_bulk_modulus() {
+        let mat = MooneyRivlin::new(0.5e6, 0.1e6);
+        assert!((mat.kappa - 2000.0 * 0.6e6).abs() < 1e-3);
+        let explicit = MooneyRivlin::new_with_bulk(0.5e6, 0.1e6, 7.5e7);
+        assert_eq!(explicit.kappa, 7.5e7);
+        assert!((explicit.shear_modulus() - 1.2e6).abs() < 1e-6);
+        assert!((explicit.lame_lambda() - (7.5e7 - 0.8e6)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_mooney_rivlin_small_strain_matches_linear_elastic() {
+        let mat = MooneyRivlin::new(0.5e6, 0.1e6);
+        let (lambda, mu) = (mat.lame_lambda(), mat.shear_modulus());
+        let nu = lambda / (2.0 * (lambda + mu));
+        let young = mu * (3.0 * lambda + 2.0 * mu) / (lambda + mu);
+        let reference = LinearElastic::new(young, nu);
+        // kappa = 1000 mu amplifies the O(eps^2) volume change of F = I + eps, so the strains must
+        // be small enough that kappa * eps^2 stays well below mu * eps.
+        let strains: [Stress6; 5] = [
+            [1.0e-8, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, -1.0e-8, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 2.0e-8, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 2.0e-8, 2.0e-8],
+            [1.0e-8, 2.0e-8, -1.0e-8, 1.0e-8, -1.0e-8, 1.0e-8],
+        ];
+        for strain in strains {
+            let got = mat.stress(strain);
+            let want = reference.stress(strain);
+            let scale = want.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            assert!(scale > 0.0);
+            for (k, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+                assert!(
+                    (g - w).abs() < 1e-4 * scale,
+                    "strain {strain:?}: component {k}: {g} vs linear elastic {w}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_mooney_rivlin_pk2_is_derivative_of_strain_energy() {
+        // P = F S must equal dW/dF for a general (non-symmetric, volume-changing) F.
+        let mat = MooneyRivlin::new_with_bulk(0.5e6, 0.1e6, 2.0e7);
+        let f = [[1.10, 0.20, -0.05], [0.05, 0.95, 0.10], [-0.10, 0.03, 1.08]];
+        let s = mat.try_pk2_stress(f).unwrap();
+        let p = mat3_mul(f, s);
+        let scale = p
+            .iter()
+            .flatten()
+            .fold(0.0_f64, |m, v| m.max(v.abs()))
+            .max(1.0);
+        let h = 1.0e-6;
+        for (i, p_row) in p.iter().enumerate() {
+            for (j, &p_ij) in p_row.iter().enumerate() {
+                let mut f_plus = f;
+                let mut f_minus = f;
+                f_plus[i][j] += h;
+                f_minus[i][j] -= h;
+                let dw = (mat.strain_energy(f_plus).unwrap() - mat.strain_energy(f_minus).unwrap())
+                    / (2.0 * h);
+                assert!(
+                    (dw - p_ij).abs() < 1e-6 * scale,
+                    "dW/dF[{i}][{j}] = {dw} but (F S)[{i}][{j}] = {p_ij}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_mooney_rivlin_simple_shear_matches_incompressible_theory() {
+        // Simple shear is isochoric (J = 1): sigma_12 = 2 (c10 + c01) gamma,
+        // sigma_11 - sigma_22 = 2 (c10 + c01) gamma^2, sigma_33 - sigma_22 = 2 c01 gamma^2.
+        let (c10, c01) = (0.5e6, 0.1e6);
+        let mat = MooneyRivlin::new(c10, c01);
+        let gamma = 0.5;
+        let f = [[1.0, gamma, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let sigma = mat.try_cauchy_stress(f).unwrap();
+        let tau = 2.0 * (c10 + c01) * gamma;
+        assert!(
+            (sigma[0][1] - tau).abs() < 1e-9 * tau,
+            "sigma_12 = {}",
+            sigma[0][1]
+        );
+        assert!((sigma[1][0] - tau).abs() < 1e-9 * tau);
+        let n1 = 2.0 * (c10 + c01) * gamma * gamma;
+        assert!(((sigma[0][0] - sigma[1][1]) - n1).abs() < 1e-9 * n1);
+        let n2 = 2.0 * c01 * gamma * gamma;
+        assert!(((sigma[2][2] - sigma[1][1]) - n2).abs() < 1e-9 * n2);
+    }
+
+    #[test]
+    fn test_mooney_rivlin_uniaxial_tension_matches_classical_formula() {
+        // Volume-preserving uniaxial stretch: sigma_11 - sigma_22 = 2 (l^2 - 1/l)(c10 + c01/l).
+        let (c10, c01) = (0.4e6, 0.15e6);
+        let mat = MooneyRivlin::new(c10, c01);
+        for stretch in [0.6_f64, 1.3, 1.7, 2.5] {
+            let lateral = stretch.powf(-0.5);
+            let f = [
+                [stretch, 0.0, 0.0],
+                [0.0, lateral, 0.0],
+                [0.0, 0.0, lateral],
+            ];
+            let sigma = mat.try_cauchy_stress(f).unwrap();
+            let expected = 2.0 * (stretch * stretch - 1.0 / stretch) * (c10 + c01 / stretch);
+            let got = sigma[0][0] - sigma[1][1];
+            assert!(
+                (got - expected).abs() < 1e-8 * expected.abs(),
+                "stretch {stretch}: {got} vs {expected}"
+            );
+            assert!((sigma[1][1] - sigma[2][2]).abs() < 1e-8 * expected.abs());
+        }
+    }
+
+    #[test]
+    fn test_mooney_rivlin_uniform_dilation_is_pure_bulk_response() {
+        // F = s I has no isochoric stress: sigma = kappa (J - 1) I.
+        let mat = MooneyRivlin::new_with_bulk(0.5e6, 0.1e6, 4.0e7);
+        for s in [0.9_f64, 1.05, 1.2] {
+            let f = [[s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]];
+            let j = s * s * s;
+            let sigma = mat.try_cauchy_stress(f).unwrap();
+            let expected = mat.kappa * (j - 1.0);
+            for (i, row) in sigma.iter().enumerate() {
+                for (k, &value) in row.iter().enumerate() {
+                    let want = if i == k { expected } else { 0.0 };
+                    assert!(
+                        (value - want).abs() < 1e-9 * expected.abs(),
+                        "s = {s}: sigma[{i}][{k}] = {value} vs {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_mooney_rivlin_tangent_is_consistent_with_stress() {
+        let mat = MooneyRivlin::new_with_bulk(0.5e6, 0.1e6, 5.0e7);
+        let tangent = mat.tangent_stiffness([0.0; 6]);
+        let (lambda, mu) = (mat.lame_lambda(), mat.shear_modulus());
+        assert!((tangent[0] - (lambda + 2.0 * mu)).abs() < 1e-6);
+        assert!((tangent[1] - lambda).abs() < 1e-6);
+        assert!((tangent[21] - mu).abs() < 1e-6);
+        // Symmetric and equal to the central-difference derivative of stress() at zero strain.
+        let h = 1.0e-6;
+        let max_entry = tangent.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        for col in 0..6 {
+            let mut plus = [0.0; 6];
+            let mut minus = [0.0; 6];
+            plus[col] = h;
+            minus[col] = -h;
+            let s_plus = mat.stress(plus);
+            let s_minus = mat.stress(minus);
+            for (row, (sp, sm)) in s_plus.iter().zip(s_minus.iter()).enumerate() {
+                let fd = (sp - sm) / (2.0 * h);
+                assert!(
+                    (fd - tangent[row * 6 + col]).abs() < 1e-5 * max_entry,
+                    "tangent[{row}][{col}] = {} but dS/de = {fd}",
+                    tangent[row * 6 + col]
+                );
+                assert!((tangent[row * 6 + col] - tangent[col * 6 + row]).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn test_mooney_rivlin_degenerate_deformation_does_not_panic() {
+        let mat = MooneyRivlin::new(0.5e6, 0.1e6);
+        // eps_xx = -1 collapses the material (F11 = 0); eps_xx = -2 inverts it.
+        for strain in [
+            [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [-2.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ] {
+            let s = mat.stress(strain);
+            assert!(
+                s.iter().all(|v| v.is_nan()),
+                "expected NaN stress, got {s:?}"
+            );
+        }
+        let singular = [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        assert!(mat.try_pk2_stress(singular).is_err());
+        assert!(mat.try_cauchy_stress(singular).is_err());
+        assert!(mat.strain_energy(singular).is_err());
+        let non_finite = [[f64::NAN, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        assert!(mat.try_pk2_stress(non_finite).is_err());
     }
 
     // ---- J2Plasticity ----

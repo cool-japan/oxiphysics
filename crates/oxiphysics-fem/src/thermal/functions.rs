@@ -89,7 +89,6 @@ pub fn transient_theta_method(
 /// * `rho`       - density \[kg/m³\]
 /// * `latent_heat` - latent heat of fusion L \[J/kg\]
 /// * `dt`        - time step \[s\]
-/// * `nu` (unused, for future use)
 pub fn stefan_front_position(s: f64, q_flux: f64, rho: f64, latent_heat: f64, dt: f64) -> f64 {
     if latent_heat.abs() < 1e-30 || rho.abs() < 1e-30 {
         return s;
@@ -98,41 +97,135 @@ pub fn stefan_front_position(s: f64, q_flux: f64, rho: f64, latent_heat: f64, dt
 }
 /// Neumann exact solution for the one-phase Stefan problem.
 ///
-/// Solves the transcendental equation:
-///   `lambda * exp(lambda²) * erf(lambda) = St / sqrt(pi)`
+/// A semi-infinite region, initially at the melt temperature, has its boundary
+/// held at `T_melt + delta_t` (`delta_t > 0`); the melt front then advances as
+/// `s(t) = 2 * lambda * sqrt(alpha * t)`, where `alpha` is the thermal
+/// diffusivity of the melt.  The dimensionless front coefficient `lambda` is the
+/// positive root of the transcendental equation
 ///
-/// where `St = Cp * (T_init - T_melt) / L` is the Stefan number.
+/// `lambda * exp(lambda²) * erf(lambda) = St / sqrt(pi)`,
 ///
-/// Returns the dimensionless front-position coefficient `lambda` such that
-/// `s(t) = 2 * lambda * sqrt(alpha * t)`.
-pub fn stefan_neumann_lambda(cp: f64, alpha: f64, _nu: f64, latent_heat: f64, dt: f64) -> f64 {
-    let stefan_number = cp * 1.0 / latent_heat;
-    let pi = std::f64::consts::PI;
-    let target = stefan_number / pi.sqrt();
-    let mut lambda = 0.5_f64;
-    for _ in 0..50 {
-        let erf_l = erf_approx(lambda);
-        let f = lambda * (lambda * lambda).exp() * erf_l - target;
-        let df = (lambda * lambda).exp() * erf_l
-            + lambda * 2.0 * lambda * (lambda * lambda).exp() * erf_l
-            + lambda * (lambda * lambda).exp() * (2.0 / pi.sqrt()) * (-(lambda * lambda)).exp();
-        if df.abs() < 1e-30 {
+/// with the Stefan number `St = cp * delta_t / latent_heat`.  `lambda` depends
+/// on the material only through `St` (the diffusivity and the elapsed time enter
+/// the front position, not `lambda`).
+///
+/// # Arguments
+/// * `cp`          - specific heat of the melt \[J/(kg K)\]
+/// * `delta_t`     - superheat `T_boundary - T_melt` \[K\]
+/// * `latent_heat` - latent heat of fusion `L` \[J/kg\]
+///
+/// # Returns
+/// `lambda >= 0`.  `0.0` when `St == 0` (no superheat, so no front motion).
+/// `NaN` when an input is not finite, when `latent_heat <= 0`, or when `St < 0`
+/// (a sub-melt boundary temperature has no one-phase melting solution).
+pub fn stefan_neumann_lambda(cp: f64, delta_t: f64, latent_heat: f64) -> f64 {
+    if !(cp.is_finite() && delta_t.is_finite() && latent_heat.is_finite()) || latent_heat <= 0.0 {
+        return f64::NAN;
+    }
+    let stefan_number = cp * delta_t / latent_heat;
+    if stefan_number.is_nan() || stefan_number < 0.0 {
+        return f64::NAN;
+    }
+    if stefan_number == 0.0 {
+        return 0.0;
+    }
+    let sqrt_pi = std::f64::consts::PI.sqrt();
+    let target = stefan_number / sqrt_pi;
+    // g(lambda) = lambda e^{lambda^2} erf(lambda) - target is increasing and
+    // convex on lambda > 0 with g(0) < 0, so it has exactly one root.
+    let residual = |l: f64| l * (l * l).exp() * erf_series(l) - target;
+    let slope = |l: f64| {
+        let e = (l * l).exp();
+        e * erf_series(l) * (1.0 + 2.0 * l * l) + 2.0 * l / sqrt_pi
+    };
+    // Bracket the root.  For St <= 1/2, lambda = sqrt(2 St) <= 1 already gives
+    // g >= 0 (g(l) >= 2/sqrt(pi) l^2 on [0, 1]) and lies within a factor of two
+    // of the small-St root sqrt(St / 2); e^{lambda^2} overflows beyond lambda ~ 26.
+    const LAMBDA_MAX: f64 = 26.0;
+    let mut hi = (2.0 * stefan_number).sqrt().min(1.0);
+    while residual(hi) < 0.0 {
+        if hi >= LAMBDA_MAX {
+            return f64::NAN;
+        }
+        hi = (hi * 2.0).min(LAMBDA_MAX);
+    }
+    let mut lo = 0.0_f64;
+    // Newton started on the right of a convex increasing function converges
+    // monotonically; bisection keeps every iterate inside the bracket anyway.
+    let mut lambda = hi;
+    for _ in 0..200 {
+        let g = residual(lambda);
+        if g == 0.0 {
             break;
         }
-        lambda -= f / df;
-        lambda = lambda.max(1e-10);
+        if g < 0.0 {
+            lo = lambda;
+        } else {
+            hi = lambda;
+        }
+        let mut next = lambda - g / slope(lambda);
+        if !next.is_finite() || next <= lo || next >= hi {
+            next = 0.5 * (lo + hi);
+        }
+        let converged = (next - lambda).abs() <= 1e-14 * next.abs();
+        lambda = next;
+        if converged {
+            break;
+        }
     }
-    let _ = (alpha, dt);
     lambda
 }
-/// Approximate error function using Horner's method (max error ~1.5e-7).
-pub(super) fn erf_approx(x: f64) -> f64 {
-    let t = 1.0 / (1.0 + 0.3275911 * x.abs());
-    let poly = t
-        * (0.254829592
-            + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
-    let result = 1.0 - poly * (-x * x).exp();
-    if x >= 0.0 { result } else { -result }
+/// Melt-front position of the one-phase Stefan problem at time `t`,
+/// `s(t) = 2 * lambda * sqrt(alpha * t)`, with the Neumann coefficient
+/// `lambda = stefan_neumann_lambda(cp, delta_t, latent_heat)`.
+///
+/// # Arguments
+/// * `cp`          - specific heat of the melt \[J/(kg K)\]
+/// * `delta_t`     - superheat `T_boundary - T_melt` \[K\]
+/// * `latent_heat` - latent heat of fusion `L` \[J/kg\]
+/// * `alpha`       - thermal diffusivity of the melt \[m²/s\]
+/// * `t`           - elapsed time \[s\]
+///
+/// Returns `NaN` when [`stefan_neumann_lambda`] does, or when `alpha` or `t` is
+/// negative or not finite.
+pub fn stefan_neumann_front_position(
+    cp: f64,
+    delta_t: f64,
+    latent_heat: f64,
+    alpha: f64,
+    t: f64,
+) -> f64 {
+    if !(alpha.is_finite() && t.is_finite()) || alpha < 0.0 || t < 0.0 {
+        return f64::NAN;
+    }
+    2.0 * stefan_neumann_lambda(cp, delta_t, latent_heat) * (alpha * t).sqrt()
+}
+/// Error function to double precision.
+///
+/// Uses the non-alternating Maclaurin series
+/// `erf(x) = 2/sqrt(pi) * exp(-x²) * sum_n 2^n x^(2n+1) / (2n+1)!!`, whose terms
+/// are all positive (no cancellation), and saturates to `±1` beyond `|x| = 6`
+/// where `1 - |erf(x)| < 2e-17`.
+pub(super) fn erf_series(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let ax = x.abs();
+    if ax >= 6.0 {
+        return x.signum();
+    }
+    let x2 = ax * ax;
+    let mut term = ax;
+    let mut sum = ax;
+    for n in 1..400 {
+        term *= 2.0 * x2 / (2.0 * n as f64 + 1.0);
+        sum += term;
+        if term <= sum * f64::EPSILON * 1e-2 {
+            break;
+        }
+    }
+    let value = 2.0 / std::f64::consts::PI.sqrt() * (-x2).exp() * sum;
+    if x < 0.0 { -value } else { value }
 }
 /// Latent heat source term for the enthalpy method.
 ///
@@ -486,9 +579,25 @@ pub fn crank_nicolson_transient(
 }
 /// Enthalpy-method update for phase change in a single node.
 ///
-/// Converts temperature to enthalpy, advances by one explicit step, converts back.
+/// Converts the nodal temperature to specific enthalpy, advances it by one
+/// explicit step with the net heat input, and converts back to temperature.
 ///
-/// H(T) = rho * (cp * T + L * f_l(T))
+/// The specific enthalpy (J/kg) is
+///
+/// `e(T) = cp * T + L * f_l(T)`,
+///
+/// with the liquid fraction `f_l(T)` rising linearly from 0 at the solidus
+/// `T_melt - mush_width` to 1 at the liquidus `T_melt + mush_width`.  One step
+/// adds the heat `q_net * dt` to the node mass `rho * volume`:
+///
+/// `e_new = e(T) + q_net * dt / (rho * volume)`.
+///
+/// `e(T)` is continuous, strictly increasing and piecewise linear (kinks at the
+/// solidus and the liquidus), so `T_new = e^{-1}(e_new)` is evaluated exactly
+/// on the branch that contains `e_new`; there is no iteration that could stall
+/// or cycle across the kinks.  For `mush_width <= 0` (sharp interface) `e(T)`
+/// jumps by `L` at `T_melt` and the temperature stays at `T_melt` while `e_new`
+/// lies on that plateau.
 ///
 /// # Arguments
 /// * `temperature`  - current nodal temperature (K)
@@ -511,34 +620,34 @@ pub fn enthalpy_update(
     dt: f64,
     volume: f64,
 ) -> f64 {
-    let f_l = |t: f64| -> f64 {
-        let t_sol = t_melt - mush_width;
-        let t_liq = t_melt + mush_width;
-        ((t - t_sol) / (t_liq - t_sol)).clamp(0.0, 1.0)
-    };
-    let h = rho * (cp * temperature + latent_heat * f_l(temperature));
-    let mass = rho * volume;
-    let h_new = h + q_net * dt / (mass.max(1e-30));
-    let h_new_per_rho = h_new / rho;
-    let mut t_new = h_new_per_rho / (cp.max(1e-30));
-    for _ in 0..30 {
-        let fl = f_l(t_new);
-        let h_guess = cp * t_new + latent_heat * fl;
-        let residual = h_guess - h_new_per_rho;
-        let t_sol = t_melt - mush_width;
-        let t_liq = t_melt + mush_width;
-        let dfl_dt = if (t_sol..=t_liq).contains(&t_new) {
-            1.0 / (t_liq - t_sol)
+    let half_width = mush_width.max(0.0);
+    let t_sol = t_melt - half_width;
+    let t_liq = t_melt + half_width;
+    let cp_safe = cp.max(1e-30);
+    let liquid_fraction = |t: f64| -> f64 {
+        if half_width > 0.0 {
+            ((t - t_sol) / (t_liq - t_sol)).clamp(0.0, 1.0)
+        } else if t > t_melt {
+            1.0
         } else {
             0.0
-        };
-        let deriv = cp + latent_heat * dfl_dt;
-        if deriv.abs() < 1e-30 {
-            break;
         }
-        t_new -= residual / deriv;
+    };
+    let e = cp_safe * temperature + latent_heat * liquid_fraction(temperature);
+    let mass = (rho * volume).max(1e-30);
+    let e_new = e + q_net * dt / mass;
+    let e_solidus = cp_safe * t_sol;
+    let e_liquidus = cp_safe * t_liq + latent_heat;
+    if e_new <= e_solidus {
+        e_new / cp_safe
+    } else if e_new >= e_liquidus {
+        (e_new - latent_heat) / cp_safe
+    } else if half_width > 0.0 {
+        let mush_slope = cp_safe + latent_heat / (t_liq - t_sol);
+        t_sol + (e_new - e_solidus) / mush_slope
+    } else {
+        t_melt
     }
-    t_new
 }
 #[cfg(test)]
 mod tests {
@@ -815,8 +924,147 @@ mod tests {
     }
     #[test]
     fn test_stefan_neumann_solution_positive() {
-        let lambda = stefan_neumann_lambda(1.0, 0.5, 0.01, 100.0, 273.15);
+        let lambda = stefan_neumann_lambda(1.0, 50.0, 100.0);
         assert!(lambda > 0.0, "Neumann lambda should be positive: {lambda}");
+    }
+    #[test]
+    fn test_stefan_neumann_lambda_st_0_1_is_0_2200() {
+        // Water-like melt: cp = 1000 J/(kg K), superheat 33.4 K, L = 334 kJ/kg
+        // gives St = cp dT / L = 0.1 and lambda = 0.2200163 (mpmath root of
+        // lambda exp(lambda^2) erf(lambda) = St / sqrt(pi)).
+        let lambda = stefan_neumann_lambda(1000.0, 33.4, 334_000.0);
+        assert!(
+            (lambda - 0.220_016_272_743).abs() < 1e-9,
+            "lambda = {lambda}"
+        );
+        assert!((lambda - 0.2200).abs() < 1e-4);
+    }
+    #[test]
+    fn test_stefan_neumann_lambda_matches_reference_roots() {
+        // (St, lambda) pairs from a 30-digit mpmath root solve.
+        let reference = [
+            (0.01, 0.070_593_276_560_429_3),
+            (0.05, 0.156_820_922_334_547_3),
+            (0.2, 0.306_423_905_361_211_2),
+            (0.5, 0.464_785_920_646_244_4),
+            (1.0, 0.620_062_633_313_595_5),
+            (2.0, 0.800_601_362_805_608_3),
+            (5.0, 1.059_687_014_281_902_4),
+        ];
+        for (st, expected) in reference {
+            // cp * dT / L = St with cp = 2000, L = 100 kJ/kg
+            let delta_t = st * 100_000.0 / 2000.0;
+            let lambda = stefan_neumann_lambda(2000.0, delta_t, 100_000.0);
+            assert!(
+                (lambda - expected).abs() < 1e-11,
+                "St = {st}: lambda = {lambda}, expected {expected}"
+            );
+        }
+    }
+    #[test]
+    fn test_stefan_neumann_lambda_satisfies_transcendental_equation() {
+        let sqrt_pi = std::f64::consts::PI.sqrt();
+        for st in [1e-6, 1e-3, 0.03, 0.7, 3.0, 20.0, 400.0] {
+            let lambda = stefan_neumann_lambda(1.0, st, 1.0);
+            let lhs = lambda * (lambda * lambda).exp() * erf_series(lambda);
+            let rhs = st / sqrt_pi;
+            assert!(
+                (lhs - rhs).abs() <= 1e-12 * rhs,
+                "St = {st}: lambda = {lambda}, lhs = {lhs}, rhs = {rhs}"
+            );
+        }
+    }
+    #[test]
+    fn test_stefan_neumann_lambda_uses_cp_delta_t_over_latent_heat() {
+        // Only the Stefan number cp dT / L matters; the old code evaluated
+        // cp / L and ignored the temperature difference entirely.
+        let base = stefan_neumann_lambda(4000.0, 10.0, 200_000.0);
+        let double_cp = stefan_neumann_lambda(8000.0, 10.0, 200_000.0);
+        let double_dt = stefan_neumann_lambda(4000.0, 20.0, 200_000.0);
+        let half_l = stefan_neumann_lambda(4000.0, 10.0, 100_000.0);
+        assert!((double_cp - double_dt).abs() < 1e-14);
+        assert!((double_cp - half_l).abs() < 1e-14);
+        assert!(double_dt > base);
+        assert!(
+            (stefan_neumann_lambda(4000.0, 10.0, 200_000.0) - stefan_neumann_lambda(1.0, 0.2, 1.0))
+                .abs()
+                < 1e-14
+        );
+    }
+    #[test]
+    fn test_stefan_neumann_lambda_small_stefan_number_limit() {
+        // lambda -> sqrt(St / 2) as St -> 0.
+        let st = 1e-8;
+        let lambda = stefan_neumann_lambda(1.0, st, 1.0);
+        assert!(
+            (lambda / (0.5 * st).sqrt() - 1.0).abs() < 1e-6,
+            "lambda = {lambda}"
+        );
+    }
+    #[test]
+    fn test_stefan_neumann_lambda_is_increasing_in_superheat() {
+        let mut previous = 0.0;
+        for k in 1..=40 {
+            let lambda = stefan_neumann_lambda(1000.0, 5.0 * k as f64, 300_000.0);
+            assert!(lambda > previous, "k = {k}: {lambda} <= {previous}");
+            previous = lambda;
+        }
+    }
+    #[test]
+    fn test_stefan_neumann_lambda_zero_superheat_is_zero() {
+        assert_eq!(stefan_neumann_lambda(1000.0, 0.0, 334_000.0), 0.0);
+        assert_eq!(stefan_neumann_lambda(0.0, 25.0, 334_000.0), 0.0);
+    }
+    #[test]
+    fn test_stefan_neumann_front_position_follows_two_lambda_sqrt_alpha_t() {
+        // St = 0.1 (lambda = 0.2200163), alpha = 1e-7 m^2/s, one hour.
+        let s = stefan_neumann_front_position(1000.0, 33.4, 334_000.0, 1.0e-7, 3600.0);
+        let expected = 2.0 * 0.220_016_272_743 * (1.0e-7_f64 * 3600.0).sqrt();
+        assert!((s - expected).abs() < 1e-11, "s = {s}, expected {expected}");
+        // The front starts at the boundary and grows like sqrt(t).
+        assert_eq!(
+            stefan_neumann_front_position(1000.0, 33.4, 334_000.0, 1.0e-7, 0.0),
+            0.0
+        );
+        let s4 = stefan_neumann_front_position(1000.0, 33.4, 334_000.0, 1.0e-7, 4.0 * 3600.0);
+        assert!((s4 / s - 2.0).abs() < 1e-12);
+        // No superheat, no motion; invalid inputs propagate NaN.
+        assert_eq!(
+            stefan_neumann_front_position(1000.0, 0.0, 334_000.0, 1.0e-7, 3600.0),
+            0.0
+        );
+        assert!(stefan_neumann_front_position(1000.0, 33.4, 0.0, 1.0e-7, 3600.0).is_nan());
+        assert!(stefan_neumann_front_position(1000.0, 33.4, 334_000.0, -1.0, 3600.0).is_nan());
+        assert!(stefan_neumann_front_position(1000.0, 33.4, 334_000.0, 1.0e-7, -1.0).is_nan());
+        assert!(stefan_neumann_front_position(1000.0, 33.4, 334_000.0, f64::NAN, 1.0).is_nan());
+    }
+    #[test]
+    fn test_stefan_neumann_lambda_rejects_invalid_input() {
+        assert!(stefan_neumann_lambda(1000.0, 10.0, 0.0).is_nan());
+        assert!(stefan_neumann_lambda(1000.0, 10.0, -334_000.0).is_nan());
+        assert!(stefan_neumann_lambda(1000.0, -10.0, 334_000.0).is_nan());
+        assert!(stefan_neumann_lambda(f64::NAN, 10.0, 334_000.0).is_nan());
+        assert!(stefan_neumann_lambda(1000.0, f64::INFINITY, 334_000.0).is_nan());
+        assert!(stefan_neumann_lambda(1000.0, 10.0, f64::INFINITY).is_nan());
+    }
+    #[test]
+    fn test_erf_series_matches_known_values() {
+        // High-precision reference values of erf.
+        let reference = [
+            (0.0, 0.0),
+            (0.1, 0.112_462_916_018_284_9),
+            (0.5, 0.520_499_877_813_046_5),
+            (1.0, 0.842_700_792_949_714_9),
+            (2.0, 0.995_322_265_018_952_7),
+            (3.0, 0.999_977_909_503_001_4),
+        ];
+        for (x, expected) in reference {
+            assert!((erf_series(x) - expected).abs() < 1e-15, "erf({x})");
+            assert!((erf_series(-x) + expected).abs() < 1e-15, "erf(-{x})");
+        }
+        assert_eq!(erf_series(7.0), 1.0);
+        assert_eq!(erf_series(-7.0), -1.0);
+        assert!(erf_series(f64::NAN).is_nan());
     }
     #[test]
     fn test_latent_heat_source_at_melting_point() {

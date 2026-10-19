@@ -596,6 +596,200 @@ mod tests_electromechanics_extended {
         assert_eq!(kpp.len(), 4);
         assert_eq!(kpp[0].len(), 4);
     }
+    /// Gaussian elimination with partial pivoting for the tiny systems below.
+    fn solve_pivoted(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
+        let n = b.len();
+        let mut m: Vec<Vec<f64>> = a.to_vec();
+        let mut rhs = b.to_vec();
+        for col in 0..n {
+            let piv = (col..n)
+                .max_by(|&p, &q| m[p][col].abs().total_cmp(&m[q][col].abs()))
+                .unwrap_or(col);
+            m.swap(col, piv);
+            rhs.swap(col, piv);
+            let pivot_row = m[col].clone();
+            let pivot_rhs = rhs[col];
+            for r in (col + 1)..n {
+                let f = m[r][col] / pivot_row[col];
+                for (entry, &p) in m[r].iter_mut().zip(pivot_row.iter()).skip(col) {
+                    *entry -= f * p;
+                }
+                rhs[r] -= f * pivot_rhs;
+            }
+        }
+        let mut x = vec![0.0_f64; n];
+        for i in (0..n).rev() {
+            let tail: f64 = m[i]
+                .iter()
+                .zip(x.iter())
+                .skip(i + 1)
+                .map(|(a, b)| a * b)
+                .sum();
+            x[i] = (rhs[i] - tail) / m[i][i];
+        }
+        x
+    }
+    /// Build a global assembler around a bare dense system (no mesh).
+    fn bare_system(k: Vec<Vec<f64>>, rhs: Vec<f64>) -> GlobalPiezoAssembler {
+        let mut global = GlobalPiezoAssembler::new(PiezoFemAssembler::new());
+        global.n_dof = rhs.len();
+        global.k_global = k;
+        global.rhs = rhs;
+        global
+    }
+    /// The prescribed value must reach the solution through the right-hand
+    /// side: K = [[2,-1],[-1,2]], f = [0,1], u0 = 5 gives u = [5, 3].
+    #[test]
+    fn test_apply_dirichlet_imposes_prescribed_value() {
+        let mut global = bare_system(vec![vec![2.0, -1.0], vec![-1.0, 2.0]], vec![0.0, 1.0]);
+        global.apply_dirichlet(0, 5.0).unwrap();
+        assert_eq!(global.k_global, vec![vec![1.0, 0.0], vec![0.0, 2.0]]);
+        assert_eq!(global.rhs, vec![5.0, 6.0]);
+        let x = solve_pivoted(&global.k_global, &global.rhs);
+        assert!((x[0] - 5.0).abs() < 1e-14, "x0 = {}", x[0]);
+        assert!((x[1] - 3.0).abs() < 1e-14, "x1 = {}", x[1]);
+    }
+    /// A zero prescribed value keeps the classic homogeneous elimination.
+    #[test]
+    fn test_apply_dirichlet_homogeneous_matches_row_column_elimination() {
+        let k = vec![
+            vec![4.0, -1.0, 0.0],
+            vec![-1.0, 4.0, -1.0],
+            vec![0.0, -1.0, 4.0],
+        ];
+        let mut global = bare_system(k, vec![1.0, 2.0, 3.0]);
+        global.apply_dirichlet(1, 0.0).unwrap();
+        assert_eq!(
+            global.k_global,
+            vec![
+                vec![4.0, 0.0, 0.0],
+                vec![0.0, 1.0, 0.0],
+                vec![0.0, 0.0, 4.0]
+            ]
+        );
+        assert_eq!(global.rhs, vec![1.0, 0.0, 3.0]);
+    }
+    /// Two conditions applied in sequence reproduce the exactly reduced system.
+    #[test]
+    fn test_apply_dirichlet_sequential_conditions() {
+        let k = vec![
+            vec![4.0, -1.0, 0.5],
+            vec![-1.0, 3.0, -1.0],
+            vec![0.5, -1.0, 5.0],
+        ];
+        let f = vec![2.0, -1.0, 4.0];
+        let (u0, u2) = (0.25, -0.75);
+        let mut global = bare_system(k.clone(), f.clone());
+        global.apply_dirichlet(0, u0).unwrap();
+        global.apply_dirichlet(2, u2).unwrap();
+        let x = solve_pivoted(&global.k_global, &global.rhs);
+        assert!((x[0] - u0).abs() < 1e-14);
+        assert!((x[2] - u2).abs() < 1e-14);
+        // The free DOF satisfies its original equation: K[1][:] . x = f[1].
+        let residual = k[1][0] * x[0] + k[1][1] * x[1] + k[1][2] * x[2] - f[1];
+        assert!(residual.abs() < 1e-13, "residual = {residual}");
+        assert!((x[1] - (f[1] - k[1][0] * u0 - k[1][2] * u2) / k[1][1]).abs() < 1e-14);
+    }
+    /// Manufactured-solution check on a real coupled piezo tetrahedron: build
+    /// f = K x* for a known x*, prescribe a mix of displacement and potential
+    /// DOFs to their x* values, and verify that x* satisfies the condensed
+    /// system.  Dropping the prescribed-value coupling breaks this immediately.
+    #[test]
+    fn test_apply_dirichlet_manufactured_solution_piezo_tet() {
+        let mut local = PiezoFemAssembler::new();
+        local.nodes = vec![
+            ElectromechanicalNode::new(0.0, 0.0, 0.0),
+            ElectromechanicalNode::new(1e-3, 0.0, 0.0),
+            ElectromechanicalNode::new(0.0, 1e-3, 0.0),
+            ElectromechanicalNode::new(0.0, 0.0, 1e-3),
+        ];
+        local.materials = vec![PiezoMaterial::isotropic_with_piezo(
+            67e9, 0.31, 1200.0, 15.1, -5.2, 12.3,
+        )];
+        local.elements = vec![ElectromechanicalElement {
+            nodes: [0, 1, 2, 3],
+            material_id: 0,
+        }];
+        let mut global = GlobalPiezoAssembler::new(local);
+        global.assemble();
+        let n = global.n_dof;
+        assert_eq!(n, 16);
+        // Displacements of order 1e-6 m, potentials of order 10 V.
+        let x_star: Vec<f64> = (0..n)
+            .map(|i| {
+                let s = ((i * 7 + 3) % 11) as f64 - 5.0;
+                if i % 4 == 3 { 2.0 * s } else { 1e-6 * s }
+            })
+            .collect();
+        let k0 = global.k_global.clone();
+        global.rhs = (0..n)
+            .map(|i| (0..n).map(|j| k0[i][j] * x_star[j]).sum())
+            .collect();
+        let prescribed = [0usize, 1, 2, 4, 6, 3, 7, 15];
+        for &d in &prescribed {
+            global.apply_dirichlet(d, x_star[d]).unwrap();
+        }
+        for i in 0..n {
+            let lhs: f64 = (0..n).map(|j| global.k_global[i][j] * x_star[j]).sum();
+            let scale: f64 = (0..n)
+                .map(|j| (global.k_global[i][j] * x_star[j]).abs())
+                .sum::<f64>()
+                + global.rhs[i].abs();
+            assert!(
+                (lhs - global.rhs[i]).abs() <= 1e-10 * scale.max(1e-300),
+                "row {i}: K'x* = {lhs}, rhs' = {}",
+                global.rhs[i]
+            );
+        }
+        for &d in &prescribed {
+            for j in 0..n {
+                let expected = if j == d { 1.0 } else { 0.0 };
+                assert_eq!(global.k_global[d][j], expected);
+                assert_eq!(global.k_global[j][d], expected);
+            }
+            assert_eq!(global.rhs[d], x_star[d]);
+        }
+        // The condensed matrix stays symmetric.
+        for i in 0..n {
+            for j in 0..n {
+                let (a, b) = (global.k_global[i][j], global.k_global[j][i]);
+                assert!((a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1e-300));
+            }
+        }
+    }
+    /// Invalid requests are rejected without touching the system.
+    #[test]
+    fn test_apply_dirichlet_rejects_invalid_requests() {
+        let mut global = bare_system(vec![vec![2.0, -1.0], vec![-1.0, 2.0]], vec![0.0, 1.0]);
+        let k_before = global.k_global.clone();
+        let rhs_before = global.rhs.clone();
+        match global.apply_dirichlet(2, 1.0) {
+            Err(crate::Error::DofOutOfRange { dof: 2, n: 2 }) => {}
+            other => panic!("expected DofOutOfRange, got {other:?}"),
+        }
+        assert!(matches!(
+            global.apply_dirichlet(0, f64::NAN),
+            Err(crate::Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            global.apply_dirichlet(0, f64::INFINITY),
+            Err(crate::Error::InvalidInput(_))
+        ));
+        global.rhs.push(0.0);
+        assert!(matches!(
+            global.apply_dirichlet(0, 1.0),
+            Err(crate::Error::InvalidInput(_))
+        ));
+        global.rhs.pop();
+        global.k_global[1].pop();
+        assert!(matches!(
+            global.apply_dirichlet(0, 1.0),
+            Err(crate::Error::InvalidInput(_))
+        ));
+        global.k_global[1].push(2.0);
+        assert_eq!(global.k_global, k_before);
+        assert_eq!(global.rhs, rhs_before);
+    }
     /// Sensor short-circuit charge is positive for positive stress.
     #[test]
     fn test_sensor_short_circuit_charge() {

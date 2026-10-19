@@ -118,6 +118,12 @@ pub fn bowyer_watson(points: &[[f64; 2]]) -> Vec<DelaunayTriangle> {
 ///
 /// Each Voronoi vertex is the circumcenter of a Delaunay triangle.
 /// For each input point, collect all triangles it belongs to and order their circumcenters.
+///
+/// The polygon of a site is only the closed Voronoi cell when the site lies
+/// strictly inside the convex hull of the input.  The cell of a hull site is
+/// unbounded: its circumcentre polygon is not closed and is not the cell.  Use
+/// [`bounded_voronoi_cells`](super::bounded_voronoi_cells) when closed cells
+/// that tile a rectangle are needed.
 pub fn delaunay_to_voronoi(
     points: &[[f64; 2]],
     triangles: &[DelaunayTriangle],
@@ -227,67 +233,14 @@ pub(super) fn polygon_centroid(verts: &[[f64; 2]]) -> [f64; 2] {
     }
     [cx / (6.0 * area), cy / (6.0 * area)]
 }
-/// Clip a convex polygon to the axis-aligned rectangle \[xmin, xmax\] x \[ymin, ymax\]
-/// using the Sutherland-Hodgman algorithm.
-pub(super) fn clip_polygon_to_bounds(poly: &[[f64; 2]], bounds: [f64; 4]) -> Vec<[f64; 2]> {
-    let [xmin, xmax, ymin, ymax] = bounds;
-    let clips: [(usize, bool, f64); 4] = [
-        (0, true, xmin),
-        (0, false, xmax),
-        (1, true, ymin),
-        (1, false, ymax),
-    ];
-    let mut output = poly.to_vec();
-    for &(axis, is_min, bound) in &clips {
-        if output.is_empty() {
-            break;
-        }
-        let input = output.clone();
-        output.clear();
-        let m = input.len();
-        for k in 0..m {
-            let cur = input[k];
-            let nxt = input[(k + 1) % m];
-            let inside_cur = if is_min {
-                cur[axis] >= bound
-            } else {
-                cur[axis] <= bound
-            };
-            let inside_nxt = if is_min {
-                nxt[axis] >= bound
-            } else {
-                nxt[axis] <= bound
-            };
-            if inside_cur {
-                output.push(cur);
-                if !inside_nxt {
-                    let t = if is_min {
-                        (bound - cur[axis]) / (nxt[axis] - cur[axis])
-                    } else {
-                        (cur[axis] - bound) / (cur[axis] - nxt[axis])
-                    };
-                    let ix = cur[0] + t * (nxt[0] - cur[0]);
-                    let iy = cur[1] + t * (nxt[1] - cur[1]);
-                    output.push([ix, iy]);
-                }
-            } else if inside_nxt {
-                let t = if is_min {
-                    (bound - cur[axis]) / (nxt[axis] - cur[axis])
-                } else {
-                    (cur[axis] - bound) / (cur[axis] - nxt[axis])
-                };
-                let ix = cur[0] + t * (nxt[0] - cur[0]);
-                let iy = cur[1] + t * (nxt[1] - cur[1]);
-                output.push([ix, iy]);
-            }
-        }
-    }
-    output
-}
 /// Lloyd relaxation for centroidal Voronoi tessellation.
 ///
-/// Iteratively moves each site to the centroid of its (clipped) Voronoi cell.
-/// `bounds` = \[xmin, xmax, ymin, ymax\].
+/// Iteratively moves each site to the centroid of its Voronoi cell clipped to
+/// `bounds` = \[xmin, xmax, ymin, ymax\].  The cells come from
+/// [`bounded_voronoi_cells`](super::bounded_voronoi_cells), so the cells of
+/// sites on the convex hull of the input are closed by the rectangle and every
+/// site moves to the centroid of its true bounded cell.  A site whose cell is
+/// empty (it coincides with a lower-index site) stays where it is.
 pub fn lloyd_relaxation(sites: &[[f64; 2]], bounds: [f64; 4], iterations: usize) -> Vec<[f64; 2]> {
     if sites.is_empty() {
         return vec![];
@@ -298,28 +251,19 @@ pub fn lloyd_relaxation(sites: &[[f64; 2]], bounds: [f64; 4], iterations: usize)
         .map(|&s| [clamp(s[0], xmin, xmax), clamp(s[1], ymin, ymax)])
         .collect();
     for _ in 0..iterations {
-        let triangles = bowyer_watson(&current);
-        let cells = delaunay_to_voronoi(&current, &triangles);
-        let mut next: Vec<[f64; 2]> = Vec::with_capacity(current.len());
-        for (i, cell) in cells.iter().enumerate() {
-            if cell.vertices.len() < 3 {
-                next.push([
-                    clamp(current[i][0], xmin, xmax),
-                    clamp(current[i][1], ymin, ymax),
-                ]);
-            } else {
-                let clipped = clip_polygon_to_bounds(&cell.vertices, bounds);
-                if clipped.len() < 3 {
-                    next.push([
-                        clamp(current[i][0], xmin, xmax),
-                        clamp(current[i][1], ymin, ymax),
-                    ]);
+        let cells = super::bounded::bounded_voronoi_cells(&current, bounds);
+        let next: Vec<[f64; 2]> = cells
+            .iter()
+            .zip(current.iter())
+            .map(|(cell, &site)| {
+                if cell.len() < 3 {
+                    site
                 } else {
-                    let c = polygon_centroid(&clipped);
-                    next.push([clamp(c[0], xmin, xmax), clamp(c[1], ymin, ymax)]);
+                    let c = polygon_centroid(cell);
+                    [clamp(c[0], xmin, xmax), clamp(c[1], ymin, ymax)]
                 }
-            }
-        }
+            })
+            .collect();
         current = next;
     }
     current
@@ -401,21 +345,29 @@ pub fn polyhedron_volume(faces: &[[usize; 3]], vertices: &[[f64; 3]]) -> f64 {
     }
     (vol / 6.0).abs()
 }
-/// Estimate the Voronoi cell volume in 3-D via tetrahedron decomposition
-/// using the circumcenters of adjacent tetrahedra as face vertices.
+/// Volume of a 3-D Voronoi cell from its vertices.
 ///
-/// This is approximate for non-convex or incomplete cells.
-pub fn voronoi_cell_volume_3d(site: [f64; 3], circumcenters: &[[f64; 3]]) -> f64 {
+/// A Voronoi cell is convex, so it is the convex hull of its vertices (the
+/// circumcentres of the Delaunay tetrahedra around the site).  The result is
+/// the volume of the convex hull of `circumcenters` and is exact for bounded
+/// cells; an unbounded cell has no finite volume, and passing only its finite
+/// vertices yields the volume of the hull of those vertices.
+///
+/// Returns `0.0` when the vertices span no volume: fewer than four points,
+/// coplanar or collinear points, or a non-finite coordinate.
+///
+/// `site` is accepted for API compatibility.  The volume depends only on the
+/// cell vertices, because a Voronoi cell is star-shaped about its site and the
+/// hull volume does not need a reference point.
+pub fn voronoi_cell_volume_3d(_site: [f64; 3], circumcenters: &[[f64; 3]]) -> f64 {
     if circumcenters.len() < 4 {
         return 0.0;
     }
-    let mut vol = 0.0_f64;
-    for cc in circumcenters {
-        let d = [cc[0] - site[0], cc[1] - site[1], cc[2] - site[2]];
-        let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        vol += r;
-    }
-    vol / circumcenters.len() as f64
+    let points: Vec<oxiphysics_core::math::Vec3> = circumcenters
+        .iter()
+        .map(|c| oxiphysics_core::math::Vec3::new(c[0], c[1], c[2]))
+        .collect();
+    crate::quickhull::ConvexHull3DVec::build(&points).map_or(0.0, |hull| hull.volume())
 }
 /// Build the Voronoi neighbor adjacency list from a Delaunay triangulation.
 ///
@@ -1289,11 +1241,76 @@ mod tests {
         assert_eq!(vol, 0.0);
     }
     #[test]
-    fn test_voronoi_cell_volume_3d_several_circumcenters() {
+    fn test_voronoi_cell_volume_3d_unit_cube_cell() {
+        // Site (0.5, 0.5, 0.5) with the eight corners of the unit cube as the
+        // Voronoi vertices of its cell: the cell is the unit cube.
+        let site = [0.5, 0.5, 0.5];
+        let corners: Vec<[f64; 3]> = (0..8)
+            .map(|m| [(m & 1) as f64, ((m >> 1) & 1) as f64, ((m >> 2) & 1) as f64])
+            .collect();
+        let vol = voronoi_cell_volume_3d(site, &corners);
+        assert!(
+            (vol - 1.0).abs() < 1e-12,
+            "unit cube cell volume, got {vol}"
+        );
+    }
+    #[test]
+    fn test_voronoi_cell_volume_3d_scaled_translated_cell() {
+        // A 2 x 3 x 0.5 box cell far from the origin: volume 3, independent of
+        // the translation and of the order of the vertices.
+        let site = [100.0, -40.0, 7.0];
+        let mut corners: Vec<[f64; 3]> = Vec::new();
+        for &x in &[99.0, 101.0] {
+            for &y in &[-41.5, -38.5] {
+                for &z in &[6.75, 7.25] {
+                    corners.push([x, y, z]);
+                }
+            }
+        }
+        corners.reverse();
+        let vol = voronoi_cell_volume_3d(site, &corners);
+        assert!((vol - 3.0).abs() < 1e-9, "box cell volume, got {vol}");
+    }
+    #[test]
+    fn test_voronoi_cell_volume_3d_ignores_interior_vertices() {
+        // Extra vertices strictly inside the cell do not change the hull.
+        let site = [0.5, 0.5, 0.5];
+        let mut pts: Vec<[f64; 3]> = (0..8)
+            .map(|m| [(m & 1) as f64, ((m >> 1) & 1) as f64, ((m >> 2) & 1) as f64])
+            .collect();
+        pts.push([0.5, 0.5, 0.5]);
+        pts.push([0.25, 0.6, 0.4]);
+        let vol = voronoi_cell_volume_3d(site, &pts);
+        assert!((vol - 1.0).abs() < 1e-12, "interior points, got {vol}");
+    }
+    #[test]
+    fn test_voronoi_cell_volume_3d_collinear_points_zero() {
         let site = [0.0, 0.0, 0.0];
         let ccs: Vec<[f64; 3]> = (1..=6).map(|i| [i as f64, 0.0, 0.0]).collect();
-        let vol = voronoi_cell_volume_3d(site, &ccs);
-        assert!(vol > 0.0, "Volume estimate should be positive");
+        assert_eq!(voronoi_cell_volume_3d(site, &ccs), 0.0);
+    }
+    #[test]
+    fn test_voronoi_cell_volume_3d_coplanar_points_zero() {
+        let site = [0.0, 0.0, 0.0];
+        let ccs = [
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [0.5, 0.5, 1.0],
+        ];
+        assert_eq!(voronoi_cell_volume_3d(site, &ccs), 0.0);
+    }
+    #[test]
+    fn test_voronoi_cell_volume_3d_non_finite_point_zero() {
+        let site = [0.0, 0.0, 0.0];
+        let ccs = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, f64::NAN],
+        ];
+        assert_eq!(voronoi_cell_volume_3d(site, &ccs), 0.0);
     }
     #[test]
     fn test_fortune_delaunay_three_points() {

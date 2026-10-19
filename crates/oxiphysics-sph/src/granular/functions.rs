@@ -6,6 +6,71 @@ use std::f64::consts::PI;
 
 use super::types::{Contact, GranularParams, RollingResistanceModel};
 
+/// Dot product of two 3-vectors.
+#[inline]
+pub(super) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Cross product `a × b` of two 3-vectors.
+#[inline]
+pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// In-place `dst += factor · v`.
+#[inline]
+pub(super) fn add_scaled(dst: &mut [f64; 3], factor: f64, v: [f64; 3]) {
+    for (d, x) in dst.iter_mut().zip(v.iter()) {
+        *d += factor * x;
+    }
+}
+
+/// Component of `v` perpendicular to the unit vector `normal`: `v − (v·n) n`.
+#[inline]
+pub fn tangential_component(v: [f64; 3], normal: [f64; 3]) -> [f64; 3] {
+    let mut t = v;
+    add_scaled(&mut t, -dot3(v, normal), normal);
+    t
+}
+
+/// Velocity of the contact point of sphere `i` relative to that of sphere `j`
+/// \[m/s\].
+///
+/// `normal_ij` is the unit normal pointing from the centre of `i` to the centre of
+/// `j`; the contact point lies `lever_i · n` from the centre of `i` and
+/// `−lever_j · n` from the centre of `j`, hence
+///
+/// `v_c = (vᵢ + ωᵢ × lever_i n) − (vⱼ + ωⱼ × (−lever_j n))
+///      = (vᵢ − vⱼ) + (lever_i ωᵢ + lever_j ωⱼ) × n`.
+///
+/// Its tangential part ([`tangential_component`]) is the sliding velocity that
+/// drives friction: it vanishes for pure rolling and is the quantity a
+/// [`TangentialContactLaw`](super::types::TangentialContactLaw) integrates.  For a
+/// contact at the midpoint of the overlap region `δ` the lever arms are
+/// `lever = r − δ/2`, which makes the contact forces and torques conserve the
+/// total angular momentum exactly.
+pub fn contact_point_relative_velocity(
+    v_i: [f64; 3],
+    v_j: [f64; 3],
+    omega_i: [f64; 3],
+    omega_j: [f64; 3],
+    lever_i: f64,
+    lever_j: f64,
+    normal_ij: [f64; 3],
+) -> [f64; 3] {
+    let mut spin = [0.0_f64; 3];
+    add_scaled(&mut spin, lever_i, omega_i);
+    add_scaled(&mut spin, lever_j, omega_j);
+    let mut v_c = [v_i[0] - v_j[0], v_i[1] - v_j[1], v_i[2] - v_j[2]];
+    add_scaled(&mut v_c, 1.0, cross3(spin, normal_ij));
+    v_c
+}
+
 /// Mohr-Coulomb yield test: returns `true` if the stress state has yielded.
 ///
 /// Yield condition: |τ| > c + σ_n · tan(φ)
@@ -244,7 +309,7 @@ mod tests {
         sim.add_particle([0.0, 0.0, 0.0], [0.0; 3], 0.1, 1.0);
         sim.add_particle([0.18, 0.0, 0.0], [0.0; 3], 0.1, 1.0);
         let contacts = sim.detect_contacts();
-        sim.resolve_contacts(&contacts);
+        sim.resolve_contacts(&contacts, 1e-4);
         assert!(sim.forces[0][0] < 0.0, "i should be pushed in -x");
         assert!(sim.forces[1][0] > 0.0, "j should be pushed in +x");
     }
@@ -252,6 +317,7 @@ mod tests {
     fn granular_sim_step_moves_particles() {
         let model = ContactModel::Hertzian {
             e_star: 1e9,
+            g_star: 4e8,
             r_star: 0.05,
         };
         let mut sim = GranularSim::new(model, 0.3, [0.0, -9.81, 0.0]);
@@ -861,6 +927,13 @@ pub fn linear_spring_normal(kn: f64, delta_n: f64) -> f64 {
 ///
 /// Computes `F_t = -k_t * delta_t` then applies the cone limit
 /// `|F_t| ≤ mu * |F_n|`.
+///
+/// The force acts on the particle whose contact point has been displaced by
+/// `delta_t` relative to its partner, so it opposes that displacement.  Integrate
+/// `delta_t` from the sliding velocity of the contact point of the particle the
+/// force is applied to (see [`contact_point_relative_velocity`]), keep it per
+/// contact pair and reset it when the contact is lost (see
+/// [`TangentialContactLaw`](super::types::TangentialContactLaw)).
 ///
 /// # Arguments
 /// * `kt`       – Tangential spring stiffness \[N/m\].

@@ -332,7 +332,7 @@ fn frozen_lean_bike(speed: f64) -> MotorcycleDynamicsSimulator {
 }
 
 #[test]
-fn constant_steer_gives_the_kinematic_yaw_rate() {
+fn constant_steer_gives_the_bicycle_model_yaw_rate() {
     for steer in [0.01_f64, -0.01] {
         // coasting: a drive force on the rear tyre would eat into its lateral grip
         let mut sim = frozen_lean_bike(20.0);
@@ -341,13 +341,31 @@ fn constant_steer_gives_the_kinematic_yaw_rate() {
             sim.step(0.005);
             assert_state_is_sane(&sim);
         }
-        // With cornering stiffness proportional to the axle load the bike is
-        // neutral-steer: yaw rate = v * delta / wheelbase.
-        let expected = sim.state.speed * steer / sim.params.wheelbase;
+        // Steady cornering of the linear single-track model with the lateral
+        // velocity as a state: r = v * delta / (L + K_us * v^2), with the
+        // understeer gradient K_us = m / L * (b / C_f - a / C_r) of the axle
+        // loads the bike carries.  The drag of the coasting bike moves a little
+        // load onto the front axle, which makes it slightly oversteering.
+        let wheelbase = sim.params.wheelbase;
+        let a = sim.params.a;
+        let b = wheelbase - a;
+        let tyre = &sim.front_tire.lat;
+        let stiffness_per_load = tyre.b * tyre.c * tyre.d;
+        let c_front = stiffness_per_load * sim.state.front_normal;
+        let c_rear = stiffness_per_load * sim.state.rear_normal;
+        let understeer_gradient = sim.params.total_mass / wheelbase * (b / c_front - a / c_rear);
+        let v = sim.state.speed;
+        let expected = v * steer / (wheelbase + understeer_gradient * v * v);
+        let kinematic = v * steer / wheelbase;
         let yaw = sim.state.yaw_rate;
         assert!(
             (yaw - expected).abs() < 0.05 * expected.abs(),
-            "steer {steer}: yaw rate {yaw}, kinematic {expected}"
+            "steer {steer}: yaw rate {yaw}, bicycle model {expected}"
+        );
+        // and it stays close to the neutral-steer value v * delta / L
+        assert!(
+            (yaw - kinematic).abs() < 0.2 * kinematic.abs(),
+            "steer {steer}: yaw rate {yaw}, kinematic {kinematic}"
         );
     }
 }

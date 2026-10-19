@@ -43,12 +43,17 @@ impl SupportPoint {
 }
 /// A cached simplex used to warm-start the next GJK query.
 ///
-/// Stores up to 4 support points from the previous frame.
+/// Stores up to 4 support points from the previous frame together with the last
+/// search direction. A warm-started query seeds its search with `direction`
+/// only: the cached `points` are `sa - sb` of the *previous* configuration of
+/// the shapes, so they describe the old Minkowski difference and are kept for
+/// inspection (for example to identify the previous contact features), not
+/// reused as the starting simplex.
 #[derive(Debug, Clone, Default)]
 pub struct WarmStartCache {
-    /// Cached simplex vertices.
+    /// Cached simplex vertices of the previous query.
     pub points: Vec<SupportPoint>,
-    /// Last known search direction.
+    /// Last known search direction: the first direction of a warm-started query.
     pub direction: [f64; 3],
     /// Whether the cache is valid for use.
     pub valid: bool,
@@ -231,7 +236,16 @@ impl EnhSimplex {
             verts: Vec::with_capacity(4),
         }
     }
-    /// Create a simplex pre-populated from a warm-start cache.
+    /// Create a simplex holding the vertices of a warm-start cache.
+    ///
+    /// The cached vertices are `w = sa - sb` of the *previous* configuration of
+    /// the shapes and are exact only while the shapes have not moved. A simplex
+    /// built here must not start a GJK query on moved shapes: it describes a
+    /// stale Minkowski difference, and the four vertices of a cached
+    /// intersection plus one new support point are not a simplex any more.
+    /// [`gjk_enhanced`](super::functions::gjk_enhanced) therefore seeds its
+    /// search with [`WarmStartCache::direction`] and starts from an empty
+    /// simplex.
     pub fn from_cache(cache: &WarmStartCache) -> Self {
         Self {
             verts: cache.points.clone(),
@@ -248,6 +262,8 @@ impl EnhSimplex {
     /// Reduce the simplex to the sub-simplex closest to the origin.
     ///
     /// Returns the new search direction and whether the origin is contained.
+    /// A simplex holds at most four vertices; if more were added, the oldest
+    /// ones are dropped first and the newest four are reduced.
     pub fn reduce(&mut self) -> ([f64; 3], bool) {
         match self.verts.len() {
             0 => ([1.0, 0.0, 0.0], false),
@@ -258,7 +274,10 @@ impl EnhSimplex {
             2 => self.reduce_line(),
             3 => self.reduce_triangle(),
             4 => self.reduce_tetrahedron(),
-            _ => ([1.0, 0.0, 0.0], false),
+            len => {
+                self.verts.drain(..len - 4);
+                self.reduce_tetrahedron()
+            }
         }
     }
     fn reduce_line(&mut self) -> ([f64; 3], bool) {
@@ -419,11 +438,4 @@ impl GjkMetrics {
     pub fn new() -> Self {
         Self::default()
     }
-}
-/// An EPA polytope face.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct EpaFaceE {
-    pub(super) indices: [usize; 3],
-    pub(super) normal: [f64; 3],
-    pub(super) dist: f64,
 }

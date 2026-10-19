@@ -129,10 +129,21 @@ fn darcy_velocity_equals_permeability_times_force_over_viscosity() {
             "eps = {eps}, K = {k}: superficial velocity {} vs K f / nu = {darcy}",
             u_sup[0]
         );
-        assert!(u_sup[1].abs() < 1e-12 * darcy.max(1e-12));
+        // No transverse flow.  The y-momentum of a y-symmetric state is the
+        // sum of populations of order 0.1, so double precision leaves a residue
+        // of about 1e-17 whatever the (possibly tiny) Darcy velocity is; the
+        // bound is that roundoff floor, not a fraction of the Darcy velocity.
+        assert!(
+            u_sup[1].abs() < 1e-14,
+            "eps = {eps}, K = {k}: spurious transverse velocity {}",
+            u_sup[1]
+        );
         // The pore velocity is the superficial velocity over the porosity.
         let u_pore = drv.grid.cells[0].velocity[0];
-        assert!(rel(eps * u_pore, darcy) < 0.02);
+        assert!(
+            rel(eps * u_pore, darcy) < 0.02,
+            "eps = {eps}, K = {k}: pore velocity {u_pore} vs K f / (nu eps)"
+        );
     }
 }
 

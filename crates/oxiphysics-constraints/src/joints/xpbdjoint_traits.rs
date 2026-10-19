@@ -12,11 +12,14 @@ use crate::traits::Constraint;
 use oxiphysics_core::BodyHandle;
 use oxiphysics_rigid::RigidBodySet;
 
-use super::functions::{apply_pair_impulse, read_body};
+use super::constraint_math::{SoftRow, spring_softness};
+use super::functions::read_body;
 use super::types::XpbdJoint;
 
 impl Constraint for XpbdJoint {
-    fn prepare(&mut self, bodies: &RigidBodySet, _dt: f64) {
+    fn prepare(&mut self, bodies: &RigidBodySet, dt: f64) {
+        self.lambda = 0.0;
+        self.velocity_row = SoftRow::inactive();
         let a = match read_body(bodies, self.body_a) {
             Some(p) => p,
             None => return,
@@ -27,45 +30,40 @@ impl Constraint for XpbdJoint {
         };
         self.r_a = a.rotation * self.local_anchor_a;
         self.r_b = b.rotation * self.local_anchor_b;
-        self.lambda = 0.0;
-    }
-    fn solve_velocity(&mut self, bodies: &mut RigidBodySet, dt: f64) {
-        let a = match read_body(bodies, self.body_a) {
-            Some(p) => p,
-            None => return,
-        };
-        let b = match read_body(bodies, self.body_b) {
-            Some(p) => p,
-            None => return,
-        };
-        let world_a = a.position + self.r_a;
-        let world_b = b.position + self.r_b;
-        let diff = world_b - world_a;
+        let diff = (b.position + self.r_b) - (a.position + self.r_a);
         let dist = diff.norm();
-        let dir = if dist > 1e-10 { diff / dist } else { return };
-        let extension = dist - self.rest_length;
-        let rel_v = (b.vel - a.vel).dot(&dir);
-        let k = a.inv_mass + b.inv_mass;
-        if k < 1e-12 {
+        if dist <= 1e-10 {
             return;
         }
-        let k_spring = if self.compliance > 1e-20 {
-            1.0 / (self.compliance * dt * dt)
+        // Velocity pass: a compliant row regularised by γ = α̃ = α/dt² (with
+        // the damping folded in), without a position bias because
+        // `solve_position` already removes the positional error.  A rigid joint
+        // (α = 0) has γ = 0 and drives the relative speed along the joint to 0.
+        let softness = if self.compliance > 1e-20 {
+            spring_softness(1.0 / self.compliance, self.damping, dt).map(|(gamma, _)| gamma)
         } else {
-            1e9
+            Some(0.0)
         };
-        let force = k_spring * extension + self.damping * rel_v;
-        let lambda = force * dt;
-        let impulse = dir * lambda;
-        apply_pair_impulse(
+        if let Some(gamma) = softness {
+            self.velocity_row = SoftRow::new(&a, &b, &self.r_a, &self.r_b, diff / dist, gamma, 0.0);
+        }
+    }
+    fn solve_velocity(&mut self, bodies: &mut RigidBodySet, _dt: f64) {
+        self.velocity_row
+            .iterate(bodies, self.body_a, self.body_b, &self.r_a, &self.r_b, 1.0);
+    }
+    fn solve_velocity_relaxed(&mut self, bodies: &mut RigidBodySet, _dt: f64, omega: f64) -> f64 {
+        self.velocity_row.iterate(
             bodies,
             self.body_a,
             self.body_b,
-            impulse,
             &self.r_a,
             &self.r_b,
-        );
-        self.lambda += lambda;
+            omega,
+        )
+    }
+    fn residual(&self) -> f64 {
+        self.velocity_row.last_update()
     }
     fn solve_position(&mut self, bodies: &mut RigidBodySet, dt: f64) {
         if dt < 1e-12 {

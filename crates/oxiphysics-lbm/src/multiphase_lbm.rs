@@ -196,7 +196,7 @@ pub fn chemical_potential_vdw(rho: f64, temperature: f64, a: f64, b: f64) -> f64
     if denom <= 1e-12 || rho <= 1e-30 {
         return 0.0;
     }
-    temperature * (rho / denom).ln() + temperature * b * rho / denom - 2.0 * a * rho
+    vdw_chemical_potential_raw(rho, temperature, a, b)
 }
 
 /// Van der Waals equation of state pressure.
@@ -207,7 +207,28 @@ pub fn vdw_pressure(rho: f64, temperature: f64, a: f64, b: f64) -> f64 {
     if denom <= 1e-12 {
         return 0.0;
     }
-    rho * temperature / denom - a * rho * rho
+    vdw_pressure_raw(rho, temperature, a, b)
+}
+
+/// Van der Waals pressure without the near-singularity clamp of [`vdw_pressure`].
+///
+/// Valid for `0 <= rho < 1/b`; diverges to `+inf` at `rho = 1/b`.
+fn vdw_pressure_raw(rho: f64, temperature: f64, a: f64, b: f64) -> f64 {
+    rho * temperature / (1.0 - rho * b) - a * rho * rho
+}
+
+/// Van der Waals chemical potential without the clamps of [`chemical_potential_vdw`].
+///
+/// Valid for `0 < rho < 1/b`.
+fn vdw_chemical_potential_raw(rho: f64, temperature: f64, a: f64, b: f64) -> f64 {
+    let denom = 1.0 - rho * b;
+    temperature * (rho / denom).ln() + temperature * b * rho / denom - 2.0 * a * rho
+}
+
+/// Slope `dp/drho = T / (1 - rho*b)^2 - 2*a*rho` of the van der Waals isotherm.
+fn vdw_pressure_derivative(rho: f64, temperature: f64, a: f64, b: f64) -> f64 {
+    let denom = 1.0 - rho * b;
+    temperature / (denom * denom) - 2.0 * a * rho
 }
 
 /// Interface width parameter xi = sqrt(kappa / |a|).
@@ -220,64 +241,219 @@ pub fn interface_width(kappa: f64, a: f64) -> f64 {
     (kappa / a.abs()).sqrt()
 }
 
-/// Maxwell equal-area construction for phase coexistence densities.
+/// Result of the Maxwell construction on a van der Waals isotherm.
 ///
-/// Finds rho_l and rho_v such that the van der Waals EOS satisfies
-/// the equal-area rule: integral from rho_v to rho_l of mu d(rho) = mu_eq * (rho_l - rho_v).
+/// The two coexisting phases have equal pressure and equal chemical potential
+/// (equivalently: the areas enclosed by the isotherm above and below the tie
+/// line are equal in the `p`-`v` plane).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MaxwellCoexistence {
+    /// Density of the vapour phase (below the lower spinodal).
+    pub rho_vapor: f64,
+    /// Density of the liquid phase (above the upper spinodal).
+    pub rho_liquid: f64,
+    /// Common coexistence (saturation) pressure.
+    pub pressure: f64,
+    /// Common coexistence chemical potential, in the convention of
+    /// [`chemical_potential_vdw`].
+    pub chemical_potential: f64,
+}
+
+/// Upper bound on the number of bisection halvings used per root.
 ///
-/// Uses a simplified bisection approach on the spinodal region.
+/// Fifty-five halvings already exhaust double precision; anything beyond a few
+/// hundred only burns time.
+const MAX_BISECTION_STEPS: usize = 200;
+
+/// Bisection for a continuous function with a sign change between `lo` and `hi`.
+///
+/// The sign of `f(lo)` is taken as the "low side" sign.  Iteration stops after
+/// `max_steps` halvings or as soon as the bracket cannot be halved in floating
+/// point; the midpoint of the final bracket is returned.
+fn bisect_sign_change<F: Fn(f64) -> f64>(f: F, mut lo: f64, mut hi: f64, max_steps: usize) -> f64 {
+    let low_side_positive = f(lo) > 0.0;
+    for _ in 0..max_steps {
+        let mid = 0.5 * (lo + hi);
+        if mid <= lo || mid >= hi {
+            break;
+        }
+        if (f(mid) > 0.0) == low_side_positive {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Maxwell construction for the van der Waals isotherm at `temperature`.
+///
+/// Solves for the vapour and liquid densities `rho_v < rho_l` with
+///
+/// - equal pressure  `p(rho_v) = p(rho_l) = p*` and
+/// - equal chemical potential `mu(rho_v) = mu(rho_l)`
+///
+/// which is equivalent to the equal-area rule `integral (p - p*) dv = 0`
+/// over the specific volume `v = 1/rho`.
+///
+/// Algorithm: the two spinodal densities (where `dp/drho = 0`) are located by
+/// bisection on the analytic slope; the saturation pressure `p*` is then
+/// bisected (on a logarithmic scale, so that the exponentially small vapour
+/// pressures at low temperature are resolved) between `max(p(rho_spinodal_hi), 0)`
+/// and `p(rho_spinodal_lo)`.  For every trial `p*` the outer roots of
+/// `p(rho) = p*` on the vapour and liquid branches are found by bisection, and
+/// the residual is `mu(rho_l) - mu(rho_v)`, which decreases monotonically
+/// with `p*`.
 ///
 /// # Arguments
-/// - `temperature`: reduced temperature (< T_c)
-/// - `a`, `b`: vdW parameters
-/// - `n_points`: resolution for integration
+/// - `temperature`: temperature in the units of the equation of state
+///   (must satisfy `0 < T < T_c = 8a/(27b)`)
+/// - `a`, `b`: van der Waals attraction and excluded-volume parameters (> 0)
+/// - `max_steps`: number of bisection halvings applied to every bracket
+///   (at least 4; 55 or more reach double precision, values above 200 are
+///   clamped)
 ///
-/// Returns `(rho_vapor, rho_liquid)` or `(f64::NAN, f64::NAN)` if not found.
+/// Returns `None` when `T` is not strictly between 0 and `T_c`, when a
+/// parameter is not positive and finite, or when the construction fails.
+pub fn maxwell_construction(
+    temperature: f64,
+    a: f64,
+    b: f64,
+    max_steps: usize,
+) -> Option<MaxwellCoexistence> {
+    let parameters_valid = temperature.is_finite()
+        && a.is_finite()
+        && b.is_finite()
+        && temperature > 0.0
+        && a > 0.0
+        && b > 0.0;
+    if !parameters_valid || max_steps < 4 {
+        return None;
+    }
+    let steps = max_steps.min(MAX_BISECTION_STEPS);
+    // Critical point: rho_c = 1/(3b), T_c = 8a/(27b).
+    let t_c = 8.0 * a / (27.0 * b);
+    if temperature >= t_c {
+        return None;
+    }
+    let rho_c = 1.0 / (3.0 * b);
+    let rho_close = 1.0 / b;
+    let slope = |rho: f64| vdw_pressure_derivative(rho, temperature, a, b);
+    let pressure = |rho: f64| vdw_pressure_raw(rho, temperature, a, b);
+    let potential = |rho: f64| vdw_chemical_potential_raw(rho, temperature, a, b);
+
+    // Spinodals: dp/drho > 0 near rho = 0, < 0 at rho_c (T < T_c), > 0 near 1/b.
+    if slope(rho_c) >= 0.0 {
+        return None;
+    }
+    let rho_spinodal_lo = bisect_sign_change(slope, 0.0, rho_c, steps);
+    let mut bracket_lo = rho_c;
+    let mut gap = 0.5 * (rho_close - rho_c);
+    let mut bracket_hi = rho_close - gap;
+    let mut attempts = 0usize;
+    while slope(bracket_hi) <= 0.0 {
+        bracket_lo = bracket_hi;
+        gap *= 0.5;
+        bracket_hi = rho_close - gap;
+        attempts += 1;
+        if attempts > 1000 || bracket_hi >= rho_close {
+            return None;
+        }
+    }
+    let rho_spinodal_hi = bisect_sign_change(slope, bracket_lo, bracket_hi, steps);
+    let p_max = pressure(rho_spinodal_lo);
+    let p_min = pressure(rho_spinodal_hi);
+    if !(p_max.is_finite() && p_max > 0.0 && p_max > p_min) {
+        return None;
+    }
+
+    // Outer root of p(rho) = p_star on the vapour branch (0, rho_spinodal_lo):
+    // the pressure rises monotonically from 0 to p_max.  The bracket is first
+    // tightened to a factor two so that tiny densities keep full relative accuracy.
+    let vapor_root = |p_star: f64| -> f64 {
+        let mut hi = rho_spinodal_lo;
+        let mut lo = rho_spinodal_lo;
+        let mut halvings = 0usize;
+        while pressure(lo) > p_star && halvings < 1100 {
+            hi = lo;
+            lo *= 0.5;
+            halvings += 1;
+        }
+        bisect_sign_change(|rho| pressure(rho) - p_star, lo, hi, steps)
+    };
+    // Outer root on the liquid branch (rho_spinodal_hi, 1/b): the pressure rises
+    // monotonically from p_min to +infinity.
+    let liquid_root = |p_star: f64| -> f64 {
+        let mut lo = rho_spinodal_hi;
+        let mut gap = 0.5 * (rho_close - rho_spinodal_hi);
+        let mut hi = rho_close - gap;
+        let mut halvings = 0usize;
+        while pressure(hi) < p_star && halvings < 1100 && hi < rho_close {
+            lo = hi;
+            gap *= 0.5;
+            hi = rho_close - gap;
+            halvings += 1;
+        }
+        bisect_sign_change(|rho| pressure(rho) - p_star, lo, hi, steps)
+    };
+
+    // mu(rho_l) - mu(rho_v) as a function of ln(p_star); it decreases with p_star
+    // because d(mu_l - mu_v)/dp = 1/rho_l - 1/rho_v < 0.
+    let residual = |log_p: f64| -> f64 {
+        let p_star = log_p.exp();
+        potential(liquid_root(p_star)) - potential(vapor_root(p_star))
+    };
+    let log_p_hi = p_max.ln();
+    let p_floor = p_min.max(p_max * 1e-300).max(f64::MIN_POSITIVE);
+    let log_p_lo = p_floor.ln();
+    let residual_at_floor = residual(log_p_lo);
+    if residual_at_floor.is_nan() || residual_at_floor <= 0.0 {
+        return None;
+    }
+    let p_star = bisect_sign_change(residual, log_p_lo, log_p_hi, steps).exp();
+
+    let rho_vapor = vapor_root(p_star);
+    let rho_liquid = liquid_root(p_star);
+    let ordered = rho_vapor.is_finite()
+        && rho_liquid.is_finite()
+        && rho_vapor > 0.0
+        && rho_vapor <= rho_spinodal_lo
+        && rho_spinodal_lo < rho_c
+        && rho_c < rho_spinodal_hi
+        && rho_spinodal_hi <= rho_liquid
+        && rho_liquid < rho_close;
+    if !ordered {
+        return None;
+    }
+    Some(MaxwellCoexistence {
+        rho_vapor,
+        rho_liquid,
+        pressure: p_star,
+        chemical_potential: 0.5 * (potential(rho_vapor) + potential(rho_liquid)),
+    })
+}
+
+/// Coexistence densities of a van der Waals fluid from the Maxwell construction.
+///
+/// Finds `rho_v` and `rho_l` with equal pressure and equal chemical potential
+/// at the given temperature (see [`maxwell_construction`], which also returns
+/// the saturation pressure and chemical potential).
+///
+/// # Arguments
+/// - `temperature`: temperature (must satisfy `0 < T < T_c = 8a/(27b)`)
+/// - `a`, `b`: vdW parameters (> 0)
+/// - `n_points`: resolution of the numerical solve, i.e. the number of
+///   bisection halvings applied to every bracket (at least 4; 55 or more
+///   reach double precision)
+///
+/// Returns `(rho_vapor, rho_liquid)` or `(f64::NAN, f64::NAN)` if there is no
+/// coexistence (`T >= T_c`, non-positive or non-finite inputs, `n_points < 4`)
+/// or the construction fails.
 pub fn phase_diagram(temperature: f64, a: f64, b: f64, n_points: usize) -> (f64, f64) {
-    // Critical density rho_c = 1/(3b), critical temperature T_c = 8a/(27b)
-    let rho_c = 1.0 / (3.0 * b.max(1e-30));
-    let t_c = 8.0 * a / (27.0 * b.max(1e-30));
-    if temperature >= t_c || n_points < 4 {
-        return (f64::NAN, f64::NAN);
+    match maxwell_construction(temperature, a, b, n_points) {
+        Some(coexistence) => (coexistence.rho_vapor, coexistence.rho_liquid),
+        None => (f64::NAN, f64::NAN),
     }
-
-    // Sample densities from near 0 to near 1/b (exclude the singularity)
-    let rho_max = 0.9 / b.max(1e-30);
-    let n = n_points.max(4);
-    let drho = rho_max / (n as f64);
-
-    // Find the spinodal region (dp/drho < 0)
-    let pressure = |rho: f64| vdw_pressure(rho, temperature, a, b);
-
-    let mut spinodal_lo = f64::NAN;
-    let mut spinodal_hi = f64::NAN;
-
-    for i in 1..n {
-        let r0 = i as f64 * drho;
-        let r1 = (i + 1) as f64 * drho;
-        if r0 <= 0.0 || r1 >= rho_max {
-            continue;
-        }
-        let dp = pressure(r1) - pressure(r0);
-        if dp < 0.0 {
-            if spinodal_lo.is_nan() {
-                spinodal_lo = r0;
-            }
-            spinodal_hi = r1;
-        }
-    }
-
-    if spinodal_lo.is_nan() || spinodal_hi.is_nan() {
-        return (f64::NAN, f64::NAN);
-    }
-
-    // Vapor phase: rho < spinodal_lo; liquid phase: rho > spinodal_hi
-    // Use the fact that rho_v ~ rho_c * (1 - reduced_t^(1/3))  (mean-field)
-    let _tau = 1.0 - temperature / t_c;
-    let rho_v = spinodal_lo * 0.5_f64.max(0.1);
-    let rho_l = spinodal_hi + (rho_c - spinodal_hi).max(0.0) * 0.5;
-
-    (rho_v.max(1e-6), rho_l.min(rho_max - drho))
 }
 
 // ---------------------------------------------------------------------------
@@ -471,27 +647,255 @@ mod tests {
         let t_c = 8.0 / (27.0 * 0.3);
         let t = 0.8 * t_c;
         let (rv, rl) = phase_diagram(t, 1.0, 0.3, 200);
-        if !rv.is_nan() && !rl.is_nan() {
-            assert!(rv < rl);
-            assert!(rv > 0.0);
-        }
-        // The function may return NaN if spinodal not found at this resolution
+        assert!(rv.is_finite() && rl.is_finite(), "rv = {rv}, rl = {rl}");
+        assert!(rv > 0.0 && rv < rl);
+        // High-precision (mpmath, 50 digits) Maxwell construction at T = 0.8 T_c.
+        assert!(((rv - 0.26629657982343397) / rv).abs() < 1e-9);
+        assert!(((rl - 2.147450920666331) / rl).abs() < 1e-9);
     }
 
     #[test]
     fn test_phase_diagram_rho_ordering() {
-        // If phase separation found, vapor < liquid density
+        // Below T_c the vapour is always strictly lighter than the liquid and
+        // both lie on either side of the critical density 1/(3b).
         let t_c = 8.0 * 2.0 / (27.0 * 0.5);
         let t = 0.7 * t_c;
         let (rv, rl) = phase_diagram(t, 2.0, 0.5, 500);
-        if !rv.is_nan() && !rl.is_nan() {
-            assert!(rv <= rl);
-        }
+        assert!(rv.is_finite() && rl.is_finite(), "rv = {rv}, rl = {rl}");
+        let rho_c = 1.0 / (3.0 * 0.5);
+        assert!(0.0 < rv && rv < rho_c && rho_c < rl);
+        // High-precision (mpmath, 50 digits) Maxwell construction at T = 0.7 T_c.
+        assert!(((rv - 0.08534820111052453) / rv).abs() < 1e-9);
+        assert!(((rl - 1.4269616990038085) / rl).abs() < 1e-9);
     }
 
     #[test]
     fn test_chemical_potential_vdw_zero_density() {
         let mu = chemical_potential_vdw(0.0, 1.0, 1.0, 0.3);
         assert_eq!(mu, 0.0);
+    }
+
+    // --- Maxwell construction (phase coexistence) ---
+
+    /// Composite Simpson integral of `f` over `[lo, hi]` with `panels` (even) panels.
+    fn simpson<F: Fn(f64) -> f64>(f: F, lo: f64, hi: f64, panels: usize) -> f64 {
+        let h = (hi - lo) / panels as f64;
+        let mut sum = f(lo) + f(hi);
+        for k in 1..panels {
+            let weight = if k % 2 == 1 { 4.0 } else { 2.0 };
+            sum += weight * f(lo + k as f64 * h);
+        }
+        sum * h / 3.0
+    }
+
+    #[test]
+    fn test_phase_diagram_matches_reference_coexistence_values() {
+        // High-precision (mpmath, 50 digits) solutions of p(rho_v) = p(rho_l),
+        // mu(rho_v) = mu(rho_l) for a = 1, b = 0.3 (T_c = 8a/(27b)).
+        let (a, b) = (1.0, 0.3);
+        let t_c = 8.0 * a / (27.0 * b);
+        let cases = [
+            // (T/T_c, rho_v, rho_l, p*)
+            (
+                0.9,
+                0.4730462641378402,
+                1.8414113466648023,
+                0.26625446579104983,
+            ),
+            (
+                0.5,
+                0.02416311905317121,
+                2.7316577781668205,
+                0.011435676972514519,
+            ),
+            (
+                0.3,
+                0.00044340585166953054,
+                3.00462698376084,
+                0.00013120038151480452,
+            ),
+            (
+                0.999,
+                1.0413011549174354,
+                1.181810281369748,
+                0.40987851813447684,
+            ),
+        ];
+        for &(t_red, rho_v_ref, rho_l_ref, p_ref) in &cases {
+            let t = t_red * t_c;
+            let (rho_v, rho_l) = phase_diagram(t, a, b, 200);
+            assert!(
+                ((rho_v - rho_v_ref) / rho_v_ref).abs() < 1e-9,
+                "T/Tc={t_red}: rho_v = {rho_v}, expected {rho_v_ref}"
+            );
+            assert!(
+                ((rho_l - rho_l_ref) / rho_l_ref).abs() < 1e-9,
+                "T/Tc={t_red}: rho_l = {rho_l}, expected {rho_l_ref}"
+            );
+            let coexistence =
+                maxwell_construction(t, a, b, 200).expect("coexistence must exist below T_c");
+            assert!(
+                ((coexistence.pressure - p_ref) / p_ref).abs() < 1e-9,
+                "T/Tc={t_red}: p* = {}, expected {p_ref}",
+                coexistence.pressure
+            );
+        }
+    }
+
+    #[test]
+    fn test_phase_diagram_equal_pressure_and_chemical_potential() {
+        let (a, b) = (1.0, 0.3);
+        let t_c = 8.0 * a / (27.0 * b);
+        let rho_c = 1.0 / (3.0 * b);
+        for &t_red in &[0.5, 0.7, 0.8, 0.9, 0.95] {
+            let t = t_red * t_c;
+            let (rho_v, rho_l) = phase_diagram(t, a, b, 200);
+            assert!(
+                rho_v < rho_c && rho_c < rho_l,
+                "T/Tc={t_red}: rho_v={rho_v}, rho_c={rho_c}, rho_l={rho_l}"
+            );
+            let p_v = vdw_pressure(rho_v, t, a, b);
+            let p_l = vdw_pressure(rho_l, t, a, b);
+            assert!(
+                ((p_v - p_l) / p_l).abs() < 1e-8,
+                "T/Tc={t_red}: p_v = {p_v}, p_l = {p_l}"
+            );
+            let mu_v = chemical_potential_vdw(rho_v, t, a, b);
+            let mu_l = chemical_potential_vdw(rho_l, t, a, b);
+            assert!(
+                (mu_v - mu_l).abs() < 1e-8,
+                "T/Tc={t_red}: mu_v = {mu_v}, mu_l = {mu_l}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_phase_diagram_satisfies_equal_area_rule() {
+        // Independent check of the classical Maxwell rule in the (p, v) plane:
+        // integral_{rho_v}^{rho_l} (p(rho) - p*) / rho^2 d(rho) = 0  with v = 1/rho.
+        let (a, b) = (1.0, 0.3);
+        let t = 0.9 * 8.0 * a / (27.0 * b);
+        let coexistence = maxwell_construction(t, a, b, 200).expect("T < T_c");
+        let area = simpson(
+            |rho| (vdw_pressure(rho, t, a, b) - coexistence.pressure) / (rho * rho),
+            coexistence.rho_vapor,
+            coexistence.rho_liquid,
+            20_000,
+        );
+        let scale = simpson(
+            |rho| (vdw_pressure(rho, t, a, b) - coexistence.pressure).abs() / (rho * rho),
+            coexistence.rho_vapor,
+            coexistence.rho_liquid,
+            20_000,
+        );
+        assert!(scale > 1e-3, "the isotherm must oscillate around p*");
+        assert!(
+            area.abs() < 1e-9 * scale,
+            "unbalanced area {area} (total area {scale})"
+        );
+        // The coexistence densities lie strictly outside the spinodal region
+        // (where dp/drho < 0); the old heuristic returned the spinodal itself.
+        let slope = |rho: f64| t / ((1.0 - b * rho) * (1.0 - b * rho)) - 2.0 * a * rho;
+        assert!(slope(coexistence.rho_vapor) > 0.0);
+        assert!(slope(coexistence.rho_liquid) > 0.0);
+        assert!(coexistence.rho_vapor < 1.0 / (3.0 * b));
+        assert!(coexistence.rho_liquid > 1.0 / (3.0 * b));
+    }
+
+    #[test]
+    fn test_phase_diagram_scales_with_van_der_waals_parameters() {
+        // rho * b and p * b^2 / a are universal functions of T / T_c.
+        let (rho_v1, rho_l1) = {
+            let (a, b) = (1.0, 0.3);
+            phase_diagram(0.9 * 8.0 * a / (27.0 * b), a, b, 200)
+        };
+        let (a2, b2) = (2.0, 0.5);
+        let t2 = 0.9 * 8.0 * a2 / (27.0 * b2);
+        let (rho_v2, rho_l2) = phase_diagram(t2, a2, b2, 200);
+        assert!((rho_v1 * 0.3 - rho_v2 * b2).abs() < 1e-12);
+        assert!((rho_l1 * 0.3 - rho_l2 * b2).abs() < 1e-12);
+        assert!((rho_v2 - 0.2838277584827041).abs() < 1e-9);
+        assert!((rho_l2 - 1.1048468079988814).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_phase_diagram_follows_mean_field_critical_scaling() {
+        // Close to T_c the van der Waals binodal obeys
+        // (rho_l - rho_v) / rho_c = 4 sqrt(1 - T / T_c).
+        let (a, b) = (1.0, 0.3);
+        let t_c = 8.0 * a / (27.0 * b);
+        let rho_c = 1.0 / (3.0 * b);
+        for &t_red in &[0.99, 0.999] {
+            let (rho_v, rho_l) = phase_diagram(t_red * t_c, a, b, 200);
+            let width = (rho_l - rho_v) / rho_c;
+            let expected = 4.0 * (1.0 - t_red).sqrt();
+            assert!(
+                (width / expected - 1.0).abs() < 0.03,
+                "T/Tc={t_red}: width {width}, mean-field {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_phase_diagram_widens_on_cooling() {
+        let (a, b) = (1.0, 0.3);
+        let t_c = 8.0 * a / (27.0 * b);
+        let mut previous = phase_diagram(0.95 * t_c, a, b, 200);
+        for &t_red in &[0.9, 0.8, 0.7, 0.6, 0.5] {
+            let current = phase_diagram(t_red * t_c, a, b, 200);
+            assert!(
+                current.0 < previous.0,
+                "vapour density must fall on cooling"
+            );
+            assert!(
+                current.1 > previous.1,
+                "liquid density must rise on cooling"
+            );
+            previous = current;
+        }
+    }
+
+    #[test]
+    fn test_phase_diagram_rejects_invalid_input() {
+        let (a, b) = (1.0, 0.3);
+        let t_c = 8.0 * a / (27.0 * b);
+        let invalid = [
+            phase_diagram(t_c, a, b, 200),
+            phase_diagram(1.1 * t_c, a, b, 200),
+            phase_diagram(0.0, a, b, 200),
+            phase_diagram(-0.1, a, b, 200),
+            phase_diagram(f64::NAN, a, b, 200),
+            phase_diagram(0.8 * t_c, 0.0, b, 200),
+            phase_diagram(0.8 * t_c, a, 0.0, 200),
+            phase_diagram(0.8 * t_c, a, -b, 200),
+            phase_diagram(0.8 * t_c, a, b, 3),
+        ];
+        for (rv, rl) in invalid {
+            assert!(rv.is_nan() && rl.is_nan());
+        }
+        assert!(maxwell_construction(0.8 * t_c, a, b, 3).is_none());
+    }
+
+    #[test]
+    fn test_phase_diagram_resolution_parameter_converges() {
+        // 60 bisection halvings already reach full double precision.
+        let (a, b) = (1.0, 0.3);
+        let t = 0.85 * 8.0 * a / (27.0 * b);
+        let (rv_fine, rl_fine) = phase_diagram(t, a, b, 200);
+        let (rv_60, rl_60) = phase_diagram(t, a, b, 60);
+        assert!(((rv_60 - rv_fine) / rv_fine).abs() < 1e-12);
+        assert!(((rl_60 - rl_fine) / rl_fine).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_maxwell_construction_reports_common_chemical_potential() {
+        let (a, b) = (1.0, 0.3);
+        let t = 0.9 * 8.0 * a / (27.0 * b);
+        let c = maxwell_construction(t, a, b, 200).expect("T < T_c");
+        assert!((c.chemical_potential - (-1.3284277133072706)).abs() < 1e-9);
+        assert!((chemical_potential_vdw(c.rho_vapor, t, a, b) - c.chemical_potential).abs() < 1e-9);
+        assert!(
+            (chemical_potential_vdw(c.rho_liquid, t, a, b) - c.chemical_potential).abs() < 1e-9
+        );
     }
 }

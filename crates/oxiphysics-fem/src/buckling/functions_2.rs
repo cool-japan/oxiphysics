@@ -165,7 +165,9 @@ mod tests {
         prob.set_k(1, 1, 4.0);
         prob.set_kg(0, 0, 1.0);
         prob.set_kg(1, 1, 1.0);
-        let factors = prob.solve_buckling_load_factors(1);
+        let factors = prob
+            .solve_buckling_load_factors(1)
+            .expect("symmetric positive-definite stiffness");
         assert_eq!(factors.len(), 1);
         assert!((factors[0] - 4.0).abs() < 1e-5);
     }
@@ -176,7 +178,9 @@ mod tests {
         prob.set_k(1, 1, 2.0);
         prob.set_kg(0, 0, 1.0);
         prob.set_kg(1, 1, 1.0);
-        let factors = prob.solve_buckling_load_factors(2);
+        let factors = prob
+            .solve_buckling_load_factors(2)
+            .expect("symmetric positive-definite stiffness");
         assert_eq!(factors.len(), 2);
         assert!(factors[0] <= factors[1] + 1e-8);
     }
@@ -187,7 +191,9 @@ mod tests {
         prob.set_k(1, 1, 3.0);
         prob.set_kg(0, 0, 1.0);
         prob.set_kg(1, 1, 1.0);
-        let factors = prob.solve_buckling_load_factors(5);
+        let factors = prob
+            .solve_buckling_load_factors(5)
+            .expect("symmetric positive-definite stiffness");
         assert_eq!(factors.len(), 2);
     }
     #[test]
@@ -494,28 +500,6 @@ mod tests {
             cant,
             pp
         );
-    }
-    #[test]
-    fn test_gaussian_solve_identity() {
-        let a = [1.0, 0.0, 0.0, 1.0];
-        let b = [3.0, 7.0];
-        let x = gaussian_solve(&a, &b, 2).unwrap();
-        assert!((x[0] - 3.0).abs() < 1e-12);
-        assert!((x[1] - 7.0).abs() < 1e-12);
-    }
-    #[test]
-    fn test_gaussian_solve_2x2() {
-        let a = [2.0, 1.0, 1.0, 3.0];
-        let b = [5.0, 7.0];
-        let x = gaussian_solve(&a, &b, 2).unwrap();
-        assert!((x[0] - 8.0 / 5.0).abs() < 1e-12);
-        assert!((x[1] - 9.0 / 5.0).abs() < 1e-12);
-    }
-    #[test]
-    fn test_gaussian_solve_singular() {
-        let a = [1.0, 2.0, 2.0, 4.0];
-        let b = [1.0, 2.0];
-        assert!(gaussian_solve(&a, &b, 2).is_none());
     }
     #[test]
     fn test_timoshenko_less_than_or_equal_euler() {

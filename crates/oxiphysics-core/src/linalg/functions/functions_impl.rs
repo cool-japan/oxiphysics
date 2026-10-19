@@ -100,28 +100,120 @@ pub fn characteristic_poly3(m: Mat3) -> (Real, Real, Real) {
     let c0 = det3(m);
     (c0, c1, c2)
 }
-/// Analytical eigenvalues of a symmetric 3x3 matrix using Cardano's formula.
-/// Returns eigenvalues in ascending order.
-pub fn symmetric_eigenvalues3(m: Mat3) -> Vec3 {
-    let (c0, c1, c2) = characteristic_poly3(m);
-    let p_coeff = c1 - c2 * c2 / 3.0;
-    let q_coeff = 2.0 * c2 * c2 * c2 / 27.0 - c1 * c2 / 3.0 + c0;
-    let discriminant = -(4.0 * p_coeff * p_coeff * p_coeff + 27.0 * q_coeff * q_coeff);
-    let shift = c2 / 3.0;
-    let mut eigs = if discriminant >= 0.0 && p_coeff < 0.0 {
-        let m_val = 2.0 * (-p_coeff / 3.0).sqrt();
-        let arg = (3.0 * q_coeff / (p_coeff * m_val)).clamp(-1.0, 1.0);
-        let theta = arg.acos() / 3.0;
-        use std::f64::consts::PI;
-        let l0 = m_val * theta.cos() + shift;
-        let l1 = m_val * (theta - 2.0 * PI / 3.0).cos() + shift;
-        let l2 = m_val * (theta - 4.0 * PI / 3.0).cos() + shift;
-        [l0, l1, l2]
+/// `2π/3`, the phase between the three trigonometric roots of a depressed cubic.
+const TWO_THIRDS_PI: Real = 2.0 * std::f64::consts::PI / 3.0;
+/// Largest power of two not exceeding the finite positive number `x`.
+///
+/// Dividing by it is exact.  Subnormal numbers, whose exponent field is zero,
+/// fall back to `x` itself.
+fn power_of_two_scale(x: Real) -> Real {
+    let scale = Real::from_bits(x.to_bits() & 0x7ff0_0000_0000_0000);
+    if scale > 0.0 { scale } else { x }
+}
+/// Eigenvalues `(low, high)` of the 2x2 compression of the symmetric matrix
+/// `c` onto the plane orthogonal to the eigenvector of its eigenvalue
+/// `isolated`.
+///
+/// The eigenvector spans the null space of `c − isolated·I`; it is obtained as
+/// the longest cross product of two columns of that rank-2 matrix.  Returns
+/// `None` if no usable cross product exists, which cannot happen when
+/// `isolated` is separated from the rest of the spectrum.
+fn deflated_pair(c: Mat3, isolated: Real) -> Option<(Real, Real)> {
+    let shifted = c - Mat3::identity() * isolated;
+    let columns = [
+        shifted.column(0).into_owned(),
+        shifted.column(1).into_owned(),
+        shifted.column(2).into_owned(),
+    ];
+    let mut axis = Vec3::zeros();
+    let mut best = 0.0_f64;
+    for (i, j) in [(0, 1), (0, 2), (1, 2)] {
+        let cross = columns[i].cross(&columns[j]);
+        let norm_sq = cross.norm_squared();
+        if norm_sq > best {
+            best = norm_sq;
+            axis = cross;
+        }
+    }
+    if !best.is_finite() || best <= 0.0 {
+        return None;
+    }
+    let u = axis / best.sqrt();
+    // Orthonormal basis (v, w) of the plane orthogonal to the unit vector `u`.
+    let v = if u.x.abs() > u.y.abs() {
+        let inv_len = 1.0 / u.x.hypot(u.z);
+        Vec3::new(-u.z * inv_len, 0.0, u.x * inv_len)
     } else {
-        [shift, shift, shift]
+        let inv_len = 1.0 / u.y.hypot(u.z);
+        Vec3::new(0.0, u.z * inv_len, -u.y * inv_len)
     };
-    eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    Vec3::new(eigs[0], eigs[1], eigs[2])
+    let w = u.cross(&v);
+    let cv = c * v;
+    let cw = c * w;
+    let m00 = v.dot(&cv);
+    let m01 = v.dot(&cw);
+    let m11 = w.dot(&cw);
+    let centre = 0.5 * (m00 + m11);
+    let radius = (0.5 * (m00 - m11)).hypot(m01);
+    Some((centre - radius, centre + radius))
+}
+/// Eigenvalues of a symmetric 3x3 matrix in closed form, in ascending order.
+///
+/// Only the symmetric part `(M + Mᵀ)/2` of `m` is used.  Non-finite entries
+/// give `NaN` eigenvalues.
+///
+/// The matrix is scaled by a power of two, shifted by its mean eigenvalue
+/// `tr(M)/3` and normalised to `C` with `Σ λᵢ(C)² = 6`.  The characteristic
+/// polynomial of `C` is `β³ − 3β − det C = 0`, with Cardano's trigonometric
+/// roots `β_k = 2 cos(acos(det C / 2)/3 + 2πk/3)`.  The root that is farthest
+/// from the others is taken from this formula, where it is well conditioned.
+/// The remaining two are *not* read off the polynomial: as roots of a cubic
+/// they would be perturbed by `O(√ε)` whenever they (nearly) coincide.  They
+/// are the eigenvalues of the 2x2 compression of `C` onto the orthogonal
+/// complement of the isolated eigenvector, which keeps the error at rounding
+/// level for every spectrum, including double and triple eigenvalues.
+pub fn symmetric_eigenvalues3(m: Mat3) -> Vec3 {
+    let a01 = 0.5 * (m.m12 + m.m21);
+    let a02 = 0.5 * (m.m13 + m.m31);
+    let a12 = 0.5 * (m.m23 + m.m32);
+    let entries = [m.m11, m.m22, m.m33, a01, a02, a12];
+    if entries.iter().any(|v| !v.is_finite()) {
+        return Vec3::new(Real::NAN, Real::NAN, Real::NAN);
+    }
+    let magnitude = entries.iter().fold(0.0_f64, |acc, v| acc.max(v.abs()));
+    if magnitude == 0.0 {
+        return Vec3::zeros();
+    }
+    let scale = power_of_two_scale(magnitude);
+    let [s00, s11, s22, s01, s02, s12] = entries.map(|v| v / scale);
+    let mean = (s00 + s11 + s22) / 3.0;
+    let (d0, d1, d2) = (s00 - mean, s11 - mean, s22 - mean);
+    let spread_sq = (d0 * d0 + d1 * d1 + d2 * d2 + 2.0 * (s01 * s01 + s02 * s02 + s12 * s12)) / 6.0;
+    let spread = spread_sq.sqrt();
+    if spread == 0.0 {
+        let lambda = mean * scale;
+        return Vec3::new(lambda, lambda, lambda);
+    }
+    let c = Mat3::new(d0, s01, s02, s01, d1, s12, s02, s12, d2) / spread;
+    let r = (0.5 * det3(c)).clamp(-1.0, 1.0);
+    let phi = r.acos() / 3.0;
+    let beta_top = 2.0 * phi.cos();
+    let beta_bottom = 2.0 * (phi + TWO_THIRDS_PI).cos();
+    // For r >= 0 the largest root is separated from the others by at least half
+    // of the spectral spread, otherwise the smallest one is.
+    let (isolated, opposite) = if r >= 0.0 {
+        (beta_top, beta_bottom)
+    } else {
+        (beta_bottom, beta_top)
+    };
+    let (low, high) = deflated_pair(c, isolated).unwrap_or((opposite, -(isolated + opposite)));
+    let mut betas = [isolated, low, high];
+    betas.sort_by(|a, b| a.total_cmp(b));
+    Vec3::new(
+        (mean + spread * betas[0]) * scale,
+        (mean + spread * betas[1]) * scale,
+        (mean + spread * betas[2]) * scale,
+    )
 }
 /// Symmetric 3x3 matrix eigendecomposition via Jacobi iterations.
 ///

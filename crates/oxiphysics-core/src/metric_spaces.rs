@@ -463,6 +463,10 @@ pub struct MetricBallTree {
 }
 
 /// A nearest-neighbor search result.
+///
+/// Results are ordered by increasing distance (IEEE total order), ties being
+/// broken by the dataset index.  A [`BinaryHeap`] of results is therefore a
+/// max-heap whose top is the farthest, i.e. the current worst, candidate.
 #[derive(Debug, Clone)]
 pub struct NearestNeighbor {
     /// Index of the neighbor in the original dataset.
@@ -473,7 +477,7 @@ pub struct NearestNeighbor {
 
 impl PartialEq for NearestNeighbor {
     fn eq(&self, other: &Self) -> bool {
-        self.distance == other.distance
+        self.cmp(other) == Ordering::Equal
     }
 }
 
@@ -487,11 +491,9 @@ impl PartialOrd for NearestNeighbor {
 
 impl Ord for NearestNeighbor {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Max-heap by distance (so smallest distances bubble up as we invert)
-        other
-            .distance
-            .partial_cmp(&self.distance)
-            .unwrap_or(Ordering::Equal)
+        self.distance
+            .total_cmp(&other.distance)
+            .then_with(|| self.index.cmp(&other.index))
     }
 }
 
@@ -499,6 +501,13 @@ impl MetricBallTree {
     /// Build a ball tree from a set of points using the Euclidean metric.
     ///
     /// `leaf_size` controls the maximum number of points stored at a leaf node.
+    /// Nodes are split around two far-apart seed points so that the children are
+    /// compact balls; the depth of the tree stays within about `3 log2(n)` even
+    /// for data on which such splits are very uneven.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `points` is empty.
     pub fn build(points: Vec<Vec<f64>>, leaf_size: usize) -> Self {
         let n = points.len();
         assert!(!points.is_empty(), "MetricBallTree: empty dataset");
@@ -506,7 +515,13 @@ impl MetricBallTree {
 
         let mut nodes: Vec<BallTreeNode> = Vec::with_capacity(2 * n / leaf_size + 4);
         let indices: Vec<usize> = (0..n).collect();
-        let root = build_node(&points, &indices, &mut nodes, leaf_size);
+        let root = build_node(
+            &points,
+            &indices,
+            &mut nodes,
+            leaf_size,
+            seed_split_budget(n),
+        );
 
         Self {
             points,
@@ -517,8 +532,16 @@ impl MetricBallTree {
     }
 
     /// Find the `k` nearest neighbors of `query` using the Euclidean metric.
+    ///
+    /// The result holds `min(k, len())` neighbors sorted by increasing
+    /// distance; equidistant neighbors are ordered by dataset index, and the
+    /// ones with the smallest indices are kept when a tie straddles the `k`-th
+    /// place.
     pub fn knn(&self, query: &[f64], k: usize) -> Vec<NearestNeighbor> {
-        let mut heap: BinaryHeap<NearestNeighbor> = BinaryHeap::new();
+        if k == 0 {
+            return Vec::new();
+        }
+        let mut heap: BinaryHeap<NearestNeighbor> = BinaryHeap::with_capacity(k.min(self.len()));
         let metric = EuclideanMetric;
         knn_search(
             &self.points,
@@ -529,13 +552,7 @@ impl MetricBallTree {
             &mut heap,
             &metric,
         );
-        let mut result: Vec<NearestNeighbor> = heap.into_sorted_vec();
-        result.sort_by(|a, b| {
-            a.distance
-                .partial_cmp(&b.distance)
-                .unwrap_or(Ordering::Equal)
-        });
-        result
+        heap.into_sorted_vec()
     }
 
     /// Find all points within `radius` of `query`.
@@ -551,11 +568,7 @@ impl MetricBallTree {
             &mut result,
             &metric,
         );
-        result.sort_by(|a, b| {
-            a.distance
-                .partial_cmp(&b.distance)
-                .unwrap_or(Ordering::Equal)
-        });
+        result.sort();
         result
     }
 
@@ -598,12 +611,89 @@ fn centroid(points: &[Vec<f64>], indices: &[usize]) -> Vec<f64> {
     c
 }
 
+/// Number of nearest-seed splits allowed along any root-to-leaf path of a tree
+/// over `n` points: twice the depth of a perfectly balanced tree, plus two.
+///
+/// Splitting around two seeds gives compact children but not balanced ones: on
+/// data such as mutually equidistant points it peels off a single point per
+/// level.  Once a path has used up its budget, [`build_node`] splits at the
+/// median instead.  That bounds the depth of the tree, and with it the recursion
+/// depth of construction and queries, by roughly `3 log2(n)`.
+fn seed_split_budget(n: usize) -> usize {
+    let balanced_depth = (usize::BITS - n.saturating_sub(1).leading_zeros()) as usize;
+    2 * balanced_depth + 2
+}
+
+/// Assigns every point of `indices` to the nearer of the seeds `pivot_idx` and
+/// `far_idx` (ties go to the pivot side).
+///
+/// Returns `None` if one side stays empty, which happens only when the points
+/// cannot be told apart geometrically (all coincide with the pivot, or have
+/// non-finite coordinates).
+fn split_around_seeds(
+    points: &[Vec<f64>],
+    indices: &[usize],
+    pivot_idx: usize,
+    far_idx: usize,
+) -> Option<(Vec<usize>, Vec<usize>)> {
+    let (near_pivot, near_far): (Vec<usize>, Vec<usize>) = indices.iter().partition(|&&i| {
+        euclidean_dist(&points[i], &points[pivot_idx])
+            <= euclidean_dist(&points[i], &points[far_idx])
+    });
+    if near_pivot.is_empty() || near_far.is_empty() {
+        None
+    } else {
+        Some((near_pivot, near_far))
+    }
+}
+
+/// Halves `indices` by position along the bisector key
+/// `|x − pivot| − |x − far|` (ties broken by index), so that the first half
+/// holds the points most attached to the pivot.
+///
+/// Both halves are non-empty whenever `indices` holds at least two points.
+fn split_at_median(
+    points: &[Vec<f64>],
+    indices: &[usize],
+    pivot_idx: usize,
+    far_idx: usize,
+) -> (Vec<usize>, Vec<usize>) {
+    let mut keyed: Vec<(f64, usize)> = indices
+        .iter()
+        .map(|&i| {
+            let key = euclidean_dist(&points[i], &points[pivot_idx])
+                - euclidean_dist(&points[i], &points[far_idx]);
+            (key, i)
+        })
+        .collect();
+    keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let upper = keyed.split_off(keyed.len() / 2);
+    let lower = keyed.into_iter().map(|(_, i)| i).collect();
+    let upper = upper.into_iter().map(|(_, i)| i).collect();
+    (lower, upper)
+}
+
 fn build_node(
     points: &[Vec<f64>],
     indices: &[usize],
     nodes: &mut Vec<BallTreeNode>,
     leaf_size: usize,
+    seed_splits: usize,
 ) -> usize {
+    let Some(&first) = indices.first() else {
+        // Every split keeps both halves non-empty, so a tree built by
+        // `MetricBallTree::build` never reaches this branch; an empty leaf keeps
+        // the helper total instead of panicking.
+        let node_idx = nodes.len();
+        nodes.push(BallTreeNode {
+            pivot_idx: 0,
+            radius: 0.0,
+            left: usize::MAX,
+            right: usize::MAX,
+            leaf_points: Vec::new(),
+        });
+        return node_idx;
+    };
     let c = centroid(points, indices);
     // Choose pivot as point farthest from centroid
     let pivot_idx = indices
@@ -614,7 +704,7 @@ fn build_node(
                 .partial_cmp(&euclidean_dist(&points[b], &c))
                 .unwrap_or(Ordering::Equal)
         })
-        .expect("indices is non-empty");
+        .unwrap_or(first);
 
     let radius = indices
         .iter()
@@ -634,26 +724,27 @@ fn build_node(
         return node_idx;
     }
 
-    // Split by distance to pivot
-    let mut left_idx: Vec<usize> = Vec::new();
-    let mut right_idx: Vec<usize> = Vec::new();
-    for &i in indices {
-        if i == pivot_idx {
-            left_idx.push(i);
-            continue;
-        }
-        if left_idx.len() <= right_idx.len() {
-            left_idx.push(i);
-        } else {
-            right_idx.push(i);
-        }
-    }
-    if left_idx.is_empty() {
-        left_idx.push(pivot_idx);
-    }
-    if right_idx.is_empty() {
-        right_idx = left_idx.split_off(left_idx.len() / 2 + 1);
-    }
+    // Split around two far-apart seeds: the pivot and the point farthest from
+    // it.  Every point joins the nearer seed, so the two children are compact
+    // balls that the query can prune.  Past the depth budget, and for points
+    // that cannot be separated geometrically (coincident or non-finite ones),
+    // halve by position instead: `indices` holds more than `leaf_size >= 1`
+    // points, so both halves are non-empty.
+    let far_idx = indices
+        .iter()
+        .copied()
+        .max_by(|&a, &b| {
+            euclidean_dist(&points[a], &points[pivot_idx])
+                .total_cmp(&euclidean_dist(&points[b], &points[pivot_idx]))
+        })
+        .unwrap_or(pivot_idx);
+    let seed_split = if seed_splits > 0 {
+        split_around_seeds(points, indices, pivot_idx, far_idx)
+    } else {
+        None
+    };
+    let (left_idx, right_idx) =
+        seed_split.unwrap_or_else(|| split_at_median(points, indices, pivot_idx, far_idx));
 
     // Push a placeholder so we can fix up children indices later
     nodes.push(BallTreeNode {
@@ -664,13 +755,20 @@ fn build_node(
         leaf_points: vec![],
     });
 
-    let left_child = build_node(points, &left_idx, nodes, leaf_size);
-    let right_child = build_node(points, &right_idx, nodes, leaf_size);
+    let remaining = seed_splits.saturating_sub(1);
+    let left_child = build_node(points, &left_idx, nodes, leaf_size, remaining);
+    let right_child = build_node(points, &right_idx, nodes, leaf_size, remaining);
     nodes[node_idx].left = left_child;
     nodes[node_idx].right = right_child;
 
     node_idx
 }
+
+/// Relative slack added to the ball lower bound `|q − pivot| − radius` before
+/// a ball is pruned.  The bound is exact only in real arithmetic; the slack keeps
+/// round-off from discarding a point that is exactly as close as the current
+/// worst candidate (or exactly on the query radius).
+const PRUNE_SLACK: f64 = 1.0e-12;
 
 fn knn_search(
     points: &[Vec<f64>],
@@ -684,31 +782,29 @@ fn knn_search(
     let node = &nodes[node_idx];
     let pivot_dist = euclidean_dist(query, &points[node.pivot_idx]);
 
-    // Pruning: if the closest possible point in this ball is farther than
-    // the current k-th best, skip.
-    if heap.len() >= k {
-        let worst = heap.peek().map(|n| n.distance).unwrap_or(f64::MAX);
-        if pivot_dist - node.radius > worst {
-            return;
-        }
+    // Pruning: once k candidates are held, the heap top is the current k-th
+    // best (largest) distance.  If the closest possible point in this ball is
+    // strictly farther than that, nothing in it can enter the result.  Balls
+    // that could only tie are still searched so that ties resolve by index.
+    if heap.len() >= k
+        && let Some(worst) = heap.peek()
+        && pivot_dist - node.radius > worst.distance + PRUNE_SLACK * (pivot_dist + node.radius)
+    {
+        return;
     }
 
     if node.is_leaf() {
         for &idx in &node.leaf_points {
-            let d = euclidean_dist(query, &points[idx]);
+            let candidate = NearestNeighbor {
+                index: idx,
+                distance: euclidean_dist(query, &points[idx]),
+            };
             if heap.len() < k {
-                heap.push(NearestNeighbor {
-                    index: idx,
-                    distance: d,
-                });
-            } else if let Some(worst) = heap.peek()
-                && d < worst.distance
+                heap.push(candidate);
+            } else if let Some(mut worst) = heap.peek_mut()
+                && candidate < *worst
             {
-                heap.pop();
-                heap.push(NearestNeighbor {
-                    index: idx,
-                    distance: d,
-                });
+                *worst = candidate;
             }
         }
         return;
@@ -756,7 +852,7 @@ fn range_search(
     let pivot_dist = euclidean_dist(query, &points[node.pivot_idx]);
 
     // Pruning: if the closest possible point in the ball is outside `radius`, skip.
-    if pivot_dist - node.radius > radius {
+    if pivot_dist - node.radius > radius + PRUNE_SLACK * (pivot_dist + node.radius) {
         return;
     }
 
@@ -1336,6 +1432,283 @@ mod tests {
         let tree = MetricBallTree::build(points, 3);
         assert_eq!(tree.len(), 10);
         assert!(!tree.is_empty());
+    }
+
+    /// SplitMix64 generator for reproducible ball-tree datasets.
+    struct TestRng(u64);
+
+    impl TestRng {
+        fn next_f64(&mut self) -> f64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+        }
+
+        fn point(&mut self, dim: usize) -> Vec<f64> {
+            (0..dim).map(|_| self.next_f64()).collect()
+        }
+    }
+
+    /// Exhaustive `k` nearest neighbours ordered by (distance, index).
+    fn brute_force_knn(points: &[Vec<f64>], query: &[f64], k: usize) -> Vec<NearestNeighbor> {
+        let mut all: Vec<NearestNeighbor> = points
+            .iter()
+            .enumerate()
+            .map(|(index, p)| NearestNeighbor {
+                index,
+                distance: euclidean_dist(query, p),
+            })
+            .collect();
+        all.sort_by(|a, b| {
+            a.distance
+                .total_cmp(&b.distance)
+                .then(a.index.cmp(&b.index))
+        });
+        all.truncate(k);
+        all
+    }
+
+    /// Dataset indices stored in the leaves below `node`.
+    fn leaf_indices(nodes: &[BallTreeNode], node: usize, out: &mut Vec<usize>) {
+        let n = &nodes[node];
+        if n.is_leaf() {
+            out.extend_from_slice(&n.leaf_points);
+        } else {
+            leaf_indices(nodes, n.left, out);
+            leaf_indices(nodes, n.right, out);
+        }
+    }
+
+    /// Number of edges on the longest root-to-leaf path below `node`.
+    fn tree_depth(nodes: &[BallTreeNode], node: usize) -> usize {
+        let n = &nodes[node];
+        if n.is_leaf() {
+            0
+        } else {
+            1 + tree_depth(nodes, n.left).max(tree_depth(nodes, n.right))
+        }
+    }
+
+    /// The `n` unit vectors of `R^n`: mutually equidistant points.
+    fn one_hot_points(n: usize) -> Vec<Vec<f64>> {
+        (0..n)
+            .map(|i| {
+                let mut p = vec![0.0; n];
+                p[i] = 1.0;
+                p
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_ball_tree_knn_does_not_evict_the_nearest_neighbour() {
+        // Distances 5, 4, 1, 3 from the query: the two nearest are 1 and 3.  A
+        // heap whose top was the nearest candidate returned {1, 5}.
+        let points: Vec<Vec<f64>> = vec![vec![5.0], vec![4.0], vec![1.0], vec![3.0]];
+        for leaf_size in [1, 2, 10] {
+            let tree = MetricBallTree::build(points.clone(), leaf_size);
+            let result = tree.knn(&[0.0], 2);
+            let indices: Vec<usize> = result.iter().map(|n| n.index).collect();
+            assert_eq!(indices, vec![2, 3], "leaf_size {leaf_size}");
+            assert_eq!(result[0].distance, 1.0);
+            assert_eq!(result[1].distance, 3.0);
+        }
+    }
+
+    #[test]
+    fn test_ball_tree_knn_matches_brute_force() {
+        let mut rng = TestRng(0xB411_7EE5);
+        let points: Vec<Vec<f64>> = (0..500).map(|_| rng.point(3)).collect();
+        for leaf_size in [1, 2, 4, 16] {
+            let tree = MetricBallTree::build(points.clone(), leaf_size);
+            for _ in 0..50 {
+                let query = rng.point(3);
+                for k in [1, 5, 20] {
+                    let expected = brute_force_knn(&points, &query, k);
+                    let got = tree.knn(&query, k);
+                    assert_eq!(got.len(), expected.len());
+                    for (g, e) in got.iter().zip(&expected) {
+                        assert_eq!(g.index, e.index, "leaf_size {leaf_size}, k {k}");
+                        assert_eq!(g.distance, e.distance);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_ball_tree_knn_ties_and_edge_cases() {
+        // Ten coincident points: ties are resolved by index.
+        let mut points = vec![vec![1.0, 1.0]; 10];
+        points.push(vec![5.0, 5.0]);
+        let tree = MetricBallTree::build(points, 2);
+        let result = tree.knn(&[1.0, 1.0], 3);
+        let indices: Vec<usize> = result.iter().map(|n| n.index).collect();
+        assert_eq!(indices, vec![0, 1, 2]);
+        // k = 0 yields nothing; k beyond the dataset yields everything, sorted.
+        assert!(tree.knn(&[0.0, 0.0], 0).is_empty());
+        let all = tree.knn(&[0.0, 0.0], 100);
+        assert_eq!(all.len(), 11);
+        assert!(all.windows(2).all(|w| w[0].distance <= w[1].distance));
+        assert_eq!(all[10].index, 10);
+    }
+
+    #[test]
+    fn test_ball_tree_range_query_matches_brute_force() {
+        let mut rng = TestRng(0x00AB_CDEF);
+        let points: Vec<Vec<f64>> = (0..300).map(|_| rng.point(2)).collect();
+        let tree = MetricBallTree::build(points.clone(), 3);
+        for _ in 0..30 {
+            let query = rng.point(2);
+            let got = tree.range_query(&query, 0.2);
+            let expected: Vec<usize> = brute_force_knn(&points, &query, points.len())
+                .into_iter()
+                .filter(|n| n.distance <= 0.2)
+                .map(|n| n.index)
+                .collect();
+            let got_indices: Vec<usize> = got.iter().map(|n| n.index).collect();
+            assert_eq!(got_indices, expected);
+        }
+    }
+
+    #[test]
+    fn test_ball_tree_children_are_compact() {
+        // Two far-apart clusters must be separated by the root split, otherwise
+        // the tree cannot prune.
+        let mut rng = TestRng(0x7117);
+        let mut points: Vec<Vec<f64>> = (0..40).map(|_| rng.point(2)).collect();
+        points.extend((0..40).map(|_| {
+            let p = rng.point(2);
+            vec![100.0 + p[0], 100.0 + p[1]]
+        }));
+        let tree = MetricBallTree::build(points, 4);
+        let root = &tree.nodes[tree.root];
+        assert!(!root.is_leaf());
+        for child in [root.left, root.right] {
+            let mut members = Vec::new();
+            leaf_indices(&tree.nodes, child, &mut members);
+            assert_eq!(members.len(), 40);
+            let cluster = members[0] / 40;
+            assert!(members.iter().all(|&i| i / 40 == cluster));
+            assert!(tree.nodes[child].radius < 2.0);
+        }
+    }
+
+    #[test]
+    fn test_ball_tree_depth_stays_logarithmic_on_equidistant_points() {
+        // Around two seeds, mutually equidistant points split into one point and
+        // the rest, which would make the tree as deep as it has points.
+        let n = 600;
+        let tree = MetricBallTree::build(one_hot_points(n), 1);
+        let depth = tree_depth(&tree.nodes, tree.root);
+        // ceil(log2(600)) = 10: seed splits for at most `seed_split_budget(n)`
+        // levels, halving splits below.
+        assert_eq!(seed_split_budget(n), 22);
+        assert!(depth >= 10, "depth {depth}");
+        assert!(depth <= seed_split_budget(n) + 10, "depth {depth}");
+    }
+
+    #[test]
+    fn test_ball_tree_queries_are_exact_on_equidistant_points() {
+        let n = 200;
+        let points = one_hot_points(n);
+        let tree = MetricBallTree::build(points.clone(), 2);
+        // The origin is at distance 1 from every point: all ties, resolved by index.
+        let origin = vec![0.0; n];
+        let indices: Vec<usize> = tree.knn(&origin, 7).iter().map(|nn| nn.index).collect();
+        assert_eq!(indices, (0..7).collect::<Vec<usize>>());
+        assert_eq!(tree.range_query(&origin, 1.0).len(), n);
+        // A data point is its own nearest neighbour, then the ties by index.
+        let nearest = tree.knn(&points[150], 4);
+        let indices: Vec<usize> = nearest.iter().map(|nn| nn.index).collect();
+        assert_eq!(indices, vec![150, 0, 1, 2]);
+        assert_eq!(nearest[0].distance, 0.0);
+        assert!((nearest[1].distance - std::f64::consts::SQRT_2).abs() < 1e-15);
+        // Perturbed queries agree with the exhaustive search.
+        let mut rng = TestRng(0xE0E0);
+        for _ in 0..20 {
+            let query: Vec<f64> = (0..n).map(|_| 0.3 * rng.next_f64()).collect();
+            let expected: Vec<usize> = brute_force_knn(&points, &query, 5)
+                .iter()
+                .map(|nn| nn.index)
+                .collect();
+            let got: Vec<usize> = tree.knn(&query, 5).iter().map(|nn| nn.index).collect();
+            assert_eq!(got, expected);
+        }
+    }
+
+    #[test]
+    fn test_seed_split_budget_is_twice_the_balanced_depth_plus_two() {
+        assert_eq!(seed_split_budget(1), 2);
+        assert_eq!(seed_split_budget(2), 4);
+        assert_eq!(seed_split_budget(3), 6);
+        assert_eq!(seed_split_budget(4), 6);
+        assert_eq!(seed_split_budget(5), 8);
+        assert_eq!(seed_split_budget(1024), 22);
+        assert_eq!(seed_split_budget(1025), 24);
+    }
+
+    #[test]
+    fn test_split_at_median_halves_by_the_bisector_key() {
+        // Points on a line with the pivot at 0 and the far seed at 10: the key
+        // |x| - |x - 10| grows with x.  Index 5 is a duplicate of index 2 and
+        // follows it by the index tie-break.
+        let points: Vec<Vec<f64>> = [0.0, 10.0, 3.0, 8.0, 1.0, 3.0]
+            .into_iter()
+            .map(|x| vec![x])
+            .collect();
+        let indices: Vec<usize> = (0..6).collect();
+        let (lower, upper) = split_at_median(&points, &indices, 0, 1);
+        assert_eq!(lower, vec![0, 4, 2]);
+        assert_eq!(upper, vec![5, 3, 1]);
+        // Coincident points are halved by position.
+        let same = vec![vec![1.0]; 5];
+        let (lower, upper) = split_at_median(&same, &[0, 1, 2, 3, 4], 0, 0);
+        assert_eq!(lower, vec![0, 1]);
+        assert_eq!(upper, vec![2, 3, 4]);
+        assert!(split_around_seeds(&same, &[0, 1, 2, 3, 4], 0, 0).is_none());
+    }
+
+    #[test]
+    fn test_ball_tree_build_node_on_empty_indices_is_an_empty_leaf() {
+        // The helper must stay total: no pivot can be chosen from nothing, so it
+        // records an empty leaf instead of panicking.
+        let points = vec![vec![0.0, 0.0], vec![1.0, 1.0]];
+        let mut nodes = Vec::new();
+        let idx = build_node(&points, &[], &mut nodes, 1, 4);
+        assert_eq!(idx, 0);
+        assert_eq!(nodes.len(), 1);
+        assert!(nodes[0].is_leaf());
+        assert!(nodes[0].leaf_points.is_empty());
+        assert_eq!(nodes[0].radius, 0.0);
+    }
+
+    #[test]
+    fn test_nearest_neighbor_ordering_is_total_and_heap_top_is_farthest() {
+        let a = NearestNeighbor {
+            index: 3,
+            distance: 1.0,
+        };
+        let b = NearestNeighbor {
+            index: 5,
+            distance: 1.0,
+        };
+        let c = NearestNeighbor {
+            index: 1,
+            distance: 2.0,
+        };
+        // Increasing distance, ties by index; equality agrees with the order.
+        assert!(a < b && b < c && a < c);
+        assert_ne!(a, b);
+        assert_eq!(a, a.clone());
+        // A max-heap exposes the farthest candidate, the one to evict first.
+        let mut heap = BinaryHeap::new();
+        heap.push(b);
+        heap.push(c);
+        heap.push(a);
+        assert_eq!(heap.peek().map(|n| n.index), Some(1));
     }
 
     // --- FrechetDistance ---

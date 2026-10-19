@@ -216,13 +216,35 @@ impl PosePdController {
     }
 }
 /// An articulated pose described by joint angles and a root transform.
+///
+/// The pose is interpreted by [`forward_kinematics`] and
+/// [`forward_kinematics_transforms`].
+#[derive(Debug, Clone)]
 pub struct ArticulatedPose {
-    /// Joint angles for each bone (Euler angles in radians).
+    /// Local joint rotation of each bone relative to its parent, as Euler
+    /// angles `[ax, ay, az]` in radians.
+    ///
+    /// The rotation is `Rx(ax) · Ry(ay) · Rz(az)` (intrinsic X-Y-Z order, see
+    /// [`euler_xyz_to_quat`]).  Missing entries are treated as zero.
     pub joint_angles: Vec<[f64; 3]>,
     /// Root position in world space.
     pub root_position: [f64; 3],
-    /// Root orientation as quaternion (w, x, y, z).
+    /// Root orientation as quaternion (w, x, y, z); it is normalised before
+    /// use and applied in addition to the root bone's own joint angles.
     pub root_orientation: [f64; 4],
+}
+/// World-space frame of a bone in an articulated skeleton.
+///
+/// Every bone extends along its local +Y axis from its proximal joint to its
+/// distal joint, and its children attach at the distal end.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoneTransform {
+    /// World position of the proximal joint (where the bone attaches to its
+    /// parent, or the root position for a root bone) \[m\].
+    pub position: [f64; 3],
+    /// World orientation (w, x, y, z): rotates bone-local vectors into world
+    /// space.
+    pub orientation: [f64; 4],
 }
 impl ArticulatedPose {
     /// Create a default T-pose (all joint angles zero).
@@ -807,6 +829,10 @@ impl Ragdoll {
         vec_add(bone.position, quat_rotate(bone.orientation, local_anchor))
     }
     /// Semi-implicit Euler integration for all dynamic bones.
+    ///
+    /// Velocities are updated by gravity first, then positions advance with the
+    /// new linear velocity and orientations rotate by `ω·dt` about the world
+    /// axis of the angular velocity.
     pub fn integrate(&mut self, dt: f64) {
         if self.state == RagdollState::Inactive {
             return;
@@ -824,16 +850,12 @@ impl Ragdoll {
             let g_scaled = vec_scale(gravity, blend);
             bone.linear_vel = vec_add(bone.linear_vel, vec_scale(g_scaled, dt));
             bone.position = vec_add(bone.position, vec_scale(bone.linear_vel, dt));
+            // Exact rotation by omega * dt about the world-space axis omega, so
+            // an unconstrained bone keeps its angular speed when `step` later
+            // recovers the angular velocity from the orientation change.
             let omega = bone.angular_vel;
-            let omega_q: [f64; 4] = [0.0, omega[0], omega[1], omega[2]];
-            let dq = quat_mul(omega_q, bone.orientation);
-            let q = bone.orientation;
-            bone.orientation = quat_normalize([
-                q[0] + 0.5 * dq[0] * dt,
-                q[1] + 0.5 * dq[1] * dt,
-                q[2] + 0.5 * dq[2] * dt,
-                q[3] + 0.5 * dq[3] * dt,
-            ]);
+            let spin = quat_from_axis_angle(omega, vec_length(omega) * dt);
+            bone.orientation = quat_normalize(quat_mul(spin, bone.orientation));
         }
     }
     /// Position-level correction for a ball-and-socket joint.
@@ -894,7 +916,25 @@ impl Ragdoll {
         }
     }
     /// Advance simulation by `dt` seconds with `n_iter` constraint iterations.
+    ///
+    /// This is a position-based step: the bones are integrated to predicted
+    /// positions and orientations, the joint constraints project them back,
+    /// and the velocities of all dynamic bones are then re-derived from the
+    /// net motion, `v = (x - x_prev)/dt` and `ω = log(q q_prev⁻¹)/dt`.  The
+    /// constraint corrections therefore remove the velocity that pointed
+    /// against a joint instead of leaving it to accumulate, so a chain hanging
+    /// from a fixed bone comes to rest.  Velocities are left untouched when the
+    /// ragdoll is inactive or `dt` is not a positive finite number.
     pub fn step(&mut self, dt: f64, n_iter: usize) {
+        let derive_velocities = self.state != RagdollState::Inactive && dt > 0.0 && dt.is_finite();
+        let previous: Vec<([f64; 3], [f64; 4])> = if derive_velocities {
+            self.bones
+                .iter()
+                .map(|b| (b.position, b.orientation))
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.integrate(dt);
         for _ in 0..n_iter {
             for ji in 0..self.ball_joints.len() {
@@ -922,6 +962,17 @@ impl Ragdoll {
                 self.bones[ib].position =
                     vec_sub(self.bones[ib].position, vec_scale(err, weight_b));
                 self.enforce_hinge_limits(ji);
+            }
+        }
+        if derive_velocities {
+            let inv_dt = 1.0 / dt;
+            for (bone, (prev_position, prev_orientation)) in self.bones.iter_mut().zip(previous) {
+                if bone.inv_mass == 0.0 {
+                    continue;
+                }
+                bone.linear_vel = vec_scale(vec_sub(bone.position, prev_position), inv_dt);
+                bone.angular_vel =
+                    quat_delta_angular_velocity(prev_orientation, bone.orientation, dt);
             }
         }
     }
@@ -1289,20 +1340,21 @@ impl HumanoidSkeleton {
     }
     /// Center of mass given a pose (FK-based).
     ///
-    /// Uses forward kinematics to compute world positions and weights by mass.
+    /// Places every bone with [`forward_kinematics_transforms`] and averages
+    /// the bone midpoints (`proximal joint + R · [0, length/2, 0]`) weighted by
+    /// mass, so the result follows the root orientation and joint angles.
     pub fn center_of_mass(&self, pose: &ArticulatedPose) -> [f64; 3] {
-        let positions = forward_kinematics(&self.bones, pose);
+        let frames = forward_kinematics_transforms(&self.bones, pose);
         let total: f64 = self.bones.iter().map(|b| b.mass).sum();
         if total < 1e-30 {
             return [0.0; 3];
         }
         let mut com = [0.0f64; 3];
-        for (i, bone) in self.bones.iter().enumerate() {
-            let p = positions[i];
-            com[0] += bone.mass * p[0];
-            com[1] += bone.mass * p[1];
-            com[2] += bone.mass * p[2];
+        for (bone, frame) in self.bones.iter().zip(&frames) {
+            let along_bone = quat_rotate(frame.orientation, [0.0, 0.5 * bone.length, 0.0]);
+            let midpoint = vec_add(frame.position, along_bone);
+            com = vec_add(com, vec_scale(midpoint, bone.mass));
         }
-        [com[0] / total, com[1] / total, com[2] / total]
+        vec_scale(com, 1.0 / total)
     }
 }

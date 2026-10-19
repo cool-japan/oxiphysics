@@ -85,8 +85,25 @@ pub fn adiabatic_gas_pressure(p0: f64, v0: f64, v_current: f64, gamma: f64) -> f
 }
 /// Compute the volume constraint gradient (Jacobian) for a tetrahedron.
 ///
-/// Returns the four gradient vectors `dV/dp_i` for each vertex.
-/// These are the cross-product normals of opposite faces, scaled by 1/6.
+/// Returns the four gradient vectors `∂V/∂p_i` of the *signed* volume
+/// [`tet_volume_signed`] with respect to the four vertices. With the edge
+/// vectors `e_k = p_k − p0`:
+///
+/// ```text
+/// ∂V/∂p1 = (e2 × e3) / 6
+/// ∂V/∂p2 = (e3 × e1) / 6
+/// ∂V/∂p3 = (e1 × e2) / 6
+/// ∂V/∂p0 = −(∂V/∂p1 + ∂V/∂p2 + ∂V/∂p3) = (p3 − p1) × (p2 − p1) / 6
+/// ```
+///
+/// Each gradient is the normal of the face opposite its vertex, scaled by 1/6
+/// (a third of the face area). The volume does not change under a rigid
+/// translation, so the four gradients sum to zero and a projection along
+/// them conserves linear momentum.
+///
+/// For a tetrahedron with negative orientation (`V < 0`) the gradients are
+/// those of the signed volume; multiply them by the orientation sign to
+/// differentiate `|V|`.
 pub fn tet_volume_gradient(
     p0: [f64; 3],
     p1: [f64; 3],
@@ -96,17 +113,20 @@ pub fn tet_volume_gradient(
     let e1 = sub3(p1, p0);
     let e2 = sub3(p2, p0);
     let e3 = sub3(p3, p0);
-    let g0 = scale3(cross3(sub3(p2, p1), sub3(p3, p1)), 1.0 / 6.0);
     let g1 = scale3(cross3(e2, e3), 1.0 / 6.0);
     let g2 = scale3(cross3(e3, e1), 1.0 / 6.0);
     let g3 = scale3(cross3(e1, e2), 1.0 / 6.0);
+    let g0 = scale3(add3(add3(g1, g2), g3), -1.0);
     [g0, g1, g2, g3]
 }
 /// Compute the Lagrange multiplier lambda for the volume constraint.
 ///
 /// lambda = -stiffness * C / (Σ w_i |g_i|²)
 ///
-/// where C = V_current - V_rest.
+/// where `C` is the value of the volume constraint (for the signed-volume
+/// constraint of a tetrahedron `C = s V − V_rest`, see
+/// [`TetrahedralSoftBody::solve_volume_constraints`](super::types::TetrahedralSoftBody::solve_volume_constraints))
+/// and `gradients` are the gradients of `C` with respect to the four vertices.
 pub fn volume_constraint_lambda(
     gradients: &[[f64; 3]; 4],
     inv_masses: &[f64; 4],
@@ -253,8 +273,15 @@ pub fn volume_preservation_energy(
     }
     energy
 }
-/// Gradient of the volume preservation penalty energy with respect to each vertex.
-/// Returns a vector of per-vertex force vectors (negative gradient).
+/// Gradient `∂E/∂x_i` of the volume preservation penalty energy
+/// ([`volume_preservation_energy`]) with respect to each vertex.
+///
+/// This is the plain energy gradient, so the corresponding force is its
+/// *negative*; descending the energy means subtracting a multiple of it from
+/// the positions. For every tetrahedron the energy
+/// `E = ½ k (|V| − V₀)²` contributes `k (|V| − V₀) sign(V) ∂V/∂p_i` (see
+/// [`tet_volume_gradient`]) to its four vertices, so the contributions of one
+/// tetrahedron sum to zero.
 pub fn volume_preservation_gradient(
     tetrahedra: &[[usize; 4]],
     rest_volumes: &[f64],
@@ -270,23 +297,15 @@ pub fn volume_preservation_gradient(
             positions[tet[2]],
             positions[tet[3]],
         ];
-        let v = tet_volume_signed(p[0], p[1], p[2], p[3]).abs();
-        let sign = if tet_volume_signed(p[0], p[1], p[2], p[3]) >= 0.0 {
-            1.0
-        } else {
-            -1.0
-        };
-        let diff = v - rest_volumes[t];
+        let signed_volume = tet_volume_signed(p[0], p[1], p[2], p[3]);
+        let sign = if signed_volume >= 0.0 { 1.0 } else { -1.0 };
+        let diff = signed_volume.abs() - rest_volumes[t];
         let coeff = stiffness * diff * sign;
-        let dv_dp0 = scale3(cross3(sub3(p[1], p[3]), sub3(p[2], p[3])), 1.0 / 6.0);
-        let dv_dp1 = scale3(cross3(sub3(p[2], p[3]), sub3(p[0], p[3])), 1.0 / 6.0);
-        let dv_dp2 = scale3(cross3(sub3(p[0], p[3]), sub3(p[1], p[3])), 1.0 / 6.0);
-        let dv_dp3 = scale3(cross3(sub3(p[1], p[0]), sub3(p[2], p[0])), 1.0 / 6.0);
-        for k in 0..3 {
-            grad[tet[0]][k] += coeff * dv_dp0[k];
-            grad[tet[1]][k] += coeff * dv_dp1[k];
-            grad[tet[2]][k] += coeff * dv_dp2[k];
-            grad[tet[3]][k] += coeff * dv_dp3[k];
+        let vertex_gradients = tet_volume_gradient(p[0], p[1], p[2], p[3]);
+        for (&vertex, vertex_gradient) in tet.iter().zip(vertex_gradients) {
+            for (slot, component) in grad[vertex].iter_mut().zip(vertex_gradient) {
+                *slot += coeff * component;
+            }
         }
     }
     grad
@@ -615,24 +634,6 @@ mod tests {
         let p = adiabatic_gas_pressure(100.0, 1.0, 0.5, gamma);
         let expected = 100.0 * 2.0_f64.powf(gamma);
         assert!((p - expected).abs() < 1e-8, "Expected {expected}, got {p}");
-    }
-    #[test]
-    fn test_tet_volume_gradient_finite_difference() {
-        let p0 = [0.0, 0.0, 0.0];
-        let p1 = [1.0, 0.0, 0.0];
-        let p2 = [0.0, 1.0, 0.0];
-        let p3 = [0.0, 0.0, 1.0];
-        let grads = tet_volume_gradient(p0, p1, p2, p3);
-        let v0 = tet_volume_signed(p0, p1, p2, p3).abs();
-        let eps = 1e-6;
-        let p3_shifted = [p3[0], p3[1], p3[2] + eps];
-        let v_shifted = tet_volume_signed(p0, p1, p2, p3_shifted).abs();
-        let fd = (v_shifted - v0) / eps;
-        assert!(
-            (fd - grads[3][2]).abs() < 1e-4,
-            "FD check: dV/dp3z = {fd}, gradient = {}",
-            grads[3][2]
-        );
     }
     #[test]
     fn test_volume_constraint_lambda() {

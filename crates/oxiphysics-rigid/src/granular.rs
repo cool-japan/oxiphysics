@@ -131,8 +131,11 @@ impl GranularParticle {
 
 /// Hertz-Mindlin contact parameters for sphere-sphere interaction.
 ///
-/// Normal force uses Hertz contact (`kn * δ^1.5 - cn * δ̇`),
-/// tangential uses linear spring-dashpot with Coulomb friction limit.
+/// Normal force uses Hertz contact (`kn * δ^1.5 + cn * v_n`, where `v_n` is the
+/// closing speed along the contact normal: positive while the particles
+/// approach, negative while they separate), clamped at zero so contacts never
+/// pull.  The tangential force uses a linear spring-dashpot with a Coulomb
+/// friction limit.
 #[derive(Debug, Clone)]
 pub struct DemContact {
     /// Normal spring stiffness \[N/m^1.5\].
@@ -194,9 +197,11 @@ impl DemContact {
         let v_n_scalar = vec3_dot(v_rel, n);
         let v_n = vec3_scale(n, v_n_scalar);
 
-        // Hertz normal force (overlap^1.5)
-        // v_n_scalar > 0 means particles approaching (closing velocity along n: a→b)
-        let fn_mag = self.kn * overlap.powf(1.5) - self.cn * v_n_scalar;
+        // Hertz normal force: elastic repulsion `kn * overlap^1.5` plus a viscous
+        // dashpot.  `v_n_scalar = (v_a - v_b) . n` with `n` pointing a -> b, so
+        // `v_n_scalar > 0` means the particles are closing.  The dashpot adds
+        // repulsion while closing and removes it while separating, hence `+`.
+        let fn_mag = self.kn * overlap * overlap.sqrt() + self.cn * v_n_scalar;
         let fn_mag = fn_mag.max(0.0); // no tensile force
         // Repulsive: a is pushed in -n direction (away from b)
         let f_normal_on_a = vec3_scale(n, -fn_mag);

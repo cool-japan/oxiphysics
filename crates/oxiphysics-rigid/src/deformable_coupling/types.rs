@@ -177,20 +177,41 @@ pub enum CouplingMethod {
     Mortar,
 }
 /// Coupled rigid-deformable simulation step.
+///
+/// A rigid body of mass `mass` is tied to the `n` interface nodes of
+/// [`CoupledSimulation::deform`] (mass `node_mass` each) by penalty
+/// spring-dampers.  With `k = bond.penalty_stiffness / n` and
+/// `c = bond.penalty_damping / n` the force on node `i` is
+///
+/// `f_i = k ((x_r - x_r0) - d_i) + c (v_r - v_i)`
+///
+/// where `x_r0` is [`CoupledSimulation::rigid_rest_position`] (the rigid-body
+/// position at which the springs are relaxed), `d_i` and `v_i` are the
+/// displacement and velocity of node `i`; the rigid body receives `-f_i`.
 #[derive(Debug, Clone)]
 pub struct CoupledSimulation {
     /// Rigid body position (m).
     pub rigid_position: [f64; 3],
+    /// Rigid body position at which the coupling springs are relaxed while the
+    /// interface nodes are undisplaced (m).
+    pub rigid_rest_position: [f64; 3],
     /// Rigid body velocity (m/s).
     pub rigid_velocity: [f64; 3],
     /// Rigid body mass (kg).
     pub mass: f64,
+    /// Mass of each interface node of [`CoupledSimulation::deform`] (kg).
+    pub node_mass: f64,
     /// Coupling bond.
     pub bond: RigidDeformableBond,
-    /// Deformation state.
+    /// Deformation state of the interface nodes: displacements from their rest
+    /// positions, velocities and the latest coupling force on each node.
     pub deform: DeformationState,
     /// Thermal coupling.
     pub thermal: ThermalExpansionCoupling,
+    /// Direction (need not be normalised) in which the thermal expansion of
+    /// the rigid body presses against the interface: the nodes are pushed along
+    /// `+thermal_axis` and the rigid body along `-thermal_axis`.
+    pub thermal_axis: [f64; 3],
     /// Fluid-structure interface.
     pub fsi: FluidStructureInterface,
     /// Gravity vector (m/s²).
@@ -198,56 +219,194 @@ pub struct CoupledSimulation {
 }
 impl CoupledSimulation {
     /// Construct a default coupled simulation (in air — zero fluid pressure).
+    ///
+    /// The 16 interface nodes of the rubber seal weigh 0.5 kg each, the
+    /// rigid body is at its rest position (the origin) and the thermal
+    /// expansion acts along +x.
     pub fn new_default() -> Self {
         let mut fsi = FluidStructureInterface::submerged_plate();
         fsi.fluid_pressure = 0.0;
         Self {
             rigid_position: [0.0; 3],
+            rigid_rest_position: [0.0; 3],
             rigid_velocity: [0.0; 3],
             mass: 100.0,
+            node_mass: 0.5,
             bond: RigidDeformableBond::default_rubber_seal(),
             deform: DeformationState::new_undeformed(16),
             thermal: ThermalExpansionCoupling::aluminium_with_rubber_seal(),
+            thermal_axis: [1.0, 0.0, 0.0],
             fsi,
             gravity: [0.0, -9.81, 0.0],
         }
     }
-    /// Advance the simulation by one time step `dt` (s).
+    /// Advance the coupled system by one time step `dt` (s) under the force
+    /// `external_force` (N) on the rigid body.
     ///
-    /// Steps:
-    /// 1. Compute coupling forces (penalty spring + FSI + thermal).
-    /// 2. Integrate rigid body (semi-implicit Euler).
-    /// 3. Update deformable mesh nodal forces.
+    /// Forces: gravity acts on the rigid body and on every interface node; the
+    /// external force and the fluid pressure force of [`CoupledSimulation::fsi`]
+    /// act on the rigid body only; the penalty spring-dampers of the bond (see
+    /// the type documentation) and the thermal-expansion force
+    /// `thermal.thermal_force()` are internal: every node receives `+f_i` (the
+    /// thermal force is shared equally and pushes the nodes along
+    /// `+thermal_axis`) and the rigid body the opposite total, so the total
+    /// momentum of rigid body and nodes changes only by the external, gravity
+    /// and fluid loads.
+    ///
+    /// The stiff penalty coupling is integrated linearly implicitly: the new
+    /// velocities solve the coupled equations of motion with the coupling force
+    /// evaluated at the new positions and velocities (the rigid body is
+    /// eliminated analytically, `O(n)`), then all positions advance with the
+    /// new velocities (semi-implicit Euler).  This is stable for any step size
+    /// and any stiffness, and conserves the momentum of the internal forces to
+    /// rounding.  The coupling force on every node at the end of the step is
+    /// stored in `deform.nodal_forces` for the deformable solver.
+    ///
+    /// The bond debonds when the largest nodal coupling force exceeds
+    /// `bond.max_force`.  A debonded bond has failed the coupled system: `step`
+    /// then does nothing, as it does for a non-positive or NaN `dt`.
     pub fn step(&mut self, dt: f64, external_force: [f64; 3]) {
-        if !self.bond.active {
+        if !self.bond.active || dt.is_nan() || dt <= 0.0 {
             return;
         }
-        let thermal_f = self.thermal.thermal_force();
-        let fsi_f = self.fsi.pressure_force();
+        let n = self.deform.displacements.len();
+        self.deform.velocities.resize(n, [0.0; 3]);
+        self.deform.nodal_forces.resize(n, [0.0; 3]);
         self.fsi.update_rigid_velocity(self.rigid_velocity);
-        let max_disp = self.deform.max_displacement();
-        let coupling_f = self.bond.penalty_stiffness * max_disp;
-        let gravity_f = vec3_scale(self.gravity, self.mass);
-        let total_f = vec3_add(
-            vec3_add(external_force, gravity_f),
-            vec3_add(fsi_f, [thermal_f, 0.0, coupling_f]),
+
+        let rigid_mass = self.mass.max(1e-6);
+        let node_mass = self.node_mass.max(1e-12);
+        let rigid_load = vec3_add(
+            vec3_add(external_force, vec3_scale(self.gravity, rigid_mass)),
+            self.fsi.pressure_force(),
         );
-        let accel = vec3_scale(total_f, 1.0 / self.mass.max(1e-6));
-        self.rigid_velocity = vec3_add(self.rigid_velocity, vec3_scale(accel, dt));
-        self.rigid_position = vec3_add(self.rigid_position, vec3_scale(self.rigid_velocity, dt));
-        let n = self.deform.nodal_forces.len();
-        let nodal_f_val = coupling_f / n.max(1) as f64;
-        for nf in &mut self.deform.nodal_forces {
-            *nf = [nodal_f_val, 0.0, 0.0];
+        let node_count = n as f64;
+        let share = node_count.max(1.0);
+        let stiffness = self.bond.penalty_stiffness.max(0.0) / share;
+        let damping = self.bond.penalty_damping.max(0.0) / share;
+        let thermal_load = vec3_scale(
+            vec3_normalise(self.thermal_axis),
+            self.thermal.thermal_force() / share,
+        );
+        let node_weight = vec3_scale(self.gravity, node_mass);
+
+        // Implicit coupling: eliminating the node velocities
+        // `v_i' = A_i + beta v_r'` leaves one equation for the new rigid velocity.
+        let gamma = stiffness * dt + damping;
+        let node_denominator = node_mass + dt * gamma;
+        let beta = dt * gamma / node_denominator;
+        let node_inertia_share = node_mass / node_denominator;
+
+        let rigid_offset = vec3_sub(self.rigid_position, self.rigid_rest_position);
+        let mut load_sum = [0.0_f64; 3];
+        let mut free_velocities: Vec<[f64; 3]> = Vec::with_capacity(n);
+        for (displacement, velocity) in self
+            .deform
+            .displacements
+            .iter()
+            .zip(self.deform.velocities.iter())
+        {
+            // Coupling force on the node at the start of the step, without the
+            // damper and the velocity-dependent part of the spring.
+            let load = vec3_add(
+                vec3_scale(vec3_sub(rigid_offset, *displacement), stiffness),
+                thermal_load,
+            );
+            load_sum = vec3_add(load_sum, load);
+            let momentum = vec3_add(
+                vec3_scale(*velocity, node_mass),
+                vec3_scale(vec3_add(load, node_weight), dt),
+            );
+            free_velocities.push(vec3_scale(momentum, 1.0 / node_denominator));
         }
-        let force_mag = vec3_norm(total_f);
-        if force_mag > self.bond.max_force {
+        let free_sum = free_velocities
+            .iter()
+            .fold([0.0_f64; 3], |sum, velocity| vec3_add(sum, *velocity));
+
+        let lhs = rigid_mass + dt * gamma * node_count * node_inertia_share;
+        let rhs = vec3_add(
+            vec3_scale(self.rigid_velocity, rigid_mass),
+            vec3_add(
+                vec3_scale(vec3_sub(rigid_load, load_sum), dt),
+                vec3_scale(free_sum, dt * gamma),
+            ),
+        );
+        let rigid_velocity = vec3_scale(rhs, 1.0 / lhs);
+
+        for ((displacement, velocity), free) in self
+            .deform
+            .displacements
+            .iter_mut()
+            .zip(self.deform.velocities.iter_mut())
+            .zip(free_velocities.iter())
+        {
+            *velocity = vec3_add(*free, vec3_scale(rigid_velocity, beta));
+            *displacement = vec3_add(*displacement, vec3_scale(*velocity, dt));
+        }
+        self.rigid_velocity = rigid_velocity;
+        self.rigid_position = vec3_add(self.rigid_position, vec3_scale(rigid_velocity, dt));
+
+        // Coupling force on every node at the end of the step.
+        let rigid_offset = vec3_sub(self.rigid_position, self.rigid_rest_position);
+        let mut peak_force = 0.0_f64;
+        for ((displacement, velocity), force) in self
+            .deform
+            .displacements
+            .iter()
+            .zip(self.deform.velocities.iter())
+            .zip(self.deform.nodal_forces.iter_mut())
+        {
+            let spring = vec3_scale(vec3_sub(rigid_offset, *displacement), stiffness);
+            let damper = vec3_scale(vec3_sub(self.rigid_velocity, *velocity), damping);
+            *force = vec3_add(vec3_add(spring, damper), thermal_load);
+            peak_force = peak_force.max(vec3_norm(*force));
+        }
+        if peak_force > self.bond.max_force {
             self.bond.debond();
         }
     }
     /// Kinetic energy of the rigid body (J).
     pub fn rigid_kinetic_energy(&self) -> f64 {
         0.5 * self.mass * vec3_dot(self.rigid_velocity, self.rigid_velocity)
+    }
+    /// Kinetic energy of the interface nodes (J).
+    pub fn nodal_kinetic_energy(&self) -> f64 {
+        self.deform
+            .velocities
+            .iter()
+            .map(|v| 0.5 * self.node_mass * vec3_dot(*v, *v))
+            .sum()
+    }
+    /// Total linear momentum of the rigid body and the interface nodes
+    /// (kg·m/s).
+    pub fn total_momentum(&self) -> [f64; 3] {
+        let nodal = self
+            .deform
+            .velocities
+            .iter()
+            .fold([0.0_f64; 3], |sum, v| vec3_add(sum, *v));
+        vec3_add(
+            vec3_scale(self.rigid_velocity, self.mass),
+            vec3_scale(nodal, self.node_mass),
+        )
+    }
+    /// Energy stored in the penalty springs of the bond (J):
+    /// `½ k Σ |(x_r - x_r0) - d_i|²` with `k = penalty_stiffness / n`.
+    pub fn coupling_strain_energy(&self) -> f64 {
+        let n = self.deform.displacements.len();
+        if n == 0 {
+            return 0.0;
+        }
+        let stiffness = self.bond.penalty_stiffness.max(0.0) / n as f64;
+        let rigid_offset = vec3_sub(self.rigid_position, self.rigid_rest_position);
+        self.deform
+            .displacements
+            .iter()
+            .map(|d| {
+                let stretch = vec3_sub(rigid_offset, *d);
+                0.5 * stiffness * vec3_dot(stretch, stretch)
+            })
+            .sum()
     }
 }
 /// Couples a rigid body to a softbody cluster via the shape-matching algorithm.
@@ -508,7 +667,8 @@ pub struct RigidDeformableBond {
     pub penalty_stiffness: f64,
     /// Penalty damping (N·s/m).
     pub penalty_damping: f64,
-    /// Maximum allowable coupling force before debond (N).
+    /// Maximum allowable coupling force at a single interface node before the
+    /// bond debonds (N).
     pub max_force: f64,
     /// Whether the bond is active.
     pub active: bool,

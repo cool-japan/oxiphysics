@@ -307,7 +307,55 @@ impl Default for BccCrystal {
 // HCP Crystal
 // ---------------------------------------------------------------------------
 
+/// A slip system given by Miller–Bravais indices: `(plane (hkil), direction [uvtw])`.
+type HcpSystemIndices = ([i32; 4], [i32; 4]);
+
+/// Basal (0001)\<11-20\> systems.
+const HCP_BASAL: [HcpSystemIndices; 3] = [
+    ([0, 0, 0, 1], [2, -1, -1, 0]),
+    ([0, 0, 0, 1], [-1, 2, -1, 0]),
+    ([0, 0, 0, 1], [-1, -1, 2, 0]),
+];
+
+/// Prismatic {10-10}\<11-20\> systems.
+const HCP_PRISMATIC: [HcpSystemIndices; 3] = [
+    ([1, 0, -1, 0], [-1, 2, -1, 0]),
+    ([0, 1, -1, 0], [2, -1, -1, 0]),
+    ([-1, 1, 0, 0], [-1, -1, 2, 0]),
+];
+
+/// First-order pyramidal \<a\> systems {10-11}\<11-20\>.
+const HCP_PYRAMIDAL_A: [HcpSystemIndices; 6] = [
+    ([1, 0, -1, 1], [-1, 2, -1, 0]),
+    ([0, 1, -1, 1], [2, -1, -1, 0]),
+    ([-1, 1, 0, 1], [-1, -1, 2, 0]),
+    ([-1, 0, 1, 1], [-1, 2, -1, 0]),
+    ([0, -1, 1, 1], [2, -1, -1, 0]),
+    ([1, -1, 0, 1], [-1, -1, 2, 0]),
+];
+
+/// Second-order pyramidal \<c+a\> systems {11-22}\<11-23\>.
+const HCP_PYRAMIDAL_CA: [HcpSystemIndices; 6] = [
+    ([1, 1, -2, 2], [-1, -1, 2, 3]),
+    ([1, -2, 1, 2], [-1, 2, -1, 3]),
+    ([-2, 1, 1, 2], [2, -1, -1, 3]),
+    ([-1, -1, 2, 2], [1, 1, -2, 3]),
+    ([-1, 2, -1, 2], [1, -2, 1, 3]),
+    ([2, -1, -1, 2], [-2, 1, 1, 3]),
+];
+
 /// HCP crystal slip systems: basal, prismatic, and pyramidal families.
+///
+/// The 18 systems are built from Miller–Bravais indices:
+///
+/// | family | systems | count |
+/// |---|---|---|
+/// | basal | (0001)\<11-20\> | 3 |
+/// | prismatic | {10-10}\<11-20\> | 3 |
+/// | pyramidal \<a\> | {10-11}\<11-20\> | 6 |
+/// | pyramidal \<c+a\> | {11-22}\<11-23\> | 6 |
+///
+/// They are stored in this order in [`HcpCrystal::slip_systems`].
 #[derive(Debug, Clone)]
 pub struct HcpCrystal {
     /// Slip systems.
@@ -317,67 +365,118 @@ pub struct HcpCrystal {
 }
 
 impl HcpCrystal {
+    /// Cartesian vector (in units of the lattice parameter `a`) of the
+    /// Miller–Bravais direction `[uvtw]`.
+    ///
+    /// The basis is a1 = \[1,0,0\], a2 = \[-1/2,√3/2,0\], c = \[0,0,c/a\] and the
+    /// direction is `u·a1 + v·a2 + t·a3 + w·c` with a3 = −a1 − a2, i.e.
+    /// `(u−t)·a1 + (v−t)·a2 + w·c`.  Returns `None` if the redundant index
+    /// condition `u + v + t = 0` is violated.
+    pub fn direction_vector(ca_ratio: f64, uvtw: [i32; 4]) -> Option<[f64; 3]> {
+        let [u, v, t, w] = uvtw;
+        if u + v + t != 0 {
+            return None;
+        }
+        let a1_coeff = f64::from(u - t);
+        let a2_coeff = f64::from(v - t);
+        let sqrt3 = 3.0_f64.sqrt();
+        Some([
+            a1_coeff - 0.5 * a2_coeff,
+            0.5 * sqrt3 * a2_coeff,
+            f64::from(w) * ca_ratio,
+        ])
+    }
+
+    /// Cartesian (unnormalised) normal of the Miller–Bravais plane `(hkil)`.
+    ///
+    /// The normal is `h·b1 + k·b2 + l·b3` in the reciprocal basis of
+    /// (a1, a2, c), i.e. `(h, (h+2k)/√3, l/(c/a))`.  Returns `None` if the
+    /// redundant index condition `h + k + i = 0` is violated.
+    pub fn plane_normal(ca_ratio: f64, hkil: [i32; 4]) -> Option<[f64; 3]> {
+        let [h, k, i, l] = hkil;
+        if h + k + i != 0 {
+            return None;
+        }
+        let sqrt3 = 3.0_f64.sqrt();
+        Some([
+            f64::from(h),
+            f64::from(h + 2 * k) / sqrt3,
+            f64::from(l) / ca_ratio,
+        ])
+    }
+
     /// Construct HCP slip systems for a given c/a ratio.
     ///
     /// Uses Cartesian representation where a1 = \[1,0,0\], a2 = \[-1/2,√3/2,0\], c = \[0,0,c/a\].
+    /// Every system satisfies `d · n = 0` (up to round-off) for any c/a.
+    ///
+    /// `ca_ratio` must be positive and finite; for any other value no slip
+    /// systems are created (use [`HcpCrystal::try_new`] to get an error instead).
     pub fn new(ca_ratio: f64) -> Self {
-        let mut slip_systems = Vec::new();
-        let sqrt3 = 3.0_f64.sqrt();
+        Self::try_new(ca_ratio).unwrap_or_else(|_| Self {
+            slip_systems: Vec::new(),
+            ca_ratio,
+        })
+    }
 
-        // Basal plane: (0001) normal ≈ [0, 0, 1]
-        let basal_normal = [0.0, 0.0, 1.0];
-        let basal_dirs: [[f64; 3]; 3] = [
-            [1.0, 0.0, 0.0],
-            [-0.5, sqrt3 / 2.0, 0.0],
-            [-0.5, -sqrt3 / 2.0, 0.0],
-        ];
-        for d in &basal_dirs {
-            slip_systems.push(SlipSystem::new(*d, basal_normal));
+    /// Fallible variant of [`HcpCrystal::new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::InvalidInput`] if `ca_ratio` is not positive and finite.
+    pub fn try_new(ca_ratio: f64) -> crate::Result<Self> {
+        if !ca_ratio.is_finite() || ca_ratio <= 0.0 {
+            return Err(crate::Error::InvalidInput(format!(
+                "HCP c/a ratio must be positive and finite, got {ca_ratio}"
+            )));
         }
-
-        // Prismatic planes {10-10}: normals in xy-plane perpendicular to <a>
-        let prismatic_normals: [[f64; 3]; 3] = [
-            [0.0, 1.0, 0.0],
-            [sqrt3 / 2.0, -0.5, 0.0],
-            [-sqrt3 / 2.0, -0.5, 0.0],
+        let families: [&[HcpSystemIndices]; 4] = [
+            &HCP_BASAL,
+            &HCP_PRISMATIC,
+            &HCP_PYRAMIDAL_A,
+            &HCP_PYRAMIDAL_CA,
         ];
-        for n in &prismatic_normals {
-            // slip along c-axis direction
-            slip_systems.push(SlipSystem::new([0.0, 0.0, ca_ratio], *n));
-        }
-
-        // Pyramidal <c+a> systems: first-order pyramidal planes
-        let pyr_normals: [[f64; 3]; 6] = [
-            [0.0, 1.0, ca_ratio],
-            [sqrt3 / 2.0, 0.5, ca_ratio],
-            [sqrt3 / 2.0, -0.5, ca_ratio],
-            [0.0, -1.0, ca_ratio],
-            [-sqrt3 / 2.0, -0.5, ca_ratio],
-            [-sqrt3 / 2.0, 0.5, ca_ratio],
-        ];
-        let pyr_dirs: [[f64; 3]; 6] = [
-            [1.0, 0.0, ca_ratio],
-            [-0.5, sqrt3 / 2.0, ca_ratio],
-            [-0.5, -sqrt3 / 2.0, ca_ratio],
-            [-1.0, 0.0, ca_ratio],
-            [0.5, -sqrt3 / 2.0, ca_ratio],
-            [0.5, sqrt3 / 2.0, ca_ratio],
-        ];
-        for (d, n) in pyr_dirs.iter().zip(pyr_normals.iter()) {
-            if dot3(*d, *n).abs() < 1e-6 {
-                slip_systems.push(SlipSystem::new(*d, *n));
+        let mut slip_systems = Vec::with_capacity(18);
+        for family in families {
+            for &(plane, direction) in family {
+                if let (Some(d), Some(n)) = (
+                    Self::direction_vector(ca_ratio, direction),
+                    Self::plane_normal(ca_ratio, plane),
+                ) {
+                    slip_systems.push(SlipSystem::new(d, n));
+                }
             }
         }
 
-        Self {
+        Ok(Self {
             slip_systems,
             ca_ratio,
-        }
+        })
     }
 
     /// Total number of slip systems.
     pub fn n_slip_systems(&self) -> usize {
         self.slip_systems.len()
+    }
+
+    /// Basal (0001)\<11-20\> systems (3).
+    pub fn basal_systems(&self) -> &[SlipSystem] {
+        self.slip_systems.get(0..3).unwrap_or(&[])
+    }
+
+    /// Prismatic {10-10}\<11-20\> systems (3).
+    pub fn prismatic_systems(&self) -> &[SlipSystem] {
+        self.slip_systems.get(3..6).unwrap_or(&[])
+    }
+
+    /// First-order pyramidal \<a\> systems {10-11}\<11-20\> (6).
+    pub fn pyramidal_a_systems(&self) -> &[SlipSystem] {
+        self.slip_systems.get(6..12).unwrap_or(&[])
+    }
+
+    /// Pyramidal \<c+a\> systems {11-22}\<11-23\> (6).
+    pub fn pyramidal_ca_systems(&self) -> &[SlipSystem] {
+        self.slip_systems.get(12..18).unwrap_or(&[])
     }
 
     /// Check whether pyramidal slip is active compared to basal/prismatic
@@ -987,11 +1086,192 @@ mod tests {
         assert!(hcp.pyramidal_active());
     }
 
+    /// c/a ratios of Be, Mg, the ideal hard-sphere packing, Ti-like and Zn / Cd.
+    const HCP_RATIOS: [f64; 6] = [1.568, 1.624, 1.633, 1.587, 1.856, 1.886];
+
     #[test]
-    fn test_hcp_has_basal_and_prismatic() {
+    fn test_hcp_has_eighteen_systems_in_four_families() {
+        // Regression: no pyramidal system used to be created (d.n = c^2 != 0 rejected all of them).
+        for ca in HCP_RATIOS {
+            let hcp = HcpCrystal::new(ca);
+            assert_eq!(hcp.n_slip_systems(), 18, "c/a = {ca}");
+            assert_eq!(hcp.basal_systems().len(), 3);
+            assert_eq!(hcp.prismatic_systems().len(), 3);
+            assert_eq!(hcp.pyramidal_a_systems().len(), 6);
+            assert_eq!(hcp.pyramidal_ca_systems().len(), 6);
+        }
+    }
+
+    #[test]
+    fn test_hcp_every_direction_lies_in_its_slip_plane() {
+        for ca in HCP_RATIOS {
+            let hcp = HcpCrystal::new(ca);
+            for (k, sys) in hcp.slip_systems.iter().enumerate() {
+                let d_dot_n = dot3(sys.slip_direction, sys.slip_normal);
+                assert!(
+                    d_dot_n.abs() < 1e-12,
+                    "c/a {ca}, system {k}: d.n = {d_dot_n}"
+                );
+                assert!((dot3(sys.slip_direction, sys.slip_direction) - 1.0).abs() < 1e-12);
+                assert!((dot3(sys.slip_normal, sys.slip_normal) - 1.0).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn test_hcp_index_tables_obey_miller_bravais_rules() {
+        for family in [
+            &HCP_BASAL[..],
+            &HCP_PRISMATIC[..],
+            &HCP_PYRAMIDAL_A[..],
+            &HCP_PYRAMIDAL_CA[..],
+        ] {
+            for &(plane, dir) in family {
+                assert_eq!(plane[0] + plane[1] + plane[2], 0, "plane {plane:?}");
+                assert_eq!(dir[0] + dir[1] + dir[2], 0, "direction {dir:?}");
+            }
+        }
+        // Violating the redundant-index rule is rejected.
+        assert!(HcpCrystal::direction_vector(1.633, [1, 1, 1, 0]).is_none());
+        assert!(HcpCrystal::plane_normal(1.633, [1, 0, 0, 1]).is_none());
+    }
+
+    #[test]
+    fn test_hcp_direction_and_normal_conversion() {
+        let ca = 1.6;
+        let sqrt3 = 3.0_f64.sqrt();
+        // [2-1-10] is parallel to a1 (length 3), [0001] to c.
+        let a1 = HcpCrystal::direction_vector(ca, [2, -1, -1, 0]).unwrap();
+        assert!((a1[0] - 3.0).abs() < 1e-14 && a1[1].abs() < 1e-14 && a1[2].abs() < 1e-14);
+        let c = HcpCrystal::direction_vector(ca, [0, 0, 0, 1]).unwrap();
+        assert!(c[0].abs() < 1e-14 && c[1].abs() < 1e-14 && (c[2] - ca).abs() < 1e-14);
+        // [-12-10] is parallel to a2 = (-1/2, sqrt(3)/2, 0).
+        let a2 = HcpCrystal::direction_vector(ca, [-1, 2, -1, 0]).unwrap();
+        assert!((a2[0] + 1.5).abs() < 1e-14 && (a2[1] - 1.5 * sqrt3).abs() < 1e-14);
+        // (0001) has the c-axis normal, (10-10) a normal at 30 degrees from a1 in the basal plane.
+        let basal = HcpCrystal::plane_normal(ca, [0, 0, 0, 1]).unwrap();
+        assert!(basal[0].abs() < 1e-14 && basal[1].abs() < 1e-14 && basal[2] > 0.0);
+        let prism = HcpCrystal::plane_normal(ca, [1, 0, -1, 0]).unwrap();
+        let angle = prism[1].atan2(prism[0]).to_degrees();
+        assert!((angle - 30.0).abs() < 1e-12, "angle = {angle}");
+        assert!(prism[2].abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_hcp_prismatic_slip_is_along_a_not_along_c() {
+        // Regression: prismatic slip used the c-axis [0, 0, c/a] as direction.
+        for ca in HCP_RATIOS {
+            let hcp = HcpCrystal::new(ca);
+            for sys in hcp.prismatic_systems() {
+                assert!(
+                    sys.slip_direction[2].abs() < 1e-12,
+                    "direction has a c-component"
+                );
+                assert!(
+                    sys.slip_normal[2].abs() < 1e-12,
+                    "prismatic plane must contain c"
+                );
+            }
+            // The three prismatic directions are the three <a> directions (60 degrees apart).
+            let dirs: Vec<[f64; 3]> = hcp
+                .prismatic_systems()
+                .iter()
+                .map(|s| s.slip_direction)
+                .collect();
+            for (i, &di) in dirs.iter().enumerate() {
+                for &dj in dirs.iter().skip(i + 1) {
+                    let cos = dot3(di, dj).abs();
+                    assert!((cos - 0.5).abs() < 1e-12, "angle between <a> directions");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_hcp_invalid_ca_ratio_is_rejected_without_nan_systems() {
+        for bad in [0.0, -1.633, f64::NAN, f64::INFINITY] {
+            assert!(HcpCrystal::try_new(bad).is_err(), "c/a = {bad}");
+            let hcp = HcpCrystal::new(bad);
+            assert_eq!(hcp.n_slip_systems(), 0, "c/a = {bad}");
+            assert!(hcp.basal_systems().is_empty());
+            assert!(hcp.pyramidal_ca_systems().is_empty());
+        }
+        let ok = HcpCrystal::try_new(1.633).unwrap();
+        assert_eq!(ok.n_slip_systems(), 18);
+    }
+
+    #[test]
+    fn test_hcp_basal_systems_are_a_directions_in_the_basal_plane() {
         let hcp = HcpCrystal::new(1.633);
-        // 3 basal + 3 prismatic = at least 6
-        assert!(hcp.n_slip_systems() >= 6);
+        for sys in hcp.basal_systems() {
+            assert!(sys.slip_normal[0].abs() < 1e-12 && sys.slip_normal[1].abs() < 1e-12);
+            assert!((sys.slip_normal[2] - 1.0).abs() < 1e-12);
+            assert!(sys.slip_direction[2].abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_hcp_pyramidal_planes_are_tilted_and_ca_directions_have_c_component() {
+        for ca in HCP_RATIOS {
+            let hcp = HcpCrystal::new(ca);
+            for sys in hcp.pyramidal_a_systems() {
+                assert!(
+                    sys.slip_normal[2] > 0.1,
+                    "pyramidal plane must be inclined to the basal plane"
+                );
+                assert!(
+                    sys.slip_direction[2].abs() < 1e-12,
+                    "<a> slip stays in the basal plane"
+                );
+            }
+            for sys in hcp.pyramidal_ca_systems() {
+                assert!(sys.slip_normal[2] > 0.1);
+                assert!(sys.slip_direction[2].abs() > 0.1, "<c+a> has a c-component");
+            }
+            // {10-11}: normal = (1, 1/sqrt3, 1/gamma).
+            let n = hcp.pyramidal_a_systems()[0].slip_normal;
+            let expected_nz = (1.0 / ca) / (4.0 / 3.0 + 1.0 / (ca * ca)).sqrt();
+            assert!(
+                (n[2] - expected_nz).abs() < 1e-12,
+                "c/a {ca}: n_z = {}",
+                n[2]
+            );
+        }
+    }
+
+    #[test]
+    fn test_hcp_schmid_factors_for_a_axis_and_c_axis_loading() {
+        let hcp = HcpCrystal::new(1.633);
+        let max_abs = |systems: &[SlipSystem], axis: [f64; 3]| {
+            systems
+                .iter()
+                .map(|s| s.schmid_factor(axis).abs())
+                .fold(0.0_f64, f64::max)
+        };
+        // Tension along the a1 axis: prismatic <a> slip has |m| = cos(30 deg) |cos(120 deg)| = 0.433,
+        // while basal slip cannot be activated (the basal-plane normal is perpendicular to the axis).
+        let a_axis = [1.0, 0.0, 0.0];
+        let prismatic = max_abs(hcp.prismatic_systems(), a_axis);
+        assert!(
+            (prismatic - 3.0_f64.sqrt() / 4.0).abs() < 1e-12,
+            "prismatic Schmid factor {prismatic}"
+        );
+        assert!(max_abs(hcp.basal_systems(), a_axis) < 1e-12);
+        // Tension along the c axis: <a> slip cannot be activated, only <c+a> slip.
+        let c_axis = [0.0, 0.0, 1.0];
+        assert!(max_abs(hcp.basal_systems(), c_axis) < 1e-12);
+        assert!(max_abs(hcp.prismatic_systems(), c_axis) < 1e-12);
+        assert!(max_abs(hcp.pyramidal_a_systems(), c_axis) < 1e-12);
+        let ca_slip = max_abs(hcp.pyramidal_ca_systems(), c_axis);
+        assert!(
+            ca_slip > 0.3 && ca_slip <= 0.5,
+            "<c+a> Schmid factor {ca_slip}"
+        );
+        // Resolved shear stress agrees with sigma * Schmid factor for uniaxial tension.
+        let sigma = 100.0e6;
+        let sys = &hcp.prismatic_systems()[0];
+        let tau = sys.resolved_shear_stress([sigma, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert!((tau - sigma * sys.schmid_factor(a_axis)).abs() < 1e-3);
     }
 
     // ---- CrystalPlasticity -------------------------------------------------

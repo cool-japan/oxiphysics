@@ -32,16 +32,13 @@ use std::f64::consts::PI;
 // Unit conversion constants (amu / Å / ps / eV unit system)
 // ---------------------------------------------------------------------------
 
-/// Energy of one `amu·(Å/ps)²` expressed in electron-volts.
-///
-/// 1 Å/ps = 100 m/s, so 1 amu·(Å/ps)² = 1.66054e-27 kg · 1e4 m²/s² = 1.66054e-23 J
-/// = 1.036427e-4 eV (taking 1 amu = 1 g/mol exactly, as MD codes do).  This is
-/// the `mvv2e` factor of the "metal" unit system.
-pub const AMU_A2_PS2_TO_EV: f64 = 1.036_426_965_626_239_8e-4;
+/// Energy of one `amu·(Å/ps)²` in electron-volts and the Boltzmann constant in
+/// `amu·Å²/ps²` per kelvin, re-exported from the crate-level [`crate::units`].
+pub use crate::units::{AMU_A2_PS2_TO_EV, K_B_AMU_A2_PS2};
 
-/// Boltzmann constant in `amu·Å²/ps²` per kelvin (= 8.617333e-5 eV/K divided by
-/// [`AMU_A2_PS2_TO_EV`]).
-pub const K_B_AMU_A2_PS2: f64 = 0.831_446_261_8;
+mod pair_virial;
+#[cfg(test)]
+mod regression_tests;
 
 // ---------------------------------------------------------------------------
 // BoundaryType
@@ -619,9 +616,19 @@ impl AtomisticToContin {
         s
     }
 
-    /// Compute the potential (virial) stress from pairwise forces.
+    /// Compute the potential (virial) stress from per-atom forces of a
+    /// **non-periodic** system.
     ///
-    /// σ_pot = (1/V) Σ_{i<j} r_ij ⊗ f_ij
+    /// σ_pot = −(1/V) Σ_i r_i ⊗ f_i
+    ///
+    /// Stresses follow the tension-positive convention of
+    /// [`AtomisticToContin::kinetic_stress`], so a compressed (repulsive) system
+    /// has a negative trace and a positive [`AtomisticToContin::pressure`].  For
+    /// pair forces that obey Newton's third law the per-atom sum equals
+    /// `Σ_{i<j} r_ij ⊗ f_ij`, but only when every `r_i` is an absolute position in
+    /// one non-periodic frame: under periodic boundary conditions the wrapped
+    /// absolute positions make the result meaningless.  Use
+    /// [`AtomisticToContin::pair_virial_stress`] for periodic boxes.
     ///
     /// # Arguments
     /// * `positions` – atom positions (Å)
@@ -635,12 +642,12 @@ impl AtomisticToContin {
     ) -> [f64; 6] {
         let mut s = [0.0_f64; 6];
         for (&r, &f) in positions.iter().zip(forces.iter()) {
-            s[0] += r[0] * f[0];
-            s[1] += r[1] * f[1];
-            s[2] += r[2] * f[2];
-            s[3] += 0.5_f64 * (r[0] * f[1] + r[1] * f[0]);
-            s[4] += 0.5_f64 * (r[1] * f[2] + r[2] * f[1]);
-            s[5] += 0.5_f64 * (r[2] * f[0] + r[0] * f[2]);
+            s[0] -= r[0] * f[0];
+            s[1] -= r[1] * f[1];
+            s[2] -= r[2] * f[2];
+            s[3] -= 0.5_f64 * (r[0] * f[1] + r[1] * f[0]);
+            s[4] -= 0.5_f64 * (r[1] * f[2] + r[2] * f[1]);
+            s[5] -= 0.5_f64 * (r[2] * f[0] + r[0] * f[2]);
         }
         if volume > 1e-30_f64 {
             for si in s.iter_mut() {
@@ -651,7 +658,13 @@ impl AtomisticToContin {
         s
     }
 
-    /// Total Cauchy stress = kinetic + potential contributions.
+    /// Total Cauchy stress = kinetic + potential contributions (eV/Å³) of a
+    /// **non-periodic** system, using the per-atom form of
+    /// [`AtomisticToContin::potential_stress`].
+    ///
+    /// The kinetic part is converted from `amu·Å²/ps²` to eV by
+    /// [`AtomisticToContin::kinetic_stress`], so both terms share the unit
+    /// `eV/Å³`.  For periodic boxes use [`AtomisticToContin::total_pair_stress`].
     pub fn total_stress(
         &mut self,
         positions: &[[f64; 3]],
@@ -712,6 +725,11 @@ pub struct FluctuatingHydrodynamics {
     pub dt: f64,
     /// Random number generator seed.
     pub seed: u64,
+    /// Whether the centre-of-mass momentum of the MD system is removed, so that
+    /// only `3N − 3` degrees of freedom carry thermal energy.  Defaults to
+    /// `false` (`3N` degrees of freedom); see
+    /// [`FluctuatingHydrodynamics::update_temperature_from_md`].
+    pub com_momentum_removed: bool,
 }
 
 impl FluctuatingHydrodynamics {
@@ -733,7 +751,16 @@ impl FluctuatingHydrodynamics {
             cell_volume,
             dt,
             seed,
+            com_momentum_removed: false,
         }
+    }
+
+    /// Declare whether the MD velocities handed to
+    /// [`FluctuatingHydrodynamics::update_temperature_from_md`] have their
+    /// centre-of-mass momentum removed (`3N − 3` degrees of freedom instead of `3N`).
+    pub fn with_com_momentum_removed(mut self, removed: bool) -> Self {
+        self.com_momentum_removed = removed;
+        self
     }
 
     /// Amplitude of the stochastic stress tensor noise.
@@ -798,18 +825,30 @@ impl FluctuatingHydrodynamics {
         s
     }
 
-    /// Update temperature from MD kinetic energy.
+    /// Update the temperature from the MD kinetic energy (equipartition).
     ///
-    /// T = (2 / (3 N k_B)) Σ_i (1/2) m_i v_i²
+    /// T = 2 KE / (N_dof k_B),   KE = Σ_i ½ m_i v_i²
+    ///
+    /// Masses are in amu and velocities in Å/ps, so `KE` is in `amu·Å²/ps²` and is
+    /// divided by the Boltzmann constant [`K_B_AMU_A2_PS2`] expressed in the same
+    /// unit (`0.8314 amu·Å²·ps⁻²·K⁻¹`).  `N_dof = 3N`, or `3N − 3` when
+    /// [`FluctuatingHydrodynamics::com_momentum_removed`] is set and `N > 1`.
+    /// The temperature is left unchanged for an empty system.
     pub fn update_temperature_from_md(&mut self, velocities: &[[f64; 3]], masses: &[f64]) {
+        let n_atoms = velocities.len().min(masses.len());
+        if n_atoms == 0 {
+            return;
+        }
         let mut ke = 0.0_f64;
         for (&v, &m) in velocities.iter().zip(masses.iter()) {
             ke += 0.5_f64 * m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
         }
-        let n = velocities.len() as f64;
-        if n > 0.0_f64 {
-            self.temperature = 2.0_f64 * ke / (3.0_f64 * n * K_B_AMU_A2_PS2);
-        }
+        let n_dof = if self.com_momentum_removed && n_atoms > 1 {
+            3 * n_atoms - 3
+        } else {
+            3 * n_atoms
+        };
+        self.temperature = 2.0_f64 * ke / (n_dof as f64 * K_B_AMU_A2_PS2);
     }
 }
 
@@ -1447,7 +1486,9 @@ mod tests {
         let pos = vec![[1.0_f64, 0.0_f64, 0.0_f64]];
         let forces = vec![[1.0_f64, 0.0_f64, 0.0_f64]];
         let s = extractor.potential_stress(&pos, &forces, 1.0_f64);
-        assert!((s[0] - 1.0_f64).abs() < 1e-12_f64, "s[0]={}", s[0]);
+        // Tension-positive convention: sigma = -(1/V) r (x) f, so a force pointing away
+        // from the origin along +x (r.f = +1) is compressive.
+        assert!((s[0] + 1.0_f64).abs() < 1e-12_f64, "s[0]={}", s[0]);
     }
 
     #[test]

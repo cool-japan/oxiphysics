@@ -7,6 +7,8 @@
 //! semi-Lagrangian advection, gravity forcing, Jacobi pressure projection,
 //! solid boundary conditions, vorticity confinement, and diagnostic utilities.
 
+use crate::error::{Error, Result};
+
 // ── Data structures ──────────────────────────────────────────────────────────
 
 /// A 3-D staggered MAC grid for Eulerian fluid simulation.
@@ -32,6 +34,10 @@ pub struct GpuEulerGrid {
     pub w: Vec<f64>,
     /// Cell-centred pressure (Pa).
     pub p: Vec<f64>,
+    /// Max-norm Poisson residual `max |∇²p − (ρ/Δt) ∇·u*|` left by the most
+    /// recent [`gpu_pressure_projection`](Self::gpu_pressure_projection)
+    /// (`0.0` before any projection).
+    pub last_residual: f64,
 }
 
 impl GpuEulerGrid {
@@ -48,6 +54,7 @@ impl GpuEulerGrid {
             v: vec![0.0; nx * (ny + 1) * nz],
             w: vec![0.0; nx * ny * (nz + 1)],
             p: vec![0.0; nc],
+            last_residual: 0.0,
         }
     }
 
@@ -176,75 +183,148 @@ impl GpuEulerGrid {
         }
     }
 
+    /// Validate the time step and density shared by the projection routines.
+    fn check_projection_params(dt: f64, rho: f64) -> Result<()> {
+        if !(dt.is_finite() && dt > 0.0) {
+            return Err(Error::general(format!(
+                "pressure projection needs a finite positive time step, got dt = {dt}"
+            )));
+        }
+        if !(rho.is_finite() && rho > 0.0) {
+            return Err(Error::general(format!(
+                "pressure projection needs a finite positive density, got rho = {rho}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Sum of the six face-neighbour values of cell `(i, j, k)` in the
+    /// cell-centred field `field`.
+    ///
+    /// Across a domain face the zero-gradient (Neumann) ghost value, i.e. the
+    /// cell's own value, is used.
+    fn neighbour_sum(&self, field: &[f64], i: usize, j: usize, k: usize) -> f64 {
+        let centre = field[self.index(i, j, k)];
+        let at = |ii: usize, jj: usize, kk: usize| field[self.index(ii, jj, kk)];
+        let x_plus = if i + 1 < self.nx {
+            at(i + 1, j, k)
+        } else {
+            centre
+        };
+        let x_minus = if i > 0 { at(i - 1, j, k) } else { centre };
+        let y_plus = if j + 1 < self.ny {
+            at(i, j + 1, k)
+        } else {
+            centre
+        };
+        let y_minus = if j > 0 { at(i, j - 1, k) } else { centre };
+        let z_plus = if k + 1 < self.nz {
+            at(i, j, k + 1)
+        } else {
+            centre
+        };
+        let z_minus = if k > 0 { at(i, j, k - 1) } else { centre };
+        x_plus + x_minus + y_plus + y_minus + z_plus + z_minus
+    }
+
+    /// Max-norm of `∇²p − rhs` over all cells, with the same zero-gradient
+    /// boundary treatment as the Jacobi sweep.
+    fn poisson_residual(&self, rhs: &[f64]) -> f64 {
+        let inv_dx2 = 1.0 / (self.dx * self.dx);
+        let mut worst = 0.0_f64;
+        for k in 0..self.nz {
+            for j in 0..self.ny {
+                for i in 0..self.nx {
+                    let idx = self.index(i, j, k);
+                    let laplacian =
+                        (self.neighbour_sum(&self.p, i, j, k) - 6.0 * self.p[idx]) * inv_dx2;
+                    worst = worst.max((laplacian - rhs[idx]).abs());
+                }
+            }
+        }
+        worst
+    }
+
     /// Jacobi pressure projection to enforce incompressibility.
     ///
-    /// Iterates up to `max_iter` times; returns the final L-inf residual.
-    pub fn gpu_pressure_projection(&mut self, max_iter: usize, tol: f64) -> f64 {
-        let dx = self.dx;
-        let dx2 = dx * dx;
-        let div = self.gpu_compute_divergence();
-        let nc = self.cell_count();
-        let mut residual = 0.0f64;
+    /// Solves the pressure Poisson equation `∇²p = (ρ/Δt) ∇·u*` for the
+    /// current face velocities `u*` with zero-gradient (Neumann) boundaries,
+    /// starting from the current pressure field.  Together with
+    /// [`gpu_update_velocity_from_pressure`](Self::gpu_update_velocity_from_pressure)
+    /// (`u ← u* − (Δt/ρ) ∇p`) the resulting velocity field is divergence-free
+    /// to the accuracy of the solve, independently of `dt` and `rho`.
+    ///
+    /// The velocity update only touches interior faces, so the boundary faces
+    /// must already carry zero normal velocity
+    /// ([`gpu_enforce_solid_bc`](Self::gpu_enforce_solid_bc)); this also makes
+    /// the all-Neumann problem solvable (`Σ ∇·u* = 0`).
+    ///
+    /// Performs at most `max_iter` sweeps and stops early once the largest
+    /// pressure change of a sweep falls below `tol`.  Returns the max-norm of
+    /// the Poisson residual `max |∇²p − (ρ/Δt) ∇·u*|` after the last sweep and
+    /// stores it in [`last_residual`](Self::last_residual).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `dt` or `rho` is not a finite positive number, or
+    /// when the velocity field contains non-finite values; the pressure field
+    /// is left unchanged in that case.
+    pub fn gpu_pressure_projection(
+        &mut self,
+        max_iter: usize,
+        tol: f64,
+        dt: f64,
+        rho: f64,
+    ) -> Result<f64> {
+        Self::check_projection_params(dt, rho)?;
+        let dx2 = self.dx * self.dx;
+        let scale = rho / dt;
+        let rhs: Vec<f64> = self
+            .gpu_compute_divergence()
+            .into_iter()
+            .map(|d| scale * d)
+            .collect();
+        if rhs.iter().any(|r| !r.is_finite()) {
+            return Err(Error::general(
+                "pressure projection needs a finite velocity field",
+            ));
+        }
 
-        for _iter in 0..max_iter {
-            let p_old = self.p.clone();
-            residual = 0.0;
+        // Jacobi: every sweep reads the previous iterate and writes `p_next`.
+        let mut p_next = self.p.clone();
+        for _ in 0..max_iter {
+            let mut max_update = 0.0_f64;
             for k in 0..self.nz {
                 for j in 0..self.ny {
                     for i in 0..self.nx {
                         let idx = self.index(i, j, k);
-                        // Gather neighbour pressures (Neumann BC: ghost = interior)
-                        let px_p = if i + 1 < self.nx {
-                            p_old[self.index(i + 1, j, k)]
-                        } else {
-                            p_old[idx]
-                        };
-                        let px_m = if i > 0 {
-                            p_old[self.index(i - 1, j, k)]
-                        } else {
-                            p_old[idx]
-                        };
-                        let py_p = if j + 1 < self.ny {
-                            p_old[self.index(i, j + 1, k)]
-                        } else {
-                            p_old[idx]
-                        };
-                        let py_m = if j > 0 {
-                            p_old[self.index(i, j - 1, k)]
-                        } else {
-                            p_old[idx]
-                        };
-                        let pz_p = if k + 1 < self.nz {
-                            p_old[self.index(i, j, k + 1)]
-                        } else {
-                            p_old[idx]
-                        };
-                        let pz_m = if k > 0 {
-                            p_old[self.index(i, j, k - 1)]
-                        } else {
-                            p_old[idx]
-                        };
-                        let p_new =
-                            (px_p + px_m + py_p + py_m + pz_p + pz_m - dx2 * div[idx]) / 6.0;
-                        let diff = (p_new - self.p[idx]).abs();
-                        if diff > residual {
-                            residual = diff;
-                        }
-                        self.p[idx] = p_new;
+                        let p_new = (self.neighbour_sum(&self.p, i, j, k) - dx2 * rhs[idx]) / 6.0;
+                        max_update = max_update.max((p_new - self.p[idx]).abs());
+                        p_next[idx] = p_new;
                     }
                 }
             }
-            if residual < tol {
+            std::mem::swap(&mut self.p, &mut p_next);
+            if max_update < tol {
                 break;
             }
         }
-        let _ = nc;
-        residual
+        self.last_residual = self.poisson_residual(&rhs);
+        Ok(self.last_residual)
     }
 
-    /// Update velocity from pressure gradient: u -= dt · ∇p.
-    pub fn gpu_update_velocity_from_pressure(&mut self, dt: f64) {
-        let dx = self.dx;
+    /// Subtract the pressure gradient from the interior face velocities:
+    /// `u ← u − (Δt/ρ) ∇p`.
+    ///
+    /// Boundary faces are left untouched (zero-gradient pressure boundary).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `dt` or `rho` is not a finite positive number; the
+    /// velocities are left unchanged in that case.
+    pub fn gpu_update_velocity_from_pressure(&mut self, dt: f64, rho: f64) -> Result<()> {
+        Self::check_projection_params(dt, rho)?;
+        let factor = dt / (rho * self.dx);
         // Update u (x-faces)
         for k in 0..self.nz {
             for j in 0..self.ny {
@@ -252,7 +332,7 @@ impl GpuEulerGrid {
                     let idx_r = self.index(i, j, k);
                     let idx_l = self.index(i - 1, j, k);
                     let fi = k * (self.nx + 1) * self.ny + j * (self.nx + 1) + i;
-                    self.u[fi] -= dt * (self.p[idx_r] - self.p[idx_l]) / dx;
+                    self.u[fi] -= factor * (self.p[idx_r] - self.p[idx_l]);
                 }
             }
         }
@@ -263,7 +343,7 @@ impl GpuEulerGrid {
                     let idx_t = self.index(i, j, k);
                     let idx_b = self.index(i, j - 1, k);
                     let fj = k * self.nx * (self.ny + 1) + j * self.nx + i;
-                    self.v[fj] -= dt * (self.p[idx_t] - self.p[idx_b]) / dx;
+                    self.v[fj] -= factor * (self.p[idx_t] - self.p[idx_b]);
                 }
             }
         }
@@ -274,10 +354,11 @@ impl GpuEulerGrid {
                     let idx_f = self.index(i, j, k);
                     let idx_b = self.index(i, j, k - 1);
                     let fk = k * self.nx * self.ny + j * self.nx + i;
-                    self.w[fk] -= dt * (self.p[idx_f] - self.p[idx_b]) / dx;
+                    self.w[fk] -= factor * (self.p[idx_f] - self.p[idx_b]);
                 }
             }
         }
+        Ok(())
     }
 
     /// Semi-Lagrangian advection of velocity (first-order back-trace).
@@ -425,7 +506,7 @@ impl GpuEulerGrid {
             max_velocity,
             total_kinetic_energy,
             max_divergence,
-            pressure_residual: 0.0,
+            pressure_residual: self.last_residual,
         }
     }
 }
@@ -518,7 +599,9 @@ pub struct FluidSimStats {
     pub total_kinetic_energy: f64,
     /// Maximum absolute divergence across all cells.
     pub max_divergence: f64,
-    /// Pressure solver residual from the last projection.
+    /// Max-norm Poisson residual left by the last pressure projection
+    /// (`0.0` before any projection), see
+    /// [`GpuEulerGrid::gpu_pressure_projection`].
     pub pressure_residual: f64,
 }
 
@@ -701,27 +784,258 @@ mod tests {
         // Introduce divergence
         marker_and_cell_init(&mut g, [1, 3, 1, 3, 1, 3], 1.0, 0.5, 0.25);
         let div_before: f64 = g.gpu_compute_divergence().iter().map(|v| v.abs()).sum();
-        g.gpu_pressure_projection(100, 1e-6);
-        g.gpu_update_velocity_from_pressure(0.01);
+        assert!(div_before > 1.0, "the seeded field must be divergent");
+        g.gpu_pressure_projection(100, 1e-6, 0.01, 1.0)
+            .expect("valid projection parameters");
+        g.gpu_update_velocity_from_pressure(0.01, 1.0)
+            .expect("valid projection parameters");
         let div_after: f64 = g.gpu_compute_divergence().iter().map(|v| v.abs()).sum();
-        // Divergence should not increase after projection
-        assert!(div_after <= div_before + 1e-8);
+        // The old scaling removed only dt (1 %) of the divergence.
+        assert!(
+            div_after < 1e-2 * div_before,
+            "divergence {div_before} -> {div_after}"
+        );
     }
 
     #[test]
     fn test_pressure_projection_returns_residual() {
         let mut g = make_grid();
-        let res = g.gpu_pressure_projection(10, 1e-6);
-        assert!(res >= 0.0);
+        let res = g
+            .gpu_pressure_projection(10, 1e-6, 0.01, 1.0)
+            .expect("valid projection parameters");
+        // A field at rest has zero divergence: the zero pressure is exact.
+        assert_eq!(res, 0.0);
+        assert!(g.p.iter().all(|&p| p == 0.0));
     }
 
     #[test]
     fn test_update_velocity_from_pressure_finite() {
         let mut g = make_grid();
         g.p[0] = 10.0;
-        g.gpu_update_velocity_from_pressure(0.01);
+        g.gpu_update_velocity_from_pressure(0.01, 1.0)
+            .expect("valid projection parameters");
         assert!(g.u.iter().all(|v| v.is_finite()));
         assert!(g.v.iter().all(|v| v.is_finite()));
+    }
+
+    // ── Pressure projection (regression for the dt-scaled divergence) ────────
+
+    /// Deterministic pseudo-random value in `[-1, 1)`.
+    fn next_unit(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((*state >> 11) as f64) / ((1_u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// An `n³` grid (spacing 0.1) with random face velocities and zero normal
+    /// velocity on the solid boundary.
+    fn random_grid(n: usize, seed: u64) -> GpuEulerGrid {
+        let mut g = GpuEulerGrid::new(n, n, n, 0.1);
+        let mut state = seed;
+        for component in [&mut g.u, &mut g.v, &mut g.w] {
+            for value in component.iter_mut() {
+                *value = next_unit(&mut state);
+            }
+        }
+        g.gpu_enforce_solid_bc();
+        g
+    }
+
+    fn max_abs(values: &[f64]) -> f64 {
+        values.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
+    }
+
+    /// Project `g` and return `(max|div| before, max|div| after)`.
+    fn project(g: &mut GpuEulerGrid, sweeps: usize, dt: f64, rho: f64) -> (f64, f64) {
+        let before = max_abs(&g.gpu_compute_divergence());
+        g.gpu_pressure_projection(sweeps, 0.0, dt, rho)
+            .expect("valid projection parameters");
+        g.gpu_update_velocity_from_pressure(dt, rho)
+            .expect("valid projection parameters");
+        (before, max_abs(&g.gpu_compute_divergence()))
+    }
+
+    /// With dt = 0.01 the old projection left `(1 - dt)` of the divergence;
+    /// the corrected one removes it to the accuracy of the Jacobi solve: 500
+    /// sweeps shrink the slowest Jacobi mode of an 8^3 Neumann grid by
+    /// `((2 + cos(pi/8)) / 3)^500`, about 3e-6, so the divergence of this
+    /// random field falls by about seven orders of magnitude.
+    #[test]
+    fn test_projection_removes_divergence_of_random_field() {
+        let mut g = random_grid(8, 0x00C0_FFEE);
+        let (before, after) = project(&mut g, 500, 0.01, 1.0);
+        assert!(before > 1.0, "the random field must be strongly divergent");
+        assert!(
+            after < 1e-3 * before,
+            "max|div| only fell from {before} to {after}"
+        );
+    }
+
+    /// `dt` and `rho` cancel between the Poisson right-hand side and the
+    /// gradient update, so the projected velocity does not depend on them.
+    #[test]
+    fn test_projection_is_independent_of_dt_and_rho() {
+        let reference = {
+            let mut g = random_grid(6, 7);
+            project(&mut g, 400, 0.01, 1.0);
+            g
+        };
+        for &(dt, rho) in &[(0.5, 1.0), (0.001, 997.0), (2.0, 0.25)] {
+            let mut g = random_grid(6, 7);
+            let (before, after) = project(&mut g, 400, dt, rho);
+            assert!(before / after > 100.0, "dt={dt} rho={rho}");
+            for (name, got, want) in [
+                ("u", &g.u, &reference.u),
+                ("v", &g.v, &reference.v),
+                ("w", &g.w, &reference.w),
+            ] {
+                for (a, b) in got.iter().zip(want.iter()) {
+                    assert!(
+                        (a - b).abs() < 1e-8,
+                        "{name} differs for dt={dt} rho={rho}: {a} vs {b}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The velocity update is `u -= (dt / rho) * dp / dx` on interior faces
+    /// and leaves boundary faces alone.
+    #[test]
+    fn test_velocity_update_scales_with_dt_over_rho() {
+        let (dt, rho) = (0.2, 4.0);
+        let mut g = GpuEulerGrid::new(3, 3, 3, 0.5);
+        // p = 2 i + 3 j + 5 k  => constant gradients (2, 3, 5) / dx.
+        for k in 0..3 {
+            for j in 0..3 {
+                for i in 0..3 {
+                    let idx = g.index(i, j, k);
+                    g.p[idx] = 2.0 * i as f64 + 3.0 * j as f64 + 5.0 * k as f64;
+                }
+            }
+        }
+        g.gpu_update_velocity_from_pressure(dt, rho)
+            .expect("valid projection parameters");
+        let factor = dt / rho / 0.5;
+        // x-face (i = 1, j = 1, k = 1): index k (nx+1) ny + j (nx+1) + i.
+        assert!((g.u[4 * 3 + 4 + 1] + factor * 2.0).abs() < 1e-14);
+        assert!((g.v[3 * 4 + 3 + 1] + factor * 3.0).abs() < 1e-14);
+        assert!((g.w[3 * 3 + 3 + 1] + factor * 5.0).abs() < 1e-14);
+        // Boundary faces stay untouched.
+        assert_eq!(g.u[0], 0.0);
+        assert_eq!(g.v[0], 0.0);
+        assert_eq!(g.w[0], 0.0);
+        assert_eq!(g.u[3], 0.0);
+    }
+
+    /// The reported residual is the max-norm of `∇²p - (ρ/Δt) ∇·u`,
+    /// recomputed here with an independent stencil.
+    #[test]
+    fn test_projection_returns_the_poisson_residual() {
+        let (dt, rho) = (0.02, 3.0);
+        let mut g = random_grid(5, 99);
+        let rhs: Vec<f64> = g
+            .gpu_compute_divergence()
+            .iter()
+            .map(|d| rho / dt * d)
+            .collect();
+        let returned = g
+            .gpu_pressure_projection(7, 0.0, dt, rho)
+            .expect("valid projection parameters");
+        let mut worst = 0.0_f64;
+        for k in 0..5_usize {
+            for j in 0..5_usize {
+                for i in 0..5_usize {
+                    let idx = g.index(i, j, k);
+                    let mut laplacian = 0.0;
+                    for (di, dj, dk) in [
+                        (1_i32, 0_i32, 0_i32),
+                        (-1, 0, 0),
+                        (0, 1, 0),
+                        (0, -1, 0),
+                        (0, 0, 1),
+                        (0, 0, -1),
+                    ] {
+                        let (ni, nj, nk) = (i as i32 + di, j as i32 + dj, k as i32 + dk);
+                        if (0..5).contains(&ni) && (0..5).contains(&nj) && (0..5).contains(&nk) {
+                            let nb = g.index(ni as usize, nj as usize, nk as usize);
+                            laplacian += g.p[nb] - g.p[idx];
+                        }
+                    }
+                    laplacian /= g.dx * g.dx;
+                    worst = worst.max((laplacian - rhs[idx]).abs());
+                }
+            }
+        }
+        assert!(returned > 0.0, "seven sweeps cannot solve the system");
+        assert!(
+            (returned - worst).abs() <= 1e-9 * worst,
+            "returned {returned} vs independent {worst}"
+        );
+        assert_eq!(g.last_residual, returned);
+    }
+
+    /// More sweeps drive the Poisson residual down and `compute_stats`
+    /// reports it instead of a hard-coded zero.
+    #[test]
+    fn test_compute_stats_reports_pressure_residual() {
+        let (dt, rho) = (0.01, 1.0);
+        let mut g = random_grid(6, 5);
+        assert_eq!(g.compute_stats().pressure_residual, 0.0);
+        let rhs_scale = rho / dt * max_abs(&g.gpu_compute_divergence());
+        let coarse = g
+            .gpu_pressure_projection(3, 0.0, dt, rho)
+            .expect("valid projection parameters");
+        assert_eq!(g.compute_stats().pressure_residual, coarse);
+        let fine = g
+            .gpu_pressure_projection(600, 0.0, dt, rho)
+            .expect("valid projection parameters");
+        let stats = g.compute_stats();
+        assert_eq!(stats.pressure_residual, fine);
+        assert!(fine < coarse, "residual must fall: {coarse} -> {fine}");
+        assert!(
+            fine < 1e-3 * rhs_scale,
+            "converged residual {fine} vs rhs scale {rhs_scale}"
+        );
+    }
+
+    /// `tol` stops the iteration after the first sweep when the update is
+    /// already below it.
+    #[test]
+    fn test_projection_tolerance_stops_early() {
+        let mut one = random_grid(4, 11);
+        let mut many = one.clone();
+        one.gpu_pressure_projection(1, 0.0, 0.01, 1.0)
+            .expect("valid projection parameters");
+        many.gpu_pressure_projection(50, 1e30, 0.01, 1.0)
+            .expect("valid projection parameters");
+        assert_eq!(one.p, many.p);
+        assert_eq!(one.last_residual, many.last_residual);
+    }
+
+    /// Invalid time steps / densities and non-finite velocities are rejected
+    /// without touching the grid.
+    #[test]
+    fn test_projection_rejects_invalid_parameters() {
+        let mut g = random_grid(4, 3);
+        let u_before = g.u.clone();
+        for &(dt, rho) in &[
+            (0.0, 1.0),
+            (-0.01, 1.0),
+            (f64::NAN, 1.0),
+            (f64::INFINITY, 1.0),
+            (0.01, 0.0),
+            (0.01, -1.0),
+            (0.01, f64::NAN),
+        ] {
+            assert!(g.gpu_pressure_projection(10, 0.0, dt, rho).is_err());
+            assert!(g.gpu_update_velocity_from_pressure(dt, rho).is_err());
+        }
+        assert_eq!(g.u, u_before);
+        assert!(g.p.iter().all(|&p| p == 0.0));
+        g.u[5] = f64::NAN;
+        assert!(g.gpu_pressure_projection(10, 0.0, 0.01, 1.0).is_err());
     }
 
     #[test]

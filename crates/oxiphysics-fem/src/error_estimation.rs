@@ -9,6 +9,8 @@
 //! hierarchical estimates, convergence rate computation, and an adaptive
 //! driver loop.
 
+mod conforming;
+
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
@@ -173,12 +175,14 @@ pub fn doerfler_marking(element_errors: &[f64], theta: f64) -> Vec<bool> {
     marked
 }
 
-/// Bisect a triangle by the longest edge, returning two new triangles.
+/// Local vertex indices `(i0, i1, i2)` of a triangle's longest edge `(i0, i1)`
+/// and of the vertex `i2` opposite to it.
 ///
-/// The midpoint of the longest edge is computed and used as the new vertex.
-/// Returns `(tri_a, tri_b)` where each is `[[f64; 3\]; 3]`.
-pub fn bisect_triangle(coords: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
-    // Find the longest edge
+/// `(i0, i1, i2)` is a cyclic permutation of `(0, 1, 2)`, so the children
+/// `[i0, mid, i2]` and `[i1, i2, mid]` obtained by splitting the longest edge at
+/// `mid` have the orientation of the parent.  Ties are resolved in favour of
+/// the lowest local edge index.
+pub fn longest_edge_vertices(coords: &[[f64; 3]; 3]) -> (usize, usize, usize) {
     let edges = [(0usize, 1usize), (1usize, 2usize), (2usize, 0usize)];
     let lengths: [f64; 3] = [
         len3(sub3(coords[edges[0].1], coords[edges[0].0])),
@@ -192,9 +196,19 @@ pub fn bisect_triangle(coords: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [[f64; 3]; 3])
     } else {
         2
     };
-
     let (i0, i1) = edges[longest];
-    let i2 = 3 - i0 - i1; // the opposite vertex index
+    (i0, i1, 3 - i0 - i1)
+}
+
+/// Bisect a triangle by the longest edge, returning two new triangles.
+///
+/// The midpoint of the longest edge is computed and used as the new vertex.
+/// Returns `(tri_a, tri_b)` where each is `[[f64; 3\]; 3]`; use
+/// [`longest_edge_vertices`] to learn which vertices the children inherit.
+/// To refine a whole mesh without hanging nodes use
+/// [`MeshRefinement::refine_marked`].
+pub fn bisect_triangle(coords: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
+    let (i0, i1, i2) = longest_edge_vertices(coords);
     let mid = [
         0.5 * (coords[i0][0] + coords[i1][0]),
         0.5 * (coords[i0][1] + coords[i1][1]),
@@ -560,48 +574,23 @@ impl MeshRefinement {
         MeshRefinement { elements, nodes }
     }
 
-    /// Refine all marked elements by bisecting their longest edge.
+    /// Refine the marked elements by bisecting their longest edge, keeping the
+    /// mesh conforming (Rivara longest-edge closure).
     ///
-    /// New nodes and elements are appended in-place.
+    /// The midpoint of a bisected edge is a single new node shared by every
+    /// triangle carrying that edge.  A neighbour whose own longest edge is a
+    /// different one is first bisected along that edge, so the closure may refine
+    /// more elements than were marked; no hanging nodes are ever created.  New
+    /// nodes are appended to `nodes`; a bisected element's slot receives its
+    /// first child (`[n_i0, mid, n_i2]`) and the second child
+    /// (`[n_i1, n_i2, mid]`) is appended to `elements`, where `(n_i0, n_i1)` is
+    /// the bisected edge and `n_i2` the opposite vertex.  Triangles that repeat a
+    /// node index are left unchanged.
+    ///
+    /// `marked` must have one flag per element.
     pub fn refine_marked(&mut self, marked: &[bool]) {
         assert_eq!(marked.len(), self.elements.len());
-        let mut new_elements = Vec::new();
-        let mut keep_elements = Vec::new();
-
-        for (e_idx, elem) in self.elements.iter().enumerate() {
-            if !marked[e_idx] {
-                keep_elements.push(elem.clone());
-                continue;
-            }
-            let (coords_a, coords_b) = bisect_triangle(&elem.coords);
-            // Add the midpoint as a new node
-            let mid = [
-                (elem.coords[0][0] + elem.coords[1][0]) * 0.5,
-                (elem.coords[0][1] + elem.coords[1][1]) * 0.5,
-                (elem.coords[0][2] + elem.coords[1][2]) * 0.5,
-            ];
-            let mid_idx = self.nodes.len() + new_elements.len(); // approximate
-            let _ = mid_idx;
-            self.nodes.push(mid);
-
-            let new_node_idx = self.nodes.len() - 1;
-            let tri_a = TriElement {
-                nodes: [elem.nodes[0], new_node_idx, elem.nodes[2]],
-                coords: coords_a,
-                degree: elem.degree,
-                h_e: compute_h_element(&coords_a),
-            };
-            let tri_b = TriElement {
-                nodes: [elem.nodes[1], elem.nodes[2], new_node_idx],
-                coords: coords_b,
-                degree: elem.degree,
-                h_e: compute_h_element(&coords_b),
-            };
-            new_elements.push(tri_a);
-            new_elements.push(tri_b);
-        }
-        keep_elements.extend(new_elements);
-        self.elements = keep_elements;
+        conforming::refine_conforming(&mut self.nodes, &mut self.elements, marked);
     }
 
     /// Number of elements in the current mesh.
@@ -1248,6 +1237,54 @@ mod tests {
     fn test_doerfler_empty_input() {
         let marked = doerfler_marking(&[], 0.5);
         assert!(marked.is_empty());
+    }
+
+    #[test]
+    fn test_longest_edge_vertices_is_a_cyclic_permutation_for_every_rotation() {
+        // Edge lengths: 0-1 = 3, 1-2 = sqrt(5), 2-0 = sqrt(2).
+        let base = [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
+        assert_eq!(longest_edge_vertices(&base), (0, 1, 2));
+        // Rotating the vertex order moves the longest edge to local edge 2 / 1.
+        let rot1 = [base[1], base[2], base[0]];
+        assert_eq!(longest_edge_vertices(&rot1), (2, 0, 1));
+        let rot2 = [base[2], base[0], base[1]];
+        assert_eq!(longest_edge_vertices(&rot2), (1, 2, 0));
+        for coords in [base, rot1, rot2] {
+            let (i0, i1, i2) = longest_edge_vertices(&coords);
+            assert_eq!(i1, (i0 + 1) % 3);
+            assert_eq!(i2, (i0 + 2) % 3);
+            // The children of bisect_triangle are [i0, mid, i2] and [i1, i2, mid].
+            let (a, b) = bisect_triangle(&coords);
+            assert_eq!(a[0], coords[i0]);
+            assert_eq!(a[2], coords[i2]);
+            assert_eq!(b[0], coords[i1]);
+            assert_eq!(b[1], coords[i2]);
+            assert_eq!(a[1], b[2]);
+            let mid = [
+                0.5 * (coords[i0][0] + coords[i1][0]),
+                0.5 * (coords[i0][1] + coords[i1][1]),
+                0.5 * (coords[i0][2] + coords[i1][2]),
+            ];
+            assert_eq!(a[1], mid);
+        }
+    }
+
+    #[test]
+    fn test_refine_marked_children_match_bisected_coordinates() {
+        // The longest edge is not local edge 0 (0-1 has length 1, 1-2 has length 5).
+        let nodes = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 5.0, 0.0]];
+        let elem = TriElement::new([0, 1, 2], [nodes[0], nodes[1], nodes[2]]);
+        let mut mesh = MeshRefinement::new(vec![elem], nodes);
+        mesh.refine_marked(&[true]);
+        assert_eq!(mesh.nodes.len(), 4);
+        assert_eq!(mesh.nodes[3], [0.5, 2.5, 0.0]);
+        for e in &mesh.elements {
+            for k in 0..3 {
+                assert_eq!(mesh.nodes[e.nodes[k]], e.coords[k]);
+            }
+        }
+        // Longest edge 0-2 (not 0-1) was split: both children contain node 3.
+        assert!(mesh.elements.iter().all(|e| e.nodes.contains(&3)));
     }
 
     #[test]

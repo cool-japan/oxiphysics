@@ -105,12 +105,10 @@ fn assert_matches_reference(sim: &PyMdSimulation, cfg: &PyMdConfig, context: &st
         sim.potential_energy()
     );
     for (i, (atom, expected)) in sim.atoms.iter().zip(&ref_forces).enumerate() {
-        for k in 0..3 {
+        for (k, (&actual, &reference)) in atom.force.iter().zip(expected).enumerate() {
             assert!(
-                (atom.force[k] - expected[k]).abs() <= 1e-10 * expected[k].abs().max(1.0),
-                "{context}: force component {k} of atom {i}: {} vs reference {}",
-                atom.force[k],
-                expected[k]
+                (actual - reference).abs() <= 1e-10 * reference.abs().max(1.0),
+                "{context}: force component {k} of atom {i}: {actual} vs reference {reference}"
             );
         }
     }
@@ -235,14 +233,17 @@ fn ewald_all_pairs_reference(set: &AtomSet, alpha: f64, r_cut: f64) -> f64 {
                 continue;
             }
             let mut dr = [0.0f64; 3];
-            for k in 0..3 {
-                let mut d = set.positions[j][k] - set.positions[i][k];
+            for (d_k, (&xj, &xi)) in dr
+                .iter_mut()
+                .zip(set.positions[j].iter().zip(&set.positions[i]))
+            {
+                let mut d = xj - xi;
                 if d > 0.5 * box_size {
                     d -= box_size;
                 } else if d < -0.5 * box_size {
                     d += box_size;
                 }
-                dr[k] = d;
+                *d_k = d;
             }
             let r2 = dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2];
             if r2 >= r_cut * r_cut || r2 < 1e-20 {

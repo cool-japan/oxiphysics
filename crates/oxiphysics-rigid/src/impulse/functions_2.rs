@@ -31,11 +31,24 @@ mod tests_impulse_new {
         let mut b = sphere([0.1, 0.0, 0.0], [0.0; 3], 1.0, 0.0);
         let corrector = PositionalCorrector::new(0.5, 0.0);
         let initial_dist = b.position[0] - a.position[0];
-        corrector.correct(&mut a, &mut b, [-1.0, 0.0, 0.0], 0.05);
+        // The normal points from A (at the origin) to B (at +x).
+        corrector.correct(&mut a, &mut b, [1.0, 0.0, 0.0], 0.05);
         let final_dist = b.position[0] - a.position[0];
         assert!(
             final_dist > initial_dist,
             "bodies should be further apart after correction"
+        );
+        // beta * excess / (invA + invB) = 0.5 * 0.05 / 2 moved along -n for A
+        // and +n for B.
+        assert!(
+            (a.position[0] + 0.0125).abs() < 1e-12,
+            "a.x = {}",
+            a.position[0]
+        );
+        assert!(
+            (b.position[0] - 0.1125).abs() < 1e-12,
+            "b.x = {}",
+            b.position[0]
         );
     }
     #[test]
@@ -282,8 +295,11 @@ mod tests_impulse_new {
         let solver = ImpulseSolver::new(0.6, 0.2, 1.0);
         assert!((solver.compute_restitution_coefficient(1.0) - 0.6).abs() < 1e-12);
     }
+    /// Coulomb friction must brake the relative tangential motion: with a
+    /// large friction limit both bodies end at the common (momentum
+    /// conserving) tangential velocity.
     #[test]
-    fn test_coulomb_friction_changes_tangential_velocity() {
+    fn test_coulomb_friction_brakes_sliding_to_common_velocity() {
         let solver = ImpulseSolver::new(0.0, 0.5, 0.0);
         let mut a = sphere([0.0; 3], [2.0, 0.0, 0.0], 1.0, 0.0);
         let mut b = sphere([0.0, 1.0, 0.0], [0.0; 3], 1.0, 0.0);
@@ -292,17 +308,47 @@ mod tests_impulse_new {
             depth: 0.0,
             contact_point: [0.0, 0.5, 0.0],
         };
-        let vx_before = a.velocity[0];
-        let vy_b_before = b.velocity[1];
+        // mu * J_n = 5, far above the 1.0 needed to equalise the velocities.
         solver.apply_coulomb_friction(&mut a, &mut b, &manifold, 10.0);
-        let vx_changed = (a.velocity[0] - vx_before).abs() > 1e-10;
-        let vy_b_changed = (b.velocity[1] - vy_b_before).abs() > 1e-10;
-        let any_changed = vx_changed || vy_b_changed || (b.velocity[0].abs() > 1e-10);
         assert!(
-            any_changed,
-            "friction should change some velocity: a_vx={}, b_vx={}",
-            a.velocity[0], b.velocity[0]
+            (a.velocity[0] - 1.0).abs() < 1e-9,
+            "a.vx must slow down to 1.0, got {}",
+            a.velocity[0]
         );
+        assert!(
+            (b.velocity[0] - 1.0).abs() < 1e-9,
+            "b.vx must speed up to 1.0, got {}",
+            b.velocity[0]
+        );
+        assert!(a.velocity[1].abs() < 1e-12 && b.velocity[1].abs() < 1e-12);
+        assert!(a.velocity[2].abs() < 1e-12 && b.velocity[2].abs() < 1e-12);
+    }
+    /// A friction impulse below the sticking requirement is clamped to the
+    /// Coulomb limit and removes exactly that much momentum from the sliding body.
+    #[test]
+    fn test_coulomb_friction_clamped_to_cone_limit() {
+        let solver = ImpulseSolver::new(0.0, 0.5, 0.0);
+        let mut a = sphere([0.0; 3], [2.0, 0.0, 0.0], 1.0, 0.0);
+        let mut b = sphere([0.0, 1.0, 0.0], [0.0; 3], 1.0, 0.0);
+        let manifold = CollisionManifold {
+            normal: [0.0, 1.0, 0.0],
+            depth: 0.0,
+            contact_point: [0.0, 0.5, 0.0],
+        };
+        // mu * J_n = 0.5 * 0.2 = 0.1
+        solver.apply_coulomb_friction(&mut a, &mut b, &manifold, 0.2);
+        assert!(
+            (a.velocity[0] - 1.9).abs() < 1e-9,
+            "a.vx = {}, expected 1.9",
+            a.velocity[0]
+        );
+        assert!(
+            (b.velocity[0] - 0.1).abs() < 1e-9,
+            "b.vx = {}, expected 0.1",
+            b.velocity[0]
+        );
+        // Friction never creates momentum.
+        assert!((a.velocity[0] + b.velocity[0] - 2.0).abs() < 1e-12);
     }
     #[test]
     fn test_coulomb_friction_zero_normal_impulse_no_change() {

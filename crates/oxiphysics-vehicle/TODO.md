@@ -159,14 +159,14 @@ Verified: 178 (critical 2, high 38, medium 107, low 31); 29 further raw findings
 - [ ] **F4882** (critical, bug, easy/small) `suspension/types.rs:233` — QuarterCarModel::step: wrong unsprung reaction sign, bogus road input, wrong static deflection
 
 ### High (38)
-- [ ] **F4752** (high, bug, easy/small) `aerodynamics/types.rs:1040` — total_lift_coefficient divides by chord (units 1/m), wrong elliptic scale
-- [ ] **F4754** (high, bug, medium/small) `aircraft_dynamics.rs:950` — SixDofIntegrator ignores p,q,r rate damping and Ixz coupling
-- [ ] **F4757** (high, bug, easy/small) `autonomous_driving/types.rs:59` — KalmanTracker predict skips F·P·Fᵀ, so velocity is never estimated
-- [ ] **F4758** (high, fabrication, medium/medium) `autonomous_driving/types.rs:192` — DubinsPath::shortest discards LSL and returns a straight line
-- [ ] **F4771** (high, fabrication, hard/medium) `autonomous_vehicle/types.rs:322` — ParticleFilterSlam never builds a map; weight update is a no-op
-- [ ] **F4772** (high, fabrication, medium/medium) `autonomous_vehicle/types.rs:717` — UkfState is a fake UKF: hardcoded +1 m/s predict, no update
-- [ ] **F4779** (high, bug, easy/small) `brake_system.rs:843` — CornerBrake uses absolute pressure: phantom drag torque and heating
-- [ ] **F4780** (high, fabrication, medium/small) `brake_system.rs:950` — BrakeSystem ABS modulation is stateless and hold-gated; effectively no-op
+- [x] **F4752** (high, bug, easy/small) `aerodynamics/types.rs:1040` — total_lift_coefficient divides by chord (units 1/m), wrong elliptic scale
+- [x] **F4754** (high, bug, medium/small) `aircraft_dynamics.rs:950` — SixDofIntegrator ignores p,q,r rate damping and Ixz coupling
+- [x] **F4757** (high, bug, easy/small) `autonomous_driving/types.rs:59` — KalmanTracker predict skips F·P·Fᵀ, so velocity is never estimated
+- [x] **F4758** (high, fabrication, medium/medium) `autonomous_driving/types.rs:192` — DubinsPath::shortest discards LSL and returns a straight line
+- [x] **F4771** (high, fabrication, hard/medium) `autonomous_vehicle/types.rs:322` — ParticleFilterSlam never builds a map; weight update is a no-op
+- [x] **F4772** (high, fabrication, medium/medium) `autonomous_vehicle/types.rs:717` — UkfState is a fake UKF: hardcoded +1 m/s predict, no update
+- [x] **F4779** (high, bug, easy/small) `brake_system.rs:843` — CornerBrake uses absolute pressure: phantom drag torque and heating
+- [x] **F4780** (high, fabrication, medium/small) `brake_system.rs:950` — BrakeSystem ABS modulation is stateless and hold-gated; effectively no-op
 - [ ] **F4793** (high, bug, easy/trivial) `electric_vehicle/functions.rs:1059` — step_battery discharge efficiency inverted; r=0 gives NaN current
 - [ ] **F4802** (high, fabrication, medium/small) `electric_vehicle/types_ext.rs:623` — ThermalManagement::update drops coolant ODE; heat assumes fixed 1 A
 - [x] **F4808** (high, bug, easy/trivial) `fuel_cell.rs:216` — Stack H2 consumption omits n_cells factor; tank drains n_cells× slow

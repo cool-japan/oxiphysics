@@ -457,6 +457,36 @@ mod tests {
         assert!(sh > 0.0, "sh={sh}");
     }
     #[test]
+    fn gear_hertz_stress_matches_iso_6336_spur_reference() {
+        // m = 3 mm, z1 = 20, z2 = 40, phi = 20 deg, b = 30 mm, Wt = 2000 N, ZE = 191:
+        // d1 = 60 mm, u = 2, sigma_H = ZE * sqrt(2/(sin cos) * Wt/(b d1) * (u+1)/u) = 615.1 MPa.
+        let g = GearTooth::spur_pair(3.0, 20, 40, 20.0, 30.0, 2000.0, 1500.0);
+        let sh = g.hertz_contact_stress();
+        assert!(
+            (sh - 615.1).abs() < 0.5,
+            "sigma_H should be 615.1 +- 0.5 N/mm2, got {sh}"
+        );
+    }
+    #[test]
+    fn gear_hertz_stress_zone_factor_is_2_495_at_20_degrees() {
+        // sigma_H / (ZE * sqrt(Wt/(b d1) * (u+1)/u)) is the zone factor ZH.
+        let g = GearTooth::spur_pair(3.0, 20, 40, 20.0, 30.0, 2000.0, 1500.0);
+        let base = g.ze
+            * (g.wt / (g.d1() * g.face_width) * (g.gear_ratio() + 1.0) / g.gear_ratio()).sqrt();
+        let z_h = g.hertz_contact_stress() / base;
+        assert!((z_h - 2.4946).abs() < 1e-3, "ZH(20 deg) = {z_h}");
+    }
+    #[test]
+    fn gear_hertz_stress_scales_with_sqrt_of_load_and_pressure_angle() {
+        let g1 = GearTooth::spur_pair(3.0, 20, 40, 20.0, 30.0, 2000.0, 1500.0);
+        let g4 = GearTooth::spur_pair(3.0, 20, 40, 20.0, 30.0, 8000.0, 1500.0);
+        let ratio = g4.hertz_contact_stress() / g1.hertz_contact_stress();
+        assert!((ratio - 2.0).abs() < 1e-12, "sqrt(4) scaling, got {ratio}");
+        // ZH^2 = 2/(sin cos) = 4/sin(2 phi) is minimal at 45 deg and grows towards small angles.
+        let g25 = GearTooth::spur_pair(3.0, 20, 40, 25.0, 30.0, 2000.0, 1500.0);
+        assert!(g25.hertz_contact_stress() < g1.hertz_contact_stress());
+    }
+    #[test]
     fn gear_ratio_correct() {
         let g = GearTooth::spur_pair(3.0, 20, 40, 20.0, 30.0, 500.0, 1500.0);
         assert!((g.gear_ratio() - 2.0).abs() < 1e-10);

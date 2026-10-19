@@ -476,19 +476,51 @@ impl HydrostaticBuckling {
         }
     }
 
-    /// Windenburg & Trilling (1934) critical pressure for lobar buckling.
+    /// Windenburg & Trilling (1934) critical external pressure for lobar
+    /// buckling of a thin cylindrical shell, in Pa:
     ///
-    /// Returns approximate critical external pressure in Pa.
-    pub fn critical_pressure_windenburg(&self) -> f64 {
-        let nu = self.poisson;
-        let r = self.radius;
-        let t = self.thickness;
-        let l = self.length;
+    /// ```text
+    ///                    2.42 E (t/D)^(5/2)
+    /// p_cr = ─────────────────────────────────────────────────
+    ///         (1 − ν²)^(3/4) · ( L/D − 0.45 (t/D)^(1/2) )
+    /// ```
+    ///
+    /// with the diameter `D = 2 r`, the wall thickness `t` and the unsupported
+    /// length `L`. The collapse pressure grows with the *five halves* power of
+    /// the thickness ratio (the long-cylinder limit,
+    /// [`PressureHull::buckling_pressure`], grows with its cube) and rises as
+    /// the shell gets shorter.
+    ///
+    /// Returns `None` when the formula does not apply, so that an unsafe or
+    /// meaningless pressure is never reported as a collapse load:
+    ///
+    /// - the radius, thickness, length or Young's modulus is not a positive
+    ///   finite number, or `|ν| ≥ 1`;
+    /// - the shell is so short that `L/D ≤ 0.45 (t/D)^(1/2)`: the denominator
+    ///   vanishes or changes sign and the lobar mode no longer governs.
+    pub fn critical_pressure_windenburg(&self) -> Option<f64> {
         let e = self.youngs_modulus;
-        // Simplified WT formula
-        2.6 * e * (t / (2.0 * r)).powi(5).cbrt()
-            / (l / (2.0 * r) - 0.45 * (t / (2.0 * r)).sqrt())
-            / (1.0 - nu.powi(2)).cbrt()
+        let nu = self.poisson;
+        let diameter = 2.0 * self.radius;
+        let positive_finite = |value: f64| value.is_finite() && value > 0.0;
+        if !(positive_finite(diameter)
+            && positive_finite(self.thickness)
+            && positive_finite(self.length)
+            && positive_finite(e)
+            && nu.is_finite()
+            && nu.abs() < 1.0)
+        {
+            return None;
+        }
+        let thickness_ratio = self.thickness / diameter;
+        let length_ratio = self.length / diameter;
+        let denominator = length_ratio - 0.45 * thickness_ratio.sqrt();
+        if denominator <= 0.0 {
+            return None;
+        }
+        let pressure =
+            2.42 * e * thickness_ratio.powf(2.5) / ((1.0 - nu * nu).powf(0.75) * denominator);
+        pressure.is_finite().then_some(pressure)
     }
 
     /// Euler column buckling load for the cylinder as a beam.
@@ -500,14 +532,20 @@ impl HydrostaticBuckling {
             / (end_condition_factor * self.length).powi(2)
     }
 
-    /// Safety factor relative to operating depth (metres).
-    pub fn safety_factor(&self, operating_depth: f64) -> f64 {
+    /// Safety factor of the collapse pressure
+    /// ([`HydrostaticBuckling::critical_pressure_windenburg`]) against the
+    /// hydrostatic pressure of seawater at `operating_depth` (metres).
+    ///
+    /// Infinite at zero (or negative) depth. `None` when the Windenburg &
+    /// Trilling formula does not apply to this shell, in which case no collapse
+    /// pressure, and hence no safety factor, can be stated.
+    pub fn safety_factor(&self, operating_depth: f64) -> Option<f64> {
+        let p_cr = self.critical_pressure_windenburg()?;
         let p_operating = RHO_SEAWATER * GRAVITY * operating_depth;
-        let p_cr = self.critical_pressure_windenburg();
         if p_operating < 1e-12 {
-            f64::INFINITY
+            Some(f64::INFINITY)
         } else {
-            p_cr / p_operating
+            Some(p_cr / p_operating)
         }
     }
 }
@@ -1261,7 +1299,7 @@ mod tests {
     #[test]
     fn test_buckling_safety_factor_shallow() {
         let b = HydrostaticBuckling::new(0.5, 0.02, 3.0, 200e9, 0.3);
-        let sf = b.safety_factor(100.0); // 100 m depth
+        let sf = b.safety_factor(100.0).expect("formula applies"); // 100 m depth
         assert!(sf > 1.0, "Safety factor should be > 1 at 100 m: {sf}");
     }
 
@@ -1484,6 +1522,143 @@ mod tests {
     #[test]
     fn test_windenburg_buckling_positive() {
         let b = HydrostaticBuckling::new(0.5, 0.02, 3.0, 200e9, 0.3);
-        assert!(b.critical_pressure_windenburg() > 0.0);
+        assert!(b.critical_pressure_windenburg().is_some_and(|p| p > 0.0));
+    }
+
+    // Windenburg & Trilling: E = 200 GPa, nu = 0.3, D = 1 m, t = 10 mm, L = 3 m.
+    //   p_cr = 2.42 * 200e9 * (0.01)^2.5 / (0.91^0.75 * (3 - 0.45 * 0.1)) = 1.758e6 Pa.
+    // The former (t/D)^(5/3) form over-predicted this by a factor of about 46.
+    #[test]
+    fn test_windenburg_matches_hand_computed_collapse_pressure() {
+        let shell = HydrostaticBuckling::new(0.5, 0.01, 3.0, 200e9, 0.3);
+        let p_cr = shell
+            .critical_pressure_windenburg()
+            .expect("formula applies");
+        assert!(
+            (p_cr - 1.758e6).abs() < 0.01 * 1.758e6,
+            "collapse pressure {p_cr} Pa, expected 1.758e6 Pa"
+        );
+        let reference = 2.42 * 200e9 * 1.0e-5 / (0.91_f64.powf(0.75) * 2.955);
+        assert!(
+            (p_cr - reference).abs() < 1.0e-9 * reference,
+            "{p_cr} vs {reference}"
+        );
+    }
+
+    #[test]
+    fn test_windenburg_scales_with_five_halves_power_of_thickness() {
+        // With a very long shell the L/D term dominates the denominator, which
+        // isolates the (t/D)^(5/2) dependence.
+        let thin = HydrostaticBuckling::new(0.5, 0.01, 1000.0, 200e9, 0.3);
+        let thick = HydrostaticBuckling::new(0.5, 0.02, 1000.0, 200e9, 0.3);
+        let ratio = thick.critical_pressure_windenburg().expect("applies")
+            / thin.critical_pressure_windenburg().expect("applies");
+        let expected = 2.0_f64.powf(2.5);
+        assert!(
+            (ratio - expected).abs() < 1.0e-4 * expected,
+            "doubling t multiplies p_cr by {ratio}, expected 2^(5/2) = {expected}"
+        );
+    }
+
+    #[test]
+    fn test_windenburg_scales_linearly_with_modulus_and_follows_poisson_ratio() {
+        let base = HydrostaticBuckling::new(0.5, 0.01, 3.0, 100e9, 0.3);
+        let stiff = HydrostaticBuckling::new(0.5, 0.01, 3.0, 300e9, 0.3);
+        let p_base = base.critical_pressure_windenburg().expect("applies");
+        let p_stiff = stiff.critical_pressure_windenburg().expect("applies");
+        assert!((p_stiff / p_base - 3.0).abs() < 1.0e-12);
+        // p_cr ~ (1 - nu^2)^(-3/4): a larger Poisson ratio raises the pressure.
+        let incompressible = HydrostaticBuckling::new(0.5, 0.01, 3.0, 100e9, 0.45);
+        let p_incompressible = incompressible
+            .critical_pressure_windenburg()
+            .expect("applies");
+        let expected = p_base * (0.91_f64 / (1.0 - 0.45_f64 * 0.45)).powf(0.75);
+        assert!(
+            (p_incompressible - expected).abs() < 1.0e-9 * expected,
+            "{p_incompressible} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn test_windenburg_decreases_with_length() {
+        let short = HydrostaticBuckling::new(0.5, 0.01, 2.0, 200e9, 0.3);
+        let long = HydrostaticBuckling::new(0.5, 0.01, 6.0, 200e9, 0.3);
+        assert!(
+            short.critical_pressure_windenburg().expect("applies")
+                > long.critical_pressure_windenburg().expect("applies")
+        );
+    }
+
+    #[test]
+    fn test_windenburg_is_none_for_shells_shorter_than_the_formula_allows() {
+        // D = 1 m, t = 10 mm: the denominator vanishes at L/D = 0.45 * sqrt(0.01) = 0.045.
+        let too_short = HydrostaticBuckling::new(0.5, 0.01, 0.04, 200e9, 0.3);
+        assert_eq!(too_short.critical_pressure_windenburg(), None);
+        let at_the_pole = HydrostaticBuckling::new(0.5, 0.01, 0.045, 200e9, 0.3);
+        assert_eq!(at_the_pole.critical_pressure_windenburg(), None);
+        let just_long_enough = HydrostaticBuckling::new(0.5, 0.01, 0.05, 200e9, 0.3);
+        assert!(
+            just_long_enough
+                .critical_pressure_windenburg()
+                .is_some_and(|p| p.is_finite() && p > 1.0e8),
+            "just above the limit the predicted pressure is very large but finite"
+        );
+    }
+
+    #[test]
+    fn test_windenburg_is_none_for_invalid_parameters() {
+        let valid = HydrostaticBuckling::new(0.5, 0.01, 3.0, 200e9, 0.3);
+        assert!(valid.critical_pressure_windenburg().is_some());
+        let invalid = [
+            HydrostaticBuckling::new(0.0, 0.01, 3.0, 200e9, 0.3),
+            HydrostaticBuckling::new(-0.5, 0.01, 3.0, 200e9, 0.3),
+            HydrostaticBuckling::new(0.5, 0.0, 3.0, 200e9, 0.3),
+            HydrostaticBuckling::new(0.5, 0.01, 0.0, 200e9, 0.3),
+            HydrostaticBuckling::new(0.5, 0.01, 3.0, 0.0, 0.3),
+            HydrostaticBuckling::new(0.5, 0.01, 3.0, 200e9, 1.0),
+            HydrostaticBuckling::new(0.5, 0.01, 3.0, 200e9, -1.5),
+            HydrostaticBuckling::new(f64::NAN, 0.01, 3.0, 200e9, 0.3),
+            HydrostaticBuckling::new(0.5, 0.01, f64::INFINITY, 200e9, 0.3),
+            HydrostaticBuckling::new(0.5, 0.01, 3.0, 200e9, f64::NAN),
+        ];
+        for (index, shell) in invalid.iter().enumerate() {
+            assert_eq!(
+                shell.critical_pressure_windenburg(),
+                None,
+                "invalid shell #{index} must not yield a collapse pressure"
+            );
+            assert_eq!(shell.safety_factor(100.0), None, "invalid shell #{index}");
+        }
+    }
+
+    #[test]
+    fn test_safety_factor_is_collapse_over_hydrostatic_pressure() {
+        let shell = HydrostaticBuckling::new(0.5, 0.02, 3.0, 200e9, 0.3);
+        let p_cr = shell.critical_pressure_windenburg().expect("applies");
+        let depth = 100.0;
+        let factor = shell.safety_factor(depth).expect("applies");
+        let expected = p_cr / (RHO_SEAWATER * GRAVITY * depth);
+        assert!((factor - expected).abs() < 1.0e-12 * expected);
+        // The corrected collapse pressure (about 10 MPa for this hull) is a
+        // factor of about ten above the 1 MPa found 100 m down.
+        assert!(
+            (factor - 9.95).abs() < 0.1,
+            "safety factor at 100 m: {factor}"
+        );
+        // The deeper the vessel, the smaller the margin; a hull far below its
+        // collapse depth has a factor below one.
+        let deep = shell.safety_factor(2000.0).expect("applies");
+        assert!(deep < 1.0, "safety factor at 2000 m: {deep}");
+        assert!(deep < factor);
+    }
+
+    #[test]
+    fn test_safety_factor_is_infinite_without_load_and_none_without_formula() {
+        let shell = HydrostaticBuckling::new(0.5, 0.01, 3.0, 200e9, 0.3);
+        assert_eq!(shell.safety_factor(0.0), Some(f64::INFINITY));
+        assert_eq!(shell.safety_factor(-5.0), Some(f64::INFINITY));
+        let too_short = HydrostaticBuckling::new(0.5, 0.01, 0.03, 200e9, 0.3);
+        assert_eq!(too_short.safety_factor(0.0), None);
+        assert_eq!(too_short.safety_factor(100.0), None);
     }
 }

@@ -621,7 +621,19 @@ impl MarkovChainMC {
 
     /// MALA (Metropolis-Adjusted Langevin Algorithm) sampler.
     ///
-    /// Proposal: x_prop = x + (eps^2/2) * grad_log_target(x) + eps * N(0,1).
+    /// Proposal: `x_prop = x + (eps^2/2) * grad_log_target(x) + eps * N(0,1)`,
+    /// i.e. `q(x'|x) = N(x'; x + (eps^2/2) * grad_log_target(x), eps^2)`.  The
+    /// proposal is not symmetric, so the acceptance probability carries the
+    /// Hastings correction
+    /// `log α = log π(x') − log π(x) + log q(x|x') − log q(x'|x)`,
+    /// which makes `π` the stationary distribution of the chain for every `eps`.
+    ///
+    /// The returned chain holds the state after each of the `n_samples` steps
+    /// (a rejected proposal repeats the previous state).  A proposal whose
+    /// acceptance ratio is undefined (`NaN`, e.g. a target that is `NaN` or
+    /// `−∞` at both points) is rejected.  `eps` must be finite and positive;
+    /// for `eps = 0` or a non-finite `eps` no proposal is ever accepted and the
+    /// chain stays at `x0`.
     pub fn mala<F, G>(
         &mut self,
         x0: f64,
@@ -634,15 +646,28 @@ impl MarkovChainMC {
         F: Fn(f64) -> f64,
         G: Fn(f64) -> f64,
     {
+        let variance = eps * eps;
+        // Log-density (up to an additive constant) of proposing `to` from a state
+        // `from` whose log-target gradient is `grad_from`.
+        let log_proposal = |to: f64, from: f64, grad_from: f64| -> f64 {
+            let residual = to - from - 0.5 * variance * grad_from;
+            -residual * residual / (2.0 * variance)
+        };
         let mut x = x0;
+        let mut log_pi = log_target(x);
+        let mut grad = grad_log_target(x);
         let mut chain = Vec::with_capacity(n_samples);
         for _ in 0..n_samples {
-            let g = grad_log_target(x);
-            let x_prop = x + 0.5 * eps * eps * g + eps * self.rng.next_normal();
-            // MH correction
-            let log_alpha = log_target(x_prop) - log_target(x);
-            if self.rng.next_f64().max(1e-15).ln() <= log_alpha.min(0.0) {
+            let x_prop = x + 0.5 * variance * grad + eps * self.rng.next_normal();
+            let log_pi_prop = log_target(x_prop);
+            let grad_prop = grad_log_target(x_prop);
+            let log_alpha = log_pi_prop - log_pi + log_proposal(x, x_prop, grad_prop)
+                - log_proposal(x_prop, x, grad);
+            let log_u = self.rng.next_f64().max(1e-15).ln();
+            if !log_alpha.is_nan() && log_u <= log_alpha {
                 x = x_prop;
+                log_pi = log_pi_prop;
+                grad = grad_prop;
             }
             chain.push(x);
         }
@@ -698,7 +723,19 @@ impl MonteCarloIntegral {
         (mean, (var / n as f64).sqrt())
     }
 
-    /// Stratified Monte Carlo: divides each dimension into k strata.
+    /// Stratified Monte Carlo integration of `f` over the unit hypercube
+    /// \[0,1\]^d: every dimension is divided into `k` equal intervals, giving
+    /// `k^d` strata of volume `1/k^d`.
+    ///
+    /// In each stratum `max(2, n_samples / k^d)` uniform points are drawn, so
+    /// the number of evaluations is that count times `k^d` (more than
+    /// `n_samples` when `n_samples < 2 k^d`).  The estimate is
+    /// `Σ_s vol · mean_s` and the standard error `sqrt(Σ_s vol² · var_s / m)`,
+    /// where `m` is the number of points per stratum and `var_s` the unbiased
+    /// sample variance of stratum `s`.
+    ///
+    /// Falls back to [`MonteCarloIntegral::integrate_lhs`] when `k == 0` or when
+    /// `k^d` does not fit in a `usize`.
     ///
     /// Returns (estimate, standard_error).
     pub fn integrate_stratified<F>(&mut self, f: F, k: usize) -> (f64, f64)
@@ -706,28 +743,36 @@ impl MonteCarloIntegral {
         F: Fn(&[f64]) -> f64,
     {
         let d = self.dim;
-        let n_strata = k.pow(d as u32);
-        let mut sum = 0.0;
-        let mut sum_sq = 0.0;
+        let n_strata = match u32::try_from(d).ok().and_then(|exp| k.checked_pow(exp)) {
+            Some(count) if count > 0 => count,
+            _ => return self.integrate_lhs(f),
+        };
+        let per_stratum = (self.n_samples / n_strata).max(2);
         let vol = 1.0 / n_strata as f64;
-        for s in 0..n_strata {
-            let mut x = vec![0.0_f64; d];
-            let mut idx = s;
-            for xj in x.iter_mut() {
-                let cell = idx % k;
-                idx /= k;
-                *xj = (cell as f64 + self.rng.next_f64()) / k as f64;
+        let mut x = vec![0.0_f64; d];
+        let mut estimate = 0.0;
+        let mut estimate_variance = 0.0;
+        for stratum in 0..n_strata {
+            // Welford's running mean and sum of squared deviations.
+            let mut mean = 0.0;
+            let mut m2 = 0.0;
+            for count in 1..=per_stratum {
+                let mut rest = stratum;
+                for xj in x.iter_mut() {
+                    let cell = rest % k;
+                    rest /= k;
+                    *xj = (cell as f64 + self.rng.next_f64()) / k as f64;
+                }
+                let val = f(&x);
+                let delta = val - mean;
+                mean += delta / count as f64;
+                m2 += delta * (val - mean);
             }
-            let val = f(&x) * vol * n_strata as f64;
-            sum += val;
-            sum_sq += val * val;
+            let sample_variance = m2 / (per_stratum - 1) as f64;
+            estimate += vol * mean;
+            estimate_variance += vol * vol * sample_variance / per_stratum as f64;
         }
-        let mean = sum / n_strata as f64;
-        let var = (sum_sq / n_strata as f64 - mean * mean).max(0.0);
-        (
-            mean * vol * n_strata as f64 / n_strata as f64,
-            (var / n_strata as f64).sqrt(),
-        )
+        (estimate, estimate_variance.sqrt())
     }
 
     /// Latin Hypercube Sampling integration.
@@ -1480,5 +1525,119 @@ mod tests {
             |_x: f64| 0.0, // log(target/proposal) = 0 when equal
         );
         assert!((est - 1.0).abs() < 0.2, "est={}", est);
+    }
+
+    // --- MALA ---------------------------------------------------------------
+
+    /// Sample mean and (population) variance of a chain.
+    fn chain_moments(chain: &[f64]) -> (f64, f64) {
+        let n = chain.len() as f64;
+        let mean = chain.iter().sum::<f64>() / n;
+        let var = chain.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+        (mean, var)
+    }
+
+    #[test]
+    fn test_mala_standard_normal_moments() {
+        // Without the Hastings correction this chain has variance ~0.61.
+        let mut mc = MarkovChainMC::new(42, 1.0);
+        let chain = mc.mala(0.0, 200_000, 1.2, |x| -0.5 * x * x, |x| -x);
+        let (mean, var) = chain_moments(&chain);
+        assert!(mean.abs() < 0.03, "mean = {mean}");
+        assert!((var - 1.0).abs() < 0.05, "variance = {var}");
+    }
+
+    #[test]
+    fn test_mala_gamma_target_with_support_boundary() {
+        // Gamma(4, 1): log pi = 3 ln x - x for x > 0 and -inf elsewhere.  An
+        // uncorrected chain has mean ~3.55 and variance ~1.8.
+        let log_target = |x: f64| {
+            if x > 0.0 {
+                3.0 * x.ln() - x
+            } else {
+                f64::NEG_INFINITY
+            }
+        };
+        let grad = |x: f64| if x != 0.0 { 3.0 / x - 1.0 } else { 0.0 };
+        let mut mc = MarkovChainMC::new(42, 1.0);
+        let chain = mc.mala(4.0, 300_000, 0.9, log_target, grad);
+        assert!(chain.iter().all(|&x| x > 0.0));
+        let (mean, var) = chain_moments(&chain);
+        assert!((mean - 4.0).abs() < 0.15, "mean = {mean}");
+        assert!((var - 4.0).abs() < 0.4, "variance = {var}");
+    }
+
+    #[test]
+    fn test_mala_rejects_undefined_proposals() {
+        // The density is undefined (NaN) right of 1: such proposals must never
+        // be accepted.
+        let log_target = |x: f64| if x > 1.0 { f64::NAN } else { -0.5 * x * x };
+        let mut mc = MarkovChainMC::new(7, 1.0);
+        let chain = mc.mala(0.0, 5_000, 1.0, log_target, |x| -x);
+        assert!(chain.iter().all(|&x| x <= 1.0));
+        assert!(chain.iter().any(|&x| x != 0.0), "the chain must move");
+    }
+
+    #[test]
+    fn test_mala_zero_step_size_keeps_initial_state() {
+        let mut mc = MarkovChainMC::new(3, 1.0);
+        let chain = mc.mala(0.7, 100, 0.0, |x| -0.5 * x * x, |x| -x);
+        assert_eq!(chain.len(), 100);
+        assert!(chain.iter().all(|&x| x == 0.7));
+    }
+
+    // --- Stratified integration ----------------------------------------------
+
+    #[test]
+    fn test_stratified_constant_integrand_is_exact() {
+        // k = 2 in two dimensions: the old estimator divided by k^d and gave 0.25.
+        let mut mc = MonteCarloIntegral::new(42, 1000, 2);
+        let (est, se) = mc.integrate_stratified(|_: &[f64]| 1.0, 2);
+        assert!((est - 1.0).abs() < 1e-12, "estimate = {est}");
+        assert_eq!(se, 0.0);
+    }
+
+    #[test]
+    fn test_stratified_product_integrand() {
+        // int_0^1 int_0^1 x0 x1 = 1/4.
+        let n = 160_000;
+        let mut mc = MonteCarloIntegral::new(42, n, 2);
+        let (est, se) = mc.integrate_stratified(|x: &[f64]| x[0] * x[1], 4);
+        assert!((est - 0.25).abs() < 1e-3, "estimate = {est}");
+        assert!(
+            se > 0.0 && (est - 0.25).abs() <= 4.0 * se,
+            "est {est}, se {se}"
+        );
+        // Stratification reduces the error with respect to plain sampling.
+        let mut plain = MonteCarloIntegral::new(42, n, 2);
+        let (_, se_plain) = plain.integrate_plain(|x: &[f64]| x[0] * x[1]);
+        assert!(se < 0.5 * se_plain, "stratified {se} vs plain {se_plain}");
+    }
+
+    #[test]
+    fn test_stratified_single_stratum_is_plain_monte_carlo() {
+        let f = |x: &[f64]| (x[0] + 2.0 * x[1]).sin();
+        let n = 5000;
+        let (est, se) = MonteCarloIntegral::new(9, n, 2).integrate_stratified(f, 1);
+        let (plain_est, plain_se) = MonteCarloIntegral::new(9, n, 2).integrate_plain(f);
+        assert!((est - plain_est).abs() < 1e-12);
+        // The stratified error uses the unbiased (n - 1) sample variance.
+        let ratio = (n as f64 / (n as f64 - 1.0)).sqrt();
+        assert!((se - plain_se * ratio).abs() < 1e-9 * se);
+    }
+
+    #[test]
+    fn test_stratified_falls_back_to_lhs() {
+        let f = |x: &[f64]| x[0] + x[1];
+        // k = 0: no strata.
+        let a = MonteCarloIntegral::new(5, 400, 2).integrate_stratified(f, 0);
+        let b = MonteCarloIntegral::new(5, 400, 2).integrate_lhs(f);
+        assert_eq!(a, b);
+        assert!((a.0 - 1.0).abs() < 0.1, "estimate = {}", a.0);
+        // 10^30 strata overflow usize.
+        let g = |x: &[f64]| x[0];
+        let a = MonteCarloIntegral::new(5, 400, 30).integrate_stratified(g, 10);
+        let b = MonteCarloIntegral::new(5, 400, 30).integrate_lhs(g);
+        assert_eq!(a, b);
     }
 }

@@ -130,13 +130,17 @@ impl HairStrand {
     /// # Arguments
     /// * `dt` - Time-step (seconds).
     /// * `gravity` - Gravitational acceleration vector (m/s²).
-    pub fn integrate_verlet(&mut self, dt: f64, gravity: [f64; 3]) {
+    /// * `extra_acc` - Additional per-particle acceleration (m/s²), indexed like
+    ///   `positions` (for example the wind acceleration from
+    ///   [`HairSimulation::apply_wind_forces`]). Particles without an entry (a
+    ///   short or empty slice) get no extra acceleration.
+    pub fn integrate_verlet(&mut self, dt: f64, gravity: [f64; 3], extra_acc: &[[f64; 3]]) {
         let n = self.positions.len();
         for i in 1..n {
             let pos = self.positions[i];
             let prev = self.prev_positions[i];
             // Verlet: x_new = 2*x - x_prev + a * dt^2
-            let acc = gravity;
+            let acc = add3(gravity, extra_acc.get(i).copied().unwrap_or([0.0; 3]));
             let new_pos = [
                 2.0 * pos[0] - prev[0] + acc[0] * dt * dt,
                 2.0 * pos[1] - prev[1] + acc[1] * dt * dt,
@@ -238,6 +242,12 @@ impl HairStrand {
 // HairSimulation
 // ---------------------------------------------------------------------------
 
+/// Mass density of hair keratin (kg/m³), used for the default particle mass.
+const HAIR_DENSITY: f64 = 1300.0;
+
+/// Length (m) of the hair segment whose mass is the default particle mass.
+const DEFAULT_SEGMENT_LENGTH: f64 = 0.01;
+
 /// A collection of hair strands with shared simulation parameters.
 ///
 /// Manages aerodynamic drag, gravity, and damping for all strands.
@@ -250,6 +260,10 @@ pub struct HairSimulation {
     pub drag_coefficient: f64,
     /// Strand cross-sectional radius for drag area (metres).
     pub strand_radius: f64,
+    /// Mass of one strand particle (kg). It converts the aerodynamic drag force
+    /// (N) into the acceleration (m/s²) the Verlet integrator needs. A
+    /// non-positive or non-finite mass switches the wind coupling off.
+    pub particle_mass: f64,
 }
 
 impl HairSimulation {
@@ -259,13 +273,28 @@ impl HairSimulation {
     /// * `air_density` - Air density (kg/m³), typically 1.225.
     /// * `drag_coefficient` - Drag coefficient, typically 0.5–1.5.
     /// * `strand_radius` - Strand radius in metres, typically 0.00005.
+    ///
+    /// The particle mass defaults to that of a 1 cm cylinder of keratin
+    /// (1300 kg/m³) with the strand radius; see
+    /// [`with_particle_mass`](Self::with_particle_mass).
     pub fn new(air_density: f64, drag_coefficient: f64, strand_radius: f64) -> Self {
         Self {
             strands: Vec::new(),
             air_density,
             drag_coefficient,
             strand_radius,
+            particle_mass: HAIR_DENSITY
+                * std::f64::consts::PI
+                * strand_radius
+                * strand_radius
+                * DEFAULT_SEGMENT_LENGTH,
         }
+    }
+
+    /// Set the mass (kg) of one strand particle.
+    pub fn with_particle_mass(mut self, particle_mass: f64) -> Self {
+        self.particle_mass = particle_mass;
+        self
     }
 
     /// Add a new strand to the simulation.
@@ -285,41 +314,56 @@ impl HairSimulation {
     /// * `gravity` - Gravitational acceleration (m/s²).
     /// * `wind` - Wind velocity vector (m/s).
     pub fn step(&mut self, dt: f64, gravity: [f64; 3], wind: [f64; 3]) {
-        self.apply_wind_forces(wind);
+        let wind_acc = self.apply_wind_forces(wind);
         self.apply_gravity(gravity);
-        for strand in self.strands.iter_mut() {
-            strand.integrate_verlet(dt, gravity);
+        for (strand, acc) in self.strands.iter_mut().zip(wind_acc.iter()) {
+            strand.integrate_verlet(dt, gravity, acc);
             strand.apply_length_constraints(1.0);
         }
     }
 
-    /// Apply aerodynamic wind forces to all strands.
+    /// Aerodynamic wind drag on all strands, returned as particle accelerations.
+    ///
+    /// The drag force of a free particle (index ≥ 1; the root is pinned) is
+    /// `F = 0.5 * rho * cd * A * |v_rel|^2` along the relative wind velocity
+    /// `v_rel = wind - v_particle`, with the projected segment area
+    /// `A = 2 * r * L`. Dividing by [`particle_mass`](Self::particle_mass) gives
+    /// the acceleration in m/s²; with a non-positive or non-finite mass the
+    /// accelerations are zero. Positions are not modified: the force is a load,
+    /// not a displacement, and has to be integrated over `dt²` by
+    /// [`HairStrand::integrate_verlet`].
     ///
     /// # Arguments
     /// * `wind` - Wind velocity vector (m/s).
-    pub fn apply_wind_forces(&mut self, wind: [f64; 3]) {
-        for strand in self.strands.iter_mut() {
-            let n = strand.positions.len();
-            for i in 1..n {
-                let seg_len = if i < strand.rest_lengths.len() {
-                    strand.rest_lengths[i - 1]
-                } else {
-                    strand.rest_lengths[strand.rest_lengths.len() - 1]
-                };
-                let rel_vel = sub3(wind, strand.velocities[i]);
-                let speed = len3(rel_vel);
-                // Drag force: F = 0.5 * rho * cd * A * v^2
-                let area = 2.0 * self.strand_radius * seg_len;
-                let drag_mag =
-                    0.5 * self.air_density * self.drag_coefficient * area * speed * speed;
-                let drag = if speed > 1e-14 {
-                    scale3(normalize3(rel_vel), drag_mag)
-                } else {
-                    [0.0, 0.0, 0.0]
-                };
-                strand.positions[i] = add3(strand.positions[i], drag);
-            }
-        }
+    ///
+    /// # Returns
+    /// One acceleration vector (m/s²) per particle for every strand, in strand
+    /// order and indexed like [`HairStrand::positions`] (the root entry is zero).
+    pub fn apply_wind_forces(&self, wind: [f64; 3]) -> Vec<Vec<[f64; 3]>> {
+        let coupled = self.particle_mass.is_finite() && self.particle_mass > 0.0;
+        self.strands
+            .iter()
+            .map(|strand| {
+                let mut acceleration = vec![[0.0_f64; 3]; strand.positions.len()];
+                if !coupled {
+                    return acceleration;
+                }
+                for (i, acc) in acceleration.iter_mut().enumerate().skip(1) {
+                    let seg_len = strand.rest_lengths.get(i - 1).copied().unwrap_or(0.0);
+                    let rel_vel = sub3(wind, strand.velocities[i]);
+                    let speed = len3(rel_vel);
+                    if speed <= 1e-14 {
+                        continue;
+                    }
+                    // Drag force: F = 0.5 * rho * cd * A * v^2
+                    let area = 2.0 * self.strand_radius * seg_len;
+                    let drag_mag =
+                        0.5 * self.air_density * self.drag_coefficient * area * speed * speed;
+                    *acc = scale3(normalize3(rel_vel), drag_mag / self.particle_mass);
+                }
+                acceleration
+            })
+            .collect()
     }
 
     /// Apply gravity to all free particles by adjusting prev_positions.
@@ -329,8 +373,8 @@ impl HairSimulation {
     /// # Arguments
     /// * `g` - Gravitational acceleration (m/s²).
     pub fn apply_gravity(&mut self, g: [f64; 3]) {
-        // Gravity is applied inside integrate_verlet; this method is a hook
-        // for additional gravity-like body forces.
+        // Gravity is applied inside integrate_verlet; this method is a documented
+        // no-op hook for additional gravity-like body forces.
         let _ = g;
     }
 
@@ -1134,6 +1178,9 @@ impl HairRenderData {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod wind_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::f64::consts::PI;
@@ -1169,11 +1216,24 @@ mod tests {
         let mut strand = HairStrand::new(root, 1.0, 4);
         let gravity = [0.0, -9.81, 0.0];
         let dt = 1.0 / 60.0;
-        strand.integrate_verlet(dt, gravity);
-        // All free particles should have moved downward
-        for i in 1..strand.num_particles() {
-            // Verlet integration: particles should have slightly new positions
-            let _ = strand.positions[i]; // just ensure no panic
+        let before = strand.positions.clone();
+        strand.integrate_verlet(dt, gravity, &[]);
+        // From rest, Verlet moves every free particle by exactly g dt^2 and keeps
+        // the root pinned.
+        assert_eq!(strand.positions[0], before[0]);
+        for (i, (after, start)) in strand
+            .positions
+            .iter()
+            .zip(before.iter())
+            .enumerate()
+            .skip(1)
+        {
+            assert!(
+                (after[1] - (start[1] - 9.81 * dt * dt)).abs() < 1e-12,
+                "particle {i} must fall by g dt^2"
+            );
+            assert_eq!(after[0], start[0]);
+            assert_eq!(after[2], start[2]);
         }
     }
 
@@ -1200,7 +1260,7 @@ mod tests {
         let mut strand = HairStrand::new(root, 1.0, 4);
         let gravity = [0.0, -9.81, 0.0];
         for _ in 0..30 {
-            strand.integrate_verlet(1.0 / 60.0, gravity);
+            strand.integrate_verlet(1.0 / 60.0, gravity, &[]);
             strand.apply_length_constraints(1.0);
         }
         // Root should remain at original position (we don't update index 0)

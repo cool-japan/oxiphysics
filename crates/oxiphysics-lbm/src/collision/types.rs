@@ -6,6 +6,7 @@ use crate::lattice::{CS2, D3Q19_VELOCITIES, D3Q19_WEIGHTS};
 
 use super::central_moments::*;
 use super::functions::*;
+use super::kbc::{kbc_decompose_d3q19, kbc_stabilizer};
 
 /// Advanced BGK overrelaxation collision with viscosity-based construction.
 ///
@@ -300,54 +301,64 @@ impl HybridCollision {
         }
     }
 }
-/// Improved ELBM with mirror state stabilization.
+/// Karlin-Bösch-Chikatamarla (KBC) entropic collision on D3Q19.
 ///
-/// Uses the Karlin-Bösch-Chikatamarla (KBC) approach where the distribution
-/// is split into kinetic and ghost parts:
+/// The non-equilibrium part `Δf = f − feq` is split into a *shear* part `Δs` and a
+/// *higher-order* part `Δh = Δf − Δs`:
 ///
-/// `f = k + s + g`
+/// - `Δs_i = w_i / (2 cs⁴) (c_i c_i) : Π_dev` carries the traceless part of the
+///   non-equilibrium stress `Π = Σ_i Δf_i c_i c_i`,
+/// - `Δh` carries the trace of `Π` (the bulk mode) and all moments of higher order.
 ///
-/// where `k` is the kinetic (equilibrium-driven) part and `s + g` are the
-/// non-equilibrium parts.  The entropy condition is applied only to the ghost
-/// part, improving stability over standard ELBM.
+/// Both parts have no mass and no momentum. The collision relaxes them with different rates,
+///
+/// `f* = f − β (2 Δs + γ Δh)`, `β = ω_s / 2`,
+///
+/// so the shear stress always relaxes with `ω_s = 2β` (the kinematic viscosity
+/// `ν = cs² (1/ω_s − 1/2)`), whereas the stabiliser `γ` is chosen from the entropy estimate
+/// `γ = 1/β − (2 − 1/β) ⟨Δs|Δh⟩ / ⟨Δh|Δh⟩` with the entropic scalar product
+/// `⟨x|y⟩ = Σ_i x_i y_i / feq_i` (it extremises the quadratic entropy estimate
+/// `⟨f* − feq|f* − feq⟩`). For `γ = 2` the operator is BGK with rate `ω_s`; it is also BGK for
+/// every state when `ω_s = 1`, and whenever `Δh = 0`. Because the trace of `Π` belongs to `Δh`,
+/// the bulk mode relaxes with the entropic rate `β γ` instead of a prescribed bulk viscosity.
+///
+/// Reference: Karlin, Bösch, Chikatamarla, Phys. Rev. E 90, 031302(R) (2014); Bösch, Chikatamarla,
+/// Karlin, Phys. Rev. E 92, 043309 (2015).
 #[derive(Debug, Clone)]
 pub struct KbcCollision {
-    /// Viscosity-controlling relaxation rate.
+    /// Shear relaxation rate `ω_s = 2β`, which sets the kinematic viscosity.
     pub omega_s: f64,
-    /// Entropy-bounded ghost relaxation (≤ 2).
-    pub omega_h_max: f64,
 }
 impl KbcCollision {
     /// Create a KBC collision operator from kinematic viscosity.
+    ///
+    /// `ω_s = 1 / (3 ν + 1/2)`.
     pub fn new(nu: f64) -> Self {
         let omega_s = 1.0 / (3.0 * nu + 0.5);
-        Self {
-            omega_s,
-            omega_h_max: 2.0,
-        }
+        Self { omega_s }
     }
-    /// Apply KBC collision with entropy stabilization.
+    /// Kinematic viscosity `ν = cs² (1/ω_s − 1/2)` of the shear relaxation.
+    pub fn effective_viscosity(&self) -> f64 {
+        (1.0 / 3.0) * (1.0 / self.omega_s - 0.5)
+    }
+    /// Entropic stabiliser `γ` for the state `f` with density `rho` and velocity `u`.
     ///
-    /// Computes the mirror state `f* = feq + (feq - f)` and uses it to
-    /// find an alpha ∈ \[0, 2\] satisfying H(f + alpha*(feq - f)) ≤ H(f).
+    /// `γ = 2` reproduces BGK; see the type documentation for the definition.
+    pub fn stabilizer(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> f64 {
+        let feq = compute_equilibrium_d3q19(rho, u);
+        let (delta_s, delta_h) = kbc_decompose_d3q19(f, &feq);
+        kbc_stabilizer(0.5 * self.omega_s, &delta_s, &delta_h, &feq)
+    }
+    /// Apply the KBC collision `f* = f − β (2 Δs + γ Δh)`.
+    ///
+    /// `rho` and `u` must be the density and velocity of `f`; mass and momentum are then
+    /// conserved to round-off for every `γ`.
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
-        let ds: [f64; 19] = std::array::from_fn(|i| feq[i] - f[i]);
-        let f_mirror: [f64; 19] = std::array::from_fn(|i| feq[i] + ds[i]);
-        let gamma = self.find_gamma(f, &feq, &f_mirror);
-        std::array::from_fn(|i| f[i] + gamma * ds[i])
-    }
-    /// Find the scalar gamma such that H(f + gamma*(feq - f)) is maximized
-    /// subject to the entropy condition.
-    fn find_gamma(&self, f: &[f64; 19], feq: &[f64; 19], _f_mirror: &[f64; 19]) -> f64 {
-        let h_f = entropy_h(f);
-        let mut gamma = self.omega_s;
-        let f_at_2: [f64; 19] = std::array::from_fn(|i| (f[i] + 2.0 * (feq[i] - f[i])).max(1e-30));
-        let h_mirror = entropy_h(&f_at_2);
-        if h_mirror <= h_f {
-            gamma = self.omega_h_max;
-        }
-        gamma.clamp(self.omega_s, self.omega_h_max)
+        let (delta_s, delta_h) = kbc_decompose_d3q19(f, &feq);
+        let beta = 0.5 * self.omega_s;
+        let gamma = kbc_stabilizer(beta, &delta_s, &delta_h, &feq);
+        std::array::from_fn(|i| f[i] - beta * (2.0 * delta_s[i] + gamma * delta_h[i]))
     }
 }
 /// Recursive regularized LBM collision operator.
@@ -819,24 +830,41 @@ impl CascadedCollision {
 /// Raw moment collision operator.
 ///
 /// Transforms distributions to raw moment space, applies separate relaxation
-/// rates for each moment, then transforms back.  This provides the same
+/// rates for each moment group, then transforms back with the exact inverse of the 19×19 raw
+/// moment matrix (see [`raw_moments_to_f_d3q19`]). This provides the same
 /// framework as MRT but operates directly in raw (non-orthogonalized) moments.
 ///
 /// Raw moments m_k = Σ_i f_i c_{ix}^{k_x} c_{iy}^{k_y} c_{iz}^{k_z}
+///
+/// The moment groups are updated as follows:
+///
+/// - density and momentum (`m_000`, `m_100`, `m_010`, `m_001`) are conserved (rate 1 towards
+///   the equilibrium of the supplied `rho`, `u`),
+/// - the trace `m_200 + m_020 + m_002` relaxes with the bulk rate `ω_b`,
+/// - the trace-free normal stresses `m_aa − trace / 3` and the shear stresses
+///   `m_110, m_101, m_011` relax with the shear rate `ω_v`,
+/// - the third- and fourth-order moments (ghosts, `m_210 … m_022`) relax with `ω_g`.
+///
+/// With `ω_v = ω_b = ω_g = ω` the operator is exactly BGK with rate `ω`.
 #[derive(Debug, Clone, Copy)]
 pub struct RawMomentCollision {
-    /// Viscous relaxation rate ω_v (for stress-tensor moments).
+    /// Viscous relaxation rate ω_v (for the shear and trace-free normal stresses).
     pub omega_v: f64,
-    /// Bulk viscosity relaxation rate ω_b.
+    /// Bulk viscosity relaxation rate ω_b (for the trace of the stress tensor).
     pub omega_b: f64,
     /// Ghost mode relaxation rate ω_g (non-hydrodynamic).
     pub omega_g: f64,
 }
 impl RawMomentCollision {
     /// Construct from shear viscosity ν and bulk viscosity ζ.
+    ///
+    /// `ω_v = 1 / (3 ν + 1/2)` and `ω_b = 1 / (9 ζ / 2 + 1/2)`, so that
+    /// [`shear_viscosity`](Self::shear_viscosity) returns `ν` and
+    /// [`bulk_viscosity`](Self::bulk_viscosity) returns `ζ`. The ghost moments are reset to their
+    /// equilibrium values (`ω_g = 1`). `ζ = 0` gives `ω_b = 2`, the edge of linear stability.
     pub fn from_viscosity(nu: f64, zeta: f64) -> Self {
         let tau_v = 3.0 * nu + 0.5;
-        let tau_b = 3.0 * (zeta + 2.0 * nu / 3.0) + 0.5;
+        let tau_b = 4.5 * zeta + 0.5;
         Self {
             omega_v: 1.0 / tau_v,
             omega_b: 1.0 / tau_b,
@@ -845,23 +873,40 @@ impl RawMomentCollision {
     }
     /// Perform raw moment collision.
     ///
-    /// Uses the D3Q19 raw moment representation.  Hydrodynamic moments
-    /// (density, momentum) are conserved; stress moments relax at ω_v.
+    /// Uses the D3Q19 raw moment representation. The hydrodynamic moments (density, momentum)
+    /// are conserved, the trace of the stress relaxes at `ω_b`, the trace-free stress at `ω_v`
+    /// and the ghost moments at `ω_g`; `rho` and `u` must be the density and velocity of `f`.
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let m = compute_raw_moments_d3q19(f);
         let meq = compute_raw_moments_d3q19(&feq);
         let mut m_out = [0.0f64; 19];
-        for (i, (m_out_i, (&mi, &meqi))) in
-            m_out.iter_mut().zip(m.iter().zip(meq.iter())).enumerate()
-        {
-            let rate = raw_moment_rate(i, self.omega_v, self.omega_b, self.omega_g);
-            *m_out_i = mi - rate * (mi - meqi);
+        // Conserved moments: density and momentum take the equilibrium values.
+        m_out[..4].copy_from_slice(&meq[..4]);
+        // Second order: the trace relaxes with the bulk rate, the deviators with the shear rate.
+        let trace = m[4] + m[5] + m[6];
+        let trace_eq = meq[4] + meq[5] + meq[6];
+        let trace_out = trace - self.omega_b * (trace - trace_eq);
+        for k in 4..7 {
+            let deviator = m[k] - trace / 3.0;
+            let deviator_eq = meq[k] - trace_eq / 3.0;
+            m_out[k] = trace_out / 3.0 + deviator - self.omega_v * (deviator - deviator_eq);
+        }
+        for k in 7..10 {
+            m_out[k] = m[k] - self.omega_v * (m[k] - meq[k]);
+        }
+        // Ghost moments: third and fourth order.
+        for k in 10..19 {
+            m_out[k] = m[k] - self.omega_g * (m[k] - meq[k]);
         }
         raw_moments_to_f_d3q19(&m_out)
     }
     /// Return effective shear viscosity.
     pub fn shear_viscosity(&self) -> f64 {
         (1.0 / 3.0) * (1.0 / self.omega_v - 0.5)
+    }
+    /// Return the effective bulk viscosity `ζ = (2/9) (1/ω_b − 1/2)` of the D3Q19 trace mode.
+    pub fn bulk_viscosity(&self) -> f64 {
+        (2.0 / 9.0) * (1.0 / self.omega_b - 0.5)
     }
 }

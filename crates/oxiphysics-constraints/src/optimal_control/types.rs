@@ -3,6 +3,9 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use super::hinf::{HInfBounds, StateSpace};
+use super::ilqr::{self, DynamicsOrder, IlqrSettings};
+use super::mpc_qp;
 /// Solution returned by MPC.
 #[derive(Debug, Clone)]
 pub struct MpcSolution {
@@ -10,15 +13,39 @@ pub struct MpcSolution {
     pub u_seq: Vec<f64>,
     /// Predicted state trajectory (length (horizon+1) * n).
     pub x_traj: Vec<f64>,
-    /// Optimal cost.
+    /// Cost `J` of the returned input sequence.
     pub cost: f64,
-    /// Whether constraints are satisfied.
+    /// Whether the state bounds are satisfied by the predicted trajectory
+    /// (to within `1e-6`, the initial state included).  The input bounds hold
+    /// exactly.  `false` means the problem is infeasible or the initial state
+    /// already violates a bound; `u_seq` is then the least-violating input
+    /// sequence found.
     pub feasible: bool,
+    /// Total number of projected-gradient iterations.
+    pub iterations: usize,
+    /// Whether the solver met its tolerances (gradient mapping, state-bound
+    /// violation and complementarity gap of the active state bounds) before
+    /// running out of iterations.
+    pub converged: bool,
 }
 /// Iterative LQR for discrete-time nonlinear systems.
 ///
-/// Uses a linearisation at each step and solves a backward Riccati pass,
-/// followed by a forward rollout.
+/// Every iteration linearises the dynamics and expands the cost to second
+/// order around the current trajectory with central finite differences
+/// (`lxx`, `luu`, `lux` are the true Hessians of the running cost, the initial
+/// value-function Hessian is the Hessian of the terminal cost), solves the
+/// backward Riccati recursion and rolls the resulting feedback law out on the
+/// nonlinear dynamics with a backtracking line search.
+///
+/// The Levenberg–Marquardt term added to `Quu` starts at [`reg`](Self::reg)
+/// and is adapted automatically: it grows when `Quu` is not positive definite
+/// or no step length reduces the cost, and shrinks after every accepted step.
+/// For a linear system with a quadratic cost the first iteration already lands
+/// on the optimum and the returned gains equal those of
+/// [`FiniteHorizonLqr`] (for `reg` small compared with `Quu`).
+///
+/// The second derivatives of the dynamics are ignored (Gauss–Newton); see
+/// [`DifferentialDynamicProgramming`] for the variant that keeps them.
 #[derive(Debug, Clone)]
 pub struct IlqrSolver {
     /// State dimension.
@@ -31,7 +58,7 @@ pub struct IlqrSolver {
     pub max_iter: usize,
     /// Convergence tolerance on cost improvement.
     pub tol: f64,
-    /// Regularisation on Quu.
+    /// Initial (and minimum) regularisation on `Quu`.
     pub reg: f64,
 }
 impl IlqrSolver {
@@ -46,11 +73,18 @@ impl IlqrSolver {
             reg,
         }
     }
-    /// Solve using numerical Jacobians of dynamics f and cost l.
+    /// Solve using numerical derivatives of the dynamics `f` and the cost `l`.
     ///
     /// `dynamics`: (x, u) → x_next
     /// `running_cost`: (x, u) → scalar
     /// `terminal_cost`: x → scalar
+    ///
+    /// `x0` holds the `n` initial state entries and `u_init` the `horizon * m`
+    /// initial controls (missing entries count as zero, surplus entries are
+    /// ignored).  The iteration stops when an accepted step improves the cost
+    /// by no more than [`tol`](Self::tol), when the quadratic model predicts no
+    /// worthwhile decrease, or after [`max_iter`](Self::max_iter) iterations;
+    /// [`IlqrResult::converged`] tells which.
     pub fn solve<F, G, H>(
         &self,
         x0: &[f64],
@@ -64,169 +98,16 @@ impl IlqrSolver {
         G: Fn(&[f64], &[f64]) -> f64,
         H: Fn(&[f64]) -> f64,
     {
-        let n = self.n;
-        let m = self.m;
-        let t = self.horizon;
-        let eps = 1e-5;
-        let rollout = |u_seq: &[f64]| -> Vec<f64> {
-            let mut traj = vec![0.0; (t + 1) * n];
-            traj[..n].copy_from_slice(x0);
-            for k in 0..t {
-                let xk = traj[k * n..(k + 1) * n].to_vec();
-                let uk = &u_seq[k * m..(k + 1) * m];
-                let xk1 = dynamics(&xk, uk);
-                traj[(k + 1) * n..(k + 2) * n].copy_from_slice(&xk1);
-            }
-            traj
+        let settings = IlqrSettings {
+            n: self.n,
+            m: self.m,
+            horizon: self.horizon,
+            max_iter: self.max_iter,
+            tol: self.tol,
+            reg: self.reg,
+            order: DynamicsOrder::First,
         };
-        let total_cost = |traj: &[f64], u_seq: &[f64]| -> f64 {
-            let mut c = 0.0;
-            for k in 0..t {
-                let xk = &traj[k * n..(k + 1) * n];
-                let uk = &u_seq[k * m..(k + 1) * m];
-                c += running_cost(xk, uk);
-            }
-            c + terminal_cost(&traj[t * n..])
-        };
-        let mut u_seq = u_init.to_vec();
-        let mut traj = rollout(&u_seq);
-        let mut cost = total_cost(&traj, &u_seq);
-        for iter in 0..self.max_iter {
-            let mut v_x = {
-                let xf = &traj[t * n..];
-                let mut grad = vec![0.0; n];
-                for (i, gi) in grad.iter_mut().enumerate() {
-                    let mut xp = xf.to_vec();
-                    xp[i] += eps;
-                    *gi = (terminal_cost(&xp) - terminal_cost(xf)) / eps;
-                }
-                grad
-            };
-            let mut v_xx = mat_eye(n);
-            let mut ks: Vec<Vec<f64>> = vec![vec![0.0; m * n]; t];
-            let mut ds: Vec<Vec<f64>> = vec![vec![0.0; m]; t];
-            for k in (0..t).rev() {
-                let xk = traj[k * n..(k + 1) * n].to_vec();
-                let uk = u_seq[k * m..(k + 1) * m].to_vec();
-                let xk1 = dynamics(&xk, &uk);
-                let mut fx = vec![0.0; n * n];
-                let mut fu = vec![0.0; n * m];
-                for i in 0..n {
-                    let mut xp = xk.clone();
-                    xp[i] += eps;
-                    let xp1 = dynamics(&xp, &uk);
-                    for j in 0..n {
-                        fx[j * n + i] = (xp1[j] - xk1[j]) / eps;
-                    }
-                }
-                for i in 0..m {
-                    let mut up = uk.clone();
-                    up[i] += eps;
-                    let xp1 = dynamics(&xk, &up);
-                    for j in 0..n {
-                        fu[j * m + i] = (xp1[j] - xk1[j]) / eps;
-                    }
-                }
-                let c0 = running_cost(&xk, &uk);
-                let mut lx = vec![0.0; n];
-                let mut lu = vec![0.0; m];
-                for (i, lxi) in lx.iter_mut().enumerate() {
-                    let mut xp = xk.clone();
-                    xp[i] += eps;
-                    *lxi = (running_cost(&xp, &uk) - c0) / eps;
-                }
-                for (i, lui) in lu.iter_mut().enumerate() {
-                    let mut up = uk.clone();
-                    up[i] += eps;
-                    *lui = (running_cost(&xk, &up) - c0) / eps;
-                }
-                let lxx = mat_eye(n);
-                let luu_diag = mat_eye(m);
-                let fut = mat_transpose_rect(&fu, n, m);
-                let fxt = mat_transpose(&fx, n);
-                let vxx_fx = mat_mul(&v_xx, &fx, n);
-                let fut_vxx_fx = mat_mul_rect(&fut, m, n, &vxx_fx, n);
-                let qux = fut_vxx_fx;
-                let vxx_fu = mat_mul_rect(&v_xx, n, n, &fu, m);
-                let fut_vxx_fu = mat_mul_rect(&fut, m, n, &vxx_fu, m);
-                let mut quu = mat_add(&luu_diag, &fut_vxx_fu, m);
-                for i in 0..m {
-                    quu[i * m + i] += self.reg;
-                }
-                let fxt_vxx = mat_mul_rect(&fxt, n, n, &v_xx, n);
-                let qxx = mat_add(&lxx, &mat_mul(&fxt_vxx, &fx, n), n);
-                let fut_vx = mat_mul_rect(&fut, m, n, &v_x, 1);
-                let fxt_vx = mat_mul_rect(&fxt, n, n, &v_x, 1);
-                let qu: Vec<f64> = lu.iter().zip(fut_vx.iter()).map(|(a, b)| a + b).collect();
-                let qx: Vec<f64> = lx.iter().zip(fxt_vx.iter()).map(|(a, b)| a + b).collect();
-                let quu_inv = match mat_inv(&quu, m) {
-                    Some(inv) => inv,
-                    None => mat_eye(m),
-                };
-                let k_gain = mat_mul_rect(&quu_inv, m, m, &qux, n);
-                let d_gain = mat_mul_rect(&quu_inv, m, m, &qu, 1);
-                ks[k] = k_gain.clone();
-                ds[k] = d_gain.clone();
-                let kt = mat_transpose_rect(&k_gain, m, n);
-                let kt_quu = mat_mul_rect(&kt, n, m, &quu, m);
-                let kt_quu_k = mat_mul_rect(&kt_quu, n, m, &k_gain, n);
-                let kt_qu = mat_mul_rect(&kt, n, m, &qu, 1);
-                v_xx = mat_sub(&qxx, &kt_quu_k, n);
-                v_x = qx
-                    .iter()
-                    .zip(kt_qu.iter())
-                    .map(|(a, b)| a - b)
-                    .collect::<Vec<_>>();
-            }
-            let mut alpha = 1.0;
-            let mut new_cost = cost;
-            let mut new_u = u_seq.clone();
-            let mut new_traj = traj.clone();
-            for _ in 0..10 {
-                let mut u_new = vec![0.0; t * m];
-                let mut x_new = vec![0.0; (t + 1) * n];
-                x_new[..n].copy_from_slice(x0);
-                for k in 0..t {
-                    let dx: Vec<f64> = x_new[k * n..(k + 1) * n]
-                        .iter()
-                        .zip(traj[k * n..(k + 1) * n].iter())
-                        .map(|(a, b)| a - b)
-                        .collect();
-                    let kd = mat_mul_rect(&ks[k], m, n, &dx, 1);
-                    for j in 0..m {
-                        u_new[k * m + j] = u_seq[k * m + j] - alpha * ds[k][j] - kd[j];
-                    }
-                    let xk1 = dynamics(&x_new[k * n..(k + 1) * n], &u_new[k * m..(k + 1) * m]);
-                    x_new[(k + 1) * n..(k + 2) * n].copy_from_slice(&xk1);
-                }
-                let c_new = total_cost(&x_new, &u_new);
-                if c_new < cost {
-                    new_cost = c_new;
-                    new_u = u_new;
-                    new_traj = x_new;
-                    break;
-                }
-                alpha *= 0.5;
-            }
-            let improvement = cost - new_cost;
-            u_seq = new_u;
-            traj = new_traj;
-            cost = new_cost;
-            if improvement.abs() < self.tol {
-                return IlqrResult {
-                    x_traj: traj,
-                    u_seq,
-                    cost,
-                    iterations: iter + 1,
-                };
-            }
-        }
-        IlqrResult {
-            x_traj: traj,
-            u_seq,
-            cost,
-            iterations: self.max_iter,
-        }
+        ilqr::solve(&settings, x0, u_init, dynamics, running_cost, terminal_cost)
     }
 }
 /// Finite-horizon LQR solver (discrete time, backward Riccati recursion).
@@ -440,7 +321,11 @@ impl TrajectoryOptimization {
 }
 /// Model Predictive Controller with receding horizon.
 ///
-/// Uses a condensed QP formulation solved by projected gradient descent.
+/// Solves the condensed quadratic program over the input sequence with the
+/// exact adjoint gradient and an accelerated projected-gradient method whose
+/// step is set from a power-iteration estimate of the largest curvature; state
+/// bounds are enforced by an augmented-Lagrangian outer loop.  See
+/// [`solve`](Self::solve).
 #[derive(Debug, Clone)]
 pub struct ModelPredictiveControl {
     /// The problem specification.
@@ -451,79 +336,31 @@ impl ModelPredictiveControl {
     pub fn new(problem: MpcProblem) -> Self {
         Self { problem }
     }
-    /// Solve the MPC QP for current state x0. Returns the MPC solution.
+    /// Solve the MPC problem for the current state `x0`.
     ///
-    /// Uses projected gradient descent as a simple QP solver.
+    /// Minimises `Σ (xₖᵀQxₖ + uₖᵀRuₖ) + x_Nᵀ Qf x_N` over the input sequence
+    /// subject to `x_{k+1} = A xₖ + B uₖ`, the input box `[u_lb, u_ub]` and the
+    /// state bounds `[x_lb, x_ub]` on the predicted states `x₁ … x_N`.
+    ///
+    /// * The gradient of the cost is computed exactly by one adjoint pass.
+    /// * The inputs are optimised by FISTA (restarted when the momentum opposes
+    ///   the gradient mapping, with backtracking) from the step `1/L`, `L` being
+    ///   the power-iteration estimate of the curvature, until the
+    ///   gradient-mapping norm is below `1e-10` of the gradient scale (a
+    ///   backward-error test, so scaling every weight by a constant does not
+    ///   change the answer).  The input bounds are therefore met exactly.
+    /// * Finite state bounds are handled by an augmented Lagrangian with
+    ///   inexact inner solves, so an active bound is met to about `1e-9`
+    ///   (relative to the size of the bounds, at least `1`) with a finite
+    ///   penalty.  If the bounds cannot be met the returned inputs minimise
+    ///   the violation and [`MpcSolution::feasible`] is `false`.
+    ///
+    /// Bound slices shorter than the dimension, or holding `NaN`, leave the
+    /// remaining entries unbounded.  Inconsistent matrix sizes or a wrong-sized
+    /// or non-finite `x0` produce a failed solution (`converged = false`, NaN
+    /// cost) instead of a panic.
     pub fn solve(&self, x0: &[f64]) -> MpcSolution {
-        let p = &self.problem;
-        let n = p.n;
-        let m = p.m;
-        let h = p.horizon;
-        let mut u_seq = vec![0.0; h * m];
-        let simulate = |u_seq: &[f64]| -> Vec<f64> {
-            let mut traj = vec![0.0; (h + 1) * n];
-            traj[..n].copy_from_slice(x0);
-            for k in 0..h {
-                let xk = &traj[k * n..(k + 1) * n].to_vec();
-                let uk = &u_seq[k * m..(k + 1) * m];
-                let ax = mat_vec(&p.a, xk, n);
-                let bu = mat_mul_rect(&p.b, n, m, uk, 1);
-                for i in 0..n {
-                    traj[(k + 1) * n + i] = ax[i] + bu[i];
-                }
-            }
-            traj
-        };
-        let cost_fn = |u_seq: &[f64]| -> f64 {
-            let traj = simulate(u_seq);
-            let mut cost = 0.0;
-            for k in 0..h {
-                let xk = &traj[k * n..(k + 1) * n];
-                let uk = &u_seq[k * m..(k + 1) * m];
-                let qx = mat_vec(&p.q, xk, n);
-                cost += dot(xk, &qx);
-                let ru = mat_vec(&p.r, uk, m);
-                cost += dot(uk, &ru);
-            }
-            let xf = &traj[h * n..];
-            let qfx = mat_vec(&p.qf, xf, n);
-            cost += dot(xf, &qfx);
-            cost
-        };
-        let step_size = 1e-3;
-        for _iter in 0..500 {
-            let c0 = cost_fn(&u_seq);
-            let mut grad = vec![0.0; h * m];
-            for (i, gi) in grad.iter_mut().enumerate() {
-                let mut u_perturbed = u_seq.clone();
-                u_perturbed[i] += 1e-6;
-                *gi = (cost_fn(&u_perturbed) - c0) / 1e-6;
-            }
-            for k in 0..h {
-                for j in 0..m {
-                    let idx = k * m + j;
-                    u_seq[idx] -= step_size * grad[idx];
-                    u_seq[idx] = u_seq[idx].max(p.u_lb[j]).min(p.u_ub[j]);
-                }
-            }
-        }
-        let traj = simulate(&u_seq);
-        let cost = cost_fn(&u_seq);
-        let mut feasible = true;
-        for k in 0..=h {
-            for i in 0..n {
-                let xi = traj[k * n + i];
-                if xi < p.x_lb[i] - 1e-6 || xi > p.x_ub[i] + 1e-6 {
-                    feasible = false;
-                }
-            }
-        }
-        MpcSolution {
-            u_seq,
-            x_traj: traj,
-            cost,
-            feasible,
-        }
+        mpc_qp::solve(&self.problem, x0)
     }
 }
 /// Discrete-time Kalman filter for a linear system.
@@ -642,7 +479,7 @@ impl KalmanFilter {
         mat_mul_rect(&p_ct, self.n, self.p, &s_inv, self.p)
     }
 }
-/// Result of one iLQR iteration.
+/// Result of an iLQR or DDP solve.
 #[derive(Debug, Clone)]
 pub struct IlqrResult {
     /// State trajectory (length (T+1) * n).
@@ -653,6 +490,15 @@ pub struct IlqrResult {
     pub cost: f64,
     /// Number of iterations taken.
     pub iterations: usize,
+    /// Feedback gains `K_k` along the returned trajectory (length T, each
+    /// `m x n` row-major): the closed-loop law is
+    /// `u = u_seq[k] - K_k (x - x_traj[k])`, with the same sign convention as
+    /// [`FiniteHorizonLqr::gains`].
+    pub gains: Vec<Vec<f64>>,
+    /// Whether the iteration met its stopping criterion (the cost improvement
+    /// or the predicted improvement fell to the tolerance) instead of running
+    /// out of iterations or regularisation headroom.
+    pub converged: bool,
 }
 /// Hamilton–Jacobi–Bellman equation value function approximation.
 ///
@@ -877,8 +723,20 @@ impl PontryaginMinimum {
 }
 /// Differential Dynamic Programming solver.
 ///
-/// Similar to iLQR but includes second-order (Hxx, Huu, Hux) terms for
-/// better local convergence.
+/// Same backward/forward structure as [`IlqrSolver`], but the backward pass
+/// keeps the second derivatives of the dynamics: the Q-function Hessians are
+///
+/// ```text
+/// Qxx = lxx + Fxᵀ Vxx Fx + Σᵢ Vxᵢ ∇²ₓₓ fᵢ
+/// Quu = luu + Fuᵀ Vxx Fu + Σᵢ Vxᵢ ∇²ᵤᵤ fᵢ
+/// Qux = lux + Fuᵀ Vxx Fx + Σᵢ Vxᵢ ∇²ᵤₓ fᵢ
+/// ```
+///
+/// with `∇² fᵢ` obtained by central finite differences (Jacobson & Mayne,
+/// 1970).  Close to a minimum this gives quadratic instead of linear
+/// convergence for nonlinear dynamics; for linear dynamics the extra terms
+/// vanish and DDP coincides with iLQR.  The regularisation starts at `1e-6`
+/// and is adapted like in [`IlqrSolver`].
 #[derive(Debug, Clone)]
 pub struct DifferentialDynamicProgramming {
     /// State dimension.
@@ -903,7 +761,9 @@ impl DifferentialDynamicProgramming {
             tol,
         }
     }
-    /// Solve DDP (first-order, equivalent to iLQR for simplicity).
+    /// Solve with the full second-order expansion of the dynamics.
+    ///
+    /// Arguments and stopping rules are those of [`IlqrSolver::solve`].
     pub fn solve<F, G, H>(
         &self,
         x0: &[f64],
@@ -917,14 +777,27 @@ impl DifferentialDynamicProgramming {
         G: Fn(&[f64], &[f64]) -> f64,
         H: Fn(&[f64]) -> f64,
     {
-        let ilqr = IlqrSolver::new(self.n, self.m, self.horizon, self.max_iter, self.tol, 1e-6);
-        ilqr.solve(x0, u_init, dynamics, running_cost, terminal_cost)
+        let settings = IlqrSettings {
+            n: self.n,
+            m: self.m,
+            horizon: self.horizon,
+            max_iter: self.max_iter,
+            tol: self.tol,
+            reg: 1e-6,
+            order: DynamicsOrder::Second,
+        };
+        ilqr::solve(&settings, x0, u_init, dynamics, running_cost, terminal_cost)
     }
 }
-/// Robust H-infinity control via small gain theorem.
+/// Robust control analysis of a continuous-time LTI plant
+/// `P(s) = C (sI - A)⁻¹ B + D` through its H-infinity norm and the small gain
+/// theorem.
 ///
-/// Stores the system transfer function gain and computes the H-infinity norm
-/// via bisection on the Hamiltonian matrix (simplified scalar version).
+/// The norm `‖P‖∞ = sup_ω σ_max(P(jω))` is computed with the Hamiltonian
+/// level-set algorithm of Bruinsma and Steinbuch (see [`HInfBounds`]), which
+/// brackets the norm between a value of `σ_max(P(jω))` that was actually
+/// evaluated and a bound certified by the absence of imaginary-axis
+/// eigenvalues of the Hamiltonian matrix.  All matrices are row-major.
 #[derive(Debug, Clone)]
 pub struct RobustControl {
     /// State dimension.
@@ -963,31 +836,54 @@ impl RobustControl {
             d,
         }
     }
-    /// Upper bound on H-infinity norm via induced 2-norm at DC (ω=0).
+    /// Bounds on the H-infinity norm `‖P‖∞ = sup_ω σ_max(P(jω))` of the plant.
     ///
-    /// H(0) = -C A⁻¹ B + D  (transfer matrix at ω=0).
-    /// Returns the Frobenius norm of H(0) as a proxy.
-    pub fn h_inf_upper_bound(&self) -> f64 {
-        let a_inv = match mat_inv(&self.a, self.n) {
-            Some(inv) => inv,
-            None => return f64::INFINITY,
-        };
-        let neg_c_ainv: Vec<f64> = mat_mul_rect(&self.c, self.p, self.n, &a_inv, self.n)
-            .iter()
-            .map(|x| -x)
-            .collect();
-        let neg_c_ainv_b = mat_mul_rect(&neg_c_ainv, self.p, self.n, &self.b, self.m);
-        let h0: Vec<f64> = neg_c_ainv_b
-            .iter()
-            .zip(self.d.iter())
-            .map(|(a, b)| a + b)
-            .collect();
-        frob_norm(&h0)
+    /// The result brackets the norm: `lower` is a value of `σ_max(P(jω))` at a
+    /// real frequency and `upper` is certified by the Hamiltonian test; they
+    /// differ by a relative `3e-6` at most.  The norm of a plant whose `A` is
+    /// not Hurwitz (an eigenvalue on or right of the imaginary axis, up to a
+    /// numerical margin) is infinite, and so is a plant with inconsistent
+    /// matrix dimensions or non-finite entries: both bounds are then
+    /// `f64::INFINITY`.  A plant without poles (`n = 0`) is the static gain
+    /// `D` and its norm is `σ_max(D)`.
+    pub fn h_inf_bounds(&self) -> HInfBounds {
+        StateSpace {
+            n: self.n,
+            m: self.m,
+            p: self.p,
+            a: &self.a,
+            b: &self.b,
+            c: &self.c,
+            d: &self.d,
+        }
+        .h_inf_bounds()
     }
-    /// Small gain theorem: system is robustly stable if γ * ||P||_∞ < 1.
+    /// The H-infinity norm of the plant, accurate to a relative `3e-6`.
     ///
-    /// Returns `true` if `gamma * h_inf_upper_bound() < 1`.
+    /// This is the peak of `σ_max(P(jω))` found by
+    /// [`h_inf_bounds`](Self::h_inf_bounds) (its `lower` bound), so it never
+    /// exceeds the true norm.  `f64::INFINITY` for a plant that is not stable.
+    pub fn h_inf_norm(&self) -> f64 {
+        self.h_inf_bounds().lower
+    }
+    /// Certified upper bound on the H-infinity norm of the plant.
+    ///
+    /// Unlike a single frequency evaluation (for example the DC gain), this
+    /// bound can be relied on for robustness certificates: it exceeds the true
+    /// norm by a relative `3e-6` at most.  `f64::INFINITY` for a plant that is
+    /// not stable.
+    pub fn h_inf_upper_bound(&self) -> f64 {
+        self.h_inf_bounds().upper
+    }
+    /// Small gain theorem: the feedback interconnection of the plant with any
+    /// stable uncertainty of H-infinity norm at most `gamma` is stable if
+    /// `gamma * ‖P‖∞ < 1`.
+    ///
+    /// The test uses the certified [`h_inf_upper_bound`](Self::h_inf_upper_bound),
+    /// so `true` is a guarantee (up to the numerical tolerance of the norm
+    /// computation); an unstable plant is never reported as robustly stable.
     pub fn small_gain_stable(&self, gamma: f64) -> bool {
-        gamma * self.h_inf_upper_bound() < 1.0
+        let upper = self.h_inf_upper_bound();
+        upper.is_finite() && gamma.abs() * upper < 1.0
     }
 }

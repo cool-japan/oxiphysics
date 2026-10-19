@@ -4,6 +4,59 @@
 
 use super::functions::{hoop_stress_angle, make_perp_fracture, make_perpendicular, norm3};
 
+/// `v / |v|`, or `fallback` when `v` has (numerically) no length.
+fn unit_or(v: [f64; 3], fallback: [f64; 3]) -> [f64; 3] {
+    let len = norm3(v);
+    if len > 1e-12 {
+        [v[0] / len, v[1] / len, v[2] / len]
+    } else {
+        fallback
+    }
+}
+
+/// Dot product of two 3-vectors.
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Turn the in-plane crack frame `(propagation_dir, normal)` by `theta` about
+/// the crack-front tangent `propagation_dir x normal`.
+///
+/// This is Rodrigues' rotation about the tangent `t = p x n`; because `p`, `n`
+/// and `t` are orthonormal (`t x p = n`, `t x n = -p`) it reduces to
+/// `p' = cos(theta) p + sin(theta) n` and `n' = cos(theta) n - sin(theta) p`.
+/// The new propagation direction is the direction of a vertex that advances by
+/// the kink angle `theta`; the new normal stays perpendicular to it, so the
+/// frame keeps describing the (kinked) crack plane.
+fn rotate_frame(p: [f64; 3], n: [f64; 3], theta: f64) -> ([f64; 3], [f64; 3]) {
+    let (s, c) = theta.sin_cos();
+    let p_new = unit_or(
+        [
+            c * p[0] + s * n[0],
+            c * p[1] + s * n[1],
+            c * p[2] + s * n[2],
+        ],
+        p,
+    );
+    let n_raw = [
+        c * n[0] - s * p[0],
+        c * n[1] - s * p[1],
+        c * n[2] - s * p[2],
+    ];
+    // Re-orthogonalise against the new propagation direction so repeated kinks
+    // cannot accumulate rounding drift.
+    let along = dot3(n_raw, p_new);
+    let n_new = unit_or(
+        [
+            n_raw[0] - along * p_new[0],
+            n_raw[1] - along * p_new[1],
+            n_raw[2] - along * p_new[2],
+        ],
+        n,
+    );
+    (p_new, n_new)
+}
+
 /// Result of splitting a node at a crack path.
 pub struct SplitResult {
     /// Index of the original node.
@@ -13,13 +66,21 @@ pub struct SplitResult {
     /// Edges that were reassigned to use the new node.
     pub reassigned_edges: Vec<usize>,
 }
-/// A single vertex on the crack front, plus the local normal to the crack plane.
+/// A single vertex on the crack front with its local crack-plane frame.
+///
+/// The frame `(propagation_dir, normal, tangent)` is right-handed with the
+/// front tangent `tangent = propagation_dir x normal`: `normal` is perpendicular
+/// to the crack plane, `propagation_dir` lies in the plane and points away from
+/// the front, and `tangent` runs along the front line.
 #[derive(Debug, Clone, Copy)]
 pub struct CrackFrontVertex {
     /// Position of this front vertex in world space.
     pub position: [f64; 3],
     /// Unit normal to the crack plane at this vertex.
     pub normal: [f64; 3],
+    /// Unit in-plane direction in which the crack advances straight ahead
+    /// (perpendicular to both the front line and `normal`).
+    pub propagation_dir: [f64; 3],
     /// Current Mode-I stress intensity factor at this vertex.
     pub k1: f64,
     /// Current Mode-II stress intensity factor at this vertex.
@@ -29,16 +90,30 @@ pub struct CrackFrontVertex {
 }
 impl CrackFrontVertex {
     /// Create a new front vertex.
-    pub fn new(position: [f64; 3], normal: [f64; 3], k1: f64, k2: f64) -> Self {
-        let n = norm3(normal);
-        let normal = if n > 1e-12 {
-            [normal[0] / n, normal[1] / n, normal[2] / n]
-        } else {
-            [0.0, 1.0, 0.0]
-        };
+    ///
+    /// `normal` is normalised (a zero normal falls back to `(0, 1, 0)`).
+    /// `propagation_dir` is projected into the crack plane and normalised; if
+    /// nothing is left (zero or parallel to `normal`) an arbitrary unit vector in
+    /// the plane is used.
+    pub fn new(
+        position: [f64; 3],
+        normal: [f64; 3],
+        propagation_dir: [f64; 3],
+        k1: f64,
+        k2: f64,
+    ) -> Self {
+        let normal = unit_or(normal, [0.0, 1.0, 0.0]);
+        let along_normal = dot3(propagation_dir, normal);
+        let in_plane = [
+            propagation_dir[0] - along_normal * normal[0],
+            propagation_dir[1] - along_normal * normal[1],
+            propagation_dir[2] - along_normal * normal[2],
+        ];
+        let propagation_dir = unit_or(in_plane, make_perpendicular(normal));
         Self {
             position,
             normal,
+            propagation_dir,
             k1,
             k2,
             arrested: false,
@@ -152,6 +227,14 @@ impl CrackFront {
     /// Propagate each active front vertex in the direction given by the
     /// maximum hoop stress criterion.
     ///
+    /// The vertex advances by `da` *inside the crack plane*: along
+    /// `cos(theta) * propagation_dir + sin(theta) * normal`, where `theta` is the
+    /// kink angle of [`CrackFrontVertex::max_hoop_stress_angle`] (zero for pure
+    /// Mode I, which keeps the crack running straight along `propagation_dir`).
+    /// The local frame is then turned by `theta` about the front tangent
+    /// `propagation_dir x normal`, so `propagation_dir` follows the advance and
+    /// `normal` stays the normal of the (kinked) crack plane.
+    ///
     /// The propagation increment is clamped to `[da_min, da_max]` and scales
     /// as `da = da_max * (K_eq / K_Ic - 1)` when `K_eq > K_Ic`.
     ///
@@ -168,28 +251,22 @@ impl CrackFront {
             }
             let da = (self.da_max * (k_eq / self.k1c - 1.0)).clamp(self.da_min, self.da_max);
             let theta = fv.max_hoop_stress_angle();
-            let n = fv.normal;
-            let t = make_perpendicular(n);
-            let cos_t = theta.cos();
-            let sin_t = theta.sin();
-            let dir = [
-                cos_t * n[0] + sin_t * t[0],
-                cos_t * n[1] + sin_t * t[1],
-                cos_t * n[2] + sin_t * t[2],
-            ];
-            fv.position[0] += da * dir[0];
-            fv.position[1] += da * dir[1];
-            fv.position[2] += da * dir[2];
-            let dl = norm3(dir);
-            if dl > 1e-12 {
-                fv.normal = [dir[0] / dl, dir[1] / dl, dir[2] / dl];
-            }
+            let (direction, normal) = rotate_frame(fv.propagation_dir, fv.normal, theta);
+            fv.position[0] += da * direction[0];
+            fv.position[1] += da * direction[1];
+            fv.position[2] += da * direction[2];
+            fv.propagation_dir = direction;
+            fv.normal = normal;
             count += 1;
         }
         count
     }
     /// Check for branching: vertices with `K_eq > k_branch` spawn a new
     /// branched vertex at ±45° of the current propagation direction.
+    ///
+    /// Each branch starts at the parent vertex with the parent's frame turned by
+    /// ±45° about the front tangent (the branch propagates inside the same
+    /// plane of the parent's `(propagation_dir, normal)` frame).
     ///
     /// Returns the newly created branch vertices (not yet inserted).
     pub fn check_branching(&self) -> Vec<CrackFrontVertex> {
@@ -202,26 +279,14 @@ impl CrackFront {
             if k_eq <= self.k_branch {
                 continue;
             }
-            let n = fv.normal;
-            let t = make_perpendicular(n);
             for sign in [1.0_f64, -1.0] {
                 let angle: f64 = sign * std::f64::consts::FRAC_PI_4;
-                let c = angle.cos();
-                let s = angle.sin();
-                let dir = [
-                    c * n[0] + s * t[0],
-                    c * n[1] + s * t[1],
-                    c * n[2] + s * t[2],
-                ];
-                let dl = norm3(dir);
-                let branch_normal = if dl > 1e-12 {
-                    [dir[0] / dl, dir[1] / dl, dir[2] / dl]
-                } else {
-                    n
-                };
+                let (branch_dir, branch_normal) =
+                    rotate_frame(fv.propagation_dir, fv.normal, angle);
                 branches.push(CrackFrontVertex {
                     position: fv.position,
                     normal: branch_normal,
+                    propagation_dir: branch_dir,
                     k1: fv.k1 * 0.5,
                     k2: fv.k2 * 0.5,
                     arrested: false,

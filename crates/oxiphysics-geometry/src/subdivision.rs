@@ -14,6 +14,8 @@
 
 use std::collections::HashMap;
 
+mod butterfly;
+
 // ---------------------------------------------------------------------------
 // Local vector math helpers
 // ---------------------------------------------------------------------------
@@ -284,119 +286,50 @@ pub fn loop_subdivision(mesh: &SubdivMesh) -> SubdivMesh {
 
 /// Apply one level of Butterfly subdivision.
 ///
-/// Butterfly (Dyn et al. 1990) is an interpolating scheme: original vertex
-/// positions are unchanged.  Edge points use an 8-point stencil.
+/// The butterfly scheme (Dyn, Levin and Gregory 1990) is interpolating: the
+/// original vertices keep their positions and every edge receives one new vertex,
+/// which splits each triangle into four.
 ///
-/// The standard Butterfly stencil weight parameter is w = 0 (standard) or
-/// small positive (modified Butterfly); here we use w = 0.
+/// For an interior edge `ab` with the opposite vertices `c` and `d` (the third
+/// vertices of the two faces on the edge) and the four wing vertices `w1..w4`
+/// (the vertices opposite to the outer edges `cb`, `ac`, `da` and `bd` of those
+/// faces) the new vertex is
+///
+/// `1/2 (a + b) + 1/8 (c + d) - 1/16 (w1 + w2 + w3 + w4)`,
+///
+/// the eight-point stencil with tension parameter `w = 1/16` (`w = 0` would give
+/// the plain midpoint). Its weights sum to one, so translating, rotating or
+/// scaling the input mesh moves the output the same way.
+///
+/// The stencil is only designed for regular vertices (valence 6). The remaining
+/// configurations are handled as follows:
+///
+/// - An edge with an end point that is an interior vertex of another valence uses
+///   the modified butterfly stencil of Zorin, Schroeder and Sweldens (1996) on
+///   the ring of that vertex. If both end points are extraordinary the two
+///   results are averaged.
+/// - A boundary edge uses the four-point rule `9/16 (a + b) - 1/16 (a' + b')`
+///   along the boundary curve, where `a'` and `b'` are the next boundary vertices.
+/// - Edges for which a stencil is not available (non-manifold edges, missing wing
+///   vertices next to the boundary, pinched boundary vertices) use the midpoint.
+///
+/// The adjacency does not depend on the winding of the faces.
 pub fn butterfly_subdivision(mesh: &SubdivMesh) -> SubdivMesh {
-    let is_boundary = mesh.boundary_vertices();
-
-    // Build adjacency: for each vertex, sorted ring of neighbours
-    let nbrs = mesh.vertex_neighbours();
-
-    // Build edge-to-opposite-vertex map (both orientations)
-    let mut edge_opposite: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-    for face in &mesh.faces {
-        let [a, b, c] = *face;
-        edge_opposite.entry((a, b)).or_default().push(c);
-        edge_opposite.entry((b, c)).or_default().push(a);
-        edge_opposite.entry((c, a)).or_default().push(b);
-    }
-
-    let mut edge_mid: HashMap<(usize, usize), usize> = HashMap::new();
+    let adjacency = butterfly::EdgeAdjacency::new(mesh.vertices.len(), &mesh.faces);
     let mut new_verts = mesh.vertices.clone();
-
-    let compute_butterfly_point = |a: usize,
-                                   b: usize,
-                                   verts: &Vec<[f64; 3]>,
-                                   _is_boundary: &[bool],
-                                   nbrs: &[Vec<usize>],
-                                   edge_opposite: &HashMap<(usize, usize), Vec<usize>>|
-     -> [f64; 3] {
-        // Collect the (up to) 2 opposite vertices
-        let opp_ab = edge_opposite.get(&(a, b)).cloned().unwrap_or_default();
-        let opp_ba = edge_opposite.get(&(b, a)).cloned().unwrap_or_default();
-
-        if opp_ab.len() == 1 && opp_ba.len() == 1 {
-            // Interior edge — full 8-point stencil
-            let (c, d) = (opp_ab[0], opp_ba[0]);
-            // Standard Butterfly weights: +1/2(a+b) + 1/8(c+d) - 1/16(eaj+ebj)
-            // where eaj are the other (non-b) neighbours of a, etc.
-            let base = add3(scale3(verts[a], 0.5), scale3(verts[b], 0.5));
-            let opp_contrib = scale3(add3(verts[c], verts[d]), 1.0 / 8.0);
-
-            // Collect "wing" vertices: neighbours of a other than b,c and
-            // neighbours of b other than a,d
-            let wing_a: Vec<usize> = nbrs[a]
-                .iter()
-                .copied()
-                .filter(|&u| u != b && u != c && u != d)
-                .collect();
-            let wing_b: Vec<usize> = nbrs[b]
-                .iter()
-                .copied()
-                .filter(|&u| u != a && u != c && u != d)
-                .collect();
-
-            let wing_sum = wing_a
-                .iter()
-                .chain(wing_b.iter())
-                .fold([0.0; 3], |acc, &u| add3(acc, verts[u]));
-            let n_wings = (wing_a.len() + wing_b.len()) as f64;
-            if n_wings > 0.0 {
-                let wing_contrib = scale3(wing_sum, -1.0 / 16.0 / n_wings * n_wings);
-                let _ = wing_contrib; // simplified: use approximation below
-            }
-            // Simplified: base + 1/8(c+d) - 1/16(ring of a excluding b,c + ring of b excluding a,d)
-            let sub = scale3(
-                wing_a
-                    .iter()
-                    .chain(wing_b.iter())
-                    .fold([0.0; 3], |acc, &u| add3(acc, verts[u])),
-                if n_wings > 0.0 { -1.0 / 16.0 } else { 0.0 },
-            );
-            add3(add3(base, opp_contrib), sub)
-        } else {
-            // Boundary or non-manifold: simple midpoint
-            midpoint3(verts[a], verts[b])
-        }
-    };
+    let mut edge_points: HashMap<(usize, usize), usize> = HashMap::new();
 
     let mut new_faces = Vec::with_capacity(mesh.faces.len() * 4);
-    for face in &mesh.faces {
-        let [a, b, c] = *face;
-        let key_ab = (a.min(b), a.max(b));
-        let key_bc = (b.min(c), b.max(c));
-        let key_ca = (c.min(a), c.max(a));
-
-        let ab = if let Some(&idx) = edge_mid.get(&key_ab) {
-            idx
-        } else {
-            let pt = compute_butterfly_point(a, b, &new_verts, &is_boundary, &nbrs, &edge_opposite);
-            let idx = new_verts.len();
-            new_verts.push(pt);
-            edge_mid.insert(key_ab, idx);
-            idx
+    for &[a, b, c] in &mesh.faces {
+        let mut edge_vertex = |u: usize, v: usize| -> usize {
+            *edge_points.entry((u.min(v), u.max(v))).or_insert_with(|| {
+                new_verts.push(adjacency.edge_point(&mesh.vertices, u, v));
+                new_verts.len() - 1
+            })
         };
-        let bc = if let Some(&idx) = edge_mid.get(&key_bc) {
-            idx
-        } else {
-            let pt = compute_butterfly_point(b, c, &new_verts, &is_boundary, &nbrs, &edge_opposite);
-            let idx = new_verts.len();
-            new_verts.push(pt);
-            edge_mid.insert(key_bc, idx);
-            idx
-        };
-        let ca = if let Some(&idx) = edge_mid.get(&key_ca) {
-            idx
-        } else {
-            let pt = compute_butterfly_point(c, a, &new_verts, &is_boundary, &nbrs, &edge_opposite);
-            let idx = new_verts.len();
-            new_verts.push(pt);
-            edge_mid.insert(key_ca, idx);
-            idx
-        };
+        let ab = edge_vertex(a, b);
+        let bc = edge_vertex(b, c);
+        let ca = edge_vertex(c, a);
 
         new_faces.push([a, ab, ca]);
         new_faces.push([ab, b, bc]);
@@ -438,6 +371,85 @@ impl QuadMesh {
     }
 }
 
+/// An undirected edge of a quad mesh with the faces that contain it.
+struct QuadEdge {
+    /// Smaller end vertex.
+    a: usize,
+    /// Larger end vertex.
+    b: usize,
+    /// Faces that contain the edge, in face order.
+    faces: Vec<usize>,
+}
+
+impl QuadEdge {
+    /// End vertex of the edge other than `v`.
+    fn other(&self, v: usize) -> usize {
+        if self.a == v { self.b } else { self.a }
+    }
+}
+
+/// New position of the original vertex `v` under the Catmull–Clark rules.
+///
+/// `faces` and `incident` list the faces and (distinct) edges around `v`.
+///
+/// - Interior vertex: `(F + 2R + (n - 3) P) / n` with the valence `n`, the
+///   average `F` of the adjacent face points and the average `R` of the midpoints
+///   of the `n` incident edges.
+/// - Boundary vertex with two boundary edges and more than one face: the cubic
+///   B-spline boundary rule `3/4 P + 1/8 (n1 + n2)` with the two boundary
+///   neighbours `n1` and `n2`.
+/// - Corner vertex (a single incident face), any other boundary configuration and
+///   vertices on a non-manifold edge keep their position.
+fn catmull_clark_vertex(
+    v: usize,
+    vertices: &[[f64; 3]],
+    face_points: &[[f64; 3]],
+    edges: &[QuadEdge],
+    faces: &[usize],
+    incident: &[usize],
+) -> [f64; 3] {
+    let position = vertices[v];
+    if faces.is_empty() || incident.iter().any(|&e| edges[e].faces.len() > 2) {
+        return position;
+    }
+    let boundary: Vec<usize> = incident
+        .iter()
+        .copied()
+        .filter(|&e| edges[e].faces.len() == 1)
+        .collect();
+    match boundary.len() {
+        0 => {
+            let valence = incident.len() as f64;
+            let face_average = scale3(
+                faces
+                    .iter()
+                    .fold([0.0; 3], |acc, &f| add3(acc, face_points[f])),
+                1.0 / faces.len() as f64,
+            );
+            let edge_average = scale3(
+                incident.iter().fold([0.0; 3], |acc, &e| {
+                    add3(acc, midpoint3(vertices[edges[e].a], vertices[edges[e].b]))
+                }),
+                1.0 / valence,
+            );
+            scale3(
+                add3(
+                    add3(face_average, scale3(edge_average, 2.0)),
+                    scale3(position, valence - 3.0),
+                ),
+                1.0 / valence,
+            )
+        }
+        2 if faces.len() > 1 => {
+            let neighbours = boundary
+                .iter()
+                .fold([0.0; 3], |acc, &e| add3(acc, vertices[edges[e].other(v)]));
+            add3(scale3(position, 0.75), scale3(neighbours, 0.125))
+        }
+        _ => position,
+    }
+}
+
 /// Apply one level of Catmull–Clark subdivision to a quad mesh.
 ///
 /// Catmull–Clark (1978) is the de-facto standard for smooth subdivision of quad
@@ -445,9 +457,17 @@ impl QuadMesh {
 ///
 /// After one level:
 /// - Each face gains a face point (centroid of original face).
-/// - Each edge gains an edge point.
-/// - Each original vertex is moved.
+/// - Each edge gains an edge point: `(a + b + f1 + f2) / 4` for an interior edge
+///   with the face points `f1` and `f2`, the midpoint for a boundary edge.
+/// - Each original vertex is moved (interior vertices by the smoothing rule,
+///   boundary vertices by the boundary-curve rule, corners stay in place; see
+///   `catmull_clark_vertex`).
 /// - Each original quad produces 4 sub-quads.
+///
+/// The vertices of the result are the moved original vertices, then the face
+/// points in face order, then the edge points in the order in which the edges
+/// are first met when the faces are traversed in order, so the output is
+/// deterministic.
 pub fn catmull_clark_subdivision(mesh: &QuadMesh) -> QuadMesh {
     let nv = mesh.vertices.len();
     let nf = mesh.faces.len();
@@ -464,103 +484,87 @@ pub fn catmull_clark_subdivision(mesh: &QuadMesh) -> QuadMesh {
         })
         .collect();
 
-    // 2. Edge points
-    //    For each edge, collect adjacent face indices
-    let mut edge_faces: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    // 2. Edges in order of first appearance, with their adjacent faces
+    let mut edge_ids: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut edges: Vec<QuadEdge> = Vec::new();
+    let mut face_sides: Vec<[usize; 4]> = Vec::with_capacity(nf);
     for (fi, face) in mesh.faces.iter().enumerate() {
-        for k in 0..4 {
-            let a = face[k];
-            let b = face[(k + 1) % 4];
-            let key = (a.min(b), a.max(b));
-            edge_faces.entry(key).or_default().push(fi);
+        let mut sides = [0usize; 4];
+        for (k, side) in sides.iter_mut().enumerate() {
+            let (u, v) = (face[k], face[(k + 1) % 4]);
+            let key = (u.min(v), u.max(v));
+            let id = *edge_ids.entry(key).or_insert_with(|| {
+                edges.push(QuadEdge {
+                    a: key.0,
+                    b: key.1,
+                    faces: Vec::new(),
+                });
+                edges.len() - 1
+            });
+            edges[id].faces.push(fi);
+            *side = id;
         }
+        face_sides.push(sides);
     }
 
-    let mut edge_point_map: HashMap<(usize, usize), usize> = HashMap::new();
-    let mut all_verts: Vec<[f64; 3]> = mesh.vertices.clone();
-    // Reserve space: face points start at nv
-    let face_point_start = nv;
-    for &fp in &face_points {
-        all_verts.push(fp);
-    }
-    let edge_point_start = all_verts.len();
+    // 3. Edge points
+    let edge_points: Vec<[f64; 3]> = edges
+        .iter()
+        .map(|edge| {
+            let pa = mesh.vertices[edge.a];
+            let pb = mesh.vertices[edge.b];
+            match edge.faces[..] {
+                [f0, f1] => scale3(
+                    add3(add3(pa, pb), add3(face_points[f0], face_points[f1])),
+                    0.25,
+                ),
+                _ => midpoint3(pa, pb),
+            }
+        })
+        .collect();
 
-    for (&(a, b), fis) in &edge_faces {
-        let ep = if fis.len() == 2 {
-            // Interior edge: average of two endpoints and two face points
-            let pa = mesh.vertices[a];
-            let pb = mesh.vertices[b];
-            let fp0 = face_points[fis[0]];
-            let fp1 = face_points[fis[1]];
-            scale3(add3(add3(pa, pb), add3(fp0, fp1)), 0.25)
-        } else {
-            // Boundary edge: midpoint
-            midpoint3(mesh.vertices[a], mesh.vertices[b])
-        };
-        let idx = all_verts.len();
-        all_verts.push(ep);
-        edge_point_map.insert((a, b), idx);
-        edge_point_map.insert((b, a), idx);
-    }
-
-    // 3. Move original vertices
-    //    For each vertex v:
-    //      n = valence
-    //      F = average of face points of adjacent faces
-    //      R = average of edge midpoints of adjacent edges
-    //      new_v = (F + 2R + (n-3)v) / n
+    // 4. Move the original vertices
     let mut vertex_faces: Vec<Vec<usize>> = vec![Vec::new(); nv];
-    let mut vertex_edge_midpoints: Vec<Vec<[f64; 3]>> = vec![Vec::new(); nv];
     for (fi, face) in mesh.faces.iter().enumerate() {
-        for k in 0..4 {
-            let v = face[k];
-            let next = face[(k + 1) % 4];
-            let prev = face[(k + 3) % 4];
+        for &v in face {
             vertex_faces[v].push(fi);
-            vertex_edge_midpoints[v].push(midpoint3(mesh.vertices[v], mesh.vertices[next]));
-            vertex_edge_midpoints[v].push(midpoint3(mesh.vertices[v], mesh.vertices[prev]));
         }
     }
+    let mut vertex_edges: Vec<Vec<usize>> = vec![Vec::new(); nv];
+    for (ei, edge) in edges.iter().enumerate() {
+        vertex_edges[edge.a].push(ei);
+        vertex_edges[edge.b].push(ei);
+    }
 
+    let mut all_verts: Vec<[f64; 3]> = Vec::with_capacity(nv + nf + edges.len());
     for v in 0..nv {
-        let n = vertex_faces[v].len() as f64;
-        if n == 0.0 {
-            continue;
-        }
-        let f_sum = vertex_faces[v]
-            .iter()
-            .fold([0.0; 3], |acc, &fi| add3(acc, face_points[fi]));
-        let f_avg = scale3(f_sum, 1.0 / n);
-
-        let r_sum = vertex_edge_midpoints[v]
-            .iter()
-            .fold([0.0; 3], |acc, &em| add3(acc, em));
-        let r_avg = scale3(r_sum, 1.0 / vertex_edge_midpoints[v].len() as f64);
-
-        let p = mesh.vertices[v];
-        all_verts[v] = scale3(
-            add3(add3(f_avg, scale3(r_avg, 2.0)), scale3(p, n - 3.0)),
-            1.0 / n,
-        );
+        all_verts.push(catmull_clark_vertex(
+            v,
+            &mesh.vertices,
+            &face_points,
+            &edges,
+            &vertex_faces[v],
+            &vertex_edges[v],
+        ));
     }
+    let face_point_start = all_verts.len();
+    all_verts.extend_from_slice(&face_points);
+    let edge_point_start = all_verts.len();
+    all_verts.extend_from_slice(&edge_points);
 
-    // 4. Build new quad faces
-    //    Each original quad → 4 sub-quads
+    // 5. Build new quad faces: each original quad -> 4 sub-quads, one per corner
     let mut new_faces = Vec::with_capacity(nf * 4);
     for (fi, face) in mesh.faces.iter().enumerate() {
-        let fp = face_point_start + fi;
+        let sides = face_sides[fi];
         for k in 0..4 {
-            let va = face[k];
-            let vb = face[(k + 1) % 4];
-            let vc = face[(k + 2) % 4]; // unused but illustrative
-            let _ = vc;
-            let ep_ab = *edge_point_map.get(&(va, vb)).unwrap_or(&va);
-            let ep_prev = *edge_point_map.get(&(face[(k + 3) % 4], va)).unwrap_or(&va);
-            new_faces.push([va, ep_ab, fp, ep_prev]);
+            new_faces.push([
+                face[k],
+                edge_point_start + sides[k],
+                face_point_start + fi,
+                edge_point_start + sides[(k + 3) % 4],
+            ]);
         }
     }
-
-    let _ = edge_point_start; // suppress unused warning
 
     QuadMesh::new(all_verts, new_faces)
 }
@@ -749,6 +753,11 @@ pub fn subdivide_quad_n_times(mesh: &QuadMesh, n: usize) -> QuadMesh {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod butterfly_tests;
+#[cfg(test)]
+mod catmull_clark_tests;
 
 #[cfg(test)]
 mod tests {

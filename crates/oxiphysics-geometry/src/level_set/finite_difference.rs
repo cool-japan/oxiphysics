@@ -239,6 +239,42 @@ mod tests {
     }
 
     #[test]
+    fn sphere_shell_curvature_is_isotropic_on_the_audit_grid() {
+        // init_sphere(R = 0.5) on a 41^3 grid over [-1, 1]^3: on every node within
+        // one cell of the surface, along the axes, the face diagonals and the cube
+        // diagonals alike, the curvature is the exact 2 / r of the distance field.
+        let (n, dx) = (41, 0.05);
+        let mut field = LevelSetField::new(n, n, n, dx, [-1.0, -1.0, -1.0]);
+        field.init_sphere([0.0, 0.0, 0.0], 0.5);
+        let mut shell_nodes = 0usize;
+        let mut off_axis_nodes = 0usize;
+        for iz in 0..n {
+            for iy in 0..n {
+                for ix in 0..n {
+                    if field.get(ix, iy, iz).abs() >= dx {
+                        continue;
+                    }
+                    let r = node_radius(&field, ix, iy, iz);
+                    let kappa = field.mean_curvature(ix, iy, iz);
+                    let exact = 2.0 / r;
+                    assert!(
+                        (kappa - exact).abs() <= 0.05 * exact,
+                        "node ({ix},{iy},{iz}) r={r}: kappa {kappa} vs exact {exact}"
+                    );
+                    shell_nodes += 1;
+                    let off_axis = [ix, iy, iz].iter().filter(|&&i| i != 20).count() >= 2;
+                    off_axis_nodes += usize::from(off_axis);
+                }
+            }
+        }
+        assert!(shell_nodes > 2000, "shell holds only {shell_nodes} nodes");
+        assert!(
+            off_axis_nodes > 1900,
+            "only {off_axis_nodes} off-axis nodes"
+        );
+    }
+
+    #[test]
     fn cylinder_curvature_ignores_the_axial_direction() {
         // φ = sqrt(x² + y²) − 0.6: κ = 1 / ρ, independent of z.
         let dx = 0.05;
@@ -266,7 +302,8 @@ mod tests {
         let n = 9;
         let dx = 0.25;
         let origin = [-1.0, -1.0, -1.0];
-        let cases: [(&str, fn(f64, f64, f64) -> f64, fn(f64, f64, f64) -> f64); 3] = [
+        type FieldFn = fn(f64, f64, f64) -> f64;
+        let cases: [(&str, FieldFn, FieldFn); 3] = [
             (
                 "xy",
                 |x, y, _| x * y,

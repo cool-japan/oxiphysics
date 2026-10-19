@@ -6,6 +6,16 @@
 //! Provides Python-friendly types for full vehicle simulation including:
 //! tire models (Pacejka/Fiala), drivetrain, suspension, stability control,
 //! telemetry, and racing line optimization.
+//!
+//! # Tyre sign convention
+//!
+//! Every tyre model returns `(Fx, Fy)` in the wheel frame with the signs of the
+//! slips: a positive slip ratio `κ` (the wheel turns faster than the ground
+//! passes) gives a positive `Fx`, and a positive slip angle `α` (see
+//! [`compute_slip_angle`]) gives a positive `Fy`, i.e. a lateral force that
+//! opposes the lateral sliding of the contact patch.
+
+mod dynamics;
 
 use pyo3::prelude::*;
 use pyo3::types::PyModuleMethods;
@@ -15,35 +25,50 @@ use serde::{Deserialize, Serialize};
 // Helper functions
 // ---------------------------------------------------------------------------
 
+/// Evaluate the Pacejka magic formula `D sin(C atan(B φ))` with
+/// `B φ = B x - E (B x - atan(B x))` for the slip `x`.
+///
+/// A zero stiffness factor `B` gives no force at all.
+fn magic_formula(x: f64, b: f64, c: f64, d: f64, e: f64) -> f64 {
+    if b == 0.0 {
+        return 0.0;
+    }
+    let phi = (1.0 - e) * x + (e / b) * (b * x).atan();
+    d * (c * (b * phi).atan()).sin()
+}
+
 /// Compute the Pacejka magic formula lateral force Fy.
 ///
-/// Parameters follow the standard Pacejka notation.
+/// Parameters follow the standard Pacejka notation. The coefficient sets of
+/// [`PacejkaCoeffs`] are in the same units as the arguments: the slip angle in
+/// radians and the slip ratio as a plain ratio, so that the lateral force
+/// peaks at a slip angle of about 0.1-0.2 rad (6-12 degrees).
 /// - `alpha` — slip angle in radians
 /// - `b` — stiffness factor
 /// - `c` — shape factor
 /// - `d` — peak value
 /// - `e` — curvature factor
 ///
-/// Returns the lateral force as a fraction of normal load (Fy / Fz).
+/// Returns the lateral force as a fraction of normal load (Fy / Fz); it has the
+/// sign of `alpha`.
 #[pyfunction]
 pub fn pacejka_fy(alpha: f64, b: f64, c: f64, d: f64, e: f64) -> f64 {
-    let x = alpha.to_degrees(); // Pacejka often uses degrees internally
-    let phi = (1.0 - e) * x + (e / b) * (b * x).atan();
-    d * (c * (b * phi).atan()).sin()
+    magic_formula(alpha, b, c, d, e)
 }
 
 /// Compute the Pacejka magic formula longitudinal force Fx.
 ///
-/// - `kappa` — slip ratio (dimensionless, -1 to 1)
+/// - `kappa` — slip ratio as a plain ratio (not a percentage), -1 to 1
 /// - `b` — stiffness factor
 /// - `c` — shape factor
 /// - `d` — peak value
 /// - `e` — curvature factor
+///
+/// Returns the longitudinal force as a fraction of normal load (Fx / Fz); it has
+/// the sign of `kappa`.
 #[pyfunction]
 pub fn pacejka_fx(kappa: f64, b: f64, c: f64, d: f64, e: f64) -> f64 {
-    let x = kappa * 100.0; // Pacejka often uses percent slip
-    let phi = (1.0 - e) * x + (e / b) * (b * x).atan();
-    d * (c * (b * phi).atan()).sin()
+    magic_formula(kappa, b, c, d, e)
 }
 
 /// Compute the slip angle from tire velocity components.
@@ -51,13 +76,17 @@ pub fn pacejka_fx(kappa: f64, b: f64, c: f64, d: f64, e: f64) -> f64 {
 /// - `vy` — lateral velocity component of the tire contact point (m/s)
 /// - `vx` — longitudinal velocity component (m/s)
 ///
-/// Returns slip angle in radians.
+/// Returns slip angle in radians, `-atan(vy / |vx|)`: the angle is positive when
+/// the contact patch slides toward the negative lateral side, so that the
+/// (positive) lateral force of the tyre models opposes the sliding. The
+/// magnitude of `vx` is used so that the sign is right when reversing too.
+/// Below a speed of `1e-4` m/s the angle is undefined and reported as zero.
 #[pyfunction]
 pub fn compute_slip_angle(vy: f64, vx: f64) -> f64 {
     if vx.abs() < 1e-4 {
         return 0.0;
     }
-    (-vy / vx).atan()
+    (-vy / vx.abs()).atan()
 }
 
 /// Compute the longitudinal slip ratio.
@@ -100,6 +129,10 @@ pub fn ackermann_angles(steer_angle: f64, wheelbase: f64, track_width: f64) -> (
 // ---------------------------------------------------------------------------
 
 /// Pacejka magic formula tire coefficients.
+///
+/// A lateral set applies to the slip angle in radians, a longitudinal set to the
+/// slip ratio as a plain ratio (see [`pacejka_fy`] and [`pacejka_fx`]); the
+/// presets are tuned for that scale.
 #[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PacejkaCoeffs {
@@ -177,9 +210,13 @@ impl FialaParams {
     }
 
     /// Compute lateral force given slip angle and normal load.
+    ///
+    /// The force has the sign of the slip angle, like the Pacejka model (see the
+    /// module documentation): it grows linearly with `cornering_stiffness` and
+    /// saturates at `mu * fz`.
     pub fn lateral_force(&self, alpha: f64, fz: f64) -> f64 {
         let f_max = self.mu * fz;
-        let f_lin = -self.cornering_stiffness * alpha;
+        let f_lin = self.cornering_stiffness * alpha;
         if f_lin.abs() > f_max {
             f_max * f_lin.signum()
         } else {
@@ -199,9 +236,12 @@ pub enum TireModelKind {
     },
     /// Fiala brush model.
     Fiala(FialaParams),
-    /// Simple linear tire model.
+    /// Simple linear tire model: `Fy = cornering_stiffness * alpha` and
+    /// `Fx = longitudinal_stiffness * kappa * fz`.
     Linear {
+        /// Cornering stiffness (N/rad).
         cornering_stiffness: f64,
+        /// Longitudinal stiffness (force per unit load and unit slip ratio).
         longitudinal_stiffness: f64,
     },
 }
@@ -255,7 +295,9 @@ impl PyTireModel {
 
     /// Compute combined lateral and longitudinal forces.
     ///
-    /// Returns `(Fx, Fy)` — longitudinal and lateral forces in N.
+    /// `alpha` is the slip angle (rad), `kappa` the slip ratio and `fz` the
+    /// normal load (N). Returns `(Fx, Fy)` — longitudinal and lateral forces in
+    /// N, with the signs of `kappa` and `alpha` respectively.
     pub fn compute_forces(&self, alpha: f64, kappa: f64, fz: f64) -> (f64, f64) {
         match &self.kind {
             TireModelKind::Pacejka {
@@ -281,7 +323,7 @@ impl PyTireModel {
                 cornering_stiffness,
                 longitudinal_stiffness,
             } => {
-                let fy = -cornering_stiffness * alpha;
+                let fy = cornering_stiffness * alpha;
                 let fx = longitudinal_stiffness * kappa * fz;
                 (fx, fy)
             }
@@ -443,24 +485,43 @@ impl EngineCurve {
     }
 
     /// Interpolate torque at a given RPM.
+    ///
+    /// The torque is held at the first value below the first breakpoint and at
+    /// the last value above the last one. If the `rpm` and `torque` lists differ
+    /// in length, only the points that have both values are used.
     pub fn torque_at(&self, rpm: f64) -> f64 {
-        let n = self.rpm.len();
-        if n == 0 {
-            return 0.0;
-        }
-        if rpm <= self.rpm[0] {
-            return self.torque[0];
-        }
-        if rpm >= self.rpm[n - 1] {
-            return self.torque[n - 1];
-        }
-        for i in 1..n {
-            if rpm <= self.rpm[i] {
-                let t = (rpm - self.rpm[i - 1]) / (self.rpm[i] - self.rpm[i - 1]);
-                return self.torque[i - 1] + t * (self.torque[i] - self.torque[i - 1]);
+        let mut previous: Option<(f64, f64)> = None;
+        for (&breakpoint, &torque) in self.rpm.iter().zip(&self.torque) {
+            if rpm <= breakpoint {
+                return match previous {
+                    None => torque,
+                    Some((rpm_below, torque_below)) => {
+                        let span = breakpoint - rpm_below;
+                        if span > 0.0 {
+                            torque_below + (rpm - rpm_below) / span * (torque - torque_below)
+                        } else {
+                            torque
+                        }
+                    }
+                };
             }
+            previous = Some((breakpoint, torque));
         }
-        self.torque[n - 1]
+        previous.map_or(0.0, |(_, torque)| torque)
+    }
+}
+
+/// Fraction of the redline above which the rev limiter starts to cut the torque.
+const REV_LIMITER_ONSET: f64 = 0.95;
+
+/// Rev-limiter factor in `[0, 1]`: one up to [`REV_LIMITER_ONSET`] times the
+/// redline, then falling linearly to zero at the redline.
+fn rev_limiter_scale(engine_rpm: f64, redline: f64) -> f64 {
+    let onset = redline * REV_LIMITER_ONSET;
+    if redline > 0.0 && engine_rpm > onset {
+        ((redline - engine_rpm) / (redline - onset)).clamp(0.0, 1.0)
+    } else {
+        1.0
     }
 }
 
@@ -546,8 +607,14 @@ impl PyDrivetrain {
     }
 
     /// Compute wheel torque given throttle (0-1) and the current state.
+    ///
+    /// The engine torque fades to zero between 95 % of the redline and the
+    /// redline (rev limiter), so the vehicle cannot be driven faster than the
+    /// engine speed range of the selected gear allows.
     pub fn wheel_torque(&self, throttle: f64) -> f64 {
-        let engine_torque = self.engine_curve.torque_at(self.engine_rpm) * throttle;
+        let engine_torque = self.engine_curve.torque_at(self.engine_rpm)
+            * throttle
+            * rev_limiter_scale(self.engine_rpm, self.engine_curve.redline);
         let gear_ratio = self
             .gear_ratios
             .get(self.current_gear)
@@ -1007,11 +1074,23 @@ impl PyWheelDynamics {
     }
 
     /// Update wheel angular velocity given applied torque and time step.
+    ///
+    /// The wheel is driven by `drive_torque` and by the reaction of the road
+    /// force `fx`. `brake_torque` (a magnitude) opposes the rotation: it can
+    /// bring the wheel to rest but never reverses it.
     pub fn step_omega(&mut self, drive_torque: f64, brake_torque: f64, dt: f64) {
-        // Net torque = drive - brake - fx * radius (reaction from road)
+        if !self.inertia.is_finite() || self.inertia <= 0.0 {
+            return;
+        }
+        // Net torque = drive - fx * radius (reaction from road)
         let road_reaction = -self.fx * self.radius;
-        let net_torque = drive_torque - brake_torque + road_reaction;
-        self.omega += net_torque / self.inertia * dt;
+        let free_omega = self.omega + (drive_torque + road_reaction) / self.inertia * dt;
+        let brake_effect = brake_torque.max(0.0) / self.inertia * dt;
+        self.omega = if free_omega.abs() <= brake_effect {
+            0.0
+        } else {
+            free_omega - free_omega.signum() * brake_effect
+        };
         if !self.grounded {
             // No road reaction off ground, just dampen
             self.omega *= (1.0 - 0.1 * dt).max(0.0);
@@ -1029,13 +1108,23 @@ impl PyWheelDynamics {
 // ---------------------------------------------------------------------------
 
 /// Full vehicle state.
+///
+/// The chassis is simulated as a planar rigid body: it moves on the `X`-`Z`
+/// plane of a `Y`-up world, [`step`](PyVehicle::step) integrates its position,
+/// velocity, heading and yaw rate from the tyre forces of its four wheels, and
+/// the vertical motion, roll and pitch are not simulated.
+///
+/// Conventions: at yaw `ψ = orientation[2]` the chassis heads along
+/// `(cos ψ, 0, sin ψ)` (`ψ = 0` faces `+X`), the lateral axis is the heading
+/// turned by `+90°` in the plan view, and the yaw rate is `angular_velocity[2]`.
+/// Positive steering, yaw rate and slip angle all turn toward the lateral axis.
 #[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyVehicle {
     /// Chassis mass (kg).
     #[pyo3(get, set)]
     pub mass: f64,
-    /// Inertia tensor diagonal \[Ixx, Iyy, Izz\] (kg·m²).
+    /// Inertia tensor diagonal \[Ixx, Iyy, Izz\] (kg·m²); `Izz` is the yaw inertia.
     pub inertia: [f64; 3],
     /// Center of mass height (m).
     #[pyo3(get, set)]
@@ -1044,13 +1133,16 @@ pub struct PyVehicle {
     pub position: [f64; 3],
     /// Velocity \[vx, vy, vz\] in world frame.
     pub velocity: [f64; 3],
-    /// Euler angles \[roll, pitch, yaw\] (rad).
+    /// Euler angles \[roll, pitch, yaw\] (rad). The yaw is the heading angle; a
+    /// roll acts as the bank angle of the road (gravity then pulls the chassis
+    /// along its lateral axis).
     pub orientation: [f64; 3],
-    /// Angular velocity \[wx, wy, wz\] (rad/s).
+    /// Angular velocity \[wx, wy, wz\] (rad/s); `wz` is the yaw rate.
     pub angular_velocity: [f64; 3],
     /// Wheels: \[FL, FR, RL, RR\].
     pub wheels: [PyWheelDynamics; 4],
-    /// Wheel positions in local frame \[FL, FR, RL, RR\].
+    /// Wheel positions relative to the centre of mass as \[forward, up, lateral\]
+    /// (m) for \[FL, FR, RL, RR\]; the left wheels have a positive lateral offset.
     pub wheel_positions: [[f64; 3]; 4],
     /// Suspensions \[FL, FR, RL, RR\].
     pub suspensions: [PySuspension; 4],
@@ -1088,10 +1180,10 @@ impl PyVehicle {
             angular_velocity: [0.0; 3],
             wheels: [wheel.clone(), wheel.clone(), wheel.clone(), wheel.clone()],
             wheel_positions: [
-                [-0.75, -0.5, 1.3],
-                [0.75, -0.5, 1.3],
-                [-0.75, -0.5, -1.2],
-                [0.75, -0.5, -1.2],
+                [1.3, -0.5, 0.75],
+                [1.3, -0.5, -0.75],
+                [-1.3, -0.5, 0.75],
+                [-1.3, -0.5, -0.75],
             ],
             suspensions: [
                 suspension.clone(),
@@ -1123,10 +1215,10 @@ impl PyVehicle {
             angular_velocity: [0.0; 3],
             wheels: [wheel.clone(), wheel.clone(), wheel.clone(), wheel.clone()],
             wheel_positions: [
-                [-0.7, -0.4, 1.6],
-                [0.7, -0.4, 1.6],
-                [-0.7, -0.4, -1.6],
-                [0.7, -0.4, -1.6],
+                [1.4, -0.4, 0.7],
+                [1.4, -0.4, -0.7],
+                [-1.4, -0.4, 0.7],
+                [-1.4, -0.4, -0.7],
             ],
             suspensions: [
                 suspension.clone(),
@@ -1142,11 +1234,25 @@ impl PyVehicle {
         }
     }
 
-    /// Get the forward speed (m/s).
+    /// Get the forward speed (m/s): the velocity component along the chassis
+    /// heading `(cos yaw, 0, sin yaw)`; negative when reversing.
     pub fn forward_speed(&self) -> f64 {
-        // Assume vehicle heading is along local X axis; yaw rotates it
-        let yaw = self.orientation[2];
-        self.velocity[0] * yaw.cos() + self.velocity[2] * yaw.sin()
+        self.planar_velocity().0
+    }
+
+    /// Get the lateral speed (m/s): the velocity component along the chassis
+    /// lateral axis, positive toward the side the vehicle turns to for a
+    /// positive steering input.
+    pub fn lateral_speed(&self) -> f64 {
+        self.planar_velocity().1
+    }
+
+    /// Normal load of every wheel at rest (N), `[FL, FR, RL, RR]`.
+    ///
+    /// The weight is shared between the axles by the position of the wheels
+    /// relative to the centre of mass, so the loads add up to `mass * g`.
+    pub fn static_wheel_loads(&self) -> Vec<f64> {
+        self.static_load_array().to_vec()
     }
 
     /// Perform one simulation step.
@@ -1155,81 +1261,19 @@ impl PyVehicle {
     /// `throttle` — throttle input \[0, 1\]
     /// `brake`    — brake input \[0, 1\]
     /// `steer`    — steering input \[-1, 1\]
+    ///
+    /// Every wheel's slip ratio and slip angle follow from the velocity of the
+    /// ground under its contact patch (chassis velocity, yaw rate and steering),
+    /// the tyre models turn them into forces, and the forces drive the wheel
+    /// spin (rear-wheel drive through an open differential, brake torque
+    /// opposing the rotation) and the chassis: its velocity, yaw rate, heading
+    /// and position. Throttle therefore accelerates the vehicle only through the
+    /// grip of the tyres, steering turns it through the lateral tyre forces, and
+    /// the wheels' `slip_ratio`, `slip_angle`, `fx`, `fy` and `fz` hold the
+    /// values of the last internal sub-step. See the `PyVehicle` documentation for
+    /// the frame conventions. A non-positive or non-finite `dt` does nothing.
     pub fn step(&mut self, dt: f64, throttle: f64, brake: f64, steer: f64) {
-        // Update steering
-        self.steering.input = steer.clamp(-1.0, 1.0);
-        let front_angle = self.steering.front_angle();
-
-        // Compute slip ratios (simplified)
-        let v = self.forward_speed().abs().max(0.01);
-        let wheel_speeds: [f64; 4] = core::array::from_fn(|i| self.wheels[i].peripheral_speed());
-        let slip_ratios: Vec<f64> = wheel_speeds
-            .iter()
-            .map(|&ws| compute_slip_ratio(ws, v))
-            .collect();
-
-        // Stability control
-        let desired_yaw = v / 2.6 * front_angle;
-        let actual_yaw = self.angular_velocity[1];
-        let (throttle_scale, brake_scale) =
-            self.stability.update(slip_ratios, desired_yaw, actual_yaw);
-        let effective_throttle = throttle * throttle_scale;
-        let effective_brake = brake * brake_scale;
-
-        // Drivetrain
-        let drive_torque_total = self.drivetrain.wheel_torque(effective_throttle);
-        let drive_torque_per_wheel = drive_torque_total / 2.0; // simplified rear-wheel drive
-
-        // Brake torque
-        let max_brake_torque = 2000.0;
-        let brake_torque = effective_brake * max_brake_torque;
-
-        // Update rear wheels with drive torque
-        for i in [2, 3] {
-            let slip_angle = self.wheels[i].slip_angle;
-            let kappa = self.wheels[i].slip_ratio;
-            let fz = self.mass * 9.81 * 0.25; // equal load distribution
-            let (fx, fy) = self.tires[i].compute_forces(slip_angle, kappa, fz);
-            self.wheels[i].fx = fx;
-            self.wheels[i].fy = fy;
-            self.wheels[i].fz = fz;
-            self.wheels[i].grounded = true;
-            self.wheels[i].step_omega(drive_torque_per_wheel, brake_torque, dt);
-        }
-        // Update front wheels with steering
-        for i in [0, 1] {
-            self.wheels[i].slip_angle = -front_angle;
-            let fz = self.mass * 9.81 * 0.25;
-            let (fx, fy) = self.tires[i].compute_forces(self.wheels[i].slip_angle, 0.0, fz);
-            self.wheels[i].fx = fx;
-            self.wheels[i].fy = fy;
-            self.wheels[i].fz = fz;
-            self.wheels[i].grounded = true;
-            self.wheels[i].step_omega(0.0, brake_torque, dt);
-        }
-
-        // Total forces on chassis (simplified)
-        let total_fx: f64 = self.wheels.iter().map(|w| w.fx).sum();
-        let total_fy: f64 = self.wheels.iter().map(|w| w.fy).sum();
-
-        // Integrate velocity / position (Euler)
-        let ax = total_fx / self.mass;
-        let az = total_fy / self.mass - 9.81 * self.orientation[0].sin();
-        self.velocity[0] += ax * dt;
-        self.velocity[2] += az * dt;
-
-        // Drag
-        let drag = 0.3 * self.velocity[0] * self.velocity[0].abs();
-        self.velocity[0] -= drag / self.mass * dt;
-
-        self.position[0] += self.velocity[0] * dt;
-        self.position[1] += self.velocity[1] * dt;
-        self.position[2] += self.velocity[2] * dt;
-
-        // Update engine RPM
-        let avg_rear_omega = (self.wheels[2].omega + self.wheels[3].omega) * 0.5;
-        self.drivetrain.update_rpm(avg_rear_omega);
-        self.gear_display = (self.drivetrain.current_gear + 1) as u32;
+        self.advance(dt, throttle, brake, steer);
     }
 
     /// Inertia tensor diagonal as `[Ixx, Iyy, Izz]`.

@@ -225,50 +225,50 @@ Exit criteria: 10k-body rigid scene fully resident (≤2 readbacks/s); DS f64-em
 Verified: 195 (critical 6, high 44, medium 98, low 47); 36 further raw findings pending second-round verification. IDs refer to the audit ledger; `[x]` = fixed.
 
 ### Critical (6)
-- [ ] **F1794** (critical, fabrication, medium/medium) `fluid_gpu.rs:499` — LBMGpuKernels: fake velocities, no-op streaming, identity bounce-back
-- [ ] **F1799** (critical, fabrication, medium/medium) `fluid_sim_gpu/functions.rs:402` — FLIP G2P: x-only transfer, zero FLIP delta, advects by dx
-- [ ] **F1831** (critical, bug, easy/trivial) `gpu_md_solver.rs:167` — LJ pair force sign inverted: repulsion becomes attraction
+- [x] **F1794** (critical, fabrication, medium/medium) `fluid_gpu.rs:499` — LBMGpuKernels: fake velocities, no-op streaming, identity bounce-back
+- [x] **F1799** (critical, fabrication, medium/medium) `fluid_sim_gpu/functions.rs:402` — FLIP G2P: x-only transfer, zero FLIP delta, advects by dx
+- [x] **F1831** (critical, bug, easy/trivial) `gpu_md_solver.rs:167` — LJ pair force sign inverted: repulsion becomes attraction
 - [x] **F1882** (critical, fabrication, hard/medium) `lbm_gpu.rs:192` — LBM GPU kernel ignores body force, solid walls and lid velocity
 - [x] **F1883** (critical, bug, hard/large) `lbm_gpu.rs:376` — Default GPU LBM step drops walls, body force and lid
 - [x] **F1885** (critical, bug, hard/medium) `lbm_gpu.rs:423` — LbmSimulation GPU path ignores walls, Guo forcing and lid velocity
 
 ### High (44)
-- [ ] **F1752** (high, bug, easy/small) `cell_list/types.rs:672` — CellList::update_incremental overwrites next cell's first atom
-- [ ] **F1753** (high, bug, medium/small) `collision_gpu/functions.rs:116` — GJK never tests tetrahedron containment; distances are wrong
-- [ ] **F1755** (high, bug, easy/small) `collision_gpu/types.rs:547` — Persistent manifolds never expire and accumulate duplicate points
-- [ ] **F1756** (high, bug, easy/trivial) `collision_gpu/types.rs:637` — Contact cache zips all pairs with filtered contacts: wrong keys
-- [ ] **F1759** (high, fabrication, medium/small) `compute/cpubackend_traits.rs:38` — CpuBackend::dispatch discards all kernel work
-- [ ] **F1768** (high, bug, medium/medium) `compute/timestamp.rs:123` — 1-D dispatch exceeds 65535 workgroup limit for large N
-- [ ] **F1778** (high, api, medium/medium) `compute/wgpu_backend.rs:706` — read_buffer_* return empty Vec on failure; callers return garbage
-- [ ] **F1781** (high, panic, medium/small) `compute/wgpu_backend.rs:931` — No wgpu error scopes: validation errors panic instead of returning Err
-- [ ] **F1789** (high, fabrication, medium/medium) `deformable_gpu/types.rs:580` — FEMGpuKernel forces are three edge springs, not tetrahedral FEM
-- [ ] **F1790** (high, fabrication, hard/medium) `deformable_gpu/types.rs:1051` — CorotationalElement forces are edge springs; nonzero at rest pose
-- [ ] **F1798** (high, bug, easy/trivial) `fluid_sim_gpu/functions.rs:86` — SPH pressure term is acceleration but integrator divides by density
-- [ ] **F1803** (high, fabrication, medium/small) `fluid_sim_gpu/types.rs:641` — FLIP pressure solve is a no-op: fluid flags never set
-- [ ] **F1804** (high, bug, medium/small) `flux_compute.rs:682` — Roe Euler flux wave strengths ignore energy jump and gamma
-- [ ] **F1805** (high, bug, easy/trivial) `flux_compute.rs:872` — Characteristic reconstruction swaps w+/w- bindings, flipping u1 sign
-- [ ] **F1807** (high, bug, medium/small) `gpu_bench.rs:159` — CPU-only paths silently run GPU; LbmGpuSolver::new_cpu reads stale state
-- [ ] **F1823** (high, bug, easy/small) `gpu_fluid_euler.rs:255` — Euler pressure projection removes only dt times the divergence
-- [ ] **F1838** (high, fabrication, medium/medium) `gpu_nn.rs:234` — BackpropGpu fabricates gradients; Conv1D silently runs as Dense
-- [ ] **F1840** (high, perf, easy/trivial) `gpu_particles.rs:482` — ParticlePool::recycle_dead is O(capacity × free) on every tick
+- [x] **F1752** (high, bug, easy/small) `cell_list/types.rs:672` — CellList::update_incremental overwrites next cell's first atom
+- [x] **F1753** (high, bug, medium/small) `collision_gpu/functions.rs:116` — GJK never tests tetrahedron containment; distances are wrong
+- [x] **F1755** (high, bug, easy/small) `collision_gpu/types.rs:547` — Persistent manifolds never expire and accumulate duplicate points
+- [x] **F1756** (high, bug, easy/trivial) `collision_gpu/types.rs:637` — Contact cache zips all pairs with filtered contacts: wrong keys
+- [x] **F1759** (high, fabrication, medium/small) `compute/cpubackend_traits.rs:38` — CpuBackend::dispatch discards all kernel work
+- [x] **F1768** (high, bug, medium/medium) `compute/timestamp.rs:123` — 1-D dispatch exceeds 65535 workgroup limit for large N
+- [x] **F1778** (high, api, medium/medium) `compute/wgpu_backend.rs:706` — read_buffer_* return empty Vec on failure; callers return garbage
+- [x] **F1781** (high, panic, medium/small) `compute/wgpu_backend.rs:931` — No wgpu error scopes: validation errors panic instead of returning Err
+- [x] **F1789** (high, fabrication, medium/medium) `deformable_gpu/types.rs:580` — FEMGpuKernel forces are three edge springs, not tetrahedral FEM
+- [x] **F1790** (high, fabrication, hard/medium) `deformable_gpu/types.rs:1051` — CorotationalElement forces are edge springs; nonzero at rest pose
+- [x] **F1798** (high, bug, easy/trivial) `fluid_sim_gpu/functions.rs:86` — SPH pressure term is acceleration but integrator divides by density
+- [x] **F1803** (high, fabrication, medium/small) `fluid_sim_gpu/types.rs:641` — FLIP pressure solve is a no-op: fluid flags never set
+- [x] **F1804** (high, bug, medium/small) `flux_compute.rs:682` — Roe Euler flux wave strengths ignore energy jump and gamma
+- [x] **F1805** (high, bug, easy/trivial) `flux_compute.rs:872` — Characteristic reconstruction swaps w+/w- bindings, flipping u1 sign
+- [x] **F1807** (high, bug, medium/small) `gpu_bench.rs:159` — CPU-only paths silently run GPU; LbmGpuSolver::new_cpu reads stale state
+- [x] **F1823** (high, bug, easy/small) `gpu_fluid_euler.rs:255` — Euler pressure projection removes only dt times the divergence
+- [x] **F1838** (high, fabrication, medium/medium) `gpu_nn.rs:234` — BackpropGpu fabricates gradients; Conv1D silently runs as Dense
+- [x] **F1840** (high, perf, easy/trivial) `gpu_particles.rs:482` — ParticlePool::recycle_dead is O(capacity × free) on every tick
 - [x] **F1841** (high, perf, medium/medium) `gpu_primitives.rs:21` — Each primitive call creates a fresh wgpu Instance/Adapter/Device
 - [x] **F1843** (high, perf, medium/medium) `gpu_radix.rs:165` — Radix sort/scan create a fresh wgpu device per call and pass
 - [x] **F1849** (high, bug, easy/trivial) `gpu_sdf.rs:337` — sdf_smooth_union operands swapped; returns max not min
 - [x] **F1852** (high, bug, easy/small) `gpu_sparse_solver.rs:61` — add_entry/finalize builds corrupt CSR for unordered or repeated input
-- [ ] **F1854** (high, bug, easy/trivial) `gpu_sph_density.rs:199` — CPU artificial viscosity sign reversed vs WGSL; approaching particles attract
+- [x] **F1854** (high, bug, easy/trivial) `gpu_sph_density.rs:199` — CPU artificial viscosity sign reversed vs WGSL; approaching particles attract
 - [x] **F1857** (high, fabrication, hard/medium) `gpu_sph_pressure.rs:251` — pcisph_gpu_correction never predicts positions or corrects pressure
 - [x] **F1858** (high, bug, easy/trivial) `gpu_sph_solver.rs:86` — Wendland C2 uses support-2h form truncated at h
-- [ ] **F1859** (high, bug, easy/trivial) `gpu_sph_solver.rs:94` — Wendland kernel uses the support-2h form but truncates at r=h
-- [ ] **F1860** (high, bug, medium/medium) `gpu_sph_solver.rs:131` — gpu_sph_step: unit mass, fixed rho0, 5.5x-off kernel, anti-viscosity
+- [x] **F1859** (high, bug, easy/trivial) `gpu_sph_solver.rs:94` — Wendland kernel uses the support-2h form but truncates at r=h
+- [x] **F1860** (high, bug, medium/medium) `gpu_sph_solver.rs:131` — gpu_sph_step: unit mass, fixed rho0, 5.5x-off kernel, anti-viscosity
 - [x] **F1861** (high, bug, easy/small) `gpu_sph_solver.rs:243` — SPH viscosity uses negative dW/dr as Laplacian: anti-diffusive
 - [x] **F1874** (high, bug, easy/small) `kernels/md_force/functions.rs:321` — Harmonic angle forces have reversed (anti-restoring) sign
 - [x] **F1875** (high, bug, medium/medium) `kernels/rigid/functions.rs:65` — Rigid integrators use inverse mass as inverse inertia
-- [ ] **F1876** (high, bug, medium/small) `kernels/rigid/types.rs:152` — ContactBatchProcessor applies inverse mass twice to contact impulses
+- [x] **F1876** (high, bug, medium/small) `kernels/rigid/types.rs:152` — ContactBatchProcessor applies inverse mass twice to contact impulses
 - [x] **F1884** (high, perf, easy/small) `lbm_gpu.rs:399` — LbmSimulation retries GPU init and eprintln!s on every step
-- [ ] **F1888** (high, bug, medium/small) `lbm_gpu.rs:500` — CPU LBM Guo forcing lacks source term and injects ωF/2 per step
+- [x] **F1888** (high, bug, medium/small) `lbm_gpu.rs:500` — CPU LBM Guo forcing lacks source term and injects ωF/2 per step
 - [x] **F1890** (high, fabrication, medium/small) `lbm_gpu.rs:577` — Lid velocity BC writes only solid cells; set_lid_velocity no-op
 - [x] **F1896** (high, bug, medium/medium) `lbm_gpu.rs:1117` — LBM lid and walls ignored on default GPU path; CPU lid dead
-- [ ] **F1908** (high, bug, easy/small) `parallel/functions.rs:273` — Parallel scans write through as_ptr() of immutable Vec (UB)
+- [x] **F1908** (high, bug, easy/small) `parallel/functions.rs:273` — Parallel scans write through as_ptr() of immutable Vec (UB)
 - [ ] **F1922** (high, fabrication, medium/medium) `pipeline/functions.rs:8` — PhysicsPipeline reports fabricated pair/constraint counts; narrowphase no-op
 - [ ] **F1930** (high, bug, easy/trivial) `raytracing/functions.rs:352` — path_trace_step uses wrong 2cosθ weight; panics on empty materials
 - [x] **F1941** (high, fabrication, medium/medium) `sdf_compute/functions.rs:10` — fast_sweeping_update is a one-direction L1 chamfer, not Eikonal
@@ -303,8 +303,8 @@ Verified: 195 (critical 6, high 44, medium 98, low 47); 36 further raw findings 
 - [ ] **F1796** (medium, bug, medium/small) `fluid_gpu.rs:756` — SPH viscosity uses W, not Laplacian; NS viscosity unused
 - [ ] **F1797** (medium, perf, medium/small) `fluid_sim_gpu/functions.rs:34` — SPH density/forces are O(n^2); 'parallel' variant is a serial copy
 - [ ] **F1802** (medium, bug, medium/small) `fluid_sim_gpu/types.rs:424` — LbmD2Q9 inlet/outlet applied once, then overwritten by periodic streaming
-- [ ] **F1806** (medium, bug, easy/trivial) `gpu_bench.rs:125` — Benchmark wgpu detection uses always-failing stub
-- [ ] **F1809** (medium, bug, easy/small) `gpu_bench.rs:538` — Benchmarks gate wgpu on the stub and mislabel GPU time as CPU
+- [x] **F1806** (medium, bug, easy/trivial) `gpu_bench.rs:125` — Benchmark wgpu detection uses always-failing stub
+- [x] **F1809** (medium, bug, easy/small) `gpu_bench.rs:538` — Benchmarks gate wgpu on the stub and mislabel GPU time as CPU
 - [ ] **F1811** (medium, bug, medium/small) `gpu_cloth.rs:520` — Cloth 'XPBD' lacks λ accumulation; gravity hardcoded
 - [ ] **F1812** (medium, fabrication, easy/small) `gpu_collision_detection.rs:292` — batch_gjk_dispatch is a bounding-sphere heuristic, not GJK
 - [ ] **F1813** (medium, fabrication, easy/small) `gpu_collision_ext.rs:287` — gpu_gjk_distance uses vertex-pair minimum, wrong for convex hulls
@@ -312,7 +312,7 @@ Verified: 195 (critical 6, high 44, medium 98, low 47); 36 further raw findings 
 - [ ] **F1819** (medium, fabrication, medium/small) `gpu_fluid.rs:178` — FluidSimGpu ignores viscosity/density; projection removes only dt*div
 - [ ] **F1820** (medium, test, easy/medium) `gpu_fluid.rs:529` — About 300 tests contain no assertion; several discard the computed result
 - [ ] **F1821** (medium, bug, medium/small) `gpu_fluid_euler.rs:125` — vorticity_at stencil wrong; confinement drops fz, no dt
-- [ ] **F1822** (medium, bug, medium/small) `gpu_fluid_euler.rs:190` — Euler projection Poisson RHS lacks 1/dt; per-sweep p clone
+- [x] **F1822** (medium, bug, medium/small) `gpu_fluid_euler.rs:190` — Euler projection Poisson RHS lacks 1/dt; per-sweep p clone
 - [ ] **F1824** (medium, bug, medium/small) `gpu_fluid_euler.rs:342` — w-velocity advection ignores y-velocity; back-trace pinned to row
 - [ ] **F1825** (medium, bug, easy/small) `gpu_fluid_euler.rs:400` — Vorticity confinement drops fz, omits dt*dx, underflows for nz==0
 - [ ] **F1826** (medium, bug, medium/small) `gpu_fluid_euler.rs:496` — w-velocity advection ignores y motion (fixed j row)
@@ -340,7 +340,7 @@ Verified: 195 (critical 6, high 44, medium 98, low 47); 36 further raw findings 
 - [ ] **F1887** (medium, bug, easy/small) `lbm_gpu.rs:463` — Failed GPU readback silently zeroes all LBM populations
 - [ ] **F1892** (medium, bug, medium/small) `lbm_gpu.rs:771` — LbmGpuSolver GPU/CPU paths differ; CPU variant reads stale data
 - [ ] **F1893** (medium, api, easy/small) `lbm_gpu.rs:780` — LBM/SPH configs never validated; invalid omega silently replaced
-- [ ] **F1894** (medium, bug, easy/small) `lbm_gpu.rs:829` — LbmGpuSolver::new_cpu and CPU fallback still run the GPU path
+- [x] **F1894** (medium, bug, easy/small) `lbm_gpu.rs:829` — LbmGpuSolver::new_cpu and CPU fallback still run the GPU path
 - [ ] **F1900** (medium, bug, easy/small) `memory.rs:233` — Buffer pool read/write trust stale caller handle offsets
 - [ ] **F1901** (medium, fabrication, easy/trivial) `memory.rs:794` — TransferQueue::copy_from_gpu returns zeros instead of pool data
 - [ ] **F1903** (medium, bug, easy/trivial) `neural_compute/types.rs:899` — GELU uses sqrt(2/sqrt(pi)) instead of sqrt(2/pi)

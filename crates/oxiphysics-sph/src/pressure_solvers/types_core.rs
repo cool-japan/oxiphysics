@@ -3,6 +3,11 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use super::support::{
+    MIN_PAIR_DISTANCE, kernel_gradient, neighbor_row, relative_velocity_dot_gradient, separation,
+    support_neighbors,
+};
+use crate::kernel::{CubicSplineKernel, SphKernel};
 
 /// Identifies which pressure solver variant to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,8 +120,19 @@ impl IisphMatrixBuilder {
     }
     /// Build the coefficient matrix (off-diagonal) for the IISPH PPE.
     ///
-    /// `aij[i]` lists `(j, coeff)` off-diagonal pairs.
-    /// The SPH kernel gradient is approximated as `r_ij / (|r_ij| * h²)`.
+    /// `aij[i]` lists the `(j, coeff)` off-diagonal pairs of row `i` (ascending
+    /// `j`) for every neighbour `j ≠ i` inside the cubic-spline support
+    /// `|r_ij| < 2h`:
+    ///
+    /// `coeff = −Δt² m_j (m_i/ρ_i² + m_j/ρ_j²) |∇W_ij|²`,
+    ///
+    /// where `|∇W_ij| = |W'(|r_ij|)|` is the exact gradient magnitude of the
+    /// [`CubicSplineKernel`].  It vanishes for coincident particles and for
+    /// `|r_ij| ≥ 2h`, so such pairs get no entry.  The units of `coeff` are
+    /// s²/m², i.e. `coeff · p` is a density \[kg/m³\].
+    ///
+    /// The neighbours are found with a spatial hash, so the cost is `O(N k)`
+    /// for `k` neighbours per particle instead of `O(N²)`.
     pub fn build_matrix(
         &self,
         positions: &[[f64; 3]],
@@ -125,31 +141,28 @@ impl IisphMatrixBuilder {
     ) -> Vec<Vec<(usize, f64)>> {
         let n = positions.len();
         let h = self.h;
-        let dt = self.dt;
+        let dt_sq = self.dt * self.dt;
+        let neighbors = support_neighbors(positions, h);
         let mut aij: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
-        for i in 0..n {
+        for (i, row) in aij.iter_mut().enumerate() {
             let rho_i = densities[i].max(1e-20);
-            for j in 0..n {
-                if i == j {
+            let weight_i = masses[i] / (rho_i * rho_i);
+            for &j in neighbor_row(&neighbors, i) {
+                if j == i || j >= n {
                     continue;
                 }
-                let dx = positions[i][0] - positions[j][0];
-                let dy = positions[i][1] - positions[j][1];
-                let dz = positions[i][2] - positions[j][2];
-                let r2 = dx * dx + dy * dy + dz * dz;
-                let r = r2.sqrt();
-                if r < 1e-14 || r > 2.0 * h {
+                let (_, r) = separation(positions[i], positions[j]);
+                if r < MIN_PAIR_DISTANCE || r >= 2.0 * h {
                     continue;
                 }
-                let grad_w_mag = 1.0 / (r * h * h);
+                let grad_w_mag = CubicSplineKernel.grad_w(r, h);
                 let rho_j = densities[j].max(1e-20);
-                let coeff = -dt
-                    * dt
+                let coeff = -dt_sq
                     * masses[j]
-                    * (masses[i] / (rho_i * rho_i) + masses[j] / (rho_j * rho_j))
+                    * (weight_i + masses[j] / (rho_j * rho_j))
                     * grad_w_mag
                     * grad_w_mag;
-                aij[i].push((j, coeff));
+                row.push((j, coeff));
             }
         }
         aij
@@ -525,7 +538,13 @@ impl SphDensityIntegrator {
     }
     /// Compute the density rate-of-change `Dρᵢ/Dt` for particle `i`.
     ///
-    /// Uses an approximate cubic-spline gradient `-r_ij / (h * |r_ij|²)`.
+    /// `Dρᵢ/Dt = Σⱼ mⱼ (vᵢ − vⱼ) · ∇ᵢWᵢⱼ` with the exact cubic-spline gradient
+    /// `∇ᵢWᵢⱼ = W'(r) (xᵢ − xⱼ)/r` (`W' ≤ 0`, support `2h`).  A neighbour that
+    /// approaches particle `i` (`(vᵢ − vⱼ) · (xᵢ − xⱼ) < 0`) compresses the fluid
+    /// and gives a positive rate; a receding one gives a negative rate.
+    ///
+    /// This scans all particles (`O(N)`); [`drho_dt_all`](Self::drho_dt_all)
+    /// evaluates every particle in `O(N k)`.
     pub fn drho_dt(
         &self,
         i: usize,
@@ -533,36 +552,48 @@ impl SphDensityIntegrator {
         velocities: &[[f64; 3]],
         masses: &[f64],
     ) -> f64 {
-        let n = positions.len();
         let pi = positions[i];
         let vi = velocities[i];
         let mut drho = 0.0_f64;
-        for j in 0..n {
-            if j == i {
-                continue;
+        for (j, (pj, vj)) in positions.iter().zip(velocities.iter()).enumerate() {
+            if j != i {
+                drho -= masses[j] * relative_velocity_dot_gradient(pi, vi, *pj, *vj, self.h);
             }
-            let r = [
-                pi[0] - positions[j][0],
-                pi[1] - positions[j][1],
-                pi[2] - positions[j][2],
-            ];
-            let r2 = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
-            let r_len = r2.sqrt();
-            if r_len < 1e-14 || r_len > 2.0 * self.h {
-                continue;
-            }
-            let dv = [
-                vi[0] - velocities[j][0],
-                vi[1] - velocities[j][1],
-                vi[2] - velocities[j][2],
-            ];
-            let inv_hr = 1.0 / (self.h * r2);
-            let dv_dot_r = dv[0] * r[0] + dv[1] * r[1] + dv[2] * r[2];
-            drho += masses[j] * dv_dot_r * inv_hr;
         }
         drho
     }
-    /// Forward-Euler density update: `ρᵢ(t+dt) = ρᵢ(t) + (Dρᵢ/Dt) * dt`.
+    /// The density rates `Dρᵢ/Dt` of all particles, see [`drho_dt`](Self::drho_dt).
+    ///
+    /// The neighbours are found once with a spatial hash, so the cost is
+    /// `O(N k)` for `k` neighbours per particle.
+    pub fn drho_dt_all(
+        &self,
+        positions: &[[f64; 3]],
+        velocities: &[[f64; 3]],
+        masses: &[f64],
+    ) -> Vec<f64> {
+        let n = positions.len();
+        let neighbors = support_neighbors(positions, self.h);
+        (0..n)
+            .map(|i| {
+                let mut drho = 0.0_f64;
+                for &j in neighbor_row(&neighbors, i) {
+                    if j != i && j < n {
+                        drho -= masses[j]
+                            * relative_velocity_dot_gradient(
+                                positions[i],
+                                velocities[i],
+                                positions[j],
+                                velocities[j],
+                                self.h,
+                            );
+                    }
+                }
+                drho
+            })
+            .collect()
+    }
+    /// Forward-Euler density update: `ρᵢ(t+dt) = ρᵢ(t) + (Dρᵢ/Dt) * dt`, clamped at zero.
     pub fn integrate(
         &self,
         densities: &mut [f64],
@@ -571,12 +602,9 @@ impl SphDensityIntegrator {
         masses: &[f64],
         dt: f64,
     ) {
-        let n = densities.len();
-        let rates: Vec<f64> = (0..n)
-            .map(|i| self.drho_dt(i, positions, velocities, masses))
-            .collect();
-        for i in 0..n {
-            densities[i] = (densities[i] + rates[i] * dt).max(0.0);
+        let rates = self.drho_dt_all(positions, velocities, masses);
+        for (density, rate) in densities.iter_mut().zip(rates.iter()) {
+            *density = (*density + rate * dt).max(0.0);
         }
     }
     /// Compute density errors relative to `rho0`.
@@ -607,9 +635,15 @@ impl PcisphCorrector {
     }
     /// Apply pressure-gradient corrections to predicted velocities.
     ///
-    /// `v_corr_i = v_pred_i - dt/m_i * Σⱼ m_j (p_i/ρᵢ² + p_j/ρⱼ²) ∇Wᵢⱼ`
+    /// `v_corr_i = v_pred_i + dt · a_i`,
+    /// `a_i = −Σⱼ m_j (p_i/ρᵢ² + p_j/ρⱼ²) ∇ᵢWᵢⱼ`
     ///
-    /// The kernel gradient is approximated as `r_ij / (h * |r_ij|²)`.
+    /// with the exact cubic-spline gradient `∇ᵢWᵢⱼ = W'(r) (xᵢ − xⱼ)/r` (support
+    /// `2h`).  The symmetric sum is already an acceleration \[m/s²\], so it is
+    /// not divided by `m_i`; for any masses the pair forces `m_i a_i` and
+    /// `m_j a_j` are equal and opposite and the total momentum is conserved.
+    ///
+    /// The neighbours are found with a spatial hash, so the cost is `O(N k)`.
     pub fn correct_velocities(
         &self,
         positions: &[[f64; 3]],
@@ -620,37 +654,31 @@ impl PcisphCorrector {
         h: f64,
     ) -> Vec<[f64; 3]> {
         let n = positions.len();
+        let neighbors = support_neighbors(positions, h);
         let mut v_corr = pred_velocities.to_vec();
         for i in 0..n {
             let rho_i = densities[i].max(1e-20);
             let p_i = pressures[i];
-            let m_i = masses[i];
-            let mut dv = [0.0_f64; 3];
-            for j in 0..n {
-                if i == j {
+            let mut accel = [0.0_f64; 3];
+            for &j in neighbor_row(&neighbors, i) {
+                if j == i || j >= n {
                     continue;
                 }
-                let r = [
-                    positions[i][0] - positions[j][0],
-                    positions[i][1] - positions[j][1],
-                    positions[i][2] - positions[j][2],
-                ];
-                let r2 = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
-                let r_len = r2.sqrt();
-                if r_len < 1e-14 || r_len > 2.0 * h {
+                let (r_ij, r) = separation(positions[i], positions[j]);
+                if r < MIN_PAIR_DISTANCE || r >= 2.0 * h {
                     continue;
                 }
                 let rho_j = densities[j].max(1e-20);
                 let p_j = pressures[j];
-                let grad_w = [-r[0] / (h * r2), -r[1] / (h * r2), -r[2] / (h * r2)];
-                let coeff = masses[j] * (p_i / (rho_i * rho_i) + p_j / (rho_j * rho_j));
-                dv[0] += coeff * grad_w[0];
-                dv[1] += coeff * grad_w[1];
-                dv[2] += coeff * grad_w[2];
+                let grad_w = kernel_gradient(r_ij, r, h);
+                let coeff = -masses[j] * (p_i / (rho_i * rho_i) + p_j / (rho_j * rho_j));
+                accel[0] += coeff * grad_w[0];
+                accel[1] += coeff * grad_w[1];
+                accel[2] += coeff * grad_w[2];
             }
-            v_corr[i][0] -= self.dt / m_i * dv[0];
-            v_corr[i][1] -= self.dt / m_i * dv[1];
-            v_corr[i][2] -= self.dt / m_i * dv[2];
+            v_corr[i][0] += self.dt * accel[0];
+            v_corr[i][1] += self.dt * accel[1];
+            v_corr[i][2] += self.dt * accel[2];
         }
         v_corr
     }
@@ -833,9 +861,20 @@ impl DivergenceFreeProjector {
             omega,
         }
     }
-    /// Compute the velocity divergence at particle `i` using SPH sum.
+    /// Compute the DFSPH divergence measure at particle `i` using an SPH sum.
     ///
-    /// `div_i = Σⱼ (m_j / ρ_j) (v_i - v_j) · ∇W_ij`
+    /// `div_i = Σⱼ (m_j / ρ_j) (v_i − v_j) · ∇ᵢWᵢⱼ`
+    ///
+    /// with the exact cubic-spline gradient `∇ᵢWᵢⱼ = W'(r) (xᵢ − xⱼ)/r` (support
+    /// `2h`).  This is the density-derivative form of the divergence used by
+    /// DFSPH (Bender & Koschier 2015), `div_i = −(∇·v)_i`, with the same sign
+    /// convention as [`DfsphSolverSimple::velocity_divergence`](super::DfsphSolverSimple::velocity_divergence):
+    /// it is positive where the neighbourhood converges (compression), negative
+    /// where it expands, and zero for a uniform or a rigidly rotating flow.
+    ///
+    /// This scans all particles (`O(N)`);
+    /// [`divergence_all`](Self::divergence_all) evaluates every particle in
+    /// `O(N k)`.
     pub fn divergence_at(
         &self,
         i: usize,
@@ -845,34 +884,52 @@ impl DivergenceFreeProjector {
         densities: &[f64],
         h: f64,
     ) -> f64 {
-        let n = positions.len();
         let pi = positions[i];
         let vi = velocities[i];
         let mut div = 0.0_f64;
-        for j in 0..n {
-            if i == j {
-                continue;
+        for (j, (pj, vj)) in positions.iter().zip(velocities.iter()).enumerate() {
+            if j != i {
+                let volume_j = masses[j] / densities[j].max(1e-20);
+                div -= volume_j * relative_velocity_dot_gradient(pi, vi, *pj, *vj, h);
             }
-            let r = [
-                pi[0] - positions[j][0],
-                pi[1] - positions[j][1],
-                pi[2] - positions[j][2],
-            ];
-            let r2 = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
-            let r_len = r2.sqrt();
-            if r_len < 1e-14 || r_len > 2.0 * h {
-                continue;
-            }
-            let dv = [
-                vi[0] - velocities[j][0],
-                vi[1] - velocities[j][1],
-                vi[2] - velocities[j][2],
-            ];
-            let grad_w = [-r[0] / (h * r2), -r[1] / (h * r2), -r[2] / (h * r2)];
-            let m_rho = masses[j] / densities[j].max(1e-20);
-            div += m_rho * (dv[0] * grad_w[0] + dv[1] * grad_w[1] + dv[2] * grad_w[2]);
         }
         div
+    }
+    /// The divergence measure [`divergence_at`](Self::divergence_at) of every
+    /// particle.
+    ///
+    /// The neighbours are found once with a spatial hash, so the cost is
+    /// `O(N k)` for `k` neighbours per particle.
+    pub fn divergence_all(
+        &self,
+        positions: &[[f64; 3]],
+        velocities: &[[f64; 3]],
+        masses: &[f64],
+        densities: &[f64],
+        h: f64,
+    ) -> Vec<f64> {
+        let n = positions.len();
+        let neighbors = support_neighbors(positions, h);
+        (0..n)
+            .map(|i| {
+                let mut div = 0.0_f64;
+                for &j in neighbor_row(&neighbors, i) {
+                    if j == i || j >= n {
+                        continue;
+                    }
+                    let volume_j = masses[j] / densities[j].max(1e-20);
+                    div -= volume_j
+                        * relative_velocity_dot_gradient(
+                            positions[i],
+                            velocities[i],
+                            positions[j],
+                            velocities[j],
+                            h,
+                        );
+                }
+                div
+            })
+            .collect()
     }
     /// Check whether the velocity field is divergence-free within `tolerance`.
     pub fn is_divergence_free(
@@ -883,16 +940,9 @@ impl DivergenceFreeProjector {
         densities: &[f64],
         h: f64,
     ) -> bool {
-        let n = positions.len();
-        for i in 0..n {
-            let d = self
-                .divergence_at(i, positions, velocities, masses, densities, h)
-                .abs();
-            if d > self.tolerance {
-                return false;
-            }
-        }
-        true
+        self.divergence_all(positions, velocities, masses, densities, h)
+            .iter()
+            .all(|d| d.abs() <= self.tolerance)
     }
     /// Max absolute divergence across all particles.
     pub fn max_divergence(
@@ -903,12 +953,9 @@ impl DivergenceFreeProjector {
         densities: &[f64],
         h: f64,
     ) -> f64 {
-        let n = positions.len();
-        (0..n)
-            .map(|i| {
-                self.divergence_at(i, positions, velocities, masses, densities, h)
-                    .abs()
-            })
+        self.divergence_all(positions, velocities, masses, densities, h)
+            .iter()
+            .map(|d| d.abs())
             .fold(0.0_f64, f64::max)
     }
 }

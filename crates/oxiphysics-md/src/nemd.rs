@@ -22,14 +22,15 @@
 //! # Cross-validation against Green-Kubo
 //!
 //! `tests/nemd_viscosity.rs` cross-checks the SLLOD viscosity against the
-//! equilibrium Green-Kubo estimator for a Lennard-Jones fluid.  For a
-//! CI-feasible system size and run length the two methods agree to **~15%**, not
-//! the textbook ~10%: the equilibrium GK running integral overshoots before it
-//! settles onto its plateau, and the SLLOD zero-shear limit cannot be pinned
-//! more tightly than the small-strain-rate statistics allow.  Enlarging the
-//! system (tested up to N = 216) does not close the gap, so it is an intrinsic
-//! method/estimator calibration limit, not a finite-size or implementation
-//! error.  Both estimators are individually well-converged.
+//! equilibrium Green-Kubo estimator for a Lennard-Jones fluid (N = 125,
+//! `ρ ≈ 0.70`, `T = 1.5`, force-shifted at `r_c = 2.3`).  The two independent
+//! routes agree to about **2%** (GK `η ≈ 1.17`, SLLOD `η ≈ 1.18–1.22` for
+//! `γ = 0.2–0.4`), and the test gates the difference at the 10% design target.
+//!
+//! The Lees-Edwards wrap of [`run_sllod`] must leave the peculiar momenta alone:
+//! an earlier version boosted `p_x` by `±m γ L_y` at every crossing of the sheared
+//! boundary, which biased `P_xy` and showed up as an apparent ~15% "intrinsic"
+//! GK/SLLOD calibration gap.  With the boost removed the gap is gone.
 //!
 //! Note also that the literal Evans-Morriss thermostat — the explicit Gaussian
 //! multiplier `alpha` applied as a friction in the velocity half-kicks — is
@@ -240,12 +241,54 @@ fn rescale_to_target_ke(momenta: &mut [[f64; 3]], masses: &[f64], ke_target: f64
     }
 }
 
+/// Advance one particle by a SLLOD drift step and apply the Lees-Edwards
+/// sliding-brick boundary conditions.
+///
+/// The streaming velocity `γ y` (with `y` taken at the start of the step) is
+/// added to the peculiar velocity `p / m`.  A particle leaving the box through
+/// the `+y` face re-enters through the `-y` face with its `x` coordinate
+/// shifted by `-offset`, and the other way round for the `-y` face, because the
+/// periodic image layer above the box is displaced by `+offset` along `x`.  The
+/// `x` and `z` coordinates are then wrapped into the box.
+///
+/// Only the position changes.  The momentum is the **peculiar** momentum
+/// `c = m (v - γ y x̂)`: the laboratory-frame velocity jump `γ L_y` that
+/// accompanies the image shift is exactly the change of the streaming velocity
+/// `γ y`, so `c` is continuous across the boundary and must not be boosted.
+fn drift_lees_edwards(
+    position: &mut [f64; 3],
+    momentum: [f64; 3],
+    mass: f64,
+    gamma: f64,
+    dt: f64,
+    box_lengths: [f64; 3],
+    offset: f64,
+) {
+    let [lx, ly, lz] = box_lengths;
+    let inv_m = 1.0 / mass;
+    let y_old = position[1];
+    position[0] += dt * (momentum[0] * inv_m + gamma * y_old);
+    position[1] += dt * (momentum[1] * inv_m);
+    position[2] += dt * (momentum[2] * inv_m);
+    if position[1] >= ly {
+        position[1] -= ly;
+        position[0] -= offset;
+    } else if position[1] < 0.0 {
+        position[1] += ly;
+        position[0] += offset;
+    }
+    position[0] = position[0].rem_euclid(lx);
+    position[2] = position[2].rem_euclid(lz);
+}
+
 /// Integrate the SLLOD equations of motion for planar Couette shear and return
 /// the shear-viscosity estimate `η = -⟨P_xy⟩ / γ`.
 ///
 /// `momenta` stores the **peculiar** momenta `c_i = p_i` (the streaming velocity
-/// `γ y_i x̂` is added explicitly in the drift step).  `force_fn` receives the
-/// current positions, the box lengths, and the Lees-Edwards strain offset, and
+/// `γ y_i x̂` is added explicitly in the drift step).  The Lees-Edwards wrap at
+/// the `y` faces shifts positions only: the peculiar momentum is continuous
+/// across the sliding-brick boundary and is never boosted.  `force_fn` receives
+/// the current positions, the box lengths, and the Lees-Edwards strain offset, and
 /// returns `(forces, virial_xy)` where
 /// `virial_xy = Σ_{i<j} r_{ij,x} f_{ij,y}` is evaluated with the Lees-Edwards
 /// minimum image.
@@ -298,27 +341,20 @@ where
         }
 
         // --- Step B: drift positions with the streaming term + Lees-Edwards. ---
+        // The momenta are the peculiar momenta, which the sliding-brick wrap
+        // leaves untouched (see `drift_lees_edwards`).
         strain_offset += gamma * ly * dt;
         let off = offset_eff(strain_offset);
         for i in 0..n {
-            let inv_m = 1.0 / masses[i];
-            let y_old = positions[i][1];
-            positions[i][0] += dt * (momenta[i][0] * inv_m + gamma * y_old);
-            positions[i][1] += dt * (momenta[i][1] * inv_m);
-            positions[i][2] += dt * (momenta[i][2] * inv_m);
-
-            // Lees-Edwards wrap on the y-boundary: shift x and boost peculiar p_x.
-            if positions[i][1] >= ly {
-                positions[i][1] -= ly;
-                positions[i][0] -= off;
-                momenta[i][0] += masses[i] * gamma * ly;
-            } else if positions[i][1] < 0.0 {
-                positions[i][1] += ly;
-                positions[i][0] += off;
-                momenta[i][0] -= masses[i] * gamma * ly;
-            }
-            positions[i][0] = positions[i][0].rem_euclid(lx);
-            positions[i][2] = positions[i][2].rem_euclid(lz);
+            drift_lees_edwards(
+                &mut positions[i],
+                momenta[i],
+                masses[i],
+                gamma,
+                dt,
+                box_lengths,
+                off,
+            );
         }
 
         // --- Step C: recompute forces (and the xy virial) at the new configuration. ---
@@ -652,5 +688,139 @@ mod tests {
         let (eta, err) = viscosity_from_pxy(&pxy, 0.1);
         assert!((eta - 0.5).abs() < 1e-10);
         assert!(err < 1e-10);
+    }
+
+    #[test]
+    fn drift_through_the_top_face_shifts_x_by_minus_the_offset() {
+        let (gamma, dt, offset) = (0.1, 0.05, 0.3);
+        let box_lengths = [5.0, 5.0, 5.0];
+        let mut position = [1.0, 4.99, 2.0];
+        drift_lees_edwards(
+            &mut position,
+            [0.0, 1.0, 0.0],
+            1.0,
+            gamma,
+            dt,
+            box_lengths,
+            offset,
+        );
+        // y: 4.99 + 0.05 = 5.04 leaves through +y and re-enters at 0.04.
+        assert!((position[1] - 0.04).abs() < 1e-12, "y = {}", position[1]);
+        // x: the streaming drift gamma * y_old * dt, then the -offset image shift.
+        let expected_x = 1.0 + dt * gamma * 4.99 - offset;
+        assert!(
+            (position[0] - expected_x).abs() < 1e-12,
+            "x = {}",
+            position[0]
+        );
+        assert!((position[2] - 2.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn drift_through_the_bottom_face_shifts_x_by_plus_the_offset() {
+        let (gamma, dt, offset) = (0.1, 0.05, 0.3);
+        let box_lengths = [5.0, 5.0, 5.0];
+        let mut position = [1.0, 0.01, 2.0];
+        drift_lees_edwards(
+            &mut position,
+            [0.0, -1.0, 0.0],
+            1.0,
+            gamma,
+            dt,
+            box_lengths,
+            offset,
+        );
+        // y: 0.01 - 0.05 = -0.04 re-enters at 4.96.
+        assert!((position[1] - 4.96).abs() < 1e-12, "y = {}", position[1]);
+        let expected_x = 1.0 + dt * gamma * 0.01 + offset;
+        assert!(
+            (position[0] - expected_x).abs() < 1e-12,
+            "x = {}",
+            position[0]
+        );
+    }
+
+    #[test]
+    fn drift_without_crossing_only_streams_and_wraps_x_and_z() {
+        let (gamma, dt) = (0.2, 0.1);
+        let box_lengths = [4.0, 6.0, 3.0];
+        let mut position = [3.95, 2.0, 0.05];
+        // mass 2: peculiar velocity = p / m = (0.5, 0.25, -1.0).
+        drift_lees_edwards(
+            &mut position,
+            [1.0, 0.5, -2.0],
+            2.0,
+            gamma,
+            dt,
+            box_lengths,
+            0.7,
+        );
+        let expected_x = (3.95 + dt * (0.5 + gamma * 2.0)).rem_euclid(4.0);
+        assert!(
+            (position[0] - expected_x).abs() < 1e-12,
+            "x = {}",
+            position[0]
+        );
+        assert!((position[1] - (2.0 + dt * 0.25)).abs() < 1e-12);
+        let expected_z = (0.05 - dt * 1.0_f64).rem_euclid(3.0);
+        assert!(
+            (position[2] - expected_z).abs() < 1e-12,
+            "z = {}",
+            position[2]
+        );
+    }
+
+    /// Three force-free particles with distinct masses; `y` positions are chosen
+    /// by the caller.  Returns the final momenta and the `P_xy` series.
+    fn force_free_run(y: [f64; 3]) -> (Vec<[f64; 3]>, Vec<[f64; 3]>, Vec<f64>) {
+        let masses = [1.0, 2.0, 1.5];
+        let mut positions = vec![[1.0, y[0], 1.0], [3.0, y[1], 2.0], [4.0, y[2], 3.0]];
+        let mut momenta = vec![[0.2, 1.0, -0.3], [-0.1, -2.0, 0.2], [-0.1, 1.0, 0.1]];
+        let cfg = SllodConfig {
+            gamma: 0.5,
+            n_equil: 0,
+            n_prod: 20,
+            dt: 0.01,
+            target_temperature: 1.5,
+        };
+        let res = run_sllod(
+            &mut positions,
+            &mut momenta,
+            &masses,
+            [5.0, 5.0, 5.0],
+            |pos, _box, _offset| (vec![[0.0; 3]; pos.len()], 0.0),
+            &cfg,
+        );
+        (momenta, positions, res.pressure_xy_series)
+    }
+
+    #[test]
+    fn lees_edwards_crossings_leave_the_peculiar_momenta_unchanged() {
+        // Without forces the SLLOD momentum equations do not depend on the
+        // positions, so a run in which particles cross the sheared y boundary
+        // must give exactly the momenta of a run in which none does.  A
+        // spurious boost of the peculiar p_x by m * gamma * L_y at every crossing
+        // (gamma * L_y = 2.5 here) breaks the equality.
+        let (p_crossing, pos_crossing, pxy_crossing) = force_free_run([4.995, 0.004, 2.5]);
+        let (p_interior, pos_interior, pxy_interior) = force_free_run([2.5, 2.5, 2.5]);
+
+        // The crossing run really crosses: particle 0 (p_y > 0) leaves through +y
+        // and re-enters near y = 0, particle 1 (p_y < 0) leaves through -y and
+        // re-enters near y = L_y.
+        assert!(pos_crossing[0][1] < 0.5, "y0 = {}", pos_crossing[0][1]);
+        assert!(pos_crossing[1][1] > 4.5, "y1 = {}", pos_crossing[1][1]);
+        assert!(
+            pos_interior.iter().all(|r| (r[1] - 2.5).abs() < 2.0),
+            "the interior run must stay clear of the y boundaries"
+        );
+
+        for (a, b) in p_crossing.iter().zip(p_interior.iter()) {
+            for d in 0..3 {
+                assert!((a[d] - b[d]).abs() < 1e-12, "p = {a:?} vs {b:?}");
+            }
+        }
+        for (a, b) in pxy_crossing.iter().zip(pxy_interior.iter()) {
+            assert!((a - b).abs() < 1e-12, "P_xy = {a} vs {b}");
+        }
     }
 }

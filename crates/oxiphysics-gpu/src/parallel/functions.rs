@@ -243,84 +243,81 @@ pub fn parallel_reduce_custom(
 ) -> f64 {
     data.par_iter().copied().reduce(|| identity, op)
 }
+/// Chunk length shared by the parallel scans: about one chunk per worker
+/// thread, but never fewer than 64 elements per chunk.
+fn scan_chunk_size(n: usize) -> usize {
+    (n / rayon::current_num_threads().max(1)).max(64)
+}
+/// Exclusive running offset of every chunk: `offsets[c]` is the sum of all
+/// elements in the chunks before chunk `c` (phase 1 in parallel, phase 2
+/// sequential).
+fn scan_chunk_offsets(data: &[f64], chunk_size: usize) -> Vec<f64> {
+    let chunk_sums: Vec<f64> = data
+        .par_chunks(chunk_size)
+        .map(|chunk| chunk.iter().copied().sum())
+        .collect();
+    let mut offsets = Vec::with_capacity(chunk_sums.len());
+    let mut acc = 0.0;
+    for &chunk_sum in &chunk_sums {
+        offsets.push(acc);
+        acc += chunk_sum;
+    }
+    offsets
+}
 /// Parallel exclusive prefix sum using a two-pass algorithm.
 ///
 /// Phase 1: compute partial sums in chunks (parallel).
 /// Phase 2: propagate offsets (sequential).
-/// Phase 3: apply offsets within chunks (parallel).
+/// Phase 3: scan every chunk starting from its offset (parallel); each task
+/// owns a disjoint mutable chunk of the output, so no `unsafe` is required.
+///
+/// `out[i] = data[0] + ... + data[i - 1]` (and `out[0] = 0`).  Summing in
+/// chunks reorders the floating-point additions relative to a purely
+/// sequential scan, so results agree with it up to rounding.
 pub fn parallel_exclusive_scan(data: &[f64]) -> Vec<f64> {
     let n = data.len();
     if n == 0 {
         return Vec::new();
     }
-    let chunk_size = (n / rayon::current_num_threads().max(1)).max(64);
-    let chunks: Vec<&[f64]> = data.chunks(chunk_size).collect();
-    let chunk_sums: Vec<f64> = chunks
-        .par_iter()
-        .map(|chunk| chunk.iter().copied().sum())
-        .collect();
-    let mut offsets = Vec::with_capacity(chunks.len());
-    let mut acc = 0.0;
-    for &cs in &chunk_sums {
-        offsets.push(acc);
-        acc += cs;
-    }
-    let result = vec![0.0; n];
-    chunks.par_iter().enumerate().for_each(|(ci, chunk)| {
-        let base = ci * chunk_size;
-        let offset = offsets[ci];
-        let mut local_acc = offset;
-        let result_ptr = result.as_ptr() as *mut f64;
-        for (k, &v) in chunk.iter().enumerate() {
-            // SAFETY: `chunks` partitions `result`'s index range into disjoint,
-            // contiguous blocks (`chunks(chunk_size)`), and `base = ci * chunk_size`
-            // is exactly this chunk's start, so distinct rayon tasks write disjoint
-            // indices — no aliasing. `base + k < base + chunk.len() <= n`, so the
-            // write stays in bounds of `result`, which outlives the parallel region.
-            unsafe {
-                *result_ptr.add(base + k) = local_acc;
+    let chunk_size = scan_chunk_size(n);
+    let offsets = scan_chunk_offsets(data, chunk_size);
+    let mut result = vec![0.0; n];
+    result
+        .par_chunks_mut(chunk_size)
+        .zip(data.par_chunks(chunk_size))
+        .zip(offsets.par_iter())
+        .for_each(|((out, input), &offset)| {
+            let mut acc = offset;
+            for (o, &v) in out.iter_mut().zip(input.iter()) {
+                *o = acc;
+                acc += v;
             }
-            local_acc += v;
-        }
-    });
+        });
     result
 }
 /// Parallel inclusive prefix sum.
+///
+/// Same chunked scheme as [`parallel_exclusive_scan`]:
+/// `out[i] = data[0] + ... + data[i]`.
 pub fn parallel_inclusive_scan(data: &[f64]) -> Vec<f64> {
     let n = data.len();
     if n == 0 {
         return Vec::new();
     }
-    let chunk_size = (n / rayon::current_num_threads().max(1)).max(64);
-    let chunks: Vec<&[f64]> = data.chunks(chunk_size).collect();
-    let chunk_sums: Vec<f64> = chunks
-        .par_iter()
-        .map(|chunk| chunk.iter().copied().sum())
-        .collect();
-    let mut offsets = Vec::with_capacity(chunks.len());
-    let mut acc = 0.0;
-    for &cs in &chunk_sums {
-        offsets.push(acc);
-        acc += cs;
-    }
-    let result = vec![0.0; n];
-    chunks.par_iter().enumerate().for_each(|(ci, chunk)| {
-        let base = ci * chunk_size;
-        let offset = offsets[ci];
-        let mut local_acc = offset;
-        let result_ptr = result.as_ptr() as *mut f64;
-        for (k, &v) in chunk.iter().enumerate() {
-            local_acc += v;
-            // SAFETY: `chunks` partitions `result`'s index range into disjoint,
-            // contiguous blocks (`chunks(chunk_size)`), and `base = ci * chunk_size`
-            // is exactly this chunk's start, so distinct rayon tasks write disjoint
-            // indices — no aliasing. `base + k < base + chunk.len() <= n`, so the
-            // write stays in bounds of `result`, which outlives the parallel region.
-            unsafe {
-                *result_ptr.add(base + k) = local_acc;
+    let chunk_size = scan_chunk_size(n);
+    let offsets = scan_chunk_offsets(data, chunk_size);
+    let mut result = vec![0.0; n];
+    result
+        .par_chunks_mut(chunk_size)
+        .zip(data.par_chunks(chunk_size))
+        .zip(offsets.par_iter())
+        .for_each(|((out, input), &offset)| {
+            let mut acc = offset;
+            for (o, &v) in out.iter_mut().zip(input.iter()) {
+                acc += v;
+                *o = acc;
             }
-        }
-    });
+        });
     result
 }
 /// Segmented prefix sum: performs exclusive scans within each segment.

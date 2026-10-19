@@ -4,6 +4,8 @@
 
 use std::collections::BinaryHeap;
 
+use crate::heat_method;
+
 use super::types::{
     DistNode, ExpMapResult, FmmStatus, GeodesicMesh, GeodesicVoronoiCell, HeatMethodParams,
     LogMapResult,
@@ -205,11 +207,12 @@ pub fn fast_marching_geodesic(mesh: &GeodesicMesh, sources: &[usize]) -> Vec<f64
                 if !f.contains(&nb) {
                     continue;
                 }
-                let third = f
-                    .iter()
-                    .copied()
-                    .find(|&v| v != u && v != nb)
-                    .expect("element must exist");
+                let edge_d = dist[u] + dist3(mesh.vertices[u], mesh.vertices[nb]);
+                best_d = best_d.min(edge_d);
+                let Some(third) = f.iter().copied().find(|&v| v != u && v != nb) else {
+                    // A degenerate face that repeats `u` or `nb` has no third corner.
+                    continue;
+                };
                 if status[third] == FmmStatus::Known {
                     let candidate = eikonal_update_triangle(
                         mesh.vertices[u],
@@ -220,8 +223,6 @@ pub fn fast_marching_geodesic(mesh: &GeodesicMesh, sources: &[usize]) -> Vec<f64
                     );
                     best_d = best_d.min(candidate);
                 }
-                let edge_d = dist[u] + dist3(mesh.vertices[u], mesh.vertices[nb]);
-                best_d = best_d.min(edge_d);
             }
             if best_d < dist[nb] {
                 dist[nb] = best_d;
@@ -253,164 +254,77 @@ pub fn mean_edge_length(mesh: &GeodesicMesh) -> f64 {
         total / count as f64
     }
 }
-/// Simplified Laplacian matrix (cotangent weights) for the mesh.
-/// Returns a sparse representation as `Vec<Vec<(usize, f64)>>` (row -> list of (col, value)).
-pub(super) fn build_cotan_laplacian(mesh: &GeodesicMesh) -> Vec<Vec<(usize, f64)>> {
-    let n = mesh.num_vertices();
-    let mut lap: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
-    for f in &mesh.faces {
-        for k in 0..3 {
-            let i = f[k];
-            let j = f[(k + 1) % 3];
-            let o = f[(k + 2) % 3];
-            let ei = sub3(mesh.vertices[i], mesh.vertices[o]);
-            let ej = sub3(mesh.vertices[j], mesh.vertices[o]);
-            let cos_o = dot3(ei, ej) / (len3(ei) * len3(ej) + 1e-30);
-            let sin_o = len3(cross3(ei, ej)) / (len3(ei) * len3(ej) + 1e-30);
-            let cot_o = if sin_o.abs() > 1e-15 {
-                cos_o / sin_o
-            } else {
-                0.0
-            };
-            add_sparse_entry(&mut lap[i], j, 0.5 * cot_o);
-            add_sparse_entry(&mut lap[j], i, 0.5 * cot_o);
-            add_sparse_entry(&mut lap[i], i, -0.5 * cot_o);
-            add_sparse_entry(&mut lap[j], j, -0.5 * cot_o);
-        }
-    }
-    lap
-}
-/// Add a value to a sparse row entry.
-pub(super) fn add_sparse_entry(row: &mut Vec<(usize, f64)>, col: usize, val: f64) {
-    if let Some(entry) = row.iter_mut().find(|(c, _)| *c == col) {
-        entry.1 += val;
-    } else {
-        row.push((col, val));
-    }
-}
-/// Solve a sparse linear system `A * x = b` using Jacobi iteration.
-/// `a` is the sparse matrix, `b` is the right-hand side, returns `x`.
-pub(super) fn jacobi_solve(
-    a: &[Vec<(usize, f64)>],
-    b: &[f64],
-    max_iter: usize,
-    tol: f64,
-) -> Vec<f64> {
-    let n = b.len();
-    let mut x = b.to_vec();
-    let mut x_new = vec![0.0; n];
-    let diag: Vec<f64> = (0..n)
-        .map(|i| {
-            a[i].iter()
-                .find(|(c, _)| *c == i)
-                .map(|(_, v)| *v)
-                .unwrap_or(1.0)
-        })
-        .collect();
-    for _iter in 0..max_iter {
-        let mut max_diff = 0.0_f64;
-        for i in 0..n {
-            let mut sum = b[i];
-            for &(j, v) in &a[i] {
-                if j != i {
-                    sum -= v * x[j];
-                }
-            }
-            let d = diag[i];
-            x_new[i] = if d.abs() > 1e-30 { sum / d } else { x[i] };
-            max_diff = max_diff.max((x_new[i] - x[i]).abs());
-        }
-        std::mem::swap(&mut x, &mut x_new);
-        if max_diff < tol {
-            break;
-        }
-    }
-    x
-}
 /// Compute geodesic distances from source vertices using the heat method.
 ///
-/// Steps:
-/// 1. Integrate heat from source (solve `(M - t*L) u = delta`).
-/// 2. Compute normalized negative gradient of `u`.
-/// 3. Solve Poisson equation `L phi = div(X)` for the distance.
+/// This is the algorithm of Crane, Weischedel and Wardetzky, *Geodesics in Heat*
+/// (2013):
 ///
-/// This is a simplified implementation suitable for moderate-size meshes.
+/// 1. Integrate the heat flow from an impulse at the sources for the time
+///    `t = params.time_factor * h^2`, with `h` the mean edge length, in one
+///    backward-Euler step `(M + t L) u = delta`; `L` is the cotangent stiffness
+///    matrix and `M` the lumped vertex area matrix.
+/// 2. On every face take the unit field `X = -grad u / |grad u|`.
+/// 3. Solve the Poisson equation `L phi = div X`, where the divergence is
+///    integrated over *both* faces on either side of every edge, so that the
+///    right-hand side sums to zero on every connected component.
+/// 4. Shift `phi` so that the smallest value over the sources is zero (the tiny
+///    negative values that remain next to a source are clamped to zero).
+///
+/// The linear algebra is the solver shared with the other heat-method
+/// implementations of this crate.  It computes the heat, which decays
+/// geometrically away from the sources, with relative accuracy (the direction of
+/// a heat value that is merely accurate in the norm of the right-hand side is
+/// noise) and enlarges the diffusion time when the heat would underflow on a very
+/// large mesh.
+///
+/// Vertices that no source reaches, i.e. those of other connected components, get
+/// `f64::INFINITY`, like in [`dijkstra_geodesic`]; so does every vertex when
+/// `sources` is empty.
+///
+/// # Errors
+/// * [`crate::Error::OutOfRange`] if `params.time_factor` is not positive and finite;
+/// * [`crate::Error::IndexOutOfBounds`] if a source is not a vertex of the mesh;
+/// * [`crate::Error::InvalidMesh`] for a non-finite vertex or a face that references
+///   a missing vertex;
+/// * [`crate::Error::ConvergenceFailure`] if an iterative solve does not converge;
+/// * [`crate::Error::General`] if the heat underflows even for the largest
+///   admissible diffusion time (a mesh more than a hundred thousand edges across).
 pub fn heat_method_geodesic(
     mesh: &GeodesicMesh,
     sources: &[usize],
     params: &HeatMethodParams,
-) -> Vec<f64> {
-    let n = mesh.num_vertices();
-    if n == 0 || sources.is_empty() {
-        return vec![0.0; n];
+) -> crate::Result<Vec<f64>> {
+    let factor = params.time_factor;
+    if !(factor.is_finite() && factor > 0.0) {
+        return Err(crate::Error::out_of_range(
+            "time_factor",
+            factor,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+        ));
     }
-    let h = mean_edge_length(mesh);
-    let t = params.time_factor * h * h;
-    let lap = build_cotan_laplacian(mesh);
-    let mass: Vec<f64> = (0..n).map(|i| mesh.voronoi_area(i)).collect();
-    let mut sys: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
-    for i in 0..n {
-        add_sparse_entry(&mut sys[i], i, mass[i]);
-        for &(j, v) in &lap[i] {
-            add_sparse_entry(&mut sys[i], j, -t * v);
-        }
-    }
-    let mut rhs = vec![0.0; n];
+    let h = heat_method::edge_length_statistics(&mesh.vertices, &mesh.faces)
+        .map_or(1.0, |(mean, _)| mean);
+    let solution = heat_method::solve(&mesh.vertices, &mesh.faces, sources, factor * h * h, 1)?;
+    // The potential is only defined up to one constant per connected component:
+    // anchor every component that holds a source at its smallest source value.
+    let mut anchor = vec![f64::INFINITY; solution.component_count];
     for &s in sources {
-        rhs[s] = 1.0;
+        let component = solution.component[s];
+        anchor[component] = anchor[component].min(solution.potential[s]);
     }
-    let u = jacobi_solve(&sys, &rhs, 500, 1e-10);
-    let mut grad_x: Vec<[f64; 3]> = vec![[0.0; 3]; mesh.num_faces()];
-    for (fi, f) in mesh.faces.iter().enumerate() {
-        let p0 = mesh.vertices[f[0]];
-        let p1 = mesh.vertices[f[1]];
-        let p2 = mesh.vertices[f[2]];
-        let fn_ = cross3(sub3(p1, p0), sub3(p2, p0));
-        let area2 = len3(fn_);
-        if area2 < 1e-30 {
-            continue;
-        }
-        let n_hat = scale3(fn_, 1.0 / area2);
-        let u0 = u[f[0]];
-        let u1 = u[f[1]];
-        let u2 = u[f[2]];
-        let e0 = sub3(p2, p1);
-        let e1 = sub3(p0, p2);
-        let e2 = sub3(p1, p0);
-        let g = add3(
-            add3(scale3(cross3(n_hat, e0), u0), scale3(cross3(n_hat, e1), u1)),
-            scale3(cross3(n_hat, e2), u2),
-        );
-        let gl = len3(g);
-        grad_x[fi] = if gl > 1e-30 {
-            scale3(g, -1.0 / gl)
-        } else {
-            [0.0; 3]
-        };
-    }
-    let mut div = vec![0.0; n];
-    for (fi, f) in mesh.faces.iter().enumerate() {
-        let x = grad_x[fi];
-        for k in 0..3 {
-            let i = f[k];
-            let j = f[(k + 1) % 3];
-            let o = f[(k + 2) % 3];
-            let ei = sub3(mesh.vertices[i], mesh.vertices[o]);
-            let ej = sub3(mesh.vertices[j], mesh.vertices[o]);
-            let cos_o = dot3(ei, ej) / (len3(ei) * len3(ej) + 1e-30);
-            let sin_o = len3(cross3(ei, ej)) / (len3(ei) * len3(ej) + 1e-30);
-            let cot_o = if sin_o.abs() > 1e-15 {
-                cos_o / sin_o
+    Ok(solution
+        .potential
+        .iter()
+        .zip(solution.component.iter())
+        .map(|(&phi, &component)| {
+            if anchor[component].is_finite() {
+                (phi - anchor[component]).max(0.0)
             } else {
-                0.0
-            };
-            let edge_ij = sub3(mesh.vertices[j], mesh.vertices[i]);
-            div[i] += 0.5 * cot_o * dot3(x, edge_ij);
-        }
-    }
-    let phi = jacobi_solve(&lap, &div, 500, 1e-10);
-    let min_phi = phi.iter().copied().fold(f64::INFINITY, f64::min);
-    phi.iter().map(|&p| (p - min_phi).max(0.0)).collect()
+                f64::INFINITY
+            }
+        })
+        .collect())
 }
 /// Compute a geodesic Voronoi diagram on a mesh from a set of site vertices.
 ///

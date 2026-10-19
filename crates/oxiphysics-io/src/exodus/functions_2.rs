@@ -373,3 +373,257 @@ mod tests_exodus_writer {
         );
     }
 }
+#[cfg(test)]
+mod tests_refine_tet4 {
+    use crate::exodus::*;
+
+    fn tet_mesh(vertices: &[[f64; 3]; 4]) -> ExodusMesh {
+        let mut mesh = ExodusMesh::new("refine");
+        for v in vertices {
+            mesh.add_node(v[0], v[1], v[2]);
+        }
+        let bi = mesh.add_block(1, "tet_block", "TET4", 4);
+        mesh.add_element_to_block(bi, &[1, 2, 3, 4]);
+        mesh
+    }
+
+    /// Signed volume of the tetrahedron with 1-based node ids `ids`.
+    fn signed_volume(mesh: &ExodusMesh, ids: &[usize]) -> f64 {
+        let p = |k: usize| mesh.coordinates[ids[k] - 1];
+        let (p0, p1, p2, p3) = (p(0), p(1), p(2), p(3));
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let e3 = [p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]];
+        (e1[0] * (e2[1] * e3[2] - e2[2] * e3[1]) - e1[1] * (e2[0] * e3[2] - e2[2] * e3[0])
+            + e1[2] * (e2[0] * e3[1] - e2[1] * e3[0]))
+            / 6.0
+    }
+
+    fn element_volumes(mesh: &ExodusMesh) -> Vec<f64> {
+        let mut out = Vec::new();
+        for block in mesh.blocks.iter().filter(|b| b.element_type == "TET4") {
+            for ids in block.connectivity.chunks_exact(4) {
+                out.push(signed_volume(mesh, ids));
+            }
+        }
+        out
+    }
+
+    /// 1-based id of the node of `mesh` located at `target`.
+    fn node_at(mesh: &ExodusMesh, target: [f64; 3]) -> usize {
+        let found = mesh.coordinates.iter().position(|c| {
+            (c[0] - target[0]).abs() < 1e-12
+                && (c[1] - target[1]).abs() < 1e-12
+                && (c[2] - target[2]).abs() < 1e-12
+        });
+        found.map(|i| i + 1).unwrap_or(0)
+    }
+
+    fn midpoint(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [
+            0.5 * (a[0] + b[0]),
+            0.5 * (a[1] + b[1]),
+            0.5 * (a[2] + b[2]),
+        ]
+    }
+
+    fn distance_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
+        (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
+    }
+
+    /// Number of elements of `mesh` that contain both node ids.
+    fn elements_containing_both(mesh: &ExodusMesh, a: usize, b: usize) -> usize {
+        mesh.blocks
+            .iter()
+            .flat_map(|blk| blk.connectivity.chunks_exact(4))
+            .filter(|ids| ids.contains(&a) && ids.contains(&b))
+            .count()
+    }
+
+    const IRREGULAR_TET: [[f64; 3]; 4] = [
+        [0.1, -0.2, 0.3],
+        [2.3, 0.4, -0.1],
+        [0.5, 1.9, 0.2],
+        [-0.3, 0.6, 2.2],
+    ];
+
+    #[test]
+    fn unit_tet_children_all_have_positive_volume() {
+        let mesh = build_unit_tet_mesh("unit");
+        let parent = signed_volume(&mesh, &[1, 2, 3, 4]);
+        assert!((parent - 1.0 / 6.0).abs() < 1e-15);
+        let refined = refine_tet4_mesh(&mesh);
+        let volumes = element_volumes(&refined);
+        assert_eq!(volumes.len(), 8);
+        for (i, v) in volumes.iter().enumerate() {
+            assert!(*v > 0.0, "child {i} is inverted: signed volume {v}");
+            assert!(
+                (v - parent / 8.0).abs() < 1e-15,
+                "child {i} volume {v} differs from parent/8 = {}",
+                parent / 8.0
+            );
+        }
+        for q in tet4_quality(&refined) {
+            assert!(
+                q.scaled_jacobian > 0.0,
+                "element {} has non-positive scaled Jacobian {}",
+                q.element_index,
+                q.scaled_jacobian
+            );
+        }
+    }
+
+    #[test]
+    fn irregular_tet_children_are_positive_and_sum_to_parent() {
+        let mesh = tet_mesh(&IRREGULAR_TET);
+        let parent = signed_volume(&mesh, &[1, 2, 3, 4]);
+        assert!(parent > 0.0, "fixture must be positively oriented");
+        let refined = refine_tet4_mesh(&mesh);
+        let volumes = element_volumes(&refined);
+        assert_eq!(volumes.len(), 8);
+        for (i, v) in volumes.iter().enumerate() {
+            assert!(*v > 0.0, "child {i} is inverted: signed volume {v}");
+            assert!(
+                (v - parent / 8.0).abs() < 1e-12,
+                "child {i} volume {v} differs from parent/8 = {}",
+                parent / 8.0
+            );
+        }
+        let total: f64 = volumes.iter().sum();
+        assert!(
+            (total - parent).abs() < 1e-12,
+            "children sum to {total}, parent is {parent}"
+        );
+        for q in tet4_quality(&refined) {
+            assert!(q.scaled_jacobian > 0.0);
+        }
+    }
+
+    #[test]
+    fn inverted_parent_yields_inverted_children() {
+        let mut swapped = IRREGULAR_TET;
+        swapped.swap(1, 2);
+        let mesh = tet_mesh(&swapped);
+        let parent = signed_volume(&mesh, &[1, 2, 3, 4]);
+        assert!(parent < 0.0, "fixture must be negatively oriented");
+        let refined = refine_tet4_mesh(&mesh);
+        let volumes = element_volumes(&refined);
+        assert_eq!(volumes.len(), 8);
+        for (i, v) in volumes.iter().enumerate() {
+            assert!(*v < 0.0, "child {i} flipped orientation: volume {v}");
+            assert!((v - parent / 8.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn interior_split_follows_the_shortest_diagonal() {
+        // Each fixture makes a different octahedron diagonal the shortest one:
+        // the pairs of opposite edges are (v0v2, v1v3), (v0v1, v2v3) and
+        // (v0v3, v1v2), so a diagonal is short when the sums of the two vertex
+        // pairs nearly coincide.
+        let fixtures: [([[f64; 3]; 4], usize); 3] = [
+            (
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, -1.0, -0.5],
+                    [2.0, 0.0, 0.0],
+                    [1.0, 1.0, 1.0],
+                ],
+                0,
+            ),
+            (
+                [
+                    [0.0, 0.0, 0.0],
+                    [2.0, 0.0, 0.0],
+                    [1.0, 1.0, 1.0],
+                    [1.0, -1.0, -0.5],
+                ],
+                1,
+            ),
+            (
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 1.0, 1.0],
+                    [1.0, -1.0, -0.5],
+                    [2.0, 0.0, 0.0],
+                ],
+                2,
+            ),
+        ];
+        for (vertices, expected) in fixtures {
+            let mesh = tet_mesh(&vertices);
+            let parent = signed_volume(&mesh, &[1, 2, 3, 4]);
+            assert!(
+                parent > 0.0,
+                "fixture {expected} must be positively oriented"
+            );
+            let m = |a: usize, b: usize| midpoint(vertices[a], vertices[b]);
+            let diagonals = [(m(0, 2), m(1, 3)), (m(0, 1), m(2, 3)), (m(0, 3), m(1, 2))];
+            let lengths: Vec<f64> = diagonals.iter().map(|&(a, b)| distance_sq(a, b)).collect();
+            for (idx, len) in lengths.iter().enumerate() {
+                if idx != expected {
+                    assert!(
+                        lengths[expected] < *len - 1e-9,
+                        "fixture {expected}: diagonal {idx} ({len}) is not longer than {}",
+                        lengths[expected]
+                    );
+                }
+            }
+            let refined = refine_tet4_mesh(&mesh);
+            for (idx, &(a, b)) in diagonals.iter().enumerate() {
+                let (ia, ib) = (node_at(&refined, a), node_at(&refined, b));
+                assert!(ia > 0 && ib > 0, "midpoint node missing in refined mesh");
+                let shared = elements_containing_both(&refined, ia, ib);
+                if idx == expected {
+                    assert_eq!(
+                        shared, 4,
+                        "shortest diagonal {idx} must be an edge of 4 children"
+                    );
+                } else {
+                    assert_eq!(shared, 0, "longer diagonal {idx} must not be an edge");
+                }
+            }
+            let volumes = element_volumes(&refined);
+            assert_eq!(volumes.len(), 8);
+            for v in &volumes {
+                assert!(
+                    (v - parent / 8.0).abs() < 1e-12,
+                    "fixture {expected}: child volume {v}, parent/8 = {}",
+                    parent / 8.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn neighbouring_tets_share_midpoints_and_stay_positive() {
+        let mut mesh = ExodusMesh::new("pair");
+        mesh.add_node(0.0, 0.0, 0.0);
+        mesh.add_node(1.0, 0.0, 0.0);
+        mesh.add_node(0.0, 1.0, 0.0);
+        mesh.add_node(0.0, 0.0, 1.0);
+        mesh.add_node(0.0, 0.0, -1.0);
+        let bi = mesh.add_block(1, "tets", "TET4", 4);
+        mesh.add_element_to_block(bi, &[1, 2, 3, 4]);
+        mesh.add_element_to_block(bi, &[1, 3, 2, 5]);
+        let before = element_volumes(&mesh);
+        assert!(before.iter().all(|v| *v > 0.0));
+        let refined = refine_tet4_mesh(&mesh);
+        assert_eq!(refined.element_count(), 16);
+        // 5 original nodes + (6 + 6 - 3 shared) edge midpoints.
+        assert_eq!(refined.node_count(), 14);
+        for i in 0..refined.coordinates.len() {
+            for j in (i + 1)..refined.coordinates.len() {
+                assert!(
+                    distance_sq(refined.coordinates[i], refined.coordinates[j]) > 1e-18,
+                    "nodes {i} and {j} coincide"
+                );
+            }
+        }
+        let after = element_volumes(&refined);
+        assert!(after.iter().all(|v| *v > 0.0));
+        let total_before: f64 = before.iter().sum();
+        let total_after: f64 = after.iter().sum();
+        assert!((total_before - total_after).abs() < 1e-12);
+    }
+}

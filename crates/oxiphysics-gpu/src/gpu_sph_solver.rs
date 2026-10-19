@@ -30,12 +30,14 @@ pub struct GpuSphParticle {
 /// Simulation parameters for the GPU SPH solver.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GpuSphParams {
-    /// SPH smoothing kernel radius h in metres.
+    /// SPH smoothing kernel radius h in metres (compact support radius).
     pub kernel_radius: f32,
     /// Tait EOS stiffness constant k.
     pub eos_k: f32,
     /// Tait EOS exponent gamma.
     pub eos_gamma: f32,
+    /// Rest density ρ₀ of the Tait EOS in kg/m³ (must be positive).
+    pub rest_density: f32,
     /// Dynamic viscosity coefficient μ.
     pub viscosity: f32,
     /// Number of particles.
@@ -49,6 +51,10 @@ pub struct GpuSphBuffer {
     pub positions: Vec<[f32; 3]>,
     /// Per-particle velocities \[vx, vy, vz\].
     pub velocities: Vec<[f32; 3]>,
+    /// Per-particle masses (kg).  Every density, pressure-force and viscosity
+    /// sum weights neighbour `j` by `masses[j]`; a particle without a mass
+    /// entry contributes nothing.
+    pub masses: Vec<f32>,
     /// Per-particle densities (kg/m³).
     pub densities: Vec<f32>,
     /// Per-particle pressures (Pa).
@@ -56,11 +62,15 @@ pub struct GpuSphBuffer {
 }
 
 impl GpuSphBuffer {
-    /// Allocate a new buffer for `n` particles, all initialised to zero.
+    /// Allocate a new buffer for `n` particles: positions, velocities,
+    /// densities and pressures are zero and every particle has unit mass
+    /// (1 kg); set [`masses`](Self::masses) for a physical particle mass such
+    /// as `ρ₀ · Δx³`.
     pub fn new(n: usize) -> Self {
         Self {
             positions: vec![[0.0; 3]; n],
             velocities: vec![[0.0; 3]; n],
+            masses: vec![1.0; n],
             densities: vec![0.0; n],
             pressures: vec![0.0; n],
         }
@@ -117,22 +127,20 @@ pub fn sph_kernel_grad_gpu(r: f32, h: f32) -> f32 {
 
 /// Compute per-particle densities via O(N²) neighbour sum.
 ///
-/// `ρ_i = Σ_j m_j * W(|r_i - r_j|, h)`
+/// `ρ_i = Σ_j m_j * W(|r_i - r_j|, h)` with the per-particle masses
+/// [`GpuSphBuffer::masses`].
 pub fn compute_density_gpu(buf: &GpuSphBuffer, params: &GpuSphParams) -> Vec<f32> {
     let n = buf.positions.len();
     let h = params.kernel_radius;
-    // Assume unit mass per particle (mass can be encoded separately)
-    let mass = 1.0_f32;
     let mut densities = vec![0.0_f32; n];
     for (rho, &pi) in densities.iter_mut().zip(buf.positions.iter()) {
         let mut acc = 0.0_f32;
-        for j in 0..n {
-            let pj = buf.positions[j];
+        for (&pj, &mass_j) in buf.positions.iter().zip(buf.masses.iter()) {
             let dx = pi[0] - pj[0];
             let dy = pi[1] - pj[1];
             let dz = pi[2] - pj[2];
             let r = (dx * dx + dy * dy + dz * dz).sqrt();
-            acc += mass * sph_kernel_gpu(r, h);
+            acc += mass_j * sph_kernel_gpu(r, h);
         }
         *rho = acc;
     }
@@ -143,9 +151,10 @@ pub fn compute_density_gpu(buf: &GpuSphBuffer, params: &GpuSphParams) -> Vec<f32
 
 /// Compute per-particle pressures using the Tait equation of state.
 ///
-/// `P = k * (ρ/ρ₀)^γ - k` where `ρ₀ = 1000` kg/m³.
+/// `P = k * ((ρ/ρ₀)^γ - 1)` with the rest density
+/// [`GpuSphParams::rest_density`] as `ρ₀`.
 pub fn compute_pressure_gpu(densities: &[f32], params: &GpuSphParams) -> Vec<f32> {
-    let rho0 = 1000.0_f32;
+    let rho0 = params.rest_density;
     densities
         .iter()
         .map(|&rho| {
@@ -159,7 +168,8 @@ pub fn compute_pressure_gpu(densities: &[f32], params: &GpuSphParams) -> Vec<f32
 
 /// Compute pressure forces on all particles.
 ///
-/// Uses the symmetric SPH momentum equation:
+/// Uses the symmetric SPH momentum equation, weighting every neighbour by its
+/// own mass [`GpuSphBuffer::masses`]:
 /// `f_i = -Σ_j m_j (P_i/ρ_i² + P_j/ρ_j²) ∇W`
 pub fn compute_pressure_force_gpu(
     buf: &GpuSphBuffer,
@@ -168,7 +178,6 @@ pub fn compute_pressure_force_gpu(
 ) -> Vec<[f32; 3]> {
     let n = buf.positions.len();
     let h = params.kernel_radius;
-    let mass = 1.0_f32;
     let mut forces = vec![[0.0_f32; 3]; n];
 
     for (i, (force, &pi)) in forces.iter_mut().zip(buf.positions.iter()).enumerate() {
@@ -178,7 +187,7 @@ pub fn compute_pressure_force_gpu(
         let mut fy = 0.0_f32;
         let mut fz = 0.0_f32;
 
-        for (j, &pj) in buf.positions.iter().enumerate() {
+        for (j, (&pj, &mass_j)) in buf.positions.iter().zip(buf.masses.iter()).enumerate() {
             if i == j {
                 continue;
             }
@@ -192,7 +201,7 @@ pub fn compute_pressure_force_gpu(
             let rho_j = buf.densities[j].max(1e-6);
             let p_j = pressures[j];
             let grad_mag = sph_kernel_grad_gpu(r, h);
-            let coeff = -mass * (p_i / (rho_i * rho_i) + p_j / (rho_j * rho_j)) * grad_mag / r;
+            let coeff = -mass_j * (p_i / (rho_i * rho_i) + p_j / (rho_j * rho_j)) * grad_mag / r;
             fx += coeff * dx;
             fy += coeff * dy;
             fz += coeff * dz;
@@ -209,6 +218,8 @@ pub fn compute_pressure_force_gpu(
 ///
 /// `a_i = Σ_j 2 μ m_j / (ρ_i ρ_j) · (r_ij · ∇_i W_ij) / (|r_ij|² + η²) · (v_i − v_j)`
 ///
+/// where `m_j` is the mass of neighbour `j` ([`GpuSphBuffer::masses`]).
+///
 /// with `r_ij = r_i − r_j`, `r_ij · ∇_i W_ij = r · dW/dr` and `η² = 0.01 h²`.
 /// Because `dW/dr ≤ 0` every pair term opposes the relative velocity, so the
 /// viscosity damps shear instead of amplifying it.  The result is an
@@ -217,7 +228,6 @@ pub fn compute_viscosity_force_gpu(buf: &GpuSphBuffer, params: &GpuSphParams) ->
     let n = buf.positions.len();
     let h = params.kernel_radius;
     let mu = params.viscosity;
-    let mass = 1.0_f32;
     let eta2 = 0.01 * h * h;
     let mut forces = vec![[0.0_f32; 3]; n];
 
@@ -231,7 +241,13 @@ pub fn compute_viscosity_force_gpu(buf: &GpuSphBuffer, params: &GpuSphParams) ->
         let mut fy = 0.0_f32;
         let mut fz = 0.0_f32;
 
-        for (j, (&pj, &vj)) in buf.positions.iter().zip(buf.velocities.iter()).enumerate() {
+        for (j, ((&pj, &vj), &mass_j)) in buf
+            .positions
+            .iter()
+            .zip(buf.velocities.iter())
+            .zip(buf.masses.iter())
+            .enumerate()
+        {
             if i == j {
                 continue;
             }
@@ -245,7 +261,7 @@ pub fn compute_viscosity_force_gpu(buf: &GpuSphBuffer, params: &GpuSphParams) ->
             }
             let rho_j = buf.densities[j].max(1e-6);
             let dw_dr = sph_kernel_grad_gpu(r, h);
-            let coeff = 2.0 * mu * mass * (r * dw_dr) / (rho_i * rho_j * (r2 + eta2));
+            let coeff = 2.0 * mu * mass_j * (r * dw_dr) / (rho_i * rho_j * (r2 + eta2));
             fx += coeff * (vi[0] - vj[0]);
             fy += coeff * (vi[1] - vj[1]);
             fz += coeff * (vi[2] - vj[2]);
@@ -260,7 +276,8 @@ pub fn compute_viscosity_force_gpu(buf: &GpuSphBuffer, params: &GpuSphParams) ->
 /// Semi-implicit Euler integration step.
 ///
 /// Updates velocities and positions in-place:
-/// `v += f * dt`, `x += v * dt`.
+/// `v += f * dt`, `x += v * dt`, where `f` is an acceleration (the SPH
+/// momentum sums above are per unit mass of the receiving particle).
 pub fn integrate_sph_gpu(buf: &mut GpuSphBuffer, forces: &[[f32; 3]], dt: f32) {
     for (vel, (pos, &f)) in buf
         .velocities
@@ -280,7 +297,8 @@ pub fn integrate_sph_gpu(buf: &mut GpuSphBuffer, forces: &[[f32; 3]], dt: f32) {
 
 /// Perform one complete SPH time-step.
 ///
-/// Executes density → pressure → force → integrate in sequence.
+/// Executes density → pressure → force → integrate in sequence, using the
+/// per-particle masses of `buf` and the rest density of `params`.
 pub fn gpu_sph_step(buf: &mut GpuSphBuffer, params: &GpuSphParams, dt: f32) {
     let densities = compute_density_gpu(buf, params);
     let pressures = compute_pressure_gpu(&densities, params);
@@ -320,6 +338,7 @@ mod tests {
             kernel_radius: 0.5,
             eos_k: 1.0,
             eos_gamma: 7.0,
+            rest_density: 1000.0,
             viscosity: 0.01,
             n_particles: n,
         }
@@ -700,6 +719,7 @@ mod tests {
             kernel_radius: h,
             eos_k: 1.0,
             eos_gamma: 7.0,
+            rest_density: 1000.0,
             viscosity,
             n_particles: 2,
         };
@@ -782,6 +802,7 @@ mod tests {
             kernel_radius: h,
             eos_k: 1.0,
             eos_gamma: 7.0,
+            rest_density: 1000.0,
             viscosity: 0.2,
             n_particles: n,
         };
@@ -799,5 +820,240 @@ mod tests {
             "fastest particle must be pulled down, got {}",
             acc[n - 1][1]
         );
+    }
+
+    // ── Per-particle masses and rest density ─────────────────────────────
+
+    /// SPH parameters for a fluid of rest density `rest_density`.
+    fn fluid_params(h: f32, rest_density: f32, viscosity: f32, n: usize) -> GpuSphParams {
+        GpuSphParams {
+            kernel_radius: h,
+            eos_k: 10.0,
+            eos_gamma: 7.0,
+            rest_density,
+            viscosity,
+            n_particles: n,
+        }
+    }
+
+    /// `n³` cubic lattice of spacing `dx`, every particle of mass `mass`, at rest.
+    fn cubic_lattice(n: usize, dx: f32, mass: f32) -> GpuSphBuffer {
+        let mut buf = GpuSphBuffer::new(n * n * n);
+        for k in 0..n {
+            for j in 0..n {
+                for i in 0..n {
+                    let idx = i + n * (j + n * k);
+                    buf.positions[idx] = [i as f32 * dx, j as f32 * dx, k as f32 * dx];
+                    buf.masses[idx] = mass;
+                }
+            }
+        }
+        buf
+    }
+
+    /// Density estimate `m Σ_j W(|r_j|, h)` at a lattice site (f64 reference).
+    ///
+    /// With `corner == false` the site lies deep inside an infinite lattice;
+    /// with `corner == true` it is the corner of a lattice that extends only
+    /// towards `+x`, `+y` and `+z`.
+    fn lattice_density_reference(dx: f64, h: f64, mass: f64, corner: bool) -> f64 {
+        let reach = (h / dx).ceil() as i32;
+        let lowest = if corner { 0 } else { -reach };
+        let mut sum = 0.0;
+        for i in lowest..=reach {
+            for j in lowest..=reach {
+                for k in lowest..=reach {
+                    let r = dx * f64::from(i * i + j * j + k * k).sqrt();
+                    sum += wendland_reference(r, h);
+                }
+            }
+        }
+        mass * sum
+    }
+
+    #[test]
+    fn test_buffer_new_has_unit_masses() {
+        let buf = GpuSphBuffer::new(4);
+        assert_eq!(buf.masses, vec![1.0; 4]);
+        assert_eq!(buf.len(), 4);
+    }
+
+    /// With `m = ρ₀ Δx³` the density summation recovers the rest density; the
+    /// previous unit-mass assumption could never do that.
+    #[test]
+    fn test_lattice_density_recovers_rest_density() {
+        let (n, dx, rho0) = (9_usize, 0.1_f32, 1000.0_f32);
+        let h = 2.5 * dx;
+        let mass = rho0 * dx * dx * dx;
+        let buf = cubic_lattice(n, dx, mass);
+        let params = fluid_params(h, rho0, 0.0, n * n * n);
+        let density = compute_density_gpu(&buf, &params);
+        // The centre particle is 4 spacings (> h) from every face, so its
+        // kernel support is completely filled.
+        let centre = 4 + n * (4 + n * 4);
+        let (dx64, h64, mass64) = (f64::from(dx), f64::from(h), f64::from(mass));
+        let reference = lattice_density_reference(dx64, h64, mass64, false);
+        assert!(
+            (f64::from(density[centre]) - reference).abs() <= 1e-3 * reference,
+            "centre density {} vs lattice reference {reference}",
+            density[centre]
+        );
+        assert!(
+            (density[centre] / rho0 - 1.0).abs() < 0.05,
+            "centre density {} must be within 5 % of {rho0}",
+            density[centre]
+        );
+        // A corner particle sees only an octant of its support (plus itself).
+        let corner_reference = lattice_density_reference(dx64, h64, mass64, true);
+        assert!(
+            (f64::from(density[0]) - corner_reference).abs() <= 1e-3 * corner_reference,
+            "corner density {} vs reference {corner_reference}",
+            density[0]
+        );
+        assert!(density[0] < 0.6 * density[centre]);
+    }
+
+    #[test]
+    fn test_density_scales_linearly_with_particle_mass() {
+        let (n, dx) = (5_usize, 0.1_f32);
+        let params = fluid_params(2.5 * dx, 1000.0, 0.0, n * n * n);
+        let light = compute_density_gpu(&cubic_lattice(n, dx, 0.5), &params);
+        let heavy = compute_density_gpu(&cubic_lattice(n, dx, 1.0), &params);
+        for (l, h) in light.iter().zip(heavy.iter()) {
+            assert!((h - 2.0 * l).abs() <= 1e-5 * h.abs(), "{l} vs {h}");
+        }
+    }
+
+    #[test]
+    fn test_density_weights_each_neighbour_by_its_own_mass() {
+        let mut buf = GpuSphBuffer::new(2);
+        buf.positions[1] = [0.5, 0.0, 0.0];
+        buf.masses = vec![2.0, 5.0];
+        let params = fluid_params(1.0, 1000.0, 0.0, 2);
+        let rho = compute_density_gpu(&buf, &params);
+        let w_self = wendland_reference(0.0, 1.0);
+        let w_pair = wendland_reference(0.5, 1.0);
+        let expected_0 = 2.0 * w_self + 5.0 * w_pair;
+        let expected_1 = 5.0 * w_self + 2.0 * w_pair;
+        assert!((f64::from(rho[0]) - expected_0).abs() <= 1e-5 * expected_0);
+        assert!((f64::from(rho[1]) - expected_1).abs() <= 1e-5 * expected_1);
+    }
+
+    #[test]
+    fn test_pressure_uses_configured_rest_density() {
+        let mut params = fluid_params(0.5, 500.0, 0.0, 3);
+        params.eos_k = 3.0;
+        let p = compute_pressure_gpu(&[500.0, 550.0, 450.0], &params);
+        assert!(p[0].abs() < 1e-5, "zero pressure at rest density: {}", p[0]);
+        let expected = 3.0_f64 * (1.1_f64.powi(7) - 1.0);
+        assert!((f64::from(p[1]) - expected).abs() < 1e-4, "{}", p[1]);
+        assert!(p[2] < 0.0);
+        // The same densities against water's rest density are far below it.
+        params.rest_density = 1000.0;
+        let against_water = compute_pressure_gpu(&[500.0], &params);
+        let expected_water = 3.0_f64 * (0.5_f64.powi(7) - 1.0);
+        assert!((f64::from(against_water[0]) - expected_water).abs() < 1e-4);
+    }
+
+    /// Pressure and viscous accelerations are antisymmetric pair sums, so
+    /// `Σ m_i a_i = 0` holds exactly when each neighbour uses its own mass.
+    #[test]
+    fn test_pair_accelerations_conserve_momentum_with_unequal_masses() {
+        let n = 6;
+        let mut buf = GpuSphBuffer::new(n);
+        buf.positions = vec![
+            [0.0, 0.0, 0.0],
+            [0.4, 0.1, -0.2],
+            [-0.3, 0.35, 0.15],
+            [0.2, -0.4, 0.3],
+            [-0.25, -0.2, -0.35],
+            [0.1, 0.3, 0.45],
+        ];
+        buf.velocities = vec![
+            [0.3, -0.1, 0.2],
+            [-0.4, 0.25, 0.0],
+            [0.1, 0.1, -0.3],
+            [0.0, -0.35, 0.2],
+            [0.5, 0.0, 0.1],
+            [-0.2, 0.4, -0.1],
+        ];
+        buf.masses = vec![0.5, 1.5, 2.0, 0.75, 3.0, 1.0];
+        let params = fluid_params(1.0, 8.0, 0.3, n);
+        buf.densities = compute_density_gpu(&buf, &params);
+        let pressures = compute_pressure_gpu(&buf.densities, &params);
+        let pressure_acc = compute_pressure_force_gpu(&buf, &pressures, &params);
+        let viscous_acc = compute_viscosity_force_gpu(&buf, &params);
+        for (name, acc) in [("pressure", &pressure_acc), ("viscosity", &viscous_acc)] {
+            let mut momentum = [0.0_f64; 3];
+            let mut scale = 0.0_f64;
+            for (m, a) in buf.masses.iter().zip(acc.iter()) {
+                for k in 0..3 {
+                    let term = f64::from(*m) * f64::from(a[k]);
+                    momentum[k] += term;
+                    scale += term.abs();
+                }
+            }
+            assert!(scale > 1e-3, "{name}: the forces must be non-trivial");
+            for (k, m) in momentum.iter().enumerate() {
+                assert!(
+                    m.abs() <= 1e-5 * scale,
+                    "{name}: net momentum rate {m} in component {k} (scale {scale})"
+                );
+            }
+        }
+    }
+
+    /// With densities and pressures held fixed, the acceleration of a
+    /// particle is proportional to the mass of its neighbour (not its own).
+    #[test]
+    fn test_accelerations_are_proportional_to_the_neighbour_mass() {
+        let params = fluid_params(1.0, 1000.0, 0.5, 2);
+        let pressures = [5.0_f32, 7.0];
+        let make = |m0: f32, m1: f32| {
+            let mut buf = GpuSphBuffer::new(2);
+            buf.positions[1] = [0.4, 0.0, 0.0];
+            buf.velocities[0] = [0.0, 1.0, 0.0];
+            buf.masses = vec![m0, m1];
+            buf.densities = vec![2.0, 3.0];
+            buf
+        };
+        let base = make(1.0, 1.0);
+        let heavy_neighbour = make(1.0, 4.0);
+
+        let p_base = compute_pressure_force_gpu(&base, &pressures, &params);
+        let p_heavy = compute_pressure_force_gpu(&heavy_neighbour, &pressures, &params);
+        assert!(p_base[0][0] != 0.0 && p_base[1][0] != 0.0);
+        assert!((p_heavy[0][0] - 4.0 * p_base[0][0]).abs() <= 1e-5 * p_heavy[0][0].abs());
+        assert!((p_heavy[1][0] - p_base[1][0]).abs() <= 1e-6 * p_base[1][0].abs());
+
+        let v_base = compute_viscosity_force_gpu(&base, &params);
+        let v_heavy = compute_viscosity_force_gpu(&heavy_neighbour, &params);
+        assert!(v_base[0][1] != 0.0 && v_base[1][1] != 0.0);
+        assert!((v_heavy[0][1] - 4.0 * v_base[0][1]).abs() <= 1e-5 * v_heavy[0][1].abs());
+        assert!((v_heavy[1][1] - v_base[1][1]).abs() <= 1e-6 * v_base[1][1].abs());
+    }
+
+    /// A light fluid (ρ₀ = 1.2 kg/m³) block with `m = ρ₀ Δx³` stays near its
+    /// rest density and near zero pressure after a step; the old hard-coded
+    /// ρ₀ = 1000 and unit masses gave hugely wrong densities and pressures.
+    #[test]
+    fn test_gpu_sph_step_respects_masses_and_rest_density() {
+        let (n, dx, rho0) = (7_usize, 0.1_f32, 1.2_f32);
+        let mut buf = cubic_lattice(n, dx, rho0 * dx * dx * dx);
+        let params = fluid_params(2.5 * dx, rho0, 0.0, n * n * n);
+        gpu_sph_step(&mut buf, &params, 1e-4);
+        let centre = 3 + n * (3 + n * 3);
+        assert!(
+            (buf.densities[centre] / rho0 - 1.0).abs() < 0.05,
+            "density {} vs rest density {rho0}",
+            buf.densities[centre]
+        );
+        // P = k ((ρ/ρ₀)^7 - 1) with k = 10 is about 1 for the 1.3 % SPH excess.
+        assert!(
+            buf.pressures[centre].abs() < 2.0,
+            "pressure {} should be O(1)",
+            buf.pressures[centre]
+        );
+        assert!(buf.positions.iter().flatten().all(|c| c.is_finite()));
     }
 }

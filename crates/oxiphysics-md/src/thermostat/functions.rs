@@ -259,19 +259,40 @@ mod tests {
             "Berendsen: expected T~{target}, got T={t_final}"
         );
     }
+    /// CSVR must sample the canonical ensemble: the time-averaged temperature
+    /// equals the target and the kinetic energy fluctuates with
+    /// `Var(K) = 2 K̄² / N_f`.  An instantaneous temperature is useless here
+    /// (its relative scatter is `sqrt(2 / N_f)`), so the test averages 45 000
+    /// steps (≈ 2 000 independent samples at `dt/τ = 0.1`) after a burn-in.
     #[test]
     fn test_csvr_drives_temperature() {
-        let mut atoms = make_atoms_at_temp(40, 600.0);
+        let n_atoms = 100;
+        let n_dof = (3 * n_atoms) as f64;
         let k_b = 1.0;
         let target = 300.0;
-        let mut thermo = CsvrThermostat::with_seed(0.5, 42);
-        for _ in 0..2000 {
+        let k_bar = 0.5 * n_dof * k_b * target;
+        let mut atoms = make_atoms_at_temp(n_atoms, 600.0);
+        let mut thermo = CsvrThermostat::with_seed(0.1, 42);
+        for _ in 0..5_000 {
             thermo.apply(&mut atoms, target, 0.01, k_b);
         }
-        let t_final = atoms.temperature(k_b);
+        let mut series = Vec::with_capacity(45_000);
+        for _ in 0..45_000 {
+            thermo.apply(&mut atoms, target, 0.01, k_b);
+            series.push(atoms.kinetic_energy());
+        }
+        let n = series.len() as f64;
+        let mean = series.iter().sum::<f64>() / n;
+        let var = series.iter().map(|k| (k - mean).powi(2)).sum::<f64>() / n;
+        let t_mean = 2.0 * mean / (n_dof * k_b);
         assert!(
-            (t_final - target).abs() < 300.0,
-            "CSVR: T={t_final}, target={target}"
+            (t_mean - target).abs() / target < 0.02,
+            "CSVR: <T>={t_mean}, target={target}"
+        );
+        let var_canonical = 2.0 * k_bar * k_bar / n_dof;
+        assert!(
+            (var / var_canonical - 1.0).abs() < 0.15,
+            "CSVR: Var(K)={var}, canonical 2 K^2/N_f={var_canonical}"
         );
     }
     #[test]
@@ -455,14 +476,15 @@ mod nhc_langevin_tests {
     }
     #[test]
     fn test_nhc_creation() {
-        let nhc = NoseHooverChain::new(3, vec![10.0, 10.0, 10.0], 30);
+        let nhc =
+            NoseHooverChain::new(3, vec![10.0, 10.0, 10.0], 30).expect("valid NHC parameters");
         assert_eq!(nhc.chain_length(), 3);
         assert_eq!(nhc.eta.len(), 3);
         assert_eq!(nhc.xi.len(), 3);
     }
     #[test]
     fn test_nhc_uniform_mass() {
-        let nhc = NoseHooverChain::with_uniform_mass(4, 5.0, 12);
+        let nhc = NoseHooverChain::with_uniform_mass(4, 5.0, 12).expect("valid NHC parameters");
         assert_eq!(nhc.chain_length(), 4);
         for &q in &nhc.q {
             assert!((q - 5.0).abs() < 1e-12);
@@ -470,7 +492,7 @@ mod nhc_langevin_tests {
     }
     #[test]
     fn test_nhc_chain1_scale_factor_finite() {
-        let mut nhc = NoseHooverChain::new(1, vec![10.0], 30);
+        let mut nhc = NoseHooverChain::new(1, vec![10.0], 30).expect("valid NHC parameters");
         let mut atoms = atoms_at_temp(10, 600.0);
         let ke_init = atoms.kinetic_energy();
         assert!(ke_init > 0.0);
@@ -480,7 +502,8 @@ mod nhc_langevin_tests {
     }
     #[test]
     fn test_nhc_chain3_reduces_temperature() {
-        let mut nhc = NoseHooverChain::with_uniform_mass(3, 50.0, 60);
+        let mut nhc =
+            NoseHooverChain::with_uniform_mass(3, 50.0, 60).expect("valid NHC parameters");
         let mut atoms = atoms_at_temp(20, 600.0);
         let t_init = atoms.temperature(1.0);
         assert!(t_init > 400.0);
@@ -495,13 +518,13 @@ mod nhc_langevin_tests {
     }
     #[test]
     fn test_nhc_conserved_energy_nonneg() {
-        let nhc = NoseHooverChain::with_uniform_mass(3, 10.0, 30);
+        let nhc = NoseHooverChain::with_uniform_mass(3, 10.0, 30).expect("valid NHC parameters");
         let e = nhc.conserved_energy(300.0, 1.0);
         assert!(e.is_finite(), "NHC conserved energy should be finite: {e}");
     }
     #[test]
     fn test_nhc_single_chain_preserves_positivity() {
-        let mut nhc = NoseHooverChain::new(1, vec![10.0], 6);
+        let mut nhc = NoseHooverChain::new(1, vec![10.0], 6).expect("valid NHC parameters");
         let mut atoms = atoms_at_temp(2, 300.0);
         for _ in 0..1000 {
             nhc.apply(&mut atoms, 300.0, 0.001, 1.0);
@@ -511,6 +534,220 @@ mod nhc_langevin_tests {
             ke >= 0.0 && ke.is_finite(),
             "KE must remain non-negative: {ke}"
         );
+    }
+    #[test]
+    fn test_nhc_constructors_reject_invalid_parameters() {
+        let empty = NoseHooverChain::new(0, Vec::new(), 6);
+        let message = empty
+            .expect_err("chain_length 0 must be rejected")
+            .to_string();
+        assert!(message.contains("chain_length"), "message: {message}");
+        assert!(NoseHooverChain::with_uniform_mass(0, 1.0, 6).is_err());
+        assert!(NoseHooverChain::new(3, vec![1.0, 1.0], 6).is_err());
+        assert!(NoseHooverChain::new(1, vec![1.0, 1.0], 6).is_err());
+        assert!(NoseHooverChain::new(2, vec![1.0, 0.0], 6).is_err());
+        assert!(NoseHooverChain::new(2, vec![1.0, -2.0], 6).is_err());
+        assert!(NoseHooverChain::new(2, vec![1.0, f64::NAN], 6).is_err());
+        assert!(NoseHooverChain::new(2, vec![f64::INFINITY, 1.0], 6).is_err());
+        assert!(NoseHooverChain::with_uniform_mass(2, -1.0, 6).is_err());
+        assert!(NoseHooverChain::new(2, vec![1.0, 1.0], 0).is_err());
+        assert!(NoseHooverChain::new(2, vec![1.0, 1.0], 6).is_ok());
+    }
+    #[test]
+    fn test_nhc_propagate_is_inert_for_inconsistent_chains() {
+        let mut empty = NoseHooverChain {
+            chain_length: 0,
+            q: Vec::new(),
+            eta: Vec::new(),
+            xi: Vec::new(),
+            n_dof: 6,
+        };
+        assert_eq!(empty.propagate(3.0, 1.0, 1.0, 0.01), 1.0);
+        let mut atoms = atoms_at_temp(2, 300.0);
+        let before = atoms.velocities.clone();
+        empty.apply(&mut atoms, 300.0, 0.01, 1.0);
+        assert_eq!(atoms.velocities, before);
+        // `chain_length` larger than the stored vectors: only the available
+        // thermostat acts, with no out-of-bounds access.
+        let mut truncated = NoseHooverChain {
+            chain_length: 3,
+            q: vec![10.0],
+            eta: vec![0.0],
+            xi: vec![0.0],
+            n_dof: 6,
+        };
+        let scale = truncated.propagate(50.0, 1.0, 1.0, 0.01);
+        assert!(scale.is_finite() && scale > 0.0, "scale = {scale}");
+        assert!(truncated.xi[0] > 0.0, "KE above target must accelerate xi");
+    }
+    #[test]
+    fn test_nhc_conserved_energy_weights_first_thermostat_by_n_dof() {
+        let mut nhc =
+            NoseHooverChain::new(3, vec![2.0, 3.0, 4.0], 12).expect("valid NHC parameters");
+        nhc.eta = vec![0.5, -0.25, 0.75];
+        nhc.xi = vec![1.0, 2.0, 0.5];
+        let (k_b, temp) = (1.0, 2.0);
+        // sum_k Q_k xi_k^2 / 2 = (2*1 + 3*4 + 4*0.25) / 2 = 7.5
+        // N_f kT eta_1 = 12 * 2 * 0.5 = 12, kT (eta_2 + eta_3) = 2 * 0.5 = 1
+        let expected = 7.5 + 12.0 + 1.0;
+        let e = nhc.conserved_energy(temp, k_b);
+        assert!(
+            (e - expected).abs() < 1e-12,
+            "H_nhc = {e}, expected {expected}"
+        );
+    }
+    /// Independent single-thermostat Yoshida-Suzuki step: both half-kicks of
+    /// every sub-step see the kinetic energy scaled by the sub-steps so far.
+    fn reference_single_thermostat_step(
+        xi0: f64,
+        q: f64,
+        n_dof: f64,
+        kinetic_energy: f64,
+        kbt: f64,
+        dt: f64,
+    ) -> (f64, f64) {
+        let w1 = 1.0 / (2.0 - 2.0_f64.powf(1.0 / 3.0));
+        let w0 = 1.0 - 2.0 * w1;
+        let mut xi = xi0;
+        let mut scale = 1.0_f64;
+        for w in [w1, w0, w1] {
+            let half = 0.5 * w * dt;
+            xi += (2.0 * kinetic_energy * scale * scale - n_dof * kbt) / q * half;
+            scale *= (-xi * w * dt).exp();
+            xi += (2.0 * kinetic_energy * scale * scale - n_dof * kbt) / q * half;
+        }
+        (xi, scale)
+    }
+    #[test]
+    fn test_nhc_substeps_use_the_scaled_kinetic_energy() {
+        let (q, n_dof, ke, kbt, dt) = (5.0, 12.0, 40.0, 2.0, 0.05);
+        let mut nhc = NoseHooverChain::new(1, vec![q], 12).expect("valid NHC parameters");
+        nhc.xi[0] = 0.3;
+        let scale = nhc.propagate(ke, kbt, 1.0, dt);
+        let (xi_ref, scale_ref) = reference_single_thermostat_step(0.3, q, n_dof, ke, kbt, dt);
+        assert!(
+            (scale - scale_ref).abs() < 1e-14,
+            "scale {scale} vs reference {scale_ref}"
+        );
+        assert!(
+            (nhc.xi[0] - xi_ref).abs() < 1e-14,
+            "xi {} vs reference {xi_ref}",
+            nhc.xi[0]
+        );
+    }
+    /// Outcome of an NHC run on twelve decoupled harmonic degrees of freedom.
+    struct HarmonicNhcRun {
+        /// Initial value of `KE + PE + H_nhc`.
+        e0: f64,
+        /// Largest relative deviation of `KE + PE + H_nhc` from `e0`.
+        max_drift: f64,
+        /// Largest `|xi_1|` reached.
+        max_xi: f64,
+        /// Range (max - min) of the physical energy `KE + PE`.
+        physical_range: f64,
+    }
+    /// Four atoms in isotropic harmonic traps (twelve decoupled oscillators)
+    /// integrated as NHC(dt/2) - velocity Verlet(dt) - NHC(dt/2) for 10 000
+    /// steps with an NHC of the given length.
+    fn run_harmonic_nhc(chain_length: usize) -> HarmonicNhcRun {
+        let spring = [0.5_f64, 1.0, 2.0, 3.0];
+        let start = [
+            ([0.5, -0.3, 0.2], [1.0, -0.8, 0.5]),
+            ([-0.4, 0.6, 0.1], [-0.7, 0.9, -0.4]),
+            ([0.3, 0.2, -0.5], [0.6, 0.3, -1.1]),
+            ([-0.2, -0.1, 0.4], [-0.5, -0.9, 0.8]),
+        ];
+        let mut atoms = AtomSet::new();
+        for (p, v) in start {
+            atoms.add_atom(
+                Vec3::new(p[0], p[1], p[2]),
+                Vec3::new(v[0], v[1], v[2]),
+                1.0,
+                0.0,
+                0,
+            );
+        }
+        let (k_b, target, dt) = (1.0, 1.0, 0.005);
+        // Start from the equipartition kinetic energy N_f kT / 2 = 6.
+        let rescale = (6.0 / atoms.kinetic_energy()).sqrt();
+        for v in &mut atoms.velocities {
+            *v *= rescale;
+        }
+        let compute_forces = |atoms: &mut AtomSet| {
+            for (i, k) in spring.iter().enumerate() {
+                atoms.forces[i] = atoms.positions[i] * (-k);
+            }
+        };
+        let potential = |atoms: &AtomSet| -> f64 {
+            (0..atoms.len())
+                .map(|i| 0.5 * spring[i] * atoms.positions[i].norm_squared())
+                .sum()
+        };
+        // Q_1 = N_f kT tau^2 and Q_k = kT tau^2 with tau = 1.
+        let mut masses = vec![1.0; chain_length];
+        masses[0] = 12.0;
+        let mut nhc = NoseHooverChain::new(chain_length, masses, 12).expect("valid NHC parameters");
+        compute_forces(&mut atoms);
+        let e0 = atoms.kinetic_energy() + potential(&atoms) + nhc.conserved_energy(target, k_b);
+        let mut run = HarmonicNhcRun {
+            e0,
+            max_drift: 0.0,
+            max_xi: 0.0,
+            physical_range: 0.0,
+        };
+        let mut physical_min = f64::INFINITY;
+        let mut physical_max = f64::NEG_INFINITY;
+        for _ in 0..10_000 {
+            nhc.apply(&mut atoms, target, 0.5 * dt, k_b);
+            for i in 0..atoms.len() {
+                let accel = atoms.forces[i] / atoms.masses[i];
+                atoms.velocities[i] += accel * (0.5 * dt);
+            }
+            for i in 0..atoms.len() {
+                let v = atoms.velocities[i];
+                atoms.positions[i] += v * dt;
+            }
+            compute_forces(&mut atoms);
+            for i in 0..atoms.len() {
+                let accel = atoms.forces[i] / atoms.masses[i];
+                atoms.velocities[i] += accel * (0.5 * dt);
+            }
+            nhc.apply(&mut atoms, target, 0.5 * dt, k_b);
+            let physical = atoms.kinetic_energy() + potential(&atoms);
+            let e = physical + nhc.conserved_energy(target, k_b);
+            run.max_drift = run.max_drift.max((e - e0).abs() / e0.abs());
+            run.max_xi = run.max_xi.max(nhc.xi[0].abs());
+            physical_min = physical_min.min(physical);
+            physical_max = physical_max.max(physical);
+        }
+        run.physical_range = physical_max - physical_min;
+        run
+    }
+    /// `KE + PE + H_nhc` is the NHC constant of motion: it must stay constant
+    /// (relative drift below 1e-4 over 10 000 steps) for every chain length.
+    /// With the former stale first-thermostat force the drift was 5e-2 to 1e-1.
+    #[test]
+    fn test_nhc_conserves_extended_energy_for_harmonic_oscillators() {
+        for chain_length in [1_usize, 2, 3, 4, 6] {
+            let run = run_harmonic_nhc(chain_length);
+            assert!(
+                run.max_drift < 1e-4,
+                "chain {chain_length}: extended energy drifted by {:.3e} (relative to {})",
+                run.max_drift,
+                run.e0
+            );
+            // The test is only meaningful if the thermostat really exchanges energy.
+            assert!(
+                run.max_xi > 0.02,
+                "chain {chain_length}: thermostat never engaged, max|xi_1| = {}",
+                run.max_xi
+            );
+            assert!(
+                run.physical_range > 100.0 * run.max_drift * run.e0.abs(),
+                "chain {chain_length}: physical energy barely moved (range {}) so conservation proves little",
+                run.physical_range
+            );
+        }
     }
     #[test]
     fn test_langevin_creation() {
@@ -596,17 +833,38 @@ mod nhc_langevin_tests {
             "SVR: KE must remain positive: {ke}"
         );
     }
+    /// SVR (Bussi) must equilibrate at the target temperature -- the former
+    /// implementation settled near `T/2` -- with canonical fluctuations.
     #[test]
     fn test_svr_drives_temperature_toward_target() {
-        let mut svr = SvrThermostat::with_seed(0.1, 60, 9999);
-        let mut atoms = atoms_at_temp(20, 600.0);
+        let n_atoms = 100;
+        let n_dof = 3 * n_atoms;
         let k_b = 1.0;
         let target = 300.0;
-        for _ in 0..3000 {
+        let k_bar = 0.5 * n_dof as f64 * k_b * target;
+        let mut svr = SvrThermostat::with_seed(0.1, n_dof, 9999);
+        let mut atoms = atoms_at_temp(n_atoms, 600.0);
+        for _ in 0..5_000 {
             svr.apply(&mut atoms, target, 0.01, k_b);
         }
-        let t_final = atoms.temperature(k_b);
-        assert!(t_final < 600.0, "SVR should cool system: T_final={t_final}");
+        let mut series = Vec::with_capacity(45_000);
+        for _ in 0..45_000 {
+            svr.apply(&mut atoms, target, 0.01, k_b);
+            series.push(atoms.kinetic_energy());
+        }
+        let n = series.len() as f64;
+        let mean = series.iter().sum::<f64>() / n;
+        let var = series.iter().map(|k| (k - mean).powi(2)).sum::<f64>() / n;
+        let t_mean = 2.0 * mean / (n_dof as f64 * k_b);
+        assert!(
+            (t_mean - target).abs() / target < 0.02,
+            "SVR: <T>={t_mean}, target={target}"
+        );
+        let var_canonical = 2.0 * k_bar * k_bar / n_dof as f64;
+        assert!(
+            (var / var_canonical - 1.0).abs() < 0.15,
+            "SVR: Var(K)={var}, canonical 2 K^2/N_f={var_canonical}"
+        );
     }
     #[test]
     fn test_temperature_ramp_start() {

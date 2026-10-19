@@ -641,16 +641,20 @@ impl Spc {
 pub struct Tip4p {
     /// O-M distance along bisector (Å).  Default 0.15 Å.
     pub r_om: f64,
-    /// Weighting factor γ = r_OM / r_OL where r_OL is the projection onto each O-H bond.
+    /// Weighting factor γ in `r_M = r_O + γ·(r_H1 + r_H2 − 2·r_O)`.
+    ///
+    /// Because `|r_H1 + r_H2 − 2·r_O| = 2·r_OH·cos(θ/2)`, the M-site lies at
+    /// `r_OM` from the oxygen when `γ = r_OM / (2·r_OH·cos(θ/2))`
+    /// (≈ 0.12801 for the TIP4P geometry).
     pub gamma: f64,
 }
 impl Tip4p {
-    /// Default TIP4P parameters (r_OM = 0.15 Å, HOH = 104.52°).
+    /// Default TIP4P parameters (r_OM = 0.15 Å, r_OH = 0.9572 Å, HOH = 104.52°).
     pub fn default_params() -> Self {
         let r_om = 0.15_f64;
         let r_oh = 0.9572_f64;
         let half_angle = 52.26_f64.to_radians();
-        let gamma = r_om / (r_oh * half_angle.cos());
+        let gamma = r_om / (2.0 * r_oh * half_angle.cos());
         Self { r_om, gamma }
     }
     /// Redistribute the force on the virtual M-site to the real atoms.

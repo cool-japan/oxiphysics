@@ -36,8 +36,9 @@ fn test_compute_kinetic_energy_two_atoms() {
     let state = make_two_atom_state();
     let sim = MdSim::new(config, state);
     let ke = sim.compute_kinetic_energy();
-    // KE = 2 × 0.5 × 1.0 × 0.1² = 0.01
-    assert!((ke - 0.01).abs() < 1e-12, "KE = {ke}");
+    // ½ m v² summed over both atoms is 2 × 0.5 × 1.0 × 0.1² = 0.01 amu Å² ps⁻²,
+    // which is 0.01 × 0.01 = 1e-4 kJ mol⁻¹ (1 amu Å² ps⁻² = 0.01 kJ mol⁻¹).
+    assert!((ke - 1.0e-4).abs() < 1e-16, "KE = {ke}");
 }
 
 #[test]
@@ -84,15 +85,63 @@ fn test_velocity_rescaling_hits_target() {
 }
 
 #[test]
-fn test_compute_pressure_positive_for_warm_gas() {
+fn test_compute_pressure_of_ideal_gas_obeys_pv_equals_nkt() {
+    // N atoms at exactly T in a box of volume V with zero virial: P V = N k_B T.
+    let n = 200_usize;
+    let masses = vec![39.948_f64; n];
+    let mut velocities = maxwell_boltzmann_velocities(&masses, 250.0, 7);
+    rescale_to_temperature(&mut velocities, &masses, 250.0);
+    let positions = vec![[0.0_f64; 3]; n];
+    let box_lengths = [20.0, 25.0, 30.0];
     let config = MdConfig {
-        box_lengths: [10.0, 10.0, 10.0],
+        box_lengths,
         ..MdConfig::default()
     };
-    let state = make_two_atom_state();
-    let sim = MdSim::new(config, state);
-    let p = sim.compute_pressure(0.0); // zero virial (ideal gas)
-    assert!(p > 0.0, "pressure should be positive for warm gas, got {p}");
+    let sim = MdSim::new(config, MdState::new(positions, velocities, masses));
+
+    let temperature = sim.compute_temperature();
+    assert!(
+        (temperature - 250.0).abs() < 1e-9,
+        "set-up temperature {temperature}"
+    );
+    let volume = box_lengths[0] * box_lengths[1] * box_lengths[2];
+    let expected_bar = n as f64 * KB_REDUCED * 250.0 / volume * KJ_MOL_PER_ANG3_TO_BAR;
+    let p = sim.compute_pressure(0.0);
+    assert!(
+        ((p - expected_bar) / expected_bar).abs() < 1e-9,
+        "P = {p} bar, N k_B T / V = {expected_bar} bar"
+    );
+    // The result is a physically sensible number: 200 argon-like atoms at 250 K
+    // in 15000 Å³ exert about 450 bar.
+    assert!(p > 400.0 && p < 500.0, "P = {p} bar");
+}
+
+#[test]
+fn test_compute_pressure_adds_virial_over_three_volumes() {
+    // P = (2 KE + W) / (3 V): the virial enters with the weight 1/(3V).
+    let box_lengths = [10.0, 10.0, 10.0];
+    let config = MdConfig {
+        box_lengths,
+        ..MdConfig::default()
+    };
+    let sim = MdSim::new(config, make_two_atom_state());
+    let ke = sim.compute_kinetic_energy();
+    let virial = -3.7_f64;
+    let expected = (2.0 * ke + virial) / (3.0 * 1000.0) * KJ_MOL_PER_ANG3_TO_BAR;
+    let p = sim.compute_pressure(virial);
+    assert!(
+        (p - expected).abs() < 1e-12 * expected.abs().max(1.0),
+        "P = {p}"
+    );
+    // Degenerate boxes give zero instead of a non-finite pressure.
+    let flat = MdSim::new(
+        MdConfig {
+            box_lengths: [10.0, 0.0, 10.0],
+            ..MdConfig::default()
+        },
+        make_two_atom_state(),
+    );
+    assert_eq!(flat.compute_pressure(1.0), 0.0);
 }
 
 #[test]
@@ -502,8 +551,9 @@ fn test_md_driver_kinetic_energy() {
     let state = make_driver_state(4, 0.5);
     let driver = MdDriver::new(state, 0.001);
     let ke = driver.kinetic_energy();
-    // Each atom: 0.5 * 1.0 * 0.25 = 0.125; 4 atoms: 0.5
-    assert!((ke - 0.5).abs() < 1e-12, "KE = {ke}, expected 0.5");
+    // Each atom: 0.5 * 1.0 * 0.25 = 0.125 amu Å² ps⁻²; 4 atoms: 0.5 amu Å² ps⁻²
+    // = 0.005 kJ mol⁻¹.
+    assert!((ke - 0.005).abs() < 1e-14, "KE = {ke}, expected 0.005");
 }
 
 #[test]
@@ -722,6 +772,10 @@ fn test_md_simulation_plain_temperature() {
     let t = sim.temperature();
     assert!(t > 0.0, "temperature should be positive, got {t}");
     assert!(t.is_finite(), "temperature should be finite");
+    // Σ ½ m v² = 1.0 amu Å² ps⁻² = 0.01 kJ mol⁻¹, so
+    // T = 2 · 0.01 / (3 · 2 · k_B) = 0.4009 K.
+    let expected = 2.0 * 0.01 / (3.0 * 2.0 * KB_REDUCED);
+    assert!((t - expected).abs() < 1e-12, "T = {t}, expected {expected}");
 }
 
 #[test]
@@ -735,13 +789,13 @@ fn test_md_simulation_plain_kinetic_energy() {
     }];
     let sim = MdSimulationPlain::new(atoms, [20.0; 3]);
     let ke = sim.kinetic_energy();
-    // KE = 0.5 * 3 * 4 = 6.0
-    assert!((ke - 6.0).abs() < 1e-12, "KE = {ke}, expected 6.0");
+    // ½ m v² = 0.5 * 3 * 4 = 6 amu Å² ps⁻² = 0.06 kJ mol⁻¹
+    assert!((ke - 0.06).abs() < 1e-14, "KE = {ke}, expected 0.06");
 }
 
 #[test]
 fn test_md_simulation_plain_pressure_virial() {
-    // Ideal gas virial = 0 => P = N*kB*T / (3V)
+    // Ideal gas virial = 0 => P = (2 KE) / (3V) = N*kB*T / V
     let atoms = vec![
         Atom {
             position: [0.0; 3],
@@ -761,6 +815,13 @@ fn test_md_simulation_plain_pressure_virial() {
     let sim = MdSimulationPlain::new(atoms, [10.0; 3]);
     let p = sim.pressure_virial(0.0);
     assert!(p > 0.0, "ideal gas pressure should be positive, got {p}");
+    // P V = N k_B T for the non-interacting gas: N k_B T = 2 KE / 3.
+    let expected =
+        sim.n_atoms() as f64 * KB_REDUCED * sim.temperature() / 1000.0 * KJ_MOL_PER_ANG3_TO_BAR;
+    assert!(
+        ((p - expected) / expected).abs() < 1e-12,
+        "P = {p} bar, N k_B T / V = {expected} bar"
+    );
 }
 
 #[test]
@@ -774,7 +835,7 @@ fn test_md_simulation_plain_step_advances_time() {
     }];
     let mut sim = MdSimulationPlain::new(atoms, [20.0; 3]);
     let dt = 0.002;
-    sim.step(dt);
+    sim.step(dt).expect("frozen-force step");
     assert_eq!(sim.step_count, 1);
     assert!(
         (sim.time - dt).abs() < 1e-14,
@@ -796,7 +857,7 @@ fn test_md_simulation_plain_step_free_particle() {
         charge: 0.0,
     }];
     let mut sim = MdSimulationPlain::new(atoms, [1000.0; 3]);
-    sim.step(dt);
+    sim.step(dt).expect("frozen-force step");
     let expected_x = v * dt;
     assert!(
         (sim.atoms[0].position[0] - expected_x).abs() < 1e-12,
@@ -826,7 +887,7 @@ fn test_md_simulation_plain_with_thermostat() {
     let mut sim = MdSimulationPlain::new(atoms, [20.0; 3]);
     sim.thermostat = Some(ThermostatType::Berendsen);
     for _ in 0..10 {
-        sim.step(0.001);
+        sim.step(0.001).expect("frozen-force step");
     }
     assert!(sim.step_count == 10);
 }
@@ -1180,7 +1241,7 @@ fn test_rescale_to_temperature_hits_target() {
     let ke: f64 = vels
         .iter()
         .zip(masses.iter())
-        .map(|(v, &m)| 0.5 * m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
+        .map(|(v, &m)| 0.5 * m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) * KJMOL_PER_AMU_A2_PS2)
         .sum();
     let t = 2.0 * ke / (3.0 * 4.0 * KB_REDUCED);
     assert!(
@@ -1568,8 +1629,9 @@ fn test_pressure_tensor_kinetic_contribution_single_particle() {
     let masses = [1.0];
     let vol = 8.0_f64;
     let kt = PressureTensor::kinetic_contribution(&velocities, &masses, vol);
-    // Only (0,0) component nonzero: m*vx*vx/V = 4.0/8.0 = 0.5
-    assert!((kt[0][0] - 0.5).abs() < 1e-12, "K[0][0] = {}", kt[0][0]);
+    // Only (0,0) component nonzero: m*vx*vx/V = 4.0/8.0 = 0.5 amu Å⁻¹ ps⁻²
+    // = 0.005 kJ mol⁻¹ Å⁻³.
+    assert!((kt[0][0] - 0.005).abs() < 1e-14, "K[0][0] = {}", kt[0][0]);
     assert!(kt[0][1].abs() < 1e-12);
     assert!(kt[1][1].abs() < 1e-12);
 }

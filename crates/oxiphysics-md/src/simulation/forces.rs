@@ -6,7 +6,7 @@
 //! Contains standalone force functions, the MdDriver high-level runner,
 //! thermostat/barostat type enums, and the standalone Atom type.
 
-use super::config::{KB_REDUCED, MdState};
+use super::config::{KB_REDUCED, MdState, atom_kinetic_energy};
 
 // ---------------------------------------------------------------------------
 // Standalone PBC / pair helpers
@@ -116,13 +116,14 @@ impl MdDriver {
         }
     }
 
-    /// Kinetic energy (kJ mol⁻¹) of the current state.
+    /// Kinetic energy (kJ mol⁻¹) of the current state:
+    /// `½ Σᵢ mᵢ |vᵢ|² · 0.01` (masses in amu, velocities in Å ps⁻¹).
     pub fn kinetic_energy(&self) -> f64 {
         self.state
             .velocities
             .iter()
             .zip(self.state.masses.iter())
-            .map(|(v, &m)| 0.5 * m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
+            .map(|(v, &m)| atom_kinetic_energy(v, m))
             .sum()
     }
 
@@ -144,13 +145,9 @@ impl MdDriver {
         let dt = self.dt;
         let n = self.state.n_atoms();
 
-        // Half-step velocity: v += F/(2m) * dt
-        for i in 0..n {
-            let inv_m = 1.0 / self.state.masses[i];
-            for a in 0..3 {
-                self.state.velocities[i][a] += 0.5 * dt * self.state.forces[i][a] * inv_m;
-            }
-        }
+        // Half-step velocity: v += F/(2m) * dt, with F in kJ mol⁻¹ Å⁻¹, m in amu and
+        // v in Å ps⁻¹ (the factor 100 is applied by `velocity_increment`).
+        self.state.kick_velocities(0.5 * dt);
 
         // Full-step position: x += v * dt
         for i in 0..n {
@@ -163,12 +160,7 @@ impl MdDriver {
         force_fn(&mut self.state);
 
         // Second half-step velocity: v += F/(2m) * dt
-        for i in 0..n {
-            let inv_m = 1.0 / self.state.masses[i];
-            for a in 0..3 {
-                self.state.velocities[i][a] += 0.5 * dt * self.state.forces[i][a] * inv_m;
-            }
-        }
+        self.state.kick_velocities(0.5 * dt);
 
         self.step_count += 1;
     }
@@ -224,25 +216,36 @@ impl MdDriver {
 // ThermostatType / BarostatType — plain enums for self-contained MD
 // ---------------------------------------------------------------------------
 
-/// Thermostat algorithm for NVT / NPT self-contained simulations.
+/// Thermostat algorithm for NVT / NPT self-contained simulations
+/// ([`MdSimulationPlain`](super::MdSimulationPlain)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThermostatType {
-    /// Berendsen velocity-rescaling thermostat.
+    /// Berendsen weak-coupling velocity rescaling.  Relaxes the temperature to
+    /// the target but suppresses the kinetic-energy fluctuations of the canonical
+    /// ensemble.
     Berendsen,
-    /// Nosé-Hoover chain thermostat.
+    /// Nosé-Hoover chain of three thermostats (Martyna, Klein & Tuckerman 1992),
+    /// integrated reversibly; samples the canonical ensemble for an ergodic
+    /// system.  See [`NoseHooverChainState`](super::NoseHooverChainState).
     NoseHoover,
-    /// Canonical sampling through velocity rescaling (CSVR).
+    /// Canonical sampling through velocity rescaling (CSVR, Bussi, Donadio &
+    /// Parrinello 2007): stochastic rescaling that reproduces the canonical
+    /// kinetic-energy distribution.
     Csvr,
 }
 
-/// Barostat algorithm for NPT self-contained simulations.
+/// Barostat algorithm for NPT self-contained simulations
+/// ([`MdSimulationPlain`](super::MdSimulationPlain)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarostatType {
     /// Berendsen isotropic pressure coupling.
     Berendsen,
-    /// Monte-Carlo barostat (volume moves).
+    /// Monte-Carlo barostat (volume moves, see
+    /// [`McVolumeMoves`](super::McVolumeMoves)).
     MonteCarlo,
-    /// Parrinello-Rahman fully flexible cell barostat.
+    /// Parrinello-Rahman barostat for an orthorhombic cell: the box edges are
+    /// dynamical variables with a persistent velocity, driven by the scalar
+    /// pressure (isotropic coupling).
     Parrinello,
 }
 
@@ -279,11 +282,9 @@ impl Atom {
         }
     }
 
-    /// Kinetic energy of this atom (kJ mol⁻¹): ½ m v².
+    /// Kinetic energy of this atom (kJ mol⁻¹): `½ m v² · 0.01`, with the mass in
+    /// amu and the velocity in Å ps⁻¹ (1 amu Å² ps⁻² = 0.01 kJ mol⁻¹).
     pub fn kinetic_energy(&self) -> f64 {
-        let v2 = self.velocity[0] * self.velocity[0]
-            + self.velocity[1] * self.velocity[1]
-            + self.velocity[2] * self.velocity[2];
-        0.5 * self.mass * v2
+        atom_kinetic_energy(&self.velocity, self.mass)
     }
 }

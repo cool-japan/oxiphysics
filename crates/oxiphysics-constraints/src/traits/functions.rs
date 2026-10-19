@@ -24,7 +24,10 @@ use super::types::{ConstraintKind, ConstraintPriority, ErrorNorm, SolverHints};
 /// supports successive over-relaxation, and
 /// [`apply_warm_start`](Constraint::apply_warm_start) /
 /// [`accumulated_impulses`](Constraint::accumulated_impulses) carry impulses
-/// from frame to frame.
+/// from frame to frame.  The TGS solver honours `is_active`, `residual` and
+/// `post_solve` as well (once per substep), and
+/// [`penetration_estimate`](Constraint::penetration_estimate) lets diagnostics report
+/// how deep a contact penetrates.
 ///
 /// # Thread Safety
 ///
@@ -154,6 +157,16 @@ pub trait Constraint {
     /// The default returns an empty vector.
     fn accumulated_impulses(&self) -> Vec<f64> {
         Vec::new()
+    }
+    /// Estimated penetration depth this constraint resolves, in metres, never
+    /// negative.
+    ///
+    /// A contact reports how deeply its shapes overlapped when the contact was
+    /// created (zero for a separated contact); every other constraint keeps the
+    /// default of `0.0`.  Solvers use the value for diagnostics only, for
+    /// example the `max_penetration` field of the TGS sub-step diagnostics.
+    fn penetration_estimate(&self) -> f64 {
+        0.0
     }
 }
 /// Extension trait for constraints that drive a DOF toward a target.

@@ -126,14 +126,14 @@ dispersion, and complete the NEMD transport toolkit.
       swap + velocity-profile gradient).  Tests in `tests/nemd_viscosity.rs`:
       cross-method GK-vs-SLLOD, γ=0 parity, MP momentum conservation, linear
       response.
-    - **Deviation (honest):** the ≤10% cross-method gate is *approached but not
-      robustly met* — GK and SLLOD agree to ~12–15% for a CI-feasible LJ system
-      (N≤216) and run length.  Both estimators are individually well-converged;
-      the residual gap is an intrinsic GK-plateau / NEMD-extrapolation
-      calibration limit (not finite-size: it persists at N=216), so the test
-      gate is set at 18%.  The literal explicit-`alpha` Evans-Morriss thermostat
-      is numerically unstable under shear, so the exact isokinetic rescaling form
-      is used.  See `nemd` module docs.
+    - **Correction (F3330):** the ≤10% cross-method gate is met — GK (1.17) and
+      SLLOD (1.18–1.22) agree to ~2% for the N=125 LJ system.  The ~12–15% gap
+      first reported as an "intrinsic calibration limit" (test gate 18%) was
+      caused by `run_sllod` boosting the peculiar `p_x` by `±m γ L_y` at every
+      Lees-Edwards boundary crossing; the gate is now 10%.  The literal
+      explicit-`alpha` Evans-Morriss thermostat is numerically unstable under
+      shear, so the exact isokinetic rescaling form is used.  See `nemd` module
+      docs.
 
 ## v0.3.0 — ML potentials & sampling
 
@@ -202,22 +202,22 @@ Verified: 429 (critical 13, high 124, medium 218, low 74); 66 further raw findin
 - [ ] **F3239** (critical, bug, medium/small) `fep.rs:313` — Bar::delta_f_estimate uses wrong BAR iteration (sign, missing +C, units)
 - [ ] **F3247** (critical, bug, easy/trivial) `forcefield/angleforcefield_traits.rs:43` — AngleForceField forces have reversed sign (equal +∇E)
 - [ ] **F3248** (critical, bug, easy/small) `forcefield/dihedralforcefield_traits.rs:49` — Dihedral forces have wrong sign on i/l and a wrong fj projection
-- [ ] **F3253** (critical, bug, medium/small) `free_energy/functions.rs:65` — fep_bar solves the wrong BAR equation (ΔF=0 for a constant shift)
-- [ ] **F3307** (critical, bug, easy/trivial) `metal_alloy_md/types.rs:165` — EAM compute_forces returns +∇E (force sign flipped)
+- [x] **F3253** (critical, bug, medium/small) `free_energy/functions.rs:65` — fep_bar solves the wrong BAR equation (ΔF=0 for a constant shift)
+- [x] **F3307** (critical, bug, easy/trivial) `metal_alloy_md/types.rs:165` — EAM compute_forces returns +∇E (force sign flipped)
 - [x] **F3387** (critical, bug, easy/trivial) `polymer_sim.rs:269` — Kremer-Grest FENE bond force has wrong sign (bonds repel)
-- [ ] **F3543** (critical, bug, medium/small) `thermostat/types.rs:236` — SvrThermostat::rescale_factor misimplements Bussi; equilibrates near T/2
+- [x] **F3543** (critical, bug, medium/small) `thermostat/types.rs:236` — SvrThermostat::rescale_factor misimplements Bussi; equilibrates near T/2
 
 ### High (124)
-- [ ] **F3099** (high, bug, easy/trivial) `ab_initio_md.rs:252` — Hellmann-Feynman electron force on nucleus has wrong sign
-- [ ] **F3104** (high, bug, easy/trivial) `amber/types.rs:228` — Generalized Born solvation energy has wrong sign
-- [ ] **F3110** (high, bug, medium/small) `analysis/functions.rs:503` — Steinhardt Q4/Q6 harmonics wrong (Y40 constant, m≠0 weights)
-- [ ] **F3125** (high, perf, medium/medium) `autograd_bridge.rs:425` — BP-NN force evaluation is O(N³·P) with every atom a neighbour
-- [ ] **F3126** (high, bug, medium/medium) `barostat/berendsenbarostat_traits.rs:33` — Barostats use atomic virial Σr_i·F_i, which is wrong under PBC
-- [ ] **F3127** (high, bug, medium/small) `barostat/parrinellorahmanbarostat_traits.rs:39` — Parrinello–Rahman Barostat::apply has no persistent box velocity
-- [ ] **F3128** (high, api, medium/small) `barostat/types.rs:421` — McBarostatRng::try_volume_move takes ΔE before volume is proposed
-- [ ] **F3130** (high, bug, easy/small) `barostat/types.rs:859` — MC barostat acceptance adds N·ΔV instead of log-volume Jacobian
-- [ ] **F3132** (high, bug, easy/small) `battery_md.rs:1095` — compute_battery_forces: inverted force sign and Coulomb constant off by 6e18
-- [ ] **F3135** (high, fabrication, easy/small) `biomolecular/functions.rs:267` — find_kabsch_sander_hbonds uses H=N so energy is identically zero
+- [x] **F3099** (high, bug, easy/trivial) `ab_initio_md.rs:252` — Hellmann-Feynman electron force on nucleus has wrong sign
+- [x] **F3104** (high, bug, easy/trivial) `amber/types.rs:228` — Generalized Born solvation energy has wrong sign
+- [x] **F3110** (high, bug, medium/small) `analysis/functions.rs:503` — Steinhardt Q4/Q6 harmonics wrong (Y40 constant, m≠0 weights)
+- [x] **F3125** (high, perf, medium/medium) `autograd_bridge.rs:425` — BP-NN force evaluation is O(N³·P) with every atom a neighbour
+- [x] **F3126** (high, bug, medium/medium) `barostat/berendsenbarostat_traits.rs:33` — Barostats use atomic virial Σr_i·F_i, which is wrong under PBC
+- [x] **F3127** (high, bug, medium/small) `barostat/parrinellorahmanbarostat_traits.rs:39` — Parrinello–Rahman Barostat::apply has no persistent box velocity
+- [x] **F3128** (high, api, medium/small) `barostat/types.rs:421` — McBarostatRng::try_volume_move takes ΔE before volume is proposed
+- [x] **F3130** (high, bug, easy/small) `barostat/types.rs:859` — MC barostat acceptance adds N·ΔV instead of log-volume Jacobian
+- [x] **F3132** (high, bug, easy/small) `battery_md.rs:1095` — compute_battery_forces: inverted force sign and Coulomb constant off by 6e18
+- [x] **F3135** (high, fabrication, easy/small) `biomolecular/functions.rs:267` — find_kabsch_sander_hbonds uses H=N so energy is identically zero
 - [ ] **F3138** (high, stub, medium/medium) `biomolecular/types.rs:939` — ProteinFolding::step advertises Langevin MD but moves nothing
 - [ ] **F3150** (high, bug, easy/trivial) `charmm.rs:534` — compute_vdw_force returns +dV/dr despite 'positive = repulsive'
 - [x] **F3161** (high, fabrication, medium/medium) `coarse_grain_md.rs:407` — CgSimulation pressure/rdf/diffusion use fabricated volume and origin
@@ -240,40 +240,40 @@ Verified: 429 (critical 13, high 124, medium 218, low 74); 66 further raw findin
 - [ ] **F3227** (high, bug, easy/small) `ewald/params.rs:14` — Ewald/PME/Coulomb use the kJ·nm constant 138.935 with Å distances (10×)
 - [ ] **F3231** (high, bug, easy/small) `ewald/reciprocal.rs:421` — EwaldForceIntegrator ignores reciprocal forces; reciprocal force sign inverted
 - [ ] **F3242** (high, fabrication, medium/medium) `fep.rs:671` — mbar_jackknife_uncertainty fabricates uncertainties
-- [ ] **F3250** (high, missing-feature, medium/medium) `forcefield/pairforcefield_traits.rs:36` — AmberForceField lacks exclusions, 1-4 scaling and electrostatics
-- [ ] **F3258** (high, bug, medium/small) `free_energy/functions.rs:870` — fep_bar and bar_uncertainty both wrong; BAR returns ~0
-- [ ] **F3261** (high, fabrication, hard/medium) `free_energy/functions_2.rs:248` — mbar_df_uncertainty ignores k,l and returns a fabricated variance
-- [ ] **F3264** (high, fabrication, medium/small) `glass_md.rs:165` — fit_vft is no-op gradient descent that returns the initial guesses
-- [ ] **F3275** (high, bug, easy/trivial) `ionic_liquid_md/functions.rs:205` — Cation–anion RDF doubled (g₊₋→2 at large r)
-- [ ] **F3279** (high, fabrication, hard/medium) `lattice_dynamics/types.rs:381` — DynamicalMatrix is diagonal Einstein model; acoustic ω(Γ)≠0
-- [ ] **F3283** (high, bug, easy/small) `lipid_bilayer.rs:1023` — BAOAB step omits final kick and has wrong O-step noise
-- [ ] **F3284** (high, bug, easy/trivial) `lipid_bilayer_md.rs:372` — lj_sf shifted-force term has wrong sign (force ≠ −dE/dr)
-- [ ] **F3291** (high, fabrication, medium/medium) `lipid_membrane_md.rs:545` — step_langevin uses step-hash uniform noise identical across lipids
-- [ ] **F3295** (high, bug, easy/small) `metadynamics/coordinationnumbercv_traits.rs:39` — CoordinationNumberCV gradient multiplies the reference-atom term by N_nb
-- [ ] **F3297** (high, bug, easy/trivial) `metadynamics/functions.rs:417` — metadynamics bar_estimate has sign error and inverted ratio
-- [ ] **F3299** (high, fabrication, medium/small) `metadynamics/types.rs:130` — OPES kernels unweighted: estimates biased, not unbiased, density
-- [ ] **F3300** (high, fabrication, medium/small) `metadynamics/types.rs:280` — PtMetaD exchange always accepts; bias-exchange uses fixed 0.5 threshold
-- [ ] **F3301** (high, bug, easy/small) `metadynamics/types.rs:390` — MultipleWalkers::synchronise multiplies hills on every call
-- [ ] **F3302** (high, fabrication, easy/small) `metadynamics/types.rs:578` — BiasExchange try_exchange uses a deterministic 0.5 threshold, not Metropolis
-- [ ] **F3304** (high, bug, medium/small) `metal_alloy_md/functions.rs:746` — elastic_constants_eam: C12 formula wrong, shear box unsheared
-- [ ] **F3305** (high, fabrication, hard/medium) `metal_alloy_md/functions.rs:853` — thermal_expansion_coefficient ignores temperatures; hardcoded Grüneisen
-- [ ] **F3308** (high, bug, easy/small) `metal_alloy_md/types.rs:213` — EAM step uses mass=1.0 and forces have flipped sign
-- [ ] **F3314** (high, fabrication, easy/small) `ml_potential.rs:691` — KRR predict_uncertainty is k** minus predicted energy
+- [x] **F3250** (high, missing-feature, medium/medium) `forcefield/pairforcefield_traits.rs:36` — AmberForceField lacks exclusions, 1-4 scaling and electrostatics
+- [x] **F3258** (high, bug, medium/small) `free_energy/functions.rs:870` — fep_bar and bar_uncertainty both wrong; BAR returns ~0
+- [x] **F3261** (high, fabrication, hard/medium) `free_energy/functions_2.rs:248` — mbar_df_uncertainty ignores k,l and returns a fabricated variance
+- [x] **F3264** (high, fabrication, medium/small) `glass_md.rs:165` — fit_vft is no-op gradient descent that returns the initial guesses
+- [x] **F3275** (high, bug, easy/trivial) `ionic_liquid_md/functions.rs:205` — Cation–anion RDF doubled (g₊₋→2 at large r)
+- [x] **F3279** (high, fabrication, hard/medium) `lattice_dynamics/types.rs:381` — DynamicalMatrix is diagonal Einstein model; acoustic ω(Γ)≠0
+- [x] **F3283** (high, bug, easy/small) `lipid_bilayer.rs:1023` — BAOAB step omits final kick and has wrong O-step noise
+- [x] **F3284** (high, bug, easy/trivial) `lipid_bilayer_md.rs:372` — lj_sf shifted-force term has wrong sign (force ≠ −dE/dr)
+- [x] **F3291** (high, fabrication, medium/medium) `lipid_membrane_md.rs:545` — step_langevin uses step-hash uniform noise identical across lipids
+- [x] **F3295** (high, bug, easy/small) `metadynamics/coordinationnumbercv_traits.rs:39` — CoordinationNumberCV gradient multiplies the reference-atom term by N_nb
+- [x] **F3297** (high, bug, easy/trivial) `metadynamics/functions.rs:417` — metadynamics bar_estimate has sign error and inverted ratio
+- [x] **F3299** (high, fabrication, medium/small) `metadynamics/types.rs:130` — OPES kernels unweighted: estimates biased, not unbiased, density
+- [x] **F3300** (high, fabrication, medium/small) `metadynamics/types.rs:280` — PtMetaD exchange always accepts; bias-exchange uses fixed 0.5 threshold
+- [x] **F3301** (high, bug, easy/small) `metadynamics/types.rs:390` — MultipleWalkers::synchronise multiplies hills on every call
+- [x] **F3302** (high, fabrication, easy/small) `metadynamics/types.rs:578` — BiasExchange try_exchange uses a deterministic 0.5 threshold, not Metropolis
+- [x] **F3304** (high, bug, medium/small) `metal_alloy_md/functions.rs:746` — elastic_constants_eam: C12 formula wrong, shear box unsheared
+- [x] **F3305** (high, fabrication, hard/medium) `metal_alloy_md/functions.rs:853` — thermal_expansion_coefficient ignores temperatures; hardcoded Grüneisen
+- [x] **F3308** (high, bug, easy/small) `metal_alloy_md/types.rs:213` — EAM step uses mass=1.0 and forces have flipped sign
+- [x] **F3314** (high, fabrication, easy/small) `ml_potential.rs:691` — KRR predict_uncertainty is k** minus predicted energy
 - [x] **F3315** (high, fabrication, medium/small) `ml_potential.rs:697` — KRR predict_uncertainty subtracts the predicted energy, not the GP variance
-- [ ] **F3318** (high, bug, easy/small) `monte_carlo_md.rs:123` — Metropolis energy starts at 0 and recomputes full O(N²) energy
+- [x] **F3318** (high, bug, easy/small) `monte_carlo_md.rs:123` — Metropolis energy starts at 0 and recomputes full O(N²) energy
 - [x] **F3327** (high, bug, easy/small) `neighbor_list.rs:93` — CellList narrow last cell misses periodic neighbours; duplicates if n<3
-- [ ] **F3330** (high, bug, easy/trivial) `nemd.rs:314` — Lees-Edwards wrap wrongly boosts peculiar momentum
+- [x] **F3330** (high, bug, easy/trivial) `nemd.rs:314` — Lees-Edwards wrap wrongly boosts peculiar momentum
 - [x] **F3337** (high, perf, medium/medium) `nn_potential/feedforwardpotential_traits.rs:17` — NN forces via global finite differences: 6N full-energy evaluations
 - [x] **F3345** (high, bug, hard/medium) `nn_potential/types.rs:1338` — DeePMD potential not rotation/permutation invariant
-- [ ] **F3351** (high, bug, easy/small) `path_integral/types.rs:83` — Centroid-virial kinetic estimators have the wrong sign
+- [x] **F3351** (high, bug, easy/small) `path_integral/types.rs:83` — Centroid-virial kinetic estimators have the wrong sign
 - [x] **F3353** (high, bug, easy/small) `path_integral/types.rs:262` — PILE-L thermostat draws uniform noise, so it samples T/3
-- [ ] **F3354** (high, fabrication, hard/medium) `path_integral/types.rs:318` — CentroidMD erases internal-mode momenta; doc claims thermostatting
+- [x] **F3354** (high, fabrication, hard/medium) `path_integral/types.rs:318` — CentroidMD erases internal-mode momenta; doc claims thermostatting
 - [x] **F3357** (high, bug, easy/trivial) `path_integral/types.rs:860` — NormalModePropagator applies momentum formulas to velocities
-- [ ] **F3359** (high, missing-feature, medium/medium) `photochemistry_md.rs:127` — FSSH never propagates electronic density; hop probability stays zero
+- [x] **F3359** (high, missing-feature, medium/medium) `photochemistry_md.rs:127` — FSSH never propagates electronic density; hop probability stays zero
 - [x] **F3360** (high, missing-feature, hard/medium) `photochemistry_md.rs:177` — FSSH never propagates electronic amplitudes; hops impossible
-- [ ] **F3367** (high, bug, easy/small) `polarizable/types.rs:813` — Drude Langevin kick: uniform noise plus kJ/amu unit error
+- [x] **F3367** (high, bug, easy/small) `polarizable/types.rs:813` — Drude Langevin kick: uniform noise plus kJ/amu unit error
 - [x] **F3374** (high, bug, easy/small) `polarizable_md.rs:424` — Drude Langevin velocity noise missing dt factor
-- [ ] **F3378** (high, bug, medium/small) `polarizable_md.rs:897` — dipole_gradient_force uses an element-wise, wrong field-gradient term
+- [x] **F3378** (high, bug, medium/small) `polarizable_md.rs:897` — dipole_gradient_force uses an element-wise, wrong field-gradient term
 - [ ] **F3382** (high, bug, easy/small) `polymer_md/chain_models.rs:108` — PolymerChain FENE bonds repel and LJ attracts (sign inversion)
 - [ ] **F3391** (high, bug, easy/trivial) `potential.rs:752` — Axilrod-Teller angle at k has wrong sign
 - [ ] **F3392** (high, fabrication, easy/trivial) `protein/functions.rs:79` — contact_energy passes sigma=r so energy is identically zero
@@ -290,28 +290,28 @@ Verified: 429 (critical 13, high 124, medium 218, low 74); 66 further raw findin
 - [ ] **F3419** (high, fabrication, hard/large) `quantum_chemistry/types_2.rs:99` — run_ks_scf adds uniform-gas LDA on top of full HF energy
 - [ ] **F3420** (high, fabrication, hard/large) `quantum_chemistry/types_2.rs:106` — run_ks_scf is HF energy plus uniform-gas XC of averaged diagonal
 - [ ] **F3424** (high, bug, hard/large) `quantum_chemistry/types_2.rs:487` — STO-3G builder: identical p functions, no 2s, valence-only electrons
-- [ ] **F3425** (high, fabrication, medium/medium) `quantum_chemistry_md.rs:155` — HartreeFockMd: fake SCF energy and sign-inverted force integration
-- [ ] **F3426** (high, fabrication, hard/large) `quantum_chemistry_md.rs:267` — DFT-MD Kohn-Sham step mixes toward uniform density; forces wrong
-- [ ] **F3429** (high, fabrication, medium/medium) `quantum_chemistry_md.rs:542` — SemiempiricalMd::gradient matches none of its energies, wrong sign
-- [ ] **F3430** (high, bug, medium/small) `quantum_chemistry_md.rs:802` — NEB tangent collapsed to single 3-vector instead of 3N vector
-- [ ] **F3432** (high, bug, easy/trivial) `quantum_corrections.rs:224` — Centroid-virial kinetic estimator has wrong sign on force term
-- [ ] **F3434** (high, bug, easy/trivial) `quantum_corrections.rs:531` — DebyeModel::heat_capacity integrates energy function, not Cv integrand
-- [ ] **F3435** (high, bug, easy/small) `quantum_corrections.rs:549` — DebyeModel::heat_capacity uses energy function D3, 4x low at low T
-- [ ] **F3437** (high, bug, medium/small) `quantum_md.rs:436` — PIMD kinetic estimators off by factor P; 'virial' uses no forces
-- [ ] **F3438** (high, bug, medium/medium) `quantum_md.rs:767` — step_pimd reuses stale external forces in second half-kick
-- [ ] **F3446** (high, bug, medium/small) `quantum_mechanics.rs:768` — Lindblad dissipation non-Hermitian and applies rate without dt
-- [ ] **F3448** (high, bug, easy/small) `quantum_transport_md.rs:228` — Tight-binding Jacobi rotation sign error gives wrong eigenvalues
-- [ ] **F3456** (high, bug, medium/small) `reactive/functions.rs:355` — eem_charges returns all-zero charges for neutral systems
-- [ ] **F3462** (high, bug, easy/small) `reactive_md.rs:419` — EemCharges matrix lacks Coulomb constant (eV vs 1/Å)
-- [ ] **F3465** (high, bug, medium/medium) `reactive_md.rs:915` — Dimer method: wrong translation for C>0, sign mismatch, no rotation
-- [ ] **F3471** (high, bug, easy/trivial) `sampling/types.rs:892` — ReplicaExchange::try_swap sign error accepts every swap
-- [ ] **F3473** (high, bug, easy/trivial) `simulation/advanced.rs:258` — RdfRunning::gofr has the same factor-N normalisation error
-- [ ] **F3474** (high, fabrication, hard/medium) `simulation/advanced.rs:286` — Parrinello-Rahman NPT is Berendsen scaling with zero virial
-- [ ] **F3475** (high, bug, hard/medium) `simulation/advanced.rs:301` — NPT 'Parrinello-Rahman' is Berendsen fed with virial = 0
-- [ ] **F3478** (high, fabrication, medium/small) `simulation/checkpoint.rs:256` — MdSim::run_npt couples the barostat with the virial fixed at zero
-- [ ] **F3479** (high, bug, medium/medium) `simulation/config.rs:14` — MD unit system mislabelled: effective time unit is 0.1 ps
-- [ ] **F3482** (high, bug, easy/trivial) `simulation/core_sim.rs:82` — MdSim::compute_pressure kinetic term is 3× too small
-- [ ] **F3486** (high, stub, medium/medium) `simulation/plain_sim.rs:141` — MdSimulationPlain: stale-force kicks, NH/CSVR run Berendsen, barostat ignored
+- [x] **F3425** (high, fabrication, medium/medium) `quantum_chemistry_md.rs:155` — HartreeFockMd: fake SCF energy and sign-inverted force integration
+- [x] **F3426** (high, fabrication, hard/large) `quantum_chemistry_md.rs:267` — DFT-MD Kohn-Sham step mixes toward uniform density; forces wrong
+- [x] **F3429** (high, fabrication, medium/medium) `quantum_chemistry_md.rs:542` — SemiempiricalMd::gradient matches none of its energies, wrong sign
+- [x] **F3430** (high, bug, medium/small) `quantum_chemistry_md.rs:802` — NEB tangent collapsed to single 3-vector instead of 3N vector
+- [x] **F3432** (high, bug, easy/trivial) `quantum_corrections.rs:224` — Centroid-virial kinetic estimator has wrong sign on force term
+- [x] **F3434** (high, bug, easy/trivial) `quantum_corrections.rs:531` — DebyeModel::heat_capacity integrates energy function, not Cv integrand
+- [x] **F3435** (high, bug, easy/small) `quantum_corrections.rs:549` — DebyeModel::heat_capacity uses energy function D3, 4x low at low T
+- [x] **F3437** (high, bug, medium/small) `quantum_md.rs:436` — PIMD kinetic estimators off by factor P; 'virial' uses no forces
+- [x] **F3438** (high, bug, medium/medium) `quantum_md.rs:767` — step_pimd reuses stale external forces in second half-kick
+- [x] **F3446** (high, bug, medium/small) `quantum_mechanics.rs:768` — Lindblad dissipation non-Hermitian and applies rate without dt
+- [x] **F3448** (high, bug, easy/small) `quantum_transport_md.rs:228` — Tight-binding Jacobi rotation sign error gives wrong eigenvalues
+- [x] **F3456** (high, bug, medium/small) `reactive/functions.rs:355` — eem_charges returns all-zero charges for neutral systems
+- [x] **F3462** (high, bug, easy/small) `reactive_md.rs:419` — EemCharges matrix lacks Coulomb constant (eV vs 1/Å)
+- [x] **F3465** (high, bug, medium/medium) `reactive_md.rs:915` — Dimer method: wrong translation for C>0, sign mismatch, no rotation
+- [x] **F3471** (high, bug, easy/trivial) `sampling/types.rs:892` — ReplicaExchange::try_swap sign error accepts every swap
+- [x] **F3473** (high, bug, easy/trivial) `simulation/advanced.rs:258` — RdfRunning::gofr has the same factor-N normalisation error
+- [x] **F3474** (high, fabrication, hard/medium) `simulation/advanced.rs:286` — Parrinello-Rahman NPT is Berendsen scaling with zero virial
+- [x] **F3475** (high, bug, hard/medium) `simulation/advanced.rs:301` — NPT 'Parrinello-Rahman' is Berendsen fed with virial = 0
+- [x] **F3478** (high, fabrication, medium/small) `simulation/checkpoint.rs:256` — MdSim::run_npt couples the barostat with the virial fixed at zero
+- [x] **F3479** (high, bug, medium/medium) `simulation/config.rs:14` — MD unit system mislabelled: effective time unit is 0.1 ps
+- [x] **F3482** (high, bug, easy/trivial) `simulation/core_sim.rs:82` — MdSim::compute_pressure kinetic term is 3× too small
+- [x] **F3486** (high, stub, medium/medium) `simulation/plain_sim.rs:141` — MdSimulationPlain: stale-force kicks, NH/CSVR run Berendsen, barostat ignored
 - [ ] **F3488** (high, bug, easy/small) `simulation/tracking.rs:154` — RdfHistogram g(r) normalisation is N times too large
 - [ ] **F3501** (high, bug, easy/small) `solid_state_md.rs:863` — debye_heat_capacity uses T^3 law up to T=2 theta (233.8R at theta)
 - [ ] **F3507** (high, bug, easy/small) `steered_md.rs:94` — SteeredMd anchor follows the atom: force independent of position
@@ -323,15 +323,15 @@ Verified: 429 (critical 13, high 124, medium 218, low 74); 66 further raw findin
 - [ ] **F3533** (high, bug, medium/small) `thermodynamics_md.rs:334` — BAR biased by −kT ln(nA/nB) for unequal sample sizes
 - [ ] **F3534** (high, bug, easy/trivial) `thermodynamics_md.rs:349` — BAR iteration drops shift m: biased by kT ln(nA/nB)
 - [ ] **F3536** (high, bug, medium/small) `thermodynamics_md.rs:453` — MBAR estimator: wrong numerator and wrong sample indexing
-- [ ] **F3540** (high, bug, medium/small) `thermostat/csvrthermostat_traits.rs:31` — CsvrThermostat noise variance halved; not canonical despite doc
-- [ ] **F3545** (high, bug, easy/small) `thermostat/types.rs:648` — NoseHooverChain reuses stale g0 in YS substeps; public panics
-- [ ] **F3554** (high, bug, easy/trivial) `tribochemistry_md.rs:538` — Morse force sign inverted: stretched bonds pushed apart
-- [ ] **F3556** (high, bug, medium/small) `tribochemistry_md.rs:1236` — TriboSimulation pressure divides by N; virial never accumulated
-- [ ] **F3557** (high, stub, medium/small) `tribochemistry_md.rs:1245` — TriboSimulation virial never computed: shear stress ≡ 0, pressure /N
-- [ ] **F3558** (high, bug, medium/small) `tribochemistry_md.rs:1281` — Bond forces/breaking ignore PBC and Lees-Edwards minimum image
-- [ ] **F3560** (high, fabrication, medium/medium) `tribochemistry_md.rs:1355` — Tribo drivers use hardcoded stress fractions; virial never computed
-- [ ] **F3582** (high, bug, easy/trivial) `water_models/types.rs:653` — TIP4P gamma doubled: M-site placed 0.30 Å from O
-- [ ] **F3587** (high, fabrication, medium/medium) `zeolite_md.rs:620` — GCMC uses deterministic fake thresholds and ignores framework
+- [x] **F3540** (high, bug, medium/small) `thermostat/csvrthermostat_traits.rs:31` — CsvrThermostat noise variance halved; not canonical despite doc
+- [x] **F3545** (high, bug, easy/small) `thermostat/types.rs:648` — NoseHooverChain reuses stale g0 in YS substeps; public panics
+- [x] **F3554** (high, bug, easy/trivial) `tribochemistry_md.rs:538` — Morse force sign inverted: stretched bonds pushed apart
+- [x] **F3556** (high, bug, medium/small) `tribochemistry_md.rs:1236` — TriboSimulation pressure divides by N; virial never accumulated
+- [x] **F3557** (high, stub, medium/small) `tribochemistry_md.rs:1245` — TriboSimulation virial never computed: shear stress ≡ 0, pressure /N
+- [x] **F3558** (high, bug, medium/small) `tribochemistry_md.rs:1281` — Bond forces/breaking ignore PBC and Lees-Edwards minimum image
+- [x] **F3560** (high, fabrication, medium/medium) `tribochemistry_md.rs:1355` — Tribo drivers use hardcoded stress fractions; virial never computed
+- [x] **F3582** (high, bug, easy/trivial) `water_models/types.rs:653` — TIP4P gamma doubled: M-site placed 0.30 Å from O
+- [x] **F3587** (high, fabrication, medium/medium) `zeolite_md.rs:620` — GCMC uses deterministic fake thresholds and ignores framework
 
 ### Medium (218)
 - [ ] **F3097** (medium, missing-feature, medium/medium) `crates/oxiphysics-md/Cargo.toml:13` — No serde/oxicode feature, so configs and checkpoints cannot be persisted

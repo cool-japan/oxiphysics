@@ -2,9 +2,17 @@
 //!
 //! This module provides standalone functions that operate on raw geometric
 //! data without any external dependencies on nalgebra or shape abstractions.
+//!
+//! The `normal` of a [`Contact`] is a unit vector pointing from body B toward
+//! body A. [`sphere_sphere`], [`capsule_capsule`], [`sphere_box`] and
+//! [`box_box_sat`] also place `point_a` on the surface of A and `point_b` on the
+//! surface of B with `point_b - point_a == normal * depth`. The box-box test is
+//! built on the plain-array [`BoxBoxManifold`].
 
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
+
+use crate::contact_generation::BoxBoxManifold;
 
 // ── Vector helpers ────────────────────────────────────────────────────────────
 
@@ -100,9 +108,13 @@ impl NarrowPhaseResult {
 /// Sphere–sphere narrow-phase test.
 ///
 /// Returns `NoContact` when the spheres are separated, `SingleContact`
-/// when they overlap.
+/// when they overlap. The contact follows the module convention: `normal`
+/// points from sphere B toward sphere A, `point_a` is the point of A's surface
+/// facing B, `point_b` the point of B's surface facing A, and
+/// `point_b - point_a == normal * depth`. Coincident centres have no direction;
+/// the normal is then +Y.
 pub fn sphere_sphere(ca: [f64; 3], ra: f64, cb: [f64; 3], rb: f64) -> NarrowPhaseResult {
-    let d = sub(cb, ca);
+    let d = sub(ca, cb);
     let dist = len(d);
     let depth = ra + rb - dist;
     if depth < 0.0 {
@@ -113,8 +125,8 @@ pub fn sphere_sphere(ca: [f64; 3], ra: f64, cb: [f64; 3], rb: f64) -> NarrowPhas
     } else {
         [0.0, 1.0, 0.0]
     };
-    let point_a = add(ca, scale(normal, ra));
-    let point_b = sub(cb, scale(normal, rb));
+    let point_a = sub(ca, scale(normal, ra));
+    let point_b = add(cb, scale(normal, rb));
     NarrowPhaseResult::SingleContact(Contact {
         point_a,
         point_b,
@@ -129,6 +141,13 @@ pub fn sphere_sphere(ca: [f64; 3], ra: f64, cb: [f64; 3], rb: f64) -> NarrowPhas
 ///
 /// The box is defined by its `box_center` and `half_extents`.
 /// Returns `NoContact` when the sphere does not reach the box.
+///
+/// The sphere is body A and the box body B: `normal` points from the box toward
+/// the sphere, `point_a` is the point of the sphere surface facing the box and
+/// `point_b` the point of the box surface the sphere presses into. When the
+/// sphere centre lies inside the box the sphere leaves through the nearest face:
+/// `normal` is that face's normal, `point_b` lies on the face and `depth` is the
+/// distance to the face plus the radius.
 pub fn sphere_box(
     sphere_center: [f64; 3],
     radius: f64,
@@ -150,29 +169,34 @@ pub fn sphere_box(
     }
 
     let dist = dist_sq.sqrt();
-    let (normal, depth) = if dist > 1e-10 {
+    // `surface` is the point of the box surface the sphere presses into.
+    let (normal, depth, surface) = if dist > 1e-10 {
         // Sphere centre is outside the box.
-        (normalize(diff), radius - dist)
+        (normalize(diff), radius - dist, clamped)
     } else {
         // Sphere centre is inside the box; push out through nearest face.
         let dx = half_extents[0] - local[0].abs();
         let dy = half_extents[1] - local[1].abs();
         let dz = half_extents[2] - local[2].abs();
-        let n = if dx <= dy && dx <= dz {
-            [local[0].signum(), 0.0, 0.0]
+        let axis = if dx <= dy && dx <= dz {
+            0
         } else if dy <= dz {
-            [0.0, local[1].signum(), 0.0]
+            1
         } else {
-            [0.0, 0.0, local[2].signum()]
+            2
         };
+        let sign = local[axis].signum();
+        let mut n = [0.0; 3];
+        n[axis] = sign;
+        let mut on_face = local;
+        on_face[axis] = sign * half_extents[axis];
         let pen = dx.min(dy).min(dz) + radius;
-        (n, pen)
+        (n, pen, on_face)
     };
 
-    // Convert closest point back to world space.
-    let closest_world = add(box_center, clamped);
+    // Convert the surface point back to world space.
     let point_a = sub(sphere_center, scale(normal, radius));
-    let point_b = closest_world;
+    let point_b = add(box_center, surface);
 
     NarrowPhaseResult::SingleContact(Contact {
         point_a,
@@ -184,14 +208,37 @@ pub fn sphere_box(
 
 // ── Box vs Box (SAT) ──────────────────────────────────────────────────────────
 
-/// OBB–OBB SAT collision test using 15 separating axes.
+/// OBB–OBB SAT collision test using the 15 candidate separating axes.
 ///
-/// `center_a`/`center_b` are world-space box centres.
-/// `half_a`/`half_b` are half-extents.
-/// `rot_a`/`rot_b` are rotation matrices whose columns are the box's local axes.
+/// `center_a`/`center_b` are world-space box centres and `half_a`/`half_b` the
+/// half-extents. `rot_a`/`rot_b` hold the three orthonormal local axes of the
+/// box in world space: `rot_a[i]` is the world direction of local axis `i`,
+/// along which the box has half-extent `half_a[i]`. As a rotation matrix these
+/// are the *columns* of the matrix, stored one per array entry, so a row-major
+/// rotation matrix must be transposed before it is passed in.
 ///
-/// Returns `NoContact` if any axis separates the boxes, otherwise the contact
-/// with minimum penetration depth.
+/// Returns `NoContact` if any axis separates the boxes. Otherwise the axis of
+/// least penetration decides the contact:
+///
+/// * `normal` is the unit axis of least penetration, pointing from B toward A;
+/// * `depth` is the true penetration distance along it (the overlap of the
+///   boxes projected on that unit axis, also for the cross-product axes of two
+///   edges);
+/// * `point_a` lies on the surface of A and `point_b` on the surface of B, with
+///   `point_b - point_a == normal * depth`. For a face contact the two points
+///   are the centroid of the deepest part of the contact patch (the incident
+///   face clipped against the reference face), so a box resting on another is
+///   not biased toward a corner; for an edge contact they are the closest
+///   points of the two edges.
+///
+/// Edge-edge axes win over face axes only when they are clearly shallower, so a
+/// resting box does not flip between a face and a numerically equal edge axis.
+/// Boxes that are separated by no more than a rounding-level margin
+/// (`1e-12` relative to the box sizes) count as touching: they report a
+/// zero-depth contact instead of flipping between contact and no contact.
+///
+/// Degenerate input (non-finite values, negative half-extents, zero-length
+/// axes) yields `NoContact`.
 pub fn box_box_sat(
     center_a: [f64; 3],
     half_a: [f64; 3],
@@ -200,117 +247,41 @@ pub fn box_box_sat(
     half_b: [f64; 3],
     rot_b: [[f64; 3]; 3],
 ) -> NarrowPhaseResult {
-    // Translation in world space.
-    let t_world = sub(center_b, center_a);
-
-    // Express t in A's frame.
-    let t = [
-        dot(rot_a[0], t_world),
-        dot(rot_a[1], t_world),
-        dot(rot_a[2], t_world),
-    ];
-
-    // R[i][j] = dot(rot_a[i], rot_b[j])
-    let mut r = [[0.0f64; 3]; 3];
-    let mut abs_r = [[0.0f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            r[i][j] = dot(rot_a[i], rot_b[j]);
-            abs_r[i][j] = r[i][j].abs() + 1e-6;
-        }
+    let size = half_a
+        .iter()
+        .chain(half_b.iter())
+        .chain(sub(center_a, center_b).iter())
+        .fold(1.0_f64, |m, v| m.max(v.abs()));
+    let margin = 1e-12 * size;
+    let patch =
+        BoxBoxManifold::new(margin).compute(center_a, half_a, rot_a, center_b, half_b, rot_b);
+    let deepest = patch
+        .iter()
+        .map(|contact| contact.depth)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !deepest.is_finite() {
+        return NarrowPhaseResult::NoContact;
     }
-
-    let mut min_depth = f64::INFINITY;
-    let mut best_axis = [0.0f64, 1.0, 0.0];
-
-    // ── A's face normals (axes 0..2) ─────────────────────────────────────────
-    for i in 0..3 {
-        let ra = half_a[i];
-        let rb = half_b[0] * abs_r[i][0] + half_b[1] * abs_r[i][1] + half_b[2] * abs_r[i][2];
-        let depth = (ra + rb) - t[i].abs();
-        if depth < 0.0 {
-            return NarrowPhaseResult::NoContact;
-        }
-        if depth < min_depth {
-            min_depth = depth;
-            let sign = if t[i] >= 0.0 { 1.0 } else { -1.0 };
-            best_axis = rot_a[i];
-            best_axis[0] *= sign;
-            best_axis[1] *= sign;
-            best_axis[2] *= sign;
-        }
+    // The patch generator reports normals from A toward B.
+    let tie_tolerance = 1e-9 * (1.0 + deepest.abs());
+    let mut count = 0.0_f64;
+    let mut point_a = [0.0; 3];
+    let mut point_b = [0.0; 3];
+    let mut normal_ab = [0.0; 3];
+    for contact in patch
+        .iter()
+        .filter(|contact| contact.depth >= deepest - tie_tolerance)
+    {
+        point_a = add(point_a, contact.pos_a);
+        point_b = add(point_b, contact.pos_b);
+        normal_ab = contact.normal;
+        count += 1.0;
     }
-
-    // ── B's face normals (axes 3..5) ─────────────────────────────────────────
-    for j in 0..3 {
-        let ra = half_a[0] * abs_r[0][j] + half_a[1] * abs_r[1][j] + half_a[2] * abs_r[2][j];
-        let rb = half_b[j];
-        let sep = t[0] * r[0][j] + t[1] * r[1][j] + t[2] * r[2][j];
-        let depth = (ra + rb) - sep.abs();
-        if depth < 0.0 {
-            return NarrowPhaseResult::NoContact;
-        }
-        if depth < min_depth {
-            min_depth = depth;
-            let sign = if sep >= 0.0 { 1.0 } else { -1.0 };
-            best_axis = rot_b[j];
-            best_axis[0] *= sign;
-            best_axis[1] *= sign;
-            best_axis[2] *= sign;
-        }
-    }
-
-    // ── Edge-edge cross products (axes 6..14) ─────────────────────────────────
-    let edge_pairs: [(usize, usize); 9] = [
-        (0, 0),
-        (0, 1),
-        (0, 2),
-        (1, 0),
-        (1, 1),
-        (1, 2),
-        (2, 0),
-        (2, 1),
-        (2, 2),
-    ];
-
-    for (i, j) in edge_pairs {
-        let i1 = (i + 1) % 3;
-        let i2 = (i + 2) % 3;
-        let j1 = (j + 1) % 3;
-        let j2 = (j + 2) % 3;
-
-        let ra = half_a[i1] * abs_r[i2][j] + half_a[i2] * abs_r[i1][j];
-        let rb = half_b[j1] * abs_r[i][j2] + half_b[j2] * abs_r[i][j1];
-        let sep = t[i2] * r[i1][j] - t[i1] * r[i2][j];
-        let depth = (ra + rb) - sep.abs();
-        if depth < 0.0 {
-            return NarrowPhaseResult::NoContact;
-        }
-
-        // Build the cross-product axis in world space.
-        let axis = cross(rot_a[i], rot_b[j]);
-        let axis_len = len(axis);
-        if axis_len > 1e-6 && depth < min_depth {
-            min_depth = depth;
-            let axis_n = scale(axis, 1.0 / axis_len);
-            // Orient toward B.
-            let sign = if dot(axis_n, t_world) >= 0.0 {
-                1.0
-            } else {
-                -1.0
-            };
-            best_axis = scale(axis_n, sign);
-        }
-    }
-
-    let point_a = add(center_a, scale(best_axis, min_depth * 0.5));
-    let point_b = sub(center_b, scale(best_axis, min_depth * 0.5));
-
     NarrowPhaseResult::SingleContact(Contact {
-        point_a,
-        point_b,
-        normal: best_axis,
-        depth: min_depth,
+        point_a: scale(point_a, 1.0 / count),
+        point_b: scale(point_b, 1.0 / count),
+        normal: neg(normal_ab),
+        depth: deepest,
     })
 }
 
@@ -320,7 +291,8 @@ pub fn box_box_sat(
 ///
 /// Each capsule is defined by two segment endpoints `(a0, a1)` and radii.
 /// Finds the closest points between the two segments, then performs a
-/// sphere–sphere test at those points.
+/// sphere–sphere test at those points, so the contact has the convention of
+/// [`sphere_sphere`] (`normal` from capsule B toward capsule A).
 pub fn capsule_capsule(
     a0: [f64; 3],
     a1: [f64; 3],
@@ -1117,6 +1089,9 @@ pub fn triangle_sphere(
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod contact_tests;
 
 #[cfg(test)]
 mod tests {

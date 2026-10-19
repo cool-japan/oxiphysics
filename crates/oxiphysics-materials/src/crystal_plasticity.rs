@@ -100,6 +100,15 @@ impl SlipSystem {
         }
     }
 
+    /// Returns `true` when the slip direction lies in the slip plane, i.e.
+    /// `|d · n| <= tol` for the (normalised) direction and plane normal.
+    ///
+    /// [`SlipSystem::new`] does not enforce this; a crystallographic slip
+    /// system must satisfy it.
+    pub fn is_orthogonal(&self, tol: f64) -> bool {
+        dot3(self.slip_direction, self.slip_normal).abs() <= tol
+    }
+
     /// Schmid tensor P = (d ⊗ n + n ⊗ d) / 2 (symmetrised).
     pub fn schmid_tensor(&self) -> [[f64; 3]; 3] {
         let d = self.slip_direction;
@@ -143,18 +152,23 @@ pub fn fcc_slip_systems() -> Vec<SlipSystem> {
         [1.0, 0.0, 1.0],
     ];
 
-    // Pairs: (normal_idx, direction_idx) that are orthogonal.
+    // Pairs: (normal_idx, direction_idx).  Each plane carries the three
+    // ⟨110⟩ directions with n·d = 0:
+    //   n0 = (1,1,1)   → d0 = [1,-1,0], d1 = [-1,0,1], d2 = [0,1,-1]
+    //   n1 = (-1,1,1)  → d2 = [0,1,-1], d3 = [1,1,0],  d5 = [1,0,1]
+    //   n2 = (1,-1,1)  → d1 = [-1,0,1], d3 = [1,1,0],  d4 = [0,1,1]
+    //   n3 = (1,1,-1)  → d0 = [1,-1,0], d4 = [0,1,1],  d5 = [1,0,1]
     let pairs: [(usize, usize); 12] = [
         (0, 0),
         (0, 1),
         (0, 2),
-        (1, 0),
+        (1, 2),
         (1, 3),
-        (1, 4),
+        (1, 5),
         (2, 1),
         (2, 3),
-        (2, 5),
-        (3, 2),
+        (2, 4),
+        (3, 0),
         (3, 4),
         (3, 5),
     ];
@@ -184,20 +198,27 @@ pub fn bcc_slip_systems() -> Vec<SlipSystem> {
         [1.0, 1.0, -1.0],
     ];
 
-    // 12 orthogonal pairs.
+    // 12 pairs (normal_idx, direction_idx).  Each {110} plane contains the two
+    // ⟨111⟩ directions with n·d = 0:
+    //   n0 = (1,1,0)  → d1 = [-1,1,1], d2 = [1,-1,1]
+    //   n1 = (1,-1,0) → d0 = [1,1,1],  d3 = [1,1,-1]
+    //   n2 = (1,0,1)  → d1 = [-1,1,1], d3 = [1,1,-1]
+    //   n3 = (1,0,-1) → d0 = [1,1,1],  d2 = [1,-1,1]
+    //   n4 = (0,1,1)  → d2 = [1,-1,1], d3 = [1,1,-1]
+    //   n5 = (0,1,-1) → d0 = [1,1,1],  d1 = [-1,1,1]
     let pairs: [(usize, usize); 12] = [
+        (0, 1),
         (0, 2),
-        (0, 3),
         (1, 0),
-        (1, 1),
-        (2, 0),
+        (1, 3),
         (2, 1),
+        (2, 3),
+        (3, 0),
         (3, 2),
-        (3, 3),
-        (4, 0),
+        (4, 2),
         (4, 3),
+        (5, 0),
         (5, 1),
-        (5, 2),
     ];
 
     pairs
@@ -535,6 +556,126 @@ mod tests {
                 s.schmid_factor
             );
         }
+    }
+
+    // ── Slip-system crystallography ─────────────────────────────────────────
+
+    fn frobenius_distance(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> f64 {
+        let mut s = 0.0;
+        for i in 0..3 {
+            for j in 0..3 {
+                s += (a[i][j] - b[i][j]).powi(2);
+            }
+        }
+        s.sqrt()
+    }
+
+    fn vec_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    }
+
+    /// Flip the sign of an axis so that its first non-zero component is positive.
+    fn canonical_axis(v: [f64; 3]) -> [f64; 3] {
+        for &c in &v {
+            if c.abs() > 1e-12 {
+                return if c < 0.0 { [-v[0], -v[1], -v[2]] } else { v };
+            }
+        }
+        v
+    }
+
+    /// Group axes (identified up to sign) and return the multiplicity of each.
+    fn axis_multiplicities(axes: impl Iterator<Item = [f64; 3]>) -> Vec<usize> {
+        let mut groups: Vec<([f64; 3], usize)> = Vec::new();
+        for axis in axes {
+            let a = canonical_axis(axis);
+            match groups.iter_mut().find(|(g, _)| vec_distance(*g, a) < 1e-9) {
+                Some(entry) => entry.1 += 1,
+                None => groups.push((a, 1)),
+            }
+        }
+        groups.into_iter().map(|(_, count)| count).collect()
+    }
+
+    fn assert_crystallographic(systems: &[SlipSystem], label: &str) {
+        for (idx, s) in systems.iter().enumerate() {
+            let defect = dot3(s.slip_normal, s.slip_direction).abs();
+            assert!(
+                defect < 1e-12,
+                "{label} system {idx}: direction not in slip plane, |n.d| = {defect}"
+            );
+            assert!(s.is_orthogonal(1e-12), "{label} system {idx}");
+        }
+        for i in 0..systems.len() {
+            for j in (i + 1)..systems.len() {
+                let dist =
+                    frobenius_distance(&systems[i].schmid_tensor(), &systems[j].schmid_tensor());
+                assert!(
+                    dist > 1e-6,
+                    "{label} systems {i} and {j} have identical Schmid tensors"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_fcc_directions_lie_in_slip_planes() {
+        assert_crystallographic(&fcc_slip_systems(), "FCC");
+    }
+
+    #[test]
+    fn test_bcc_directions_lie_in_slip_planes() {
+        assert_crystallographic(&bcc_slip_systems(), "BCC");
+    }
+
+    #[test]
+    fn test_fcc_slip_system_multiplicities() {
+        let systems = fcc_slip_systems();
+        // 4 distinct {111} planes with 3 directions each, and 6 distinct
+        // <110> directions each shared by 2 planes.
+        let planes = axis_multiplicities(systems.iter().map(|s| s.slip_normal));
+        let directions = axis_multiplicities(systems.iter().map(|s| s.slip_direction));
+        assert_eq!(planes, vec![3; 4]);
+        assert_eq!(directions, vec![2; 6]);
+    }
+
+    #[test]
+    fn test_bcc_slip_system_multiplicities() {
+        let systems = bcc_slip_systems();
+        // 6 distinct {110} planes with 2 directions each, and 4 distinct
+        // <111> directions each shared by 3 planes.
+        let planes = axis_multiplicities(systems.iter().map(|s| s.slip_normal));
+        let directions = axis_multiplicities(systems.iter().map(|s| s.slip_direction));
+        assert_eq!(planes, vec![2; 6]);
+        assert_eq!(directions, vec![3; 4]);
+    }
+
+    #[test]
+    fn test_cubic_schmid_factors_for_100_loading() {
+        // Loading along [100]: 8 of the 12 FCC (and BCC) systems carry the
+        // maximum Schmid factor 1/sqrt(6); the remaining 4 are unstressed.
+        let target = 1.0 / 6.0_f64.sqrt();
+        for (label, systems) in [("FCC", fcc_slip_systems()), ("BCC", bcc_slip_systems())] {
+            let active = systems
+                .iter()
+                .filter(|s| (s.schmid_factor.abs() - target).abs() < 1e-12)
+                .count();
+            let idle = systems
+                .iter()
+                .filter(|s| s.schmid_factor.abs() < 1e-12)
+                .count();
+            assert_eq!(active, 8, "{label}: systems at 1/sqrt(6)");
+            assert_eq!(idle, 4, "{label}: unstressed systems");
+        }
+    }
+
+    #[test]
+    fn test_slip_system_is_orthogonal_detects_bad_pair() {
+        // (-1,1,1) is NOT perpendicular to [1,-1,0]: n.d = -2/sqrt(6).
+        let bad = SlipSystem::new([1.0, -1.0, 0.0], [-1.0, 1.0, 1.0]);
+        assert!(!bad.is_orthogonal(1e-9));
+        let good = SlipSystem::new([1.0, -1.0, 0.0], [1.0, 1.0, 1.0]);
+        assert!(good.is_orthogonal(1e-12));
     }
 
     // ── Schmid tensor ────────────────────────────────────────────────────────

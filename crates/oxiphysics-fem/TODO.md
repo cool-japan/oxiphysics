@@ -246,10 +246,10 @@ Verified: 363 (critical 8, high 122, medium 177, low 56); 57 further raw finding
 ### Critical (8)
 - [x] **F1037** (critical, bug, easy/small) `analysis.rs:724` — Newmark-beta solves displacement-form K_eff but treats result as acceleration
 - [x] **F1038** (critical, bug, medium/small) `analysis.rs:788` — Wilson-theta solves displacement system, uses result as acceleration
-- [ ] **F1140** (critical, bug, medium/small) `dynamics.rs:151` — HHT-α parameters sign-flipped (γ<½, energy growth), not HHT
-- [ ] **F1142** (critical, bug, medium/medium) `dynamics.rs:193` — NewmarkIntegrator::step is explicit yet claims unconditional stability
-- [ ] **F1152** (critical, bug, medium/medium) `eigenvalue.rs:382` — solve_smallest/ModalAnalysis return k-step Lanczos Ritz values, not smallest modes
-- [ ] **F1174** (critical, bug, medium/small) `explicit_fem/types.rs:135` — 3D node-to-segment gap is unsigned, so contact force is always zero
+- [x] **F1140** (critical, bug, medium/small) `dynamics.rs:151` — HHT-α parameters sign-flipped (γ<½, energy growth), not HHT
+- [x] **F1142** (critical, bug, medium/medium) `dynamics.rs:193` — NewmarkIntegrator::step is explicit yet claims unconditional stability
+- [x] **F1152** (critical, bug, medium/medium) `eigenvalue.rs:382` — solve_smallest/ModalAnalysis return k-step Lanczos Ritz values, not smallest modes
+- [x] **F1174** (critical, bug, medium/small) `explicit_fem/types.rs:135` — 3D node-to-segment gap is unsigned, so contact force is always zero
 - [x] **F1346** (critical, bug, medium/medium) `solvers/functions.rs:378` — MINRES recurrence wrong; returns garbage flagged converged=true
 - [ ] **F1378** (critical, bug, easy/small) `thermal_fem.rs:163` — Tet shape gradients use J^-T rows; fails linear patch test
 
@@ -257,51 +257,51 @@ Verified: 363 (critical 8, high 122, medium 177, low 56); 57 further raw finding
 - [x] **F1024** (high, bug, medium/medium) `adaptive_mesh/functions.rs:565` — coarsen_mesh deletes leaf elements, punching holes in mesh
 - [x] **F1028** (high, bug, easy/small) `adaptive_mesh/types.rs:481` — refine_element duplicates shared edge-midpoint nodes between neighbours
 - [x] **F1032** (high, api, medium/medium) `analysis.rs:94` — LinearStaticAnalysis::solve infallible; hides CG failure and NaN
-- [ ] **F1034** (high, bug, medium/medium) `analysis.rs:429` — Modal RQI misses lowest modes; mode shape fabricated on singular shift
-- [ ] **F1036** (high, bug, medium/medium) `analysis.rs:690` — Newmark/Wilson solve wrong effective system; acceleration scaled by βΔt²
+- [x] **F1034** (high, bug, medium/medium) `analysis.rs:429` — Modal RQI misses lowest modes; mode shape fabricated on singular shift
+- [x] **F1036** (high, bug, medium/medium) `analysis.rs:690` — Newmark/Wilson solve wrong effective system; acceleration scaled by βΔt²
 - [x] **F1042** (high, perf, easy/small) `assembly.rs:145` — apply_dirichlet_bc sweeps whole matrix per fixed DOF
 - [x] **F1048** (high, bug, easy/trivial) `beam_fem.rs:89` — Rectangular torsion constant overestimated: 0.21 term divided by 3
 - [x] **F1054** (high, perf, easy/small) `boundary.rs:885` — Dirichlet application scans whole CSR per BC: O(n_bc·nnz)
-- [ ] **F1055** (high, bug, easy/small) `boundary_element.rs:99` — Laplace double-layer kernel sign flipped; BEM flux and interior u negated
-- [ ] **F1058** (high, bug, medium/small) `boundary_element.rs:650` — Elastostatic BEM self-G 3.6–4.6× too small; rigid-body diag incomplete
+- [x] **F1055** (high, bug, easy/small) `boundary_element.rs:99` — Laplace double-layer kernel sign flipped; BEM flux and interior u negated
+- [x] **F1058** (high, bug, medium/small) `boundary_element.rs:650` — Elastostatic BEM self-G 3.6–4.6× too small; rigid-body diag incomplete
 - [x] **F1063** (high, bug, easy/small) `boundary_element.rs:1026` — BEM-FEM condense: O(n^4) inverse and wrong H·G⁻¹ order
-- [ ] **F1069** (high, bug, medium/small) `buckling/types.rs:88` — Higher buckling modes re-find mode 1 (shift = prev*1.01)
-- [ ] **F1071** (high, fabrication, medium/small) `cohesive/types.rs:145` — PPR cohesive law ad hoc: fracture energy ≠ Γn (off by ~1e5)
-- [ ] **F1072** (high, bug, easy/small) `cohesive/types.rs:366` — Xu-Needleman normal traction nonzero at zero opening
-- [ ] **F1073** (high, bug, easy/small) `composite_fem.rs:330` — Ply strain rotated with stress transform; shear term doubled
-- [ ] **F1074** (high, fabrication, medium/small) `composite_fem.rs:454` — first_ply_failure fabricates ply strengths from elastic moduli
-- [ ] **F1077** (high, bug, medium/small) `constitutive.rs:317` — Mooney-Rivlin stress is nonzero at zero strain (no pressure/bulk term)
-- [ ] **F1080** (high, bug, medium/medium) `contact/functions.rs:443` — Node-face contact reports nodes against their own faces
-- [ ] **F1100** (high, bug, easy/small) `contact_mechanics.rs:231` — Mindlin G* convention mixed: k_t 4× too stiff, δt 2× too small
-- [ ] **F1102** (high, bug, easy/trivial) `contact_mechanics.rs:368` — JKR contact radius missing 3/4 factor; elastic_energy delta wrong
+- [x] **F1069** (high, bug, medium/small) `buckling/types.rs:88` — Higher buckling modes re-find mode 1 (shift = prev*1.01)
+- [x] **F1071** (high, fabrication, medium/small) `cohesive/types.rs:145` — PPR cohesive law ad hoc: fracture energy ≠ Γn (off by ~1e5)
+- [x] **F1072** (high, bug, easy/small) `cohesive/types.rs:366` — Xu-Needleman normal traction nonzero at zero opening
+- [x] **F1073** (high, bug, easy/small) `composite_fem.rs:330` — Ply strain rotated with stress transform; shear term doubled
+- [x] **F1074** (high, fabrication, medium/small) `composite_fem.rs:454` — first_ply_failure fabricates ply strengths from elastic moduli
+- [x] **F1077** (high, bug, medium/small) `constitutive.rs:317` — Mooney-Rivlin stress is nonzero at zero strain (no pressure/bulk term)
+- [x] **F1080** (high, bug, medium/medium) `contact/functions.rs:443` — Node-face contact reports nodes against their own faces
+- [x] **F1100** (high, bug, easy/small) `contact_mechanics.rs:231` — Mindlin G* convention mixed: k_t 4× too stiff, δt 2× too small
+- [x] **F1102** (high, bug, easy/trivial) `contact_mechanics.rs:368` — JKR contact radius missing 3/4 factor; elastic_energy delta wrong
 - [x] **F1105** (high, fabrication, hard/large) `coupled_fem/types.rs:911` — ThermoMechanicalCoupling mechanics is fabricated displacement accumulation
 - [x] **F1109** (high, bug, easy/small) `coupled_fem/types.rs:1793` — AcousticCavity1D 'Lax-Wendroff' step is unconditionally unstable FTCS
-- [ ] **F1112** (high, bug, medium/small) `coupled_physics_fem.rs:693` — CoupledSolver: sign mismatch between schemes; fake converged/zero residuals
-- [ ] **F1114** (high, bug, medium/small) `coupled_physics_fem.rs:873` — CoupledSolver: CG on nonsymmetric block, sign mismatch, hard-coded convergence
-- [ ] **F1115** (high, bug, medium/medium) `crystal_plasticity.rs:367` — HCP: zero pyramidal systems created; prismatic slip uses c-axis
-- [ ] **F1117** (high, fabrication, easy/trivial) `damage/types.rs:212` — GursonModel::yield_function always returns 0.0
-- [ ] **F1126** (high, bug, medium/medium) `discontinuous_galerkin.rs:823` — DG diffusion volume term anti-diffusive; interior-penalty face terms discarded
+- [x] **F1112** (high, bug, medium/small) `coupled_physics_fem.rs:693` — CoupledSolver: sign mismatch between schemes; fake converged/zero residuals
+- [x] **F1114** (high, bug, medium/small) `coupled_physics_fem.rs:873` — CoupledSolver: CG on nonsymmetric block, sign mismatch, hard-coded convergence
+- [x] **F1115** (high, bug, medium/medium) `crystal_plasticity.rs:367` — HCP: zero pyramidal systems created; prismatic slip uses c-axis
+- [x] **F1117** (high, fabrication, easy/trivial) `damage/types.rs:212` — GursonModel::yield_function always returns 0.0
+- [x] **F1126** (high, bug, medium/medium) `discontinuous_galerkin.rs:823` — DG diffusion volume term anti-diffusive; interior-penalty face terms discarded
 - [ ] **F1129** (high, bug, easy/trivial) `dynamic/functions.rs:826` — modal_newmark_1dof a4=γ/(β²Δt) makes damped response diverge
 - [ ] **F1132** (high, fabrication, medium/small) `dynamic/types.rs:80` — Bathe step_diagonal sub-step 2 is not 3-point backward Euler
 - [ ] **F1134** (high, bug, easy/small) `dynamic/types.rs:397` — Wilson-θ uses 3·a1 instead of a2=2·a1 on velocity terms
 - [ ] **F1137** (high, fabrication, easy/small) `dynamic/types.rs:806` — DynamicSolver::generalized_alpha: diagonal-only, double-counted fake solve
 - [ ] **F1138** (high, bug, easy/small) `dynamic/types.rs:826` — DynamicSolver::generalized_alpha diagonal-only and double-counts predictor terms
-- [ ] **F1141** (high, fabrication, medium/medium) `dynamics.rs:161` — Newmark 'implicit' step is explicit; critical_dt claims unconditional stability
-- [ ] **F1143** (high, fabrication, medium/medium) `dynamics.rs:402` — BatheIntegrator::step uses an invented 0.9/0.1 blend instead of Bathe–Noh
-- [ ] **F1144** (high, bug, easy/trivial) `dynamics.rs:452` — lump_mass_hrz divides total by n_dim; lumped mass n_dim× too small
-- [ ] **F1146** (high, bug, easy/trivial) `dynamics.rs:701` — estimate_omega_max uses K_ii/M_ii, so the 'safe' explicit dt is unstable
-- [ ] **F1148** (high, bug, medium/small) `eigen/functions.rs:265` — subspace_iteration finds largest eigenpairs and never re-orthonormalizes
-- [ ] **F1149** (high, bug, medium/small) `eigen/functions.rs:455` — shift_invert_power returns num_modes copies of one eigenpair
-- [ ] **F1155** (high, fabrication, medium/small) `eigenvalue.rs:780` — FrequencyResponse ignores damping_ratio; LU has no pivoting
-- [ ] **F1158** (high, bug, medium/small) `electrochemical_fem.rs:148` — Nernst-Planck migration sign wrong, upwind weight inverted, velocity ignored
-- [ ] **F1159** (high, bug, easy/small) `electrochemical_fem.rs:173` — Nernst-Planck LHS/RHS mass matrices mismatch; concentration grows ~50%/step
-- [ ] **F1160** (high, fabrication, hard/large) `electrochemical_fem.rs:797` — BatteryFem 'DFN' step only does solid diffusion; surface BC wrong
-- [ ] **F1162** (high, bug, easy/small) `electrochemical_fem.rs:1191` — PEM O2 'zero-flux' membrane BC forces c=0; ORR sink mis-scaled
-- [ ] **F1166** (high, bug, easy/small) `electromechanics/types.rs:1056` — GlobalPiezoAssembler::apply_dirichlet ignores prescribed value
-- [ ] **F1172** (high, bug, medium/medium) `error_estimation.rs:578` — refine_marked connectivity disagrees with bisected coords; non-conforming mesh
-- [ ] **F1176** (high, bug, easy/small) `explicit_fem/types.rs:222` — Contact Lagrange multipliers clamped to zero forever; Lagrange gives zero force
-- [ ] **F1177** (high, fabrication, medium/medium) `explicit_fem/types.rs:829` — ConWep overpressure fit is non-physical and does not decay
-- [ ] **F1179** (high, bug, easy/small) `fatigue_fem.rs:441` — Rainflow ignores ASTM start-point half-cycle rule and drops plateau peaks
+- [x] **F1141** (high, fabrication, medium/medium) `dynamics.rs:161` — Newmark 'implicit' step is explicit; critical_dt claims unconditional stability
+- [x] **F1143** (high, fabrication, medium/medium) `dynamics.rs:402` — BatheIntegrator::step uses an invented 0.9/0.1 blend instead of Bathe–Noh
+- [x] **F1144** (high, bug, easy/trivial) `dynamics.rs:452` — lump_mass_hrz divides total by n_dim; lumped mass n_dim× too small
+- [x] **F1146** (high, bug, easy/trivial) `dynamics.rs:701` — estimate_omega_max uses K_ii/M_ii, so the 'safe' explicit dt is unstable
+- [x] **F1148** (high, bug, medium/small) `eigen/functions.rs:265` — subspace_iteration finds largest eigenpairs and never re-orthonormalizes
+- [x] **F1149** (high, bug, medium/small) `eigen/functions.rs:455` — shift_invert_power returns num_modes copies of one eigenpair
+- [x] **F1155** (high, fabrication, medium/small) `eigenvalue.rs:780` — FrequencyResponse ignores damping_ratio; LU has no pivoting
+- [x] **F1158** (high, bug, medium/small) `electrochemical_fem.rs:148` — Nernst-Planck migration sign wrong, upwind weight inverted, velocity ignored
+- [x] **F1159** (high, bug, easy/small) `electrochemical_fem.rs:173` — Nernst-Planck LHS/RHS mass matrices mismatch; concentration grows ~50%/step
+- [x] **F1160** (high, fabrication, hard/large) `electrochemical_fem.rs:797` — BatteryFem 'DFN' step only does solid diffusion; surface BC wrong
+- [x] **F1162** (high, bug, easy/small) `electrochemical_fem.rs:1191` — PEM O2 'zero-flux' membrane BC forces c=0; ORR sink mis-scaled
+- [x] **F1166** (high, bug, easy/small) `electromechanics/types.rs:1056` — GlobalPiezoAssembler::apply_dirichlet ignores prescribed value
+- [x] **F1172** (high, bug, medium/medium) `error_estimation.rs:578` — refine_marked connectivity disagrees with bisected coords; non-conforming mesh
+- [x] **F1176** (high, bug, easy/small) `explicit_fem/types.rs:222` — Contact Lagrange multipliers clamped to zero forever; Lagrange gives zero force
+- [x] **F1177** (high, fabrication, medium/medium) `explicit_fem/types.rs:829` — ConWep overpressure fit is non-physical and does not decay
+- [x] **F1179** (high, bug, easy/small) `fatigue_fem.rs:441` — Rainflow ignores ASTM start-point half-cycle rule and drops plateau peaks
 - [ ] **F1183** (high, bug, easy/trivial) `fluid_fem/fluid_fem_stokes.rs:442` — 1-D NS viscous term uses FD scaling with FEM-integrated mass
 - [ ] **F1191** (high, bug, easy/trivial) `fracture/types.rs:528` — SENB K_I uses W² instead of W^{3/2}
 - [ ] **F1194** (high, bug, easy/trivial) `homogenization/advanced.rs:759` — Levin thermal expansion wrongly multiplied by volume fraction
@@ -311,20 +311,20 @@ Verified: 363 (critical 8, high 122, medium 177, low 56); 57 further raw finding
 - [ ] **F1212** (high, fabrication, hard/medium) `isogeometric/types.rs:541` — DegreeElevation uses curve samples as control points
 - [ ] **F1215** (high, bug, easy/trivial) `isogeometric/types.rs:1814` — p_refine_knot makes every interior knot C^-1
 - [ ] **F1216** (high, fabrication, hard/medium) `isogeometric/types.rs:1901` — Mortar coupling matrix ignores spans, sizes, and interface location
-- [ ] **F1218** (high, bug, easy/trivial) `isogeometric_fem.rs:797` — IGA B-matrix uses J⁻¹ instead of J⁻ᵀ for physical derivatives
-- [ ] **F1219** (high, perf, medium/large) `isogeometric_fem.rs:825` — IGA element matrices span all control points; O(N³) assembly
-- [ ] **F1220** (high, perf, medium/medium) `isogeometric_fem.rs:947` — IGA elements span all control points: O(N³) dense assembly
-- [ ] **F1223** (high, bug, easy/small) `lbm_coupling.rs:243` — transfer_velocity_to_lbm double-weights delta kernel; imposes ω·v
-- [ ] **F1225** (high, fabrication, medium/medium) `lbm_coupling.rs:354` — IBM pressure force direction = sign of slip velocity, not normal
-- [ ] **F1226** (high, bug, easy/small) `level_set.rs:60` — Reinitialization Godunov gradient omits grid spacing
-- [ ] **F1227** (high, bug, easy/trivial) `level_set.rs:302` — Level-set curvature cross-derivative term halved
-- [ ] **F1231** (high, bug, easy/trivial) `mesh.rs:306` — Tet dihedral angle returns π−φ instead of φ
-- [ ] **F1237** (high, fabrication, hard/medium) `meshfree_fem/functions.rs:689` — apply_nitsche_bc is identical to the penalty method
-- [ ] **F1239** (high, fabrication, medium/medium) `meshfree_fem/types.rs:154` — Bridging-domain weights no-op; coupling matrix always zero
-- [ ] **F1241** (high, bug, medium/small) `meshless.rs:35` — MLS/RKPM silently return zero shape functions on singular moment matrix
-- [ ] **F1247** (high, bug, medium/medium) `modal.rs:449` — harmonic_analysis: 5 fixed block-GS sweeps with CG on indefinite K−ω²M
-- [ ] **F1248** (high, bug, medium/medium) `modal.rs:456` — harmonic_analysis sign error and CG on indefinite K−ω²M
-- [ ] **F1252** (high, bug, medium/small) `modal.rs:1460` — Response spectrum double-steps SDOF and cancels ground forcing
+- [x] **F1218** (high, bug, easy/trivial) `isogeometric_fem.rs:797` — IGA B-matrix uses J⁻¹ instead of J⁻ᵀ for physical derivatives
+- [x] **F1219** (high, perf, medium/large) `isogeometric_fem.rs:825` — IGA element matrices span all control points; O(N³) assembly
+- [x] **F1220** (high, perf, medium/medium) `isogeometric_fem.rs:947` — IGA elements span all control points: O(N³) dense assembly
+- [x] **F1223** (high, bug, easy/small) `lbm_coupling.rs:243` — transfer_velocity_to_lbm double-weights delta kernel; imposes ω·v
+- [x] **F1225** (high, fabrication, medium/medium) `lbm_coupling.rs:354` — IBM pressure force direction = sign of slip velocity, not normal
+- [x] **F1226** (high, bug, easy/small) `level_set.rs:60` — Reinitialization Godunov gradient omits grid spacing
+- [x] **F1227** (high, bug, easy/trivial) `level_set.rs:302` — Level-set curvature cross-derivative term halved
+- [x] **F1231** (high, bug, easy/trivial) `mesh.rs:306` — Tet dihedral angle returns π−φ instead of φ
+- [x] **F1237** (high, fabrication, hard/medium) `meshfree_fem/functions.rs:689` — apply_nitsche_bc is identical to the penalty method
+- [x] **F1239** (high, fabrication, medium/medium) `meshfree_fem/types.rs:154` — Bridging-domain weights no-op; coupling matrix always zero
+- [x] **F1241** (high, bug, medium/small) `meshless.rs:35` — MLS/RKPM silently return zero shape functions on singular moment matrix
+- [x] **F1247** (high, bug, medium/medium) `modal.rs:449` — harmonic_analysis: 5 fixed block-GS sweeps with CG on indefinite K−ω²M
+- [x] **F1248** (high, bug, medium/medium) `modal.rs:456` — harmonic_analysis sign error and CG on indefinite K−ω²M
+- [x] **F1252** (high, bug, medium/small) `modal.rs:1460` — Response spectrum double-steps SDOF and cancels ground forcing
 - [ ] **F1253** (high, fabrication, medium/medium) `multiphysics_fem.rs:224` — Thermal load vector is nodal D·ε_th, not ∫BᵀDε_th dV
 - [ ] **F1254** (high, bug, easy/trivial) `multiphysics_fem.rs:417` — PZT-5A piezo coupling entries in wrong matrix positions
 - [x] **F1260** (high, fabrication, hard/large) `multiscale_fem.rs:305` — FE² MicroSolver solves no RVE; returns Voigt rule-of-mixtures
@@ -346,21 +346,21 @@ Verified: 363 (critical 8, high 122, medium 177, low 56); 57 further raw finding
 - [ ] **F1313** (high, bug, easy/small) `reduced_order.rs:546` — ROM Newmark step: zero acceleration, wrong effective RHS
 - [ ] **F1314** (high, fabrication, hard/medium) `reduced_order.rs:978` — Balanced truncation uses fabricated Gramians and wrong projection
 - [x] **F1316** (high, fabrication, hard/medium) `reduced_order_fem.rs:755` — balanced_truncation never uses A; Gramians are BBᵀ and CᵀC
-- [ ] **F1323** (high, bug, medium/small) `reliability_fem/types.rs:478` — SORM curvatures mix x/u spaces and skip the rotation
+- [x] **F1323** (high, bug, medium/small) `reliability_fem/types.rs:478` — SORM curvatures mix x/u spaces and skip the rotation
 - [x] **F1327** (high, fabrication, medium/medium) `shell/types.rs:347` — RectPlateElement stiffness is uncoupled diagonal, not a plate element
-- [ ] **F1328** (high, fabrication, medium/small) `shell/types.rs:353` — RectPlateElement stiffness is diagonal-only, no rigid-body modes
-- [ ] **F1329** (high, fabrication, hard/medium) `shell/types.rs:465` — 'DKT' flat-shell bending gives zero stiffness to w DOFs
-- [ ] **F1330** (high, bug, easy/trivial) `shell_fem.rs:604` — Cylinder external-pressure buckling formulas overestimate (unconservative)
+- [x] **F1328** (high, fabrication, medium/small) `shell/types.rs:353` — RectPlateElement stiffness is diagonal-only, no rigid-body modes
+- [x] **F1329** (high, fabrication, hard/medium) `shell/types.rs:465` — 'DKT' flat-shell bending gives zero stiffness to w DOFs
+- [x] **F1330** (high, bug, easy/trivial) `shell_fem.rs:604` — Cylinder external-pressure buckling formulas overestimate (unconservative)
 - [x] **F1332** (high, bug, easy/small) `soil_fem.rs:160` — principal_stresses drops shear; Mohr-Coulomb never sees shear
-- [ ] **F1333** (high, bug, easy/small) `soil_fem.rs:176` — Mohr-Coulomb yield uses wrong friction sign for tension-positive stress
-- [ ] **F1339** (high, panic, hard/medium) `solvers/amg/smoothed_aggregation.rs:193` — SA-AMG elasticity path indexes node coords by DOF (panic)
+- [x] **F1333** (high, bug, easy/small) `soil_fem.rs:176` — Mohr-Coulomb yield uses wrong friction sign for tension-positive stress
+- [x] **F1339** (high, panic, hard/medium) `solvers/amg/smoothed_aggregation.rs:193` — SA-AMG elasticity path indexes node coords by DOF (panic)
 - [x] **F1347** (high, fabrication, medium/small) `solvers/functions.rs:675` — Dense V-cycle overwrites pre-smoothing and coarse correction
 - [x] **F1348** (high, perf, medium/small) `solvers/functions.rs:1176` — amg_pcg rebuilds AMG hierarchy every iteration; non-SPD preconditioner
-- [ ] **F1356** (high, perf, medium/medium) `sparse/types.rs:61` — ICC(0) factorization is O(n²) and breakdown clamp explodes factor
+- [x] **F1356** (high, perf, medium/medium) `sparse/types.rs:61` — ICC(0) factorization is O(n²) and breakdown clamp explodes factor
 - [x] **F1361** (high, bug, easy/trivial) `spectral_fem/types.rs:456` — SEM load_rhs divides out Jacobian; solution scaled by 1/J
 - [x] **F1371** (high, bug, easy/small) `stochastic_fem/types.rs:808` — PCE Gauss-Hermite projection mis-scaled; 5-point weights wrong too
-- [ ] **F1372** (high, fabrication, easy/small) `thermal/functions.rs:108` — stefan_neumann_lambda ignores ΔT; Stefan number is cp/L
-- [ ] **F1375** (high, bug, easy/trivial) `thermal/functions.rs:521` — enthalpy_update divides heat input by density twice
+- [x] **F1372** (high, fabrication, easy/small) `thermal/functions.rs:108` — stefan_neumann_lambda ignores ΔT; Stefan number is cp/L
+- [x] **F1375** (high, bug, easy/trivial) `thermal/functions.rs:521` — enthalpy_update divides heat input by density twice
 - [ ] **F1376** (high, bug, easy/trivial) `thermal/types.rs:358` — 1-D explicit thermal step double-counts convective loss
 - [ ] **F1380** (high, fabrication, easy/small) `thermal_fem.rs:1108` — θ-method implicit/CN step drops off-diagonal K (diagonal approximation)
 - [ ] **F1381** (high, bug, easy/trivial) `thermal_fem.rs:1187` — Linearised radiation BC RHS has wrong sign/terms

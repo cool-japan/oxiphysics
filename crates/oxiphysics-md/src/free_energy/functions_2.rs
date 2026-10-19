@@ -700,6 +700,57 @@ mod tests_extended {
         );
     }
     #[test]
+    fn test_alchemical_bar_uncertainty_profile_accumulates_in_quadrature() {
+        use crate::free_energy::test_support::standard_normal;
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        // Constant energy shifts have constant Fermi weights: no sampling error.
+        let flat_fwd = vec![vec![0.5_f64; 50]; 3];
+        let flat_bwd = vec![vec![-0.5_f64; 50]; 3];
+        let flat = alchemical_bar_uncertainty_profile(&flat_fwd, &flat_bwd, 1.0, 1e-10);
+        assert!(flat.iter().all(|&u| u.abs() < 1e-8), "{flat:?}");
+
+        // Gaussian work distributions obeying Crooks' theorem:
+        // W_F ~ N(mu, s^2) and -W_R ~ N(mu - s^2 / kT, s^2).
+        let (mu, spread, kt) = (2.0, 1.5, 1.0);
+        let mut rng = StdRng::seed_from_u64(99);
+        let mut forwards = Vec::new();
+        let mut backwards = Vec::new();
+        for _ in 0..3 {
+            forwards.push(
+                (0..500)
+                    .map(|_| mu + spread * standard_normal(&mut rng))
+                    .collect::<Vec<f64>>(),
+            );
+            backwards.push(
+                (0..500)
+                    .map(|_| -(mu - spread * spread / kt + spread * standard_normal(&mut rng)))
+                    .collect::<Vec<f64>>(),
+            );
+        }
+        let profile = alchemical_bar_uncertainty_profile(&forwards, &backwards, kt, 1e-10);
+        assert_eq!(profile.len(), 4);
+        assert_eq!(profile[0], 0.0);
+        let mut variance = 0.0;
+        for window in 0..3 {
+            let df = fep_bar(&forwards[window], &backwards[window], kt, 1e-10);
+            let sigma = bar_uncertainty(&forwards[window], &backwards[window], df, kt);
+            assert!(
+                (0.01..0.5).contains(&sigma),
+                "window {window}: BAR standard error {sigma}"
+            );
+            variance += sigma * sigma;
+            assert!(
+                (profile[window + 1] - variance.sqrt()).abs() < 1e-12,
+                "window {window}: cumulative {} vs quadrature sum {}",
+                profile[window + 1],
+                variance.sqrt()
+            );
+            assert!(profile[window + 1] > profile[window]);
+        }
+    }
+    #[test]
     fn test_soft_core_lj_dlambda_p_zero_lambda() {
         let dv = soft_core_lj_dlambda_p(0.5, 0.0, 1.0, 0.3, 0.5, 1);
         assert!(dv.is_finite(), "dlambda should be finite at lambda=0");

@@ -5,6 +5,9 @@ pub mod types;
 /// Advanced sediment transport types.
 pub mod types_advanced;
 
+#[cfg(test)]
+mod tests_regression;
+
 // Re-export all types
 pub use functions::*;
 pub use types::*;

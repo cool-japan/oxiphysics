@@ -19,7 +19,11 @@
 //! assert!(!json.is_empty());
 //! ```
 
+use crate::util::bounded_capacity;
 use std::collections::HashMap;
+
+/// Smallest encoded H5Part step: step index, time and particle count.
+const H5PART_MIN_STEP_BYTES: usize = 8 + 8 + 8;
 
 // ---------------------------------------------------------------------------
 // ParticleDataset
@@ -234,6 +238,11 @@ impl<'a> ByteCursor<'a> {
         Ok(buf)
     }
 
+    /// Number of bytes that have not been consumed yet.
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.offset)
+    }
+
     /// Read a little-endian `u64`.
     fn read_u64(&mut self) -> crate::Result<u64> {
         Ok(u64::from_le_bytes(self.read_array::<8>()?))
@@ -314,9 +323,14 @@ impl H5partReader {
         let mut cursor = ByteCursor::new(&data[8..]);
 
         let num_steps = cursor.read_u64()?;
-        let mut steps = Vec::with_capacity(num_steps as usize);
+        // The step count comes from the file: never trust it for the allocation.
+        let mut steps = Vec::with_capacity(bounded_capacity(
+            num_steps,
+            cursor.remaining(),
+            H5PART_MIN_STEP_BYTES,
+        ));
 
-        for step_index in 0..num_steps {
+        for _ in 0..num_steps {
             let step = cursor.read_u64()?;
             let time = cursor.read_f64()?;
             let particle_count = cursor.read_u64()?;
@@ -329,7 +343,6 @@ impl H5partReader {
                 let radius = cursor.read_f64()?;
                 // The writer does not persist IDs; assign sequential IDs so the
                 // reconstructed dataset is internally consistent.
-                let _ = step_index;
                 dataset.add_particle(particle_index, position, velocity, mass, radius);
             }
 
@@ -783,225 +796,16 @@ impl ParticleJsonWriter {
 }
 
 // ---------------------------------------------------------------------------
-// ParticleDiffWriter — delta encoding
+// ParticleDiffWriter — delta encoding (see the `diff` submodule)
 // ---------------------------------------------------------------------------
 
-/// A record describing changes between two consecutive frames.
-#[derive(Debug, Clone)]
-pub struct ParticleDelta {
-    /// Particle ID.
-    pub id: u64,
-    /// Position delta `[dx, dy, dz]`.
-    pub delta_pos: [f64; 3],
-    /// Velocity delta `[dvx, dvy, dvz]`.
-    pub delta_vel: [f64; 3],
-    /// Whether this particle is newly added in this frame.
-    pub is_new: bool,
-    /// Whether this particle was removed in this frame.
-    pub is_removed: bool,
-}
+mod diff;
+#[cfg(test)]
+mod diff_tests;
+#[cfg(test)]
+mod h5part_tests;
 
-/// Writes only the changes between consecutive particle frames (delta encoding).
-///
-/// This format is useful for large simulations where only a small fraction of
-/// particles move significantly each frame, enabling compact storage.
-#[derive(Debug, Default)]
-pub struct ParticleDiffWriter {
-    /// Previous frame snapshot (for diffing).
-    previous: Option<ParticleDataset>,
-    /// Threshold below which position changes are considered zero.
-    pub pos_threshold: f64,
-    /// Threshold below which velocity changes are considered zero.
-    pub vel_threshold: f64,
-    /// Accumulated delta frames.
-    pub deltas: Vec<(u64, Vec<ParticleDelta>)>,
-}
-
-impl ParticleDiffWriter {
-    /// Create a diff writer with default thresholds (1e-9 for position, 1e-9 for velocity).
-    pub fn new() -> Self {
-        Self {
-            previous: None,
-            pos_threshold: 1e-9,
-            vel_threshold: 1e-9,
-            deltas: vec![],
-        }
-    }
-
-    /// Create with custom thresholds.
-    pub fn with_thresholds(pos_threshold: f64, vel_threshold: f64) -> Self {
-        Self {
-            previous: None,
-            pos_threshold,
-            vel_threshold,
-            deltas: vec![],
-        }
-    }
-
-    /// Process a new frame, computing and storing the delta vs the previous frame.
-    ///
-    /// Returns the number of changed particles in this frame.
-    pub fn write_frame(&mut self, current: &ParticleDataset) -> usize {
-        let step = current.step;
-        let deltas = match &self.previous {
-            None => {
-                // First frame: all particles are "new".
-                current
-                    .ids
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &id)| ParticleDelta {
-                        id,
-                        delta_pos: current.positions[i],
-                        delta_vel: current.velocities[i],
-                        is_new: true,
-                        is_removed: false,
-                    })
-                    .collect::<Vec<_>>()
-            }
-            Some(prev) => {
-                let prev_map: HashMap<u64, usize> = prev
-                    .ids
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &id)| (id, i))
-                    .collect();
-                let curr_map: HashMap<u64, usize> = current
-                    .ids
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &id)| (id, i))
-                    .collect();
-
-                let mut out = vec![];
-
-                // Changed or new particles.
-                for (i, &id) in current.ids.iter().enumerate() {
-                    if let Some(&pi) = prev_map.get(&id) {
-                        let dp = [
-                            current.positions[i][0] - prev.positions[pi][0],
-                            current.positions[i][1] - prev.positions[pi][1],
-                            current.positions[i][2] - prev.positions[pi][2],
-                        ];
-                        let dv = [
-                            current.velocities[i][0] - prev.velocities[pi][0],
-                            current.velocities[i][1] - prev.velocities[pi][1],
-                            current.velocities[i][2] - prev.velocities[pi][2],
-                        ];
-                        let pos_changed = dp.iter().any(|x| x.abs() > self.pos_threshold);
-                        let vel_changed = dv.iter().any(|x| x.abs() > self.vel_threshold);
-                        if pos_changed || vel_changed {
-                            out.push(ParticleDelta {
-                                id,
-                                delta_pos: dp,
-                                delta_vel: dv,
-                                is_new: false,
-                                is_removed: false,
-                            });
-                        }
-                    } else {
-                        out.push(ParticleDelta {
-                            id,
-                            delta_pos: current.positions[i],
-                            delta_vel: current.velocities[i],
-                            is_new: true,
-                            is_removed: false,
-                        });
-                    }
-                }
-
-                // Removed particles.
-                for &id in prev.ids.iter() {
-                    if !curr_map.contains_key(&id) {
-                        out.push(ParticleDelta {
-                            id,
-                            delta_pos: [0.0; 3],
-                            delta_vel: [0.0; 3],
-                            is_new: false,
-                            is_removed: true,
-                        });
-                    }
-                }
-
-                out
-            }
-        };
-
-        let n = deltas.len();
-        self.deltas.push((step, deltas));
-        self.previous = Some(current.clone());
-        n
-    }
-
-    /// Total number of delta records across all frames.
-    pub fn total_deltas(&self) -> usize {
-        self.deltas.iter().map(|(_, d)| d.len()).sum()
-    }
-
-    /// Serialise all delta frames to a compact binary format.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = b"PDIFF\0\0\0".to_vec();
-        out.extend_from_slice(&(self.deltas.len() as u64).to_le_bytes());
-        for (step, deltas) in &self.deltas {
-            out.extend_from_slice(&step.to_le_bytes());
-            out.extend_from_slice(&(deltas.len() as u64).to_le_bytes());
-            for d in deltas {
-                out.extend_from_slice(&d.id.to_le_bytes());
-                let flags: u8 = (d.is_new as u8) | ((d.is_removed as u8) << 1);
-                out.push(flags);
-                for x in &d.delta_pos {
-                    out.extend_from_slice(&x.to_le_bytes());
-                }
-                for x in &d.delta_vel {
-                    out.extend_from_slice(&x.to_le_bytes());
-                }
-            }
-        }
-        out
-    }
-
-    /// Reconstruct a full dataset from delta frames up to `step`.
-    pub fn reconstruct(&self, through_step: u64) -> ParticleDataset {
-        let mut state: HashMap<u64, (usize, [f64; 3], [f64; 3])> = HashMap::new();
-        // state: id -> (index_placeholder, position, velocity)
-        let mut pos_map: HashMap<u64, [f64; 3]> = HashMap::new();
-        let mut vel_map: HashMap<u64, [f64; 3]> = HashMap::new();
-
-        for (step, deltas) in &self.deltas {
-            if *step > through_step {
-                break;
-            }
-            for d in deltas {
-                if d.is_removed {
-                    pos_map.remove(&d.id);
-                    vel_map.remove(&d.id);
-                    state.remove(&d.id);
-                } else if d.is_new {
-                    pos_map.insert(d.id, d.delta_pos);
-                    vel_map.insert(d.id, d.delta_vel);
-                } else {
-                    let p = pos_map.entry(d.id).or_insert([0.0; 3]);
-                    let v = vel_map.entry(d.id).or_insert([0.0; 3]);
-                    for k in 0..3 {
-                        p[k] += d.delta_pos[k];
-                        v[k] += d.delta_vel[k];
-                    }
-                }
-            }
-        }
-
-        let mut ds = ParticleDataset::with_time(0.0, through_step);
-        let mut ids: Vec<u64> = pos_map.keys().cloned().collect();
-        ids.sort();
-        for id in ids {
-            let pos = pos_map[&id];
-            let vel = vel_map[&id];
-            ds.add_particle(id, pos, vel, 1.0, 0.1);
-        }
-        let _ = state; // suppress warning
-        ds
-    }
-}
+pub use diff::{ParticleDelta, ParticleDiffWriter};
 
 // ---------------------------------------------------------------------------
 // ParticleTrajectory — multi-frame container
@@ -1645,107 +1449,6 @@ mod tests {
         let s = w.format(&ds).unwrap();
         assert!(s.contains("1.23"));
         assert!(!s.contains("1.234567"));
-    }
-
-    // ---- ParticleDiffWriter ----
-
-    #[test]
-    fn test_diff_writer_first_frame_all_new() {
-        let mut w = ParticleDiffWriter::new();
-        let ds = make_ds(4);
-        let n = w.write_frame(&ds);
-        assert_eq!(n, 4);
-        assert!(w.deltas[0].1.iter().all(|d| d.is_new));
-    }
-
-    #[test]
-    fn test_diff_writer_unchanged_frame() {
-        let mut w = ParticleDiffWriter::new();
-        let ds = make_ds(3);
-        w.write_frame(&ds);
-        let n = w.write_frame(&ds);
-        assert_eq!(n, 0, "no changes → 0 deltas");
-    }
-
-    #[test]
-    fn test_diff_writer_moved_particle() {
-        let mut w = ParticleDiffWriter::new();
-        let ds1 = make_ds(2);
-        let mut ds2 = ds1.clone();
-        ds2.positions[0][0] += 1.0;
-        w.write_frame(&ds1);
-        let n = w.write_frame(&ds2);
-        assert_eq!(n, 1);
-        let delta = &w.deltas[1].1[0];
-        assert!((delta.delta_pos[0] - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_diff_writer_removed_particle() {
-        let mut w = ParticleDiffWriter::new();
-        let ds1 = make_ds(3);
-        let mut ds2 = ds1.clone();
-        // Remove particle at index 1 by rebuilding without it.
-        let id1 = ds2.ids[1];
-        ds2.ids.remove(1);
-        ds2.positions.remove(1);
-        ds2.velocities.remove(1);
-        ds2.masses.remove(1);
-        ds2.radii.remove(1);
-        w.write_frame(&ds1);
-        let n = w.write_frame(&ds2);
-        assert_eq!(n, 1);
-        let removed = w.deltas[1].1.iter().find(|d| d.id == id1).unwrap();
-        assert!(removed.is_removed);
-    }
-
-    #[test]
-    fn test_diff_writer_added_particle() {
-        let mut w = ParticleDiffWriter::new();
-        let ds1 = make_ds(2);
-        let mut ds2 = ds1.clone();
-        ds2.add_particle(99, [10.0; 3], [0.0; 3], 1.0, 0.1);
-        w.write_frame(&ds1);
-        let n = w.write_frame(&ds2);
-        assert_eq!(n, 1);
-        assert!(w.deltas[1].1[0].is_new);
-    }
-
-    #[test]
-    fn test_diff_writer_to_bytes() {
-        let mut w = ParticleDiffWriter::new();
-        let ds = make_ds(3);
-        w.write_frame(&ds);
-        let bytes = w.to_bytes();
-        assert_eq!(&bytes[..5], b"PDIFF");
-    }
-
-    #[test]
-    fn test_diff_writer_total_deltas() {
-        let mut w = ParticleDiffWriter::new();
-        let ds = make_ds(5);
-        w.write_frame(&ds);
-        assert_eq!(w.total_deltas(), 5); // first frame: all new
-    }
-
-    #[test]
-    fn test_diff_writer_reconstruct() {
-        let mut w = ParticleDiffWriter::new();
-        let ds = make_ds(4);
-        w.write_frame(&ds);
-        let rec = w.reconstruct(0);
-        assert_eq!(rec.len(), 4);
-    }
-
-    #[test]
-    fn test_diff_writer_thresholds() {
-        let mut w = ParticleDiffWriter::with_thresholds(1.0, 1.0);
-        let ds1 = make_ds(2);
-        let mut ds2 = ds1.clone();
-        ds2.positions[0][0] += 0.5; // below threshold
-        w.write_frame(&ds1);
-        let n = w.write_frame(&ds2);
-        assert_eq!(n, 0, "sub-threshold changes should be ignored");
     }
 
     // ---- ParticleTrajectory ----

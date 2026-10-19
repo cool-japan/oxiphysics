@@ -17,7 +17,47 @@
 //! - Masel, R. I. (1996). *Principles of Adsorption and Reaction on Solid Surfaces*.
 //! - Johnson, K. L. (1985). *Contact Mechanics*. Cambridge.
 
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use std::f64::consts::PI;
+
+// ---------------------------------------------------------------------------
+// Random streams
+// ---------------------------------------------------------------------------
+
+/// Pseudo-random stream of a stochastic routine, tagged with the seed that
+/// started it.
+struct SeededStream {
+    /// Seed the stream was started from.
+    seed: u64,
+    /// Generator; its output is uniform on \[0, 1) with the full 53-bit
+    /// resolution of an `f64`.
+    rng: StdRng,
+}
+
+impl SeededStream {
+    /// Start the stream of `seed`.
+    fn new(seed: u64) -> Self {
+        Self {
+            seed,
+            rng: StdRng::seed_from_u64(seed),
+        }
+    }
+}
+
+/// The random stream of `seed`, kept in `slot` between calls.
+///
+/// A call with the seed of the previous call *continues* its stream, so a loop
+/// that passes a fixed seed on every call draws fresh numbers each time instead of
+/// drawing the same ones again; a different seed starts a new stream.  The numbers
+/// drawn are a deterministic function of the sequence of seeds, which keeps runs
+/// reproducible.
+fn stream_for_seed(slot: &mut Option<SeededStream>, seed: u64) -> &mut StdRng {
+    if slot.as_ref().is_some_and(|stream| stream.seed != seed) {
+        *slot = None;
+    }
+    &mut slot.get_or_insert_with(|| SeededStream::new(seed)).rng
+}
 
 // ---------------------------------------------------------------------------
 // AdsorptionSite
@@ -134,6 +174,8 @@ pub struct SurfaceAdsorption {
     pub temp: f64,
     /// Thermal energy k_B · T (J).
     pub kbt: f64,
+    /// Random stream of [`SurfaceAdsorption::metropolis_step`].
+    stream: Option<SeededStream>,
 }
 
 impl SurfaceAdsorption {
@@ -144,7 +186,12 @@ impl SurfaceAdsorption {
     /// * `temp`  — temperature (K)
     /// * `kbt`   — k_B · T (J)
     pub fn new(sites: Vec<AdsorptionSite>, temp: f64, kbt: f64) -> Self {
-        Self { sites, temp, kbt }
+        Self {
+            sites,
+            temp,
+            kbt,
+            stream: None,
+        }
     }
 
     /// Perform one Metropolis sweep over all adsorption sites.
@@ -154,22 +201,20 @@ impl SurfaceAdsorption {
     /// * Adsorption (empty → occupied): `ΔE = E_site − μ_gas`
     /// * Desorption (occupied → empty): `ΔE = −E_site + μ_gas`
     ///
-    /// The move is accepted if `ΔE < 0` or with probability `exp(−ΔE / kBT)`.
+    /// The move is accepted if `ΔE < 0` or with probability `exp(−ΔE / kBT)`, so
+    /// each independent site relaxes to the occupation
+    /// `1 / (1 + exp((E_site − μ_gas) / kBT))`.
     ///
     /// # Arguments
     /// * `pressure`  — gas pressure (for ideal-gas μ reference, currently unused)
     /// * `mu_gas`    — gas chemical potential (J)
-    /// * `rng_seed`  — seed for the pseudo-random generator
+    /// * `rng_seed`  — seed of the pseudo-random stream.  Repeated calls with the
+    ///   same seed continue one stream (they do not draw the same numbers again);
+    ///   a different seed starts a new stream.
     pub fn metropolis_step(&mut self, pressure: f64, mu_gas: f64, rng_seed: u64) {
         let _ = pressure; // retained for API completeness
-        // Simple LCG pseudo-random to avoid rand dependency duplication
-        let mut state = rng_seed.wrapping_add(0x9e3779b97f4a7c15);
-        let mut next_f64 = || -> f64 {
-            state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            ((state >> 33) as f64) / (u32::MAX as f64)
-        };
+        let kbt = self.kbt;
+        let rng = stream_for_seed(&mut self.stream, rng_seed);
 
         for site in self.sites.iter_mut() {
             let delta_e = if site.occupied {
@@ -183,8 +228,8 @@ impl SurfaceAdsorption {
             let accept = if delta_e <= 0.0 {
                 true
             } else {
-                let prob = (-delta_e / self.kbt).exp();
-                next_f64() < prob
+                let prob = (-delta_e / kbt).exp();
+                rng.random::<f64>() < prob
             };
 
             if accept {
@@ -288,6 +333,8 @@ pub struct SurfaceDiffusion {
     kbt: f64,
     /// Attempt frequency ν₀ (Hz).
     nu0: f64,
+    /// Random stream of [`SurfaceDiffusion::monte_carlo_step`].
+    stream: Option<SeededStream>,
 }
 
 impl SurfaceDiffusion {
@@ -306,6 +353,7 @@ impl SurfaceDiffusion {
             temp,
             kbt,
             nu0,
+            stream: None,
         }
     }
 
@@ -322,23 +370,20 @@ impl SurfaceDiffusion {
     /// Perform one Monte Carlo step for all adatoms.
     ///
     /// Each adatom attempts to hop left or right by one lattice unit with
-    /// probability `k · dt`.  The number of accepted hops is returned.
+    /// probability `k · dt`; the two directions are equally likely, so the
+    /// adatoms diffuse without drift.  The number of accepted hops is returned.
     ///
     /// # Arguments
     /// * `dt`   — time step (s)
-    /// * `seed` — random seed (LCG)
+    /// * `seed` — seed of the pseudo-random stream.  Repeated calls with the same
+    ///   seed continue one stream (they do not draw the same numbers again); a
+    ///   different seed starts a new stream.
     pub fn monte_carlo_step(&mut self, dt: f64, seed: u64) -> usize {
         let nb = self.barriers.len();
         if nb == 0 {
             return 0;
         }
-        let mut state = seed.wrapping_add(0xdeadbeefcafe1234);
-        let mut next_f64 = || -> f64 {
-            state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            ((state >> 33) as f64) / (u32::MAX as f64)
-        };
+        let rng = stream_for_seed(&mut self.stream, seed);
 
         let nu0 = self.nu0;
         let kbt = self.kbt;
@@ -348,9 +393,9 @@ impl SurfaceDiffusion {
             let barrier = self.barriers[site];
             let rate = nu0 * (-barrier / kbt).exp();
             let prob = (rate * dt).clamp(0.0, 1.0);
-            if next_f64() < prob {
+            if rng.random::<f64>() < prob {
                 // decide direction
-                let dir = if next_f64() < 0.5 { 1.0 } else { -1.0 };
+                let dir = if rng.random::<f64>() < 0.5 { 1.0 } else { -1.0 };
                 *pos += dir;
                 hops += 1;
             }
@@ -580,6 +625,9 @@ pub fn derjaguin_muller_toporov_adhesion(e_star: f64, r: f64, gamma: f64) -> f64
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {

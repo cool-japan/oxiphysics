@@ -297,7 +297,9 @@ fn diagonal_crack_cuts_off_a_corner() {
 #[test]
 fn cracks_that_miss_the_mesh_or_are_degenerate_leave_it_untouched() {
     let reference = grid(4, 4, 1.0);
-    let attempts: [([f64; 3], [f64; 3], Option<[f64; 3]>); 5] = [
+    // (from, to, explicit surface normal)
+    type Attempt = ([f64; 3], [f64; 3], Option<[f64; 3]>);
+    let attempts: [Attempt; 5] = [
         // Entirely outside the body.
         ([10.0, 0.0, 0.0], [10.0, 5.0, 0.0], None),
         // Zero length.
@@ -380,16 +382,20 @@ fn dynamic_fracture_step_cuts_the_mesh_and_tracks_energy() {
     let mut crack = CrackPath::new([1.5, -1.0, 0.0], [0.0, 1.0, 0.0]);
     let mut fracture = DynamicFracture::new(CrackCriteria::glass(), 1.0);
     // G = K^2 / E exceeds G_c = 1: K = 3e5 Pa sqrt(m) at E = 70 GPa.
-    let advance = fracture.step(&mut crack, &mut mesh, 3.0e5, 70.0e9, 0.001);
+    let advance = fracture.step(&mut crack, &mut mesh, 3.0e5, 70.0e9, 0.0017);
     assert!(advance > 0.0);
     assert!(fracture.total_energy_dissipated() > 0.0);
-    // The tip travelled 1.5 km/s * 1 ms = 1.5 m: it enters the strip at y = 0
-    // and stops inside it, so the body is slit but not separated.
+    // The tip travelled 1.5 km/s * 1.7 ms = 2.55 m: it enters the strip at y = 0
+    // and stops at y = 1.55, inside the second row of cells.  The slit crosses the
+    // bottom edge, both diagonals and the horizontal edge at y = 1 on its way, but
+    // it ends before the strip is cut through, so the body is slit but not
+    // separated.  (A tip that stops inside a single triangle, for example after
+    // only 1.5 m, crosses nothing that could separate two triangles.)
     let tip = crack
         .current_tip()
         .map(|t| t.position[1])
         .unwrap_or(f64::NAN);
-    assert!(tip > 0.0 && tip < 4.0, "tip at y = {tip}");
+    assert!((tip - 1.55).abs() < 1e-3, "tip at y = {tip}");
     assert_eq!(identify_fragments(&mesh).len(), 1);
     assert!(
         mesh.node_count() > 25,

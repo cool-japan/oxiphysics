@@ -51,11 +51,6 @@ pub(super) struct HullDistance {
     pub intersecting: bool,
 }
 
-/// Convex combination behind the witnesses of a [`HullDistance`], as
-/// `(index in A, index in B, weight)`. The weights are positive and sum to one;
-/// `point_a = sum(w * (A[index_a] + offset))` and `point_b = sum(w * B[index_b])`.
-pub(super) type SupportCombination = Vec<(usize, usize, f64)>;
-
 /// Index of the first point of `points` that maximises `p . dir`.
 fn support_index(points: &[[f64; 3]], dir: [f64; 3]) -> usize {
     points
@@ -70,11 +65,6 @@ fn support_index(points: &[[f64; 3]], dir: [f64; 3]) -> usize {
             }
         })
         .0
-}
-
-/// The point of `points` that is extreme in direction `dir` (`None` if empty).
-pub(super) fn support_point(points: &[[f64; 3]], dir: [f64; 3]) -> Option<[f64; 3]> {
-    points.get(support_index(points, dir)).copied()
 }
 
 /// Mean of the points (`None` if empty).
@@ -212,7 +202,10 @@ fn closest_to_origin(verts: &[CsoVertex]) -> ([f64; 3], [f64; 4]) {
             // Optimality certificate: no simplex vertex lies behind the plane
             // through `point` perpendicular to it.
             let slack = 1e-12 * (len3(point) * max_norm) + 1e-300;
-            if verts.iter().any(|v| dot3(v.point, point) < point_sq - slack) {
+            if verts
+                .iter()
+                .any(|v| dot3(v.point, point) < point_sq - slack)
+            {
                 continue;
             }
             let better = match best {
@@ -243,35 +236,30 @@ fn closest_to_origin(verts: &[CsoVertex]) -> ([f64; 3], [f64; 4]) {
 }
 
 /// Assemble the witnesses of the active vertices `(vertex, weight)`.
-fn assemble(
-    active: &[(CsoVertex, f64)],
-    closest_sq: f64,
-    intersecting: bool,
-) -> (HullDistance, SupportCombination) {
+fn assemble(active: &[(CsoVertex, f64)], closest_sq: f64, intersecting: bool) -> HullDistance {
     let mut point_a = [0.0; 3];
     let mut point_b = [0.0; 3];
-    let mut combination = Vec::with_capacity(active.len());
     for &(v, w) in active {
         point_a = add3(point_a, scale3(v.point_a, w));
         point_b = add3(point_b, scale3(v.point_b, w));
-        combination.push((v.index_a, v.index_b, w));
     }
-    let result = HullDistance {
+    HullDistance {
         distance: if intersecting { 0.0 } else { closest_sq.sqrt() },
         point_a,
         point_b,
         intersecting,
-    };
-    (result, combination)
+    }
 }
 
-/// Like [`hull_distance`], additionally returning the convex combination of
-/// support points behind the witnesses.
-pub(super) fn hull_distance_with_support(
+/// Distance between the convex hull of `points_a`, translated by `offset_a`, and
+/// the convex hull of `points_b`.
+///
+/// Returns `None` if either point set is empty.
+pub(super) fn hull_distance(
     points_a: &[[f64; 3]],
     offset_a: [f64; 3],
     points_b: &[[f64; 3]],
-) -> Option<(HullDistance, SupportCombination)> {
+) -> Option<HullDistance> {
     let centroid_a = add3(centroid(points_a)?, offset_a);
     let centroid_b = centroid(points_b)?;
 
@@ -297,7 +285,7 @@ pub(super) fn hull_distance_with_support(
     let mut simplex: Vec<CsoVertex> = Vec::with_capacity(4);
     simplex.push(support(direction)?);
     let mut scale = len3(simplex[0].point);
-    let mut last: Option<(HullDistance, SupportCombination)> = None;
+    let mut last: Option<HullDistance> = None;
 
     for _ in 0..MAX_ITERATIONS {
         let (closest, weights) = closest_to_origin(&simplex);
@@ -334,16 +322,4 @@ pub(super) fn hull_distance_with_support(
         simplex.push(candidate);
     }
     last
-}
-
-/// Distance between the convex hull of `points_a`, translated by `offset_a`, and
-/// the convex hull of `points_b`.
-///
-/// Returns `None` if either point set is empty.
-pub(super) fn hull_distance(
-    points_a: &[[f64; 3]],
-    offset_a: [f64; 3],
-    points_b: &[[f64; 3]],
-) -> Option<HullDistance> {
-    hull_distance_with_support(points_a, offset_a, points_b).map(|(result, _)| result)
 }

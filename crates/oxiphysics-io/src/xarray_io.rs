@@ -8,7 +8,7 @@
 //! such as resampling, time-averaging, and finite-difference gradients.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 
 // ── Coordinate ───────────────────────────────────────────────────────────────
 
@@ -269,9 +269,191 @@ pub fn read_csv_xarray(path: &str) -> Result<XarrayDataArray, String> {
 
 // ── VTK export ────────────────────────────────────────────────────────────────
 
-/// Export a 3-D variable from a dataset as a VTK structured grid.
+/// Geometry of one axis of an exported VTK grid.
+enum VtkAxis {
+    /// Evenly spaced points `origin + i * spacing`. Also the default index
+    /// axis (`origin = 0`, `spacing = 1`) of a dimension without a coordinate.
+    Uniform { origin: f64, spacing: f64 },
+    /// Strictly monotonic points that are not evenly spaced.
+    Explicit(Vec<f64>),
+}
+
+impl VtkAxis {
+    /// Coordinate of each of the `n` points along the axis.
+    fn points(&self, n: usize) -> Vec<f64> {
+        match self {
+            VtkAxis::Uniform { origin, spacing } => {
+                (0..n).map(|i| origin + spacing * i as f64).collect()
+            }
+            VtkAxis::Explicit(values) => values.clone(),
+        }
+    }
+}
+
+/// Resolve the grid axis for dimension `dim` of `var`.
 ///
-/// The variable must have exactly 3 dimensions. Uses VTK legacy ASCII format.
+/// The coordinate belonging to the dimension is the one whose name equals the
+/// dimension name. Without a coordinate the axis is the index axis
+/// (`0, 1, 2, ...`). A coordinate must have exactly one value per point of its
+/// dimension and be strictly monotonic (increasing or decreasing).
+fn vtk_axis(var: &XarrayDataArray, dim: usize) -> Result<VtkAxis, String> {
+    let index_axis = VtkAxis::Uniform {
+        origin: 0.0,
+        spacing: 1.0,
+    };
+    let n = var.shape[dim];
+    let Some(dim_name) = var.dims.get(dim) else {
+        return Ok(index_axis);
+    };
+    let Some(coord) = var.coords.iter().find(|c| &c.name == dim_name) else {
+        return Ok(index_axis);
+    };
+    let values = &coord.values;
+    if values.len() != n {
+        return Err(format!(
+            "coordinate '{}' has {} values but dimension '{dim_name}' has size {n}",
+            coord.name,
+            values.len()
+        ));
+    }
+    if values.iter().any(|v| !v.is_finite()) {
+        return Err(format!(
+            "coordinate '{}' contains non-finite values",
+            coord.name
+        ));
+    }
+    let (Some(&first), Some(&last)) = (values.first(), values.last()) else {
+        return Ok(index_axis);
+    };
+    if n == 1 {
+        // A single point has no spacing: keep its position, use unit spacing.
+        return Ok(VtkAxis::Uniform {
+            origin: first,
+            spacing: 1.0,
+        });
+    }
+    let step = (last - first) / (n - 1) as f64;
+    let increasing = step > 0.0;
+    let monotonic = step != 0.0
+        && values
+            .windows(2)
+            .all(|w| if increasing { w[1] > w[0] } else { w[1] < w[0] });
+    if !monotonic {
+        return Err(format!(
+            "coordinate '{}' is not strictly monotonic and cannot describe a VTK grid axis",
+            coord.name
+        ));
+    }
+    let tolerance = 1e-9 * (last - first).abs().max(first.abs()).max(last.abs());
+    let uniform = values
+        .iter()
+        .enumerate()
+        .all(|(i, &v)| (v - (first + step * i as f64)).abs() <= tolerance);
+    if uniform {
+        Ok(VtkAxis::Uniform {
+            origin: first,
+            spacing: step,
+        })
+    } else {
+        Ok(VtkAxis::Explicit(values.clone()))
+    }
+}
+
+/// A VTK legacy data name is a single token: whitespace is replaced by `_`.
+fn vtk_data_name(name: &str) -> String {
+    let token: String = name
+        .chars()
+        .map(|c| if c.is_whitespace() { '_' } else { c })
+        .collect();
+    if token.is_empty() {
+        "data".to_string()
+    } else {
+        token
+    }
+}
+
+/// Write the legacy-VTK document for `var`.
+fn write_vtk_document<W: Write>(
+    w: &mut W,
+    var: &XarrayDataArray,
+    axes: &[VtkAxis; 3],
+    data_name: &str,
+) -> std::io::Result<()> {
+    let (nx, ny, nz) = (var.shape[0], var.shape[1], var.shape[2]);
+    writeln!(w, "# vtk DataFile Version 3.0")?;
+    writeln!(w, "XarrayExport")?;
+    writeln!(w, "ASCII")?;
+    match axes {
+        [
+            VtkAxis::Uniform {
+                origin: ox,
+                spacing: sx,
+            },
+            VtkAxis::Uniform {
+                origin: oy,
+                spacing: sy,
+            },
+            VtkAxis::Uniform {
+                origin: oz,
+                spacing: sz,
+            },
+        ] => {
+            writeln!(w, "DATASET STRUCTURED_POINTS")?;
+            writeln!(w, "DIMENSIONS {nx} {ny} {nz}")?;
+            writeln!(w, "ORIGIN {ox} {oy} {oz}")?;
+            writeln!(w, "SPACING {sx} {sy} {sz}")?;
+        }
+        _ => {
+            writeln!(w, "DATASET RECTILINEAR_GRID")?;
+            writeln!(w, "DIMENSIONS {nx} {ny} {nz}")?;
+            for (label, axis, n) in [
+                ("X", &axes[0], nx),
+                ("Y", &axes[1], ny),
+                ("Z", &axes[2], nz),
+            ] {
+                writeln!(w, "{label}_COORDINATES {n} double")?;
+                let line: Vec<String> = axis.points(n).iter().map(|v| v.to_string()).collect();
+                writeln!(w, "{}", line.join(" "))?;
+            }
+        }
+    }
+    writeln!(w, "POINT_DATA {}", nx * ny * nz)?;
+    writeln!(w, "SCALARS {data_name} double 1")?;
+    writeln!(w, "LOOKUP_TABLE default")?;
+    // The array is C-order (the last dimension varies fastest) but VTK
+    // requires the first DIMENSIONS entry (x) to vary fastest, so the values
+    // are emitted transposed: x innermost, z outermost.
+    for k in 0..nz {
+        for j in 0..ny {
+            for i in 0..nx {
+                writeln!(w, "{}", var.data[linear_index(&[i, j, k], &var.shape)])?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Export a 3-D variable from a dataset as a VTK legacy ASCII grid.
+///
+/// The variable must have exactly three non-empty dimensions and exactly
+/// `shape[0] * shape[1] * shape[2]` values, otherwise an `Err` is returned.
+/// Dimension 0 becomes the VTK x axis, dimension 1 y and dimension 2 z.
+///
+/// The data are stored C-order (the last dimension varies fastest) while VTK
+/// expects x, the first entry of `DIMENSIONS`, to vary fastest, so the values
+/// are written transposed.
+///
+/// The grid geometry comes from the coordinates whose name equals the
+/// dimension name (a dimension without one uses the index `0, 1, 2, ...`):
+///
+/// * if every axis is evenly spaced the output is a `STRUCTURED_POINTS`
+///   dataset with `ORIGIN` and `SPACING` taken from the coordinates;
+/// * if any coordinate is not evenly spaced the output is a
+///   `RECTILINEAR_GRID` dataset with explicit `X/Y/Z_COORDINATES`.
+///
+/// A coordinate must have one value per point of its dimension and be
+/// strictly monotonic, else an `Err` is returned. Whitespace in the variable
+/// name is replaced by `_` because VTK data names are single tokens.
 pub fn xarray_to_vtk_structured(
     dataset: &XarrayDataset,
     var_name: &str,
@@ -287,21 +469,31 @@ pub fn xarray_to_vtk_structured(
         ));
     }
     let (nx, ny, nz) = (var.shape[0], var.shape[1], var.shape[2]);
-    let mut f = File::create(path).map_err(|e| format!("cannot create {path}: {e}"))?;
-    writeln!(f, "# vtk DataFile Version 3.0").map_err(|e| e.to_string())?;
-    writeln!(f, "XarrayExport").map_err(|e| e.to_string())?;
-    writeln!(f, "ASCII").map_err(|e| e.to_string())?;
-    writeln!(f, "DATASET STRUCTURED_POINTS").map_err(|e| e.to_string())?;
-    writeln!(f, "DIMENSIONS {} {} {}", nx, ny, nz).map_err(|e| e.to_string())?;
-    writeln!(f, "ORIGIN 0 0 0").map_err(|e| e.to_string())?;
-    writeln!(f, "SPACING 1 1 1").map_err(|e| e.to_string())?;
-    writeln!(f, "POINT_DATA {}", nx * ny * nz).map_err(|e| e.to_string())?;
-    writeln!(f, "SCALARS {} double 1", var_name).map_err(|e| e.to_string())?;
-    writeln!(f, "LOOKUP_TABLE default").map_err(|e| e.to_string())?;
-    for &val in &var.data {
-        writeln!(f, "{val}").map_err(|e| e.to_string())?;
+    if nx == 0 || ny == 0 || nz == 0 {
+        return Err(format!(
+            "variable '{var_name}' has an empty dimension (shape {:?})",
+            var.shape
+        ));
     }
-    Ok(())
+    let n_points = nx
+        .checked_mul(ny)
+        .and_then(|n| n.checked_mul(nz))
+        .ok_or_else(|| format!("variable '{var_name}': shape {:?} overflows", var.shape))?;
+    if var.data.len() != n_points {
+        return Err(format!(
+            "variable '{var_name}' holds {} values but shape {:?} requires {n_points}",
+            var.data.len(),
+            var.shape
+        ));
+    }
+    let axes = [vtk_axis(var, 0)?, vtk_axis(var, 1)?, vtk_axis(var, 2)?];
+
+    let file = File::create(path).map_err(|e| format!("cannot create {path}: {e}"))?;
+    let mut w = BufWriter::new(file);
+    write_vtk_document(&mut w, var, &axes, &vtk_data_name(var_name))
+        .map_err(|e| format!("cannot write {path}: {e}"))?;
+    // A BufWriter drops flush errors silently: surface them.
+    w.flush().map_err(|e| format!("cannot write {path}: {e}"))
 }
 
 // ── Array operations ──────────────────────────────────────────────────────────
@@ -668,7 +860,47 @@ mod tests {
         assert!(expected.exists());
     }
 
-    // ── VTK export test ───────────────────────────────────────────────────
+    // ── VTK export tests ──────────────────────────────────────────────────
+
+    /// Scratch path unique to this process and test.
+    fn vtk_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("xarray_vtk_{tag}_{}.vtk", std::process::id()))
+    }
+
+    fn dims_xyz() -> Vec<String> {
+        vec!["x".into(), "y".into(), "z".into()]
+    }
+
+    /// A 3-D variable `name` of the given shape whose value at flat C-order
+    /// index `n` is `n`.
+    fn counting_variable(name: &str, shape: [usize; 3]) -> XarrayDataArray {
+        let mut var = XarrayDataArray::new(name, dims_xyz(), shape.to_vec());
+        for (n, v) in var.data.iter_mut().enumerate() {
+            *v = n as f64;
+        }
+        var
+    }
+
+    /// Export `var` and return the written text; the scratch file is removed.
+    fn export_text(var: XarrayDataArray, tag: &str) -> Result<String, String> {
+        let name = var.name.clone();
+        let mut ds = XarrayDataset::new("vtk_test");
+        ds.add_variable(var);
+        let path = vtk_path(tag);
+        let result = xarray_to_vtk_structured(&ds, &name, path.to_str().unwrap_or(""));
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        result.map(|()| text)
+    }
+
+    /// The scalar values listed after `LOOKUP_TABLE default`.
+    fn vtk_values(text: &str) -> Vec<f64> {
+        text.lines()
+            .skip_while(|l| *l != "LOOKUP_TABLE default")
+            .skip(1)
+            .map(|l| l.parse::<f64>().unwrap())
+            .collect()
+    }
 
     #[test]
     fn test_vtk_export_creates_file() {
@@ -692,6 +924,169 @@ mod tests {
         let path = std::env::temp_dir().join("xarray_test_u2d.vtk");
         let res = xarray_to_vtk_structured(&ds, "u2d", path.to_str().unwrap_or(""));
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_vtk_export_missing_variable_returns_err() {
+        let ds = XarrayDataset::new("vtk_empty");
+        let path = vtk_path("missing");
+        let err = xarray_to_vtk_structured(&ds, "nope", path.to_str().unwrap_or("")).unwrap_err();
+        assert!(err.contains("'nope' not found"), "{err}");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_vtk_export_writes_x_fastest() {
+        // shape [nx=2, ny=1, nz=3], C-order data 0..6: flat index of (i, 0, k)
+        // is 3 * i + k. VTK order (x fastest) visits (0,0,0) (1,0,0) (0,0,1)
+        // (1,0,1) (0,0,2) (1,0,2) = flat 0, 3, 1, 4, 2, 5.
+        let text = export_text(counting_variable("f", [2, 1, 3]), "xfastest").unwrap();
+        assert!(text.contains("DIMENSIONS 2 1 3\n"), "{text}");
+        assert!(text.contains("POINT_DATA 6\n"), "{text}");
+        assert_eq!(vtk_values(&text), vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0]);
+    }
+
+    #[test]
+    fn test_vtk_export_non_cubic_array_is_not_scrambled() {
+        let (nx, ny, nz) = (2usize, 3usize, 4usize);
+        let var = counting_variable("f", [nx, ny, nz]);
+        let shape = var.shape.clone();
+        let text = export_text(var, "noncubic").unwrap();
+        let values = vtk_values(&text);
+        assert_eq!(values.len(), nx * ny * nz);
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    let vtk_pos = i + nx * (j + ny * k);
+                    let expected = linear_index(&[i, j, k], &shape) as f64;
+                    assert!(
+                        (values[vtk_pos] - expected).abs() < 1e-12,
+                        "point ({i},{j},{k}): got {} expected {expected}",
+                        values[vtk_pos]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_vtk_export_default_geometry_is_the_index_grid() {
+        let text = export_text(counting_variable("f", [2, 2, 2]), "defaultgeom").unwrap();
+        assert!(text.contains("DATASET STRUCTURED_POINTS\n"), "{text}");
+        assert!(text.contains("ORIGIN 0 0 0\n"), "{text}");
+        assert!(text.contains("SPACING 1 1 1\n"), "{text}");
+        assert!(text.contains("SCALARS f double 1\n"), "{text}");
+    }
+
+    #[test]
+    fn test_vtk_export_uniform_coordinates_set_origin_and_spacing() {
+        let mut var = counting_variable("f", [2, 1, 3]);
+        var.set_coord(XarrayCoordinate::new("x", vec![10.0, 12.0], "m"));
+        var.set_coord(XarrayCoordinate::new("y", vec![5.0], "m"));
+        var.set_coord(XarrayCoordinate::new("z", vec![0.0, 0.5, 1.0], "m"));
+        let text = export_text(var, "uniformcoords").unwrap();
+        assert!(text.contains("DATASET STRUCTURED_POINTS\n"), "{text}");
+        // A single-point axis keeps its position and gets unit spacing.
+        assert!(text.contains("ORIGIN 10 5 0\n"), "{text}");
+        assert!(text.contains("SPACING 2 1 0.5\n"), "{text}");
+    }
+
+    #[test]
+    fn test_vtk_export_descending_uniform_coordinate_has_negative_spacing() {
+        let mut var = counting_variable("f", [1, 1, 3]);
+        var.set_coord(XarrayCoordinate::new("z", vec![1.0, 0.5, 0.0], "m"));
+        let text = export_text(var, "descending").unwrap();
+        assert!(text.contains("ORIGIN 0 0 1\n"), "{text}");
+        assert!(text.contains("SPACING 1 1 -0.5\n"), "{text}");
+    }
+
+    #[test]
+    fn test_vtk_export_non_uniform_coordinates_write_a_rectilinear_grid() {
+        let mut var = counting_variable("f", [2, 1, 3]);
+        var.set_coord(XarrayCoordinate::new("z", vec![0.0, 1.0, 3.0], "m"));
+        let text = export_text(var, "rectilinear").unwrap();
+        assert!(text.contains("DATASET RECTILINEAR_GRID\n"), "{text}");
+        assert!(!text.contains("SPACING"), "{text}");
+        // x and y have no coordinate: index axes.
+        assert!(text.contains("X_COORDINATES 2 double\n0 1\n"), "{text}");
+        assert!(text.contains("Y_COORDINATES 1 double\n0\n"), "{text}");
+        assert!(text.contains("Z_COORDINATES 3 double\n0 1 3\n"), "{text}");
+        // The data are still written x fastest.
+        assert_eq!(vtk_values(&text), vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0]);
+    }
+
+    #[test]
+    fn test_vtk_export_ignores_coordinates_not_named_after_a_dimension() {
+        let mut var = counting_variable("f", [2, 2, 2]);
+        var.set_coord(XarrayCoordinate::new(
+            "longitude",
+            vec![100.0, 200.0],
+            "deg",
+        ));
+        let text = export_text(var, "unmatched").unwrap();
+        assert!(text.contains("ORIGIN 0 0 0\n"), "{text}");
+    }
+
+    #[test]
+    fn test_vtk_export_rejects_data_length_mismatch() {
+        let mut var = counting_variable("f", [2, 2, 2]);
+        var.data.pop();
+        let err = export_text(var, "badlen").unwrap_err();
+        assert!(err.contains("holds 7 values"), "{err}");
+        assert!(err.contains("requires 8"), "{err}");
+    }
+
+    #[test]
+    fn test_vtk_export_rejects_empty_dimension() {
+        let err = export_text(counting_variable("f", [2, 0, 2]), "empty").unwrap_err();
+        assert!(err.contains("empty dimension"), "{err}");
+    }
+
+    #[test]
+    fn test_vtk_export_rejects_coordinate_of_wrong_length() {
+        let mut var = counting_variable("f", [2, 2, 2]);
+        var.set_coord(XarrayCoordinate::new("x", vec![0.0, 1.0, 2.0], "m"));
+        let err = export_text(var, "coordlen").unwrap_err();
+        assert!(err.contains("coordinate 'x' has 3 values"), "{err}");
+        assert!(err.contains("size 2"), "{err}");
+    }
+
+    #[test]
+    fn test_vtk_export_rejects_non_monotonic_or_non_finite_coordinates() {
+        let mut zigzag = counting_variable("f", [1, 1, 3]);
+        zigzag.set_coord(XarrayCoordinate::new("z", vec![0.0, 2.0, 1.0], "m"));
+        let err = export_text(zigzag, "zigzag").unwrap_err();
+        assert!(err.contains("not strictly monotonic"), "{err}");
+
+        let mut repeated = counting_variable("f", [1, 1, 3]);
+        repeated.set_coord(XarrayCoordinate::new("z", vec![0.0, 0.0, 0.0], "m"));
+        assert!(export_text(repeated, "repeated").is_err());
+
+        let mut nan = counting_variable("f", [1, 1, 2]);
+        nan.set_coord(XarrayCoordinate::new("z", vec![0.0, f64::NAN], "m"));
+        let err = export_text(nan, "nan").unwrap_err();
+        assert!(err.contains("non-finite"), "{err}");
+    }
+
+    #[test]
+    fn test_vtk_export_data_name_is_a_single_token() {
+        let text =
+            export_text(counting_variable("air temperature", [1, 1, 2]), "dataname").unwrap();
+        assert!(
+            text.contains("SCALARS air_temperature double 1\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn test_vtk_export_unwritable_path_returns_err() {
+        let mut ds = XarrayDataset::new("vtk_test");
+        ds.add_variable(counting_variable("f", [1, 1, 1]));
+        let path = std::env::temp_dir()
+            .join(format!("xarray_no_such_dir_{}", std::process::id()))
+            .join("out.vtk");
+        let err = xarray_to_vtk_structured(&ds, "f", path.to_str().unwrap_or("")).unwrap_err();
+        assert!(err.contains("cannot create"), "{err}");
     }
 
     #[test]

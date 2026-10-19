@@ -38,8 +38,7 @@ impl SuperquadricGlyph {
         scale: f64,
         colormap: Colormap,
     ) -> Self {
-        let principals = stress.principal_stresses();
-        let axes = principal_eigenvectors(stress.voigt);
+        let (principals, axes) = principal_frame(stress.voigt);
         let vm = stress.von_mises();
         let max_abs = principals.iter().map(|&s| s.abs()).fold(0.0f64, f64::max);
         let semi_axes = principals.map(|s| (s.abs() * scale).max(1e-6));
@@ -77,8 +76,8 @@ pub struct TensorGlyph {
     pub position: [f64; 3],
     /// Principal stress magnitudes (eigenvalues).
     pub magnitudes: [f64; 3],
-    /// Principal directions (eigenvectors) as columns.
-    /// Each entry is a 3-component direction vector.
+    /// Principal directions (unit eigenvectors): `directions[k]` is the
+    /// direction belonging to `magnitudes[k]`.
     pub directions: [[f64; 3]; 3],
     /// Color assigned to this glyph.
     pub color: Color,

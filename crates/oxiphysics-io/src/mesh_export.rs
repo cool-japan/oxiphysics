@@ -12,8 +12,9 @@
 //! - `MeshImporter`: parse OBJ, binary/ASCII STL, and PLY.
 //! - `MeshSimplification`: quadric error metric edge-collapse simplification.
 
-use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
+
+mod qem;
 
 // ============================================================================
 // MeshData
@@ -849,65 +850,10 @@ impl MeshImporter {
 // MeshSimplification
 // ============================================================================
 
-/// Quadric error metric (QEM) entry for a vertex.
-#[derive(Debug, Clone, Default)]
-struct Quadric {
-    /// Upper-triangular 4x4 symmetric matrix stored as 10 f64 coefficients.
-    q: [f64; 10],
-}
-
-impl Quadric {
-    fn add(&mut self, other: &Quadric) {
-        for i in 0..10 {
-            self.q[i] += other.q[i];
-        }
-    }
-
-    /// Accumulate the plane `(a,b,c,d)` into this quadric.
-    fn add_plane(&mut self, a: f64, b: f64, c: f64, d: f64) {
-        self.q[0] += a * a;
-        self.q[1] += a * b;
-        self.q[2] += a * c;
-        self.q[3] += a * d;
-        self.q[4] += b * b;
-        self.q[5] += b * c;
-        self.q[6] += b * d;
-        self.q[7] += c * c;
-        self.q[8] += c * d;
-        self.q[9] += d * d;
-    }
-
-    /// Evaluate the quadric error at vertex `v`.
-    fn error_at(&self, v: [f64; 3]) -> f64 {
-        let [x, y, z] = v;
-        let q = &self.q;
-        x * x * q[0]
-            + 2.0 * x * y * q[1]
-            + 2.0 * x * z * q[2]
-            + 2.0 * x * q[3]
-            + y * y * q[4]
-            + 2.0 * y * z * q[5]
-            + 2.0 * y * q[6]
-            + z * z * q[7]
-            + 2.0 * z * q[8]
-            + q[9]
-    }
-}
-
-/// Edge collapse candidate.
-#[derive(Debug, Clone)]
-struct EdgeCollapse {
-    /// First vertex index.
-    v0: usize,
-    /// Second vertex index.
-    v1: usize,
-    /// Optimal position for the merged vertex.
-    target: [f64; 3],
-    /// Quadric error at `target`.
-    error: f64,
-}
-
 /// Mesh simplification via quadric error metrics (QEM) and edge collapse.
+///
+/// Implements the algorithm of Garland and Heckbert, "Surface Simplification Using
+/// Quadric Error Metrics" (SIGGRAPH 1997).
 #[derive(Debug, Default)]
 pub struct MeshSimplification;
 
@@ -917,112 +863,44 @@ impl MeshSimplification {
         Self
     }
 
-    /// Simplify `mesh` to at most `target_triangles` triangles.
+    /// Simplify `mesh` towards `target_triangles` triangles by quadric-error edge
+    /// collapses.
     ///
-    /// Uses the QEM algorithm: computes per-vertex quadrics from incident
-    /// planes, then greedily collapses the cheapest edges.
+    /// Every vertex carries the quadric of the planes of its triangles (weighted by
+    /// triangle area) plus one heavily weighted plane per boundary edge, so open
+    /// boundaries keep their outline.  The cheapest edge is collapsed first.  The merged
+    /// vertex goes to the point that minimizes the sum of the two quadrics (or, when that
+    /// point is not well defined, to the best point of the edge), it takes over the sum of
+    /// the two quadrics, and only the edges around it are costed again.
+    ///
+    /// A collapse is skipped when it would change the topology of the surface (pinch it,
+    /// join two boundary pieces, cut off or delete a piece) or fold a neighbouring
+    /// triangle over (its normal would turn by 90 degrees or more).  The number of
+    /// connected pieces and the Euler characteristic of the mesh therefore never change.
+    /// The simplification stops as soon as the mesh has at most `target_triangles`
+    /// triangles *or* no allowed collapse remains; a target below what the surface
+    /// permits is not reached (a closed piece stays at four triangles, a disc at one).  A
+    /// collapse removes one triangle along a boundary edge and two along an interior
+    /// edge, so the result can also end one triangle below the target.
+    ///
+    /// Connectivity comes from shared vertex indices, so vertices that are duplicated at
+    /// the same position (as in an STL triangle soup) must be welded first; triangles
+    /// that share no vertex are separate pieces that cannot be reduced.
+    ///
+    /// Triangles that use a vertex index outside the mesh, the same vertex twice or a
+    /// vertex with a non-finite coordinate cannot be simplified and are dropped.  The
+    /// result holds exactly the vertices its triangles use, in order of first use, and,
+    /// when the input has one material ID per triangle, the material IDs of the
+    /// surviving triangles; normals and UV coordinates are not carried over (see
+    /// [`MeshData::compute_smooth_normals`]).
+    ///
+    /// A mesh that already has at most `target_triangles` triangles is returned
+    /// unchanged.
     pub fn simplify(&self, mesh: &MeshData, target_triangles: usize) -> MeshData {
         if mesh.faces.len() <= target_triangles {
             return mesh.clone();
         }
-
-        let n = mesh.vertices.len();
-        let mut quadrics: Vec<Quadric> = vec![Quadric::default(); n];
-
-        // Accumulate quadrics from face planes
-        for &face in &mesh.faces {
-            let v0 = mesh.vertices[face[0]];
-            let v1 = mesh.vertices[face[1]];
-            let v2 = mesh.vertices[face[2]];
-            let nrm = triangle_normal_f64(v0, v1, v2);
-            let d = -(nrm[0] * v0[0] + nrm[1] * v0[1] + nrm[2] * v0[2]);
-            for &vi in &face {
-                quadrics[vi].add_plane(nrm[0], nrm[1], nrm[2], d);
-            }
-        }
-
-        // Build edge set (unique edges from faces)
-        let mut edge_set: HashMap<(usize, usize), ()> = HashMap::new();
-        for &face in &mesh.faces {
-            for k in 0..3 {
-                let a = face[k];
-                let b = face[(k + 1) % 3];
-                let key = if a < b { (a, b) } else { (b, a) };
-                edge_set.insert(key, ());
-            }
-        }
-
-        // Compute collapse candidates
-        let mut candidates: Vec<EdgeCollapse> = edge_set
-            .keys()
-            .map(|&(v0, v1)| {
-                let mid = [
-                    (mesh.vertices[v0][0] + mesh.vertices[v1][0]) * 0.5,
-                    (mesh.vertices[v0][1] + mesh.vertices[v1][1]) * 0.5,
-                    (mesh.vertices[v0][2] + mesh.vertices[v1][2]) * 0.5,
-                ];
-                let mut combined = quadrics[v0].clone();
-                combined.add(&quadrics[v1]);
-                let error = combined.error_at(mid);
-                EdgeCollapse {
-                    v0,
-                    v1,
-                    target: mid,
-                    error,
-                }
-            })
-            .collect();
-
-        // `total_cmp` is a total order even for NaN errors (degenerate input), and the
-        // vertex pair breaks ties so the result does not depend on `HashMap` iteration order.
-        candidates.sort_by(|a, b| {
-            a.error
-                .total_cmp(&b.error)
-                .then_with(|| a.v0.cmp(&b.v0))
-                .then_with(|| a.v1.cmp(&b.v1))
-        });
-
-        // Greedy collapse
-        let mut vertices = mesh.vertices.clone();
-        let mut faces = mesh.faces.clone();
-        let mut redirect: Vec<usize> = (0..n).collect();
-        let mut removed_count = 0;
-
-        let to_remove = mesh.faces.len() - target_triangles;
-
-        for collapse in &candidates {
-            if removed_count >= to_remove {
-                break;
-            }
-            let v0 = follow_redirect(&redirect, collapse.v0);
-            let v1 = follow_redirect(&redirect, collapse.v1);
-            if v0 == v1 {
-                continue;
-            }
-
-            // Merge v1 into v0
-            vertices[v0] = collapse.target;
-            redirect[v1] = v0;
-
-            // Remap faces, remove degenerate triangles
-            let prev_len = faces.len();
-            faces.retain(|f| {
-                let a = follow_redirect(&redirect, f[0]);
-                let b = follow_redirect(&redirect, f[1]);
-                let c = follow_redirect(&redirect, f[2]);
-                a != b && b != c && a != c
-            });
-            // Remap remaining
-            for f in faces.iter_mut() {
-                f[0] = follow_redirect(&redirect, f[0]);
-                f[1] = follow_redirect(&redirect, f[1]);
-                f[2] = follow_redirect(&redirect, f[2]);
-            }
-
-            removed_count += prev_len - faces.len();
-        }
-
-        compact_mesh(&vertices, &faces)
+        qem::simplify(mesh, target_triangles)
     }
 }
 
@@ -1048,14 +926,6 @@ fn compact_mesh(vertices: &[[f64; 3]], faces: &[[usize; 3]]) -> MeshData {
         mesh.add_face(new_face[0], new_face[1], new_face[2]);
     }
     mesh
-}
-
-/// Follow the redirect chain to find the canonical representative vertex.
-fn follow_redirect(redirect: &[usize], mut v: usize) -> usize {
-    while redirect[v] != v {
-        v = redirect[v];
-    }
-    v
 }
 
 // ============================================================================
@@ -1418,10 +1288,21 @@ mod tests {
 
     #[test]
     fn test_simplify_reduces_triangles() {
-        let s = MeshSimplification::new();
-        let m = tetra();
-        let out = s.simplify(&m, 2);
-        assert!(out.faces.len() <= 4);
+        // The diagonal of a quad joins two boundary vertices and is never collapsed; a
+        // boundary edge is, which removes one of the two triangles.
+        let out = MeshSimplification::new().simplify(&quad(), 1);
+        assert_eq!(out.faces.len(), 1);
+        assert_eq!(out.vertices.len(), 3);
+        assert_consistent(&out);
+    }
+
+    #[test]
+    fn test_simplify_never_reduces_a_closed_surface_below_a_tetrahedron() {
+        // Collapsing any edge of a tetrahedron would leave two coincident triangles.
+        let out = MeshSimplification::new().simplify(&tetra(), 2);
+        assert_eq!(out.faces.len(), 4);
+        assert_eq!(out.vertices.len(), 4);
+        assert_consistent(&out);
     }
 
     #[test]
@@ -1597,6 +1478,10 @@ mod tests {
         for face in &out.faces {
             assert!(face.iter().all(|&vi| vi < out.vertices.len()));
         }
+        assert!(
+            out.vertices.iter().flatten().all(|c| c.is_finite()),
+            "the triangles around the NaN vertex are dropped"
+        );
     }
 
     // -- Material tests -------------------------------------------------------

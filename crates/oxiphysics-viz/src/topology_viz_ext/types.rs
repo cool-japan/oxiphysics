@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use super::functions::Point3;
 use super::functions::*;
+use crate::slice_renderer::contour_lines_2d;
 
 /// A topological noise candidate (a low-persistence feature to be removed).
 #[derive(Debug, Clone)]
@@ -151,10 +152,25 @@ impl JacobiSetViz {
     pub fn build_lines(&self) -> Vec<LineSegment> {
         self.segments.iter().map(|s| s.to_line()).collect()
     }
-    /// Compute the Jacobi set from a bivariate field on a 2-D grid.
+    /// Compute the Jacobi set of the bivariate field `(f, g)` sampled on a
+    /// regular grid of `nx × ny` nodes spanning `[x0, x1] × [y0, y1]`.
     ///
-    /// A sample point lies on the Jacobi set when the 2×2 Jacobian has rank < 2,
-    /// detected by |det(J)| < `threshold`.
+    /// The Jacobi set is the locus where the gradients of the two components
+    /// are parallel, i.e. where the Jacobian determinant
+    /// `det J = f_x·g_y − f_y·g_x` of the map `(x, y) ↦ (f, g)` vanishes and the
+    /// map loses rank (a fold).  `field` is evaluated once per node; the four
+    /// partial derivatives follow from central differences in the interior and
+    /// one-sided differences on the border of the grid.  The zero level set of
+    /// the nodal determinant is extracted with marching squares (linear
+    /// interpolation along the cell edges) and every piece of it becomes one
+    /// [`JacobiSegment`] of type `1` in the plane `z = 0`.  Where two branches
+    /// of the set cross inside a cell, the cell is resolved into two
+    /// corner-cutting segments.
+    ///
+    /// Grids with fewer than two nodes along an axis, a zero-width or
+    /// non-finite extent, and segments whose geometry is not finite (non-finite
+    /// samples) contribute nothing.  A region where the determinant vanishes
+    /// identically has no zero crossing, so no curve is reported inside it.
     pub fn from_bivariate_field_2d(
         field: impl Fn(f64, f64) -> [f64; 2],
         x0: f64,
@@ -163,30 +179,54 @@ impl JacobiSetViz {
         y0: f64,
         y1: f64,
         ny: usize,
-        det_threshold: f64,
     ) -> Self {
-        let dx = (x1 - x0) / (nx as f64 - 1.0).max(1.0);
-        let dy = (y1 - y0) / (ny as f64 - 1.0).max(1.0);
-        let mut segments = Vec::new();
-        for j in 0..ny.saturating_sub(1) {
-            for i in 0..nx.saturating_sub(1) {
-                let x = x0 + i as f64 * dx;
-                let y = y0 + j as f64 * dy;
-                let [f0, g0] = field(x, y);
-                let [f1, _] = field(x + dx, y);
-                let [_, g1] = field(x, y + dy);
-                let dfdx = (f1 - f0) / dx;
-                let dgdy = (g1 - g0) / dy;
-                let dfdy = 0.0_f64;
-                let dgdx = 0.0_f64;
-                let det = dfdx * dgdy - dfdy * dgdx;
-                if det.abs() < det_threshold {
-                    let start = [x, y, 0.0];
-                    let end = [x + dx, y + dy, 0.0];
-                    segments.push(JacobiSegment::new(start, end, 1));
-                }
+        if nx < 2 || ny < 2 {
+            return Self::new();
+        }
+        let Some(node_count) = nx.checked_mul(ny) else {
+            return Self::new();
+        };
+        let dx = (x1 - x0) / (nx - 1) as f64;
+        let dy = (y1 - y0) / (ny - 1) as f64;
+        if !(dx.is_finite() && dy.is_finite()) || dx == 0.0 || dy == 0.0 {
+            return Self::new();
+        }
+        // Nodal samples `[f, g]`, x varying fastest.
+        let mut samples = Vec::with_capacity(node_count);
+        for j in 0..ny {
+            let y = y0 + j as f64 * dy;
+            for i in 0..nx {
+                samples.push(field(x0 + i as f64 * dx, y));
             }
         }
+        // det J per node, with one-sided differences where a neighbour is missing.
+        let mut det = Vec::with_capacity(node_count);
+        for j in 0..ny {
+            let (j_lo, j_hi) = (j.saturating_sub(1), (j + 1).min(ny - 1));
+            let y_span = (j_hi - j_lo) as f64 * dy;
+            for i in 0..nx {
+                let (i_lo, i_hi) = (i.saturating_sub(1), (i + 1).min(nx - 1));
+                let x_span = (i_hi - i_lo) as f64 * dx;
+                let (west, east) = (samples[j * nx + i_lo], samples[j * nx + i_hi]);
+                let (south, north) = (samples[j_lo * nx + i], samples[j_hi * nx + i]);
+                let (f_x, g_x) = ((east[0] - west[0]) / x_span, (east[1] - west[1]) / x_span);
+                let (f_y, g_y) = (
+                    (north[0] - south[0]) / y_span,
+                    (north[1] - south[1]) / y_span,
+                );
+                det.push(f_x * g_y - f_y * g_x);
+            }
+        }
+        // `contour_lines_2d` works in grid-index coordinates.
+        let to_world = |p: [f64; 2]| [x0 + p[0] * dx, y0 + p[1] * dy, 0.0];
+        let segments = contour_lines_2d(&det, nx, ny, 0.0)
+            .into_iter()
+            .filter_map(|[a, b]| {
+                let (start, end) = (to_world(a), to_world(b));
+                let finite = start.iter().chain(end.iter()).all(|c| c.is_finite());
+                (finite && start != end).then(|| JacobiSegment::new(start, end, 1))
+            })
+            .collect();
         Self { segments }
     }
     /// Number of segments.

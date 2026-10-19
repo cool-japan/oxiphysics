@@ -495,23 +495,50 @@ impl BrakeBiasController {
 // ABS Controller
 // ---------------------------------------------------------------------------
 
+/// Phase of one wheel's ABS pressure-modulation cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbsPhase {
+    /// The caliper pressure is held constant.
+    Hold,
+    /// Pressure is being dumped because the wheel slips too much.
+    Release,
+    /// Pressure is being re-applied after the wheel has recovered.
+    Build,
+}
+
 /// ABS (Anti-lock Braking System) wheel-slip regulation controller.
+///
+/// The controller is a per-wheel state machine ([`AbsPhase`]) with an
+/// integrating pressure modulator: while a wheel is regulated the pressure
+/// applied to its caliper is a state ([`AbsBrakeController::modulated_pressure`])
+/// that is lowered at `release_rate` while the wheel over-slips and raised at
+/// `build_rate` once it has recovered, never exceeding the driver demand.
 #[derive(Debug, Clone)]
 pub struct AbsBrakeController {
     /// Target wheel slip ratio (typical 0.1–0.2 for peak friction).
     pub target_slip: f64,
     /// Slip tolerance band (pressure release starts above target + band).
     pub slip_tolerance: f64,
-    /// Current ABS active flag per wheel (4-wheel assumed).
+    /// ABS intervention flag per wheel (4-wheel assumed).
+    ///
+    /// Set with the first pressure release on a wheel and cleared by
+    /// [`AbsBrakeController::modulate`] once the driver demand has been fully
+    /// restored (or by [`AbsBrakeController::reset`]).
     pub active: [bool; 4],
     /// Modulation pressure reduction rate in Pa/s.
     pub release_rate: f64,
     /// Modulation pressure build rate in Pa/s.
     pub build_rate: f64,
-    /// Minimum cycle hold time in seconds.
+    /// Minimum dwell time in seconds before a release or build phase may be
+    /// left again (prevents valve chatter).  A new release is never delayed.
     pub hold_time: f64,
-    /// Time since last transition for each wheel.
+    /// Time since the last phase transition for each wheel.
     pub cycle_timer: [f64; 4],
+    /// Current modulation phase of each wheel.
+    pub phase: [AbsPhase; 4],
+    /// Gauge pressure (Pa above atmospheric) commanded to each caliper while
+    /// ABS is regulating that wheel; follows the driver demand otherwise.
+    pub modulated_pressure: [f64; 4],
 }
 
 impl AbsBrakeController {
@@ -523,8 +550,10 @@ impl AbsBrakeController {
             active: [false; 4],
             release_rate: 4_000_000.0, // 4 MPa/s
             build_rate: 2_000_000.0,   // 2 MPa/s
-            hold_time: 0.02,           // 20 ms hold
+            hold_time: 0.02,           // 20 ms minimum dwell
             cycle_timer: [0.0; 4],
+            phase: [AbsPhase::Hold; 4],
+            modulated_pressure: [0.0; 4],
         }
     }
 
@@ -541,7 +570,20 @@ impl AbsBrakeController {
 
     /// Regulate brake pressure for one wheel.
     ///
-    /// Returns pressure modifier in Pa (negative = reduce, positive = increase).
+    /// `current_pressure` is the gauge pressure (Pa) currently applied to the
+    /// caliper; a release never takes more than this away.  Returns the
+    /// pressure change for this step in Pa (negative = reduce, positive =
+    /// increase):
+    ///
+    /// * slip above `target_slip + slip_tolerance`: the wheel is releasing,
+    ///   and `-release_rate * dt` is returned on **every** step of the phase;
+    /// * slip below `target_slip - slip_tolerance` on a wheel that is being
+    ///   regulated: the pressure is rebuilt at `build_rate * dt` per step;
+    /// * otherwise the pressure is held.
+    ///
+    /// A new release starts immediately.  Once a release or build phase is
+    /// running it lasts at least `hold_time`, except that an over-slipping
+    /// wheel always switches to release at once.
     pub fn regulate_wheel(
         &mut self,
         wheel_idx: usize,
@@ -554,25 +596,95 @@ impl AbsBrakeController {
         let over_threshold = slip_ratio > self.target_slip + self.slip_tolerance;
         let under_threshold = slip_ratio < self.target_slip - self.slip_tolerance;
 
-        if over_threshold && self.cycle_timer[wheel_idx] >= self.hold_time {
-            // Release phase
-            self.active[wheel_idx] = true;
-            self.cycle_timer[wheel_idx] = 0.0;
-            -self.release_rate * dt
+        let desired = if over_threshold {
+            AbsPhase::Release
         } else if under_threshold && self.active[wheel_idx] {
-            // Build phase
-            let max_build = current_pressure * 0.1; // cap at 10% of current per step
-            (self.build_rate * dt).min(max_build)
+            AbsPhase::Build
         } else {
-            // Hold
-            0.0
+            AbsPhase::Hold
+        };
+        let current = self.phase[wheel_idx];
+        let dwell_elapsed = self.cycle_timer[wheel_idx] >= self.hold_time;
+        let next = if desired == current
+            || desired == AbsPhase::Release
+            || current == AbsPhase::Hold
+            || dwell_elapsed
+        {
+            desired
+        } else {
+            current
+        };
+        if next != current {
+            self.phase[wheel_idx] = next;
+            self.cycle_timer[wheel_idx] = 0.0;
         }
+
+        match next {
+            AbsPhase::Release => {
+                self.active[wheel_idx] = true;
+                -(self.release_rate * dt).min(current_pressure.max(0.0))
+            }
+            AbsPhase::Build => self.build_rate * dt,
+            AbsPhase::Hold => 0.0,
+        }
+    }
+
+    /// Stateful pressure modulation for one wheel.
+    ///
+    /// `demand_pressure` is the gauge pressure (Pa) the driver requests for
+    /// this caliper.  While the wheel is not being regulated the demand passes
+    /// through unchanged.  Once [`AbsBrakeController::regulate_wheel`] starts
+    /// releasing, the applied pressure becomes the integrated
+    /// [`AbsBrakeController::modulated_pressure`], which accumulates the
+    /// release and build steps from step to step and is clamped to
+    /// `[0, demand]`.  The intervention ends (`active` cleared) when the demand
+    /// has been fully restored and the slip is back under the release
+    /// threshold.  With no demand there is nothing to modulate: the wheel is
+    /// released from ABS control and zero pressure is returned.
+    ///
+    /// Returns the gauge pressure to apply to the caliper (Pa).
+    pub fn modulate(
+        &mut self,
+        wheel_idx: usize,
+        demand_pressure: f64,
+        slip_ratio: f64,
+        dt: f64,
+    ) -> f64 {
+        let demand = demand_pressure.max(0.0);
+        if demand <= 0.0 {
+            self.active[wheel_idx] = false;
+            self.phase[wheel_idx] = AbsPhase::Hold;
+            self.cycle_timer[wheel_idx] = 0.0;
+            self.modulated_pressure[wheel_idx] = 0.0;
+            return 0.0;
+        }
+        let current = if self.active[wheel_idx] {
+            self.modulated_pressure[wheel_idx].clamp(0.0, demand)
+        } else {
+            demand
+        };
+        let delta = self.regulate_wheel(wheel_idx, current, slip_ratio, dt);
+        if !self.active[wheel_idx] {
+            self.modulated_pressure[wheel_idx] = demand;
+            return demand;
+        }
+        let applied = (current + delta).clamp(0.0, demand);
+        self.modulated_pressure[wheel_idx] = applied;
+        let slip_in_band = slip_ratio <= self.target_slip + self.slip_tolerance;
+        if applied >= demand && slip_in_band {
+            self.active[wheel_idx] = false;
+            self.phase[wheel_idx] = AbsPhase::Hold;
+            self.cycle_timer[wheel_idx] = 0.0;
+        }
+        applied
     }
 
     /// Reset ABS state (e.g., when vehicle stops).
     pub fn reset(&mut self) {
         self.active = [false; 4];
         self.cycle_timer = [0.0; 4];
+        self.phase = [AbsPhase::Hold; 4];
+        self.modulated_pressure = [0.0; 4];
     }
 
     /// Is ABS currently intervening on any wheel?
@@ -825,23 +937,25 @@ pub struct CornerBrake {
     pub caliper: BrakeCaliper,
     /// Rotor for this corner.
     pub rotor: BrakeRotor,
-    /// Current applied pressure in Pa.
-    pub pressure: f64,
+    /// Hydraulic pressure applied to the caliper, as **gauge** pressure in Pa
+    /// (above atmospheric).  Zero means the pedal is released.
+    pub gauge_pressure: f64,
 }
 
 impl CornerBrake {
-    /// Create a corner brake assembly.
+    /// Create a corner brake assembly with the brake released.
     pub fn new(caliper: BrakeCaliper, rotor: BrakeRotor) -> Self {
         Self {
             caliper,
             rotor,
-            pressure: ATMOSPHERIC_PRESSURE,
+            gauge_pressure: 0.0,
         }
     }
 
     /// Braking torque at this corner (N·m).
     pub fn torque(&self) -> f64 {
-        self.caliper.braking_torque(self.pressure, &self.rotor)
+        self.caliper
+            .braking_torque(self.gauge_pressure, &self.rotor)
     }
 
     /// Braking force at this corner (N) given wheel radius.
@@ -854,9 +968,9 @@ impl CornerBrake {
 
     /// Update thermal state given wheel speed and time step.
     pub fn update_thermal(&mut self, wheel_speed_rad_s: f64, ambient: f64, dt: f64) {
-        let heat = self
-            .caliper
-            .heat_generation_rate(self.pressure, &self.rotor, wheel_speed_rad_s);
+        let heat =
+            self.caliper
+                .heat_generation_rate(self.gauge_pressure, &self.rotor, wheel_speed_rad_s);
         // Distribute heat 60/40 rotor/pad
         self.rotor.update_temperature(heat * 0.6, ambient, dt);
         self.caliper.update_pad_temperature(heat * 0.4, ambient, dt);
@@ -946,24 +1060,22 @@ impl BrakeSystem {
 
         let base_pressures = [p_front, p_front, p_rear, p_rear];
 
-        // Step 4: ABS modulation
+        // Step 4: ABS modulation.  The controller integrates its release and
+        // build steps in `modulated_pressure`, so a locked wheel sees the
+        // pressure fall further on every step; wheels that are not regulated
+        // get the driver demand unchanged.  All pressures are gauge pressures.
         let mut pressures = base_pressures;
         for i in 0..4 {
             let v_wheel = wheel_speeds[i] * wheel_radius;
             let slip = AbsBrakeController::wheel_slip(vehicle_speed, v_wheel);
-            let dp = self
-                .abs
-                .regulate_wheel(i, ATMOSPHERIC_PRESSURE + pressures[i], slip, dt);
-            pressures[i] = (pressures[i] + dp).max(0.0);
+            pressures[i] = self.abs.modulate(i, base_pressures[i], slip, dt);
         }
 
         // Step 5: apply to corners
         let mut torques = [0.0_f64; 4];
         for i in 0..4 {
-            self.corners[i].pressure = ATMOSPHERIC_PRESSURE + pressures[i];
-            torques[i] = self.corners[i]
-                .caliper
-                .braking_torque(pressures[i], &self.corners[i].rotor);
+            self.corners[i].gauge_pressure = pressures[i];
+            torques[i] = self.corners[i].torque();
             self.corners[i].update_thermal(wheel_speeds[i], ambient_temp, dt);
             let heat = torques[i] * wheel_speeds[i].abs();
             self.energy_dissipated_j += heat * dt;
@@ -1003,11 +1115,7 @@ impl BrakeSystem {
         self.corners
             .iter()
             .zip(wheel_speeds.iter())
-            .map(|(c, &ws)| {
-                c.caliper
-                    .braking_torque(c.pressure - ATMOSPHERIC_PRESSURE, &c.rotor)
-                    * ws.abs()
-            })
+            .map(|(c, &ws)| c.torque() * ws.abs())
             .sum()
     }
 }
@@ -1110,6 +1218,9 @@ pub fn required_deceleration(v0: f64, distance: f64) -> f64 {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod abs_tests;
 
 #[cfg(test)]
 mod tests {

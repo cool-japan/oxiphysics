@@ -7,6 +7,7 @@ use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::{Quat, Real, Vec3};
 use oxiphysics_rigid::RigidBodySet;
 
+use super::constraint_math::{SoftRow, hinge_angle};
 use super::functions::{JOINT_BAUMGARTE, apply_pair_impulse, read_body};
 
 /// Ball joint (spherical joint): constrains two anchor points to coincide.
@@ -171,7 +172,18 @@ impl PrismaticJoint {
 /// Revolute joint: allows rotation around a single axis.
 ///
 /// Constrains the anchor points to coincide and restricts rotation to a
-/// single axis. Optionally enforces angle limits.
+/// single axis (the hinge axis of body B is kept aligned with that of body A).
+/// Optionally enforces angle limits.
+///
+/// The hinge angle is the right-handed rotation of body B relative to body A
+/// about `local_axis`, measured from the
+/// [`reference_rotation`](RevoluteJoint::reference_rotation) (the relative
+/// rotation `qA⁻¹·qB` at which the angle is zero; identity by default, which
+/// means both bodies start with the same orientation).  Limits are enforced at
+/// the velocity level by unilateral angular rows that never let the joint run
+/// past a limit within a step, and at the position level by a correction of the
+/// remaining violation.  The angle is reported in `(-π, π]`, so limits must lie
+/// inside that range.
 #[derive(Debug, Clone)]
 pub struct RevoluteJoint {
     /// Handle of body A.
@@ -188,9 +200,15 @@ pub struct RevoluteJoint {
     pub lower_limit: Option<Real>,
     /// Optional upper angle limit (radians).
     pub upper_limit: Option<Real>,
+    /// Relative rotation `qA⁻¹·qB` of the reference configuration, in which the
+    /// hinge angle is zero.  Identity by default.
+    pub reference_rotation: Quat,
     pub(super) r_a: Vec3,
     pub(super) r_b: Vec3,
     pub(super) world_axis: Vec3,
+    pub(super) cached_angle: Real,
+    pub(super) lower_impulse: Real,
+    pub(super) upper_impulse: Real,
 }
 impl RevoluteJoint {
     /// Create a revolute joint.
@@ -209,16 +227,64 @@ impl RevoluteJoint {
             local_axis: local_axis.normalize(),
             lower_limit: None,
             upper_limit: None,
+            reference_rotation: Quat::identity(),
             r_a: Vec3::zeros(),
             r_b: Vec3::zeros(),
             world_axis: Vec3::zeros(),
+            cached_angle: 0.0,
+            lower_impulse: 0.0,
+            upper_impulse: 0.0,
         }
     }
-    /// Set angle limits.
+    /// Set angle limits (radians, relative to the reference configuration,
+    /// inside `[-π, π]`).
     pub fn with_limits(mut self, lower: Real, upper: Real) -> Self {
         self.lower_limit = Some(lower);
         self.upper_limit = Some(upper);
         self
+    }
+    /// Set the reference relative rotation `qA⁻¹·qB` at which the hinge angle
+    /// is zero.
+    pub fn with_reference_rotation(mut self, reference_rotation: Quat) -> Self {
+        self.reference_rotation = reference_rotation;
+        self
+    }
+    /// Take the bodies' current relative orientation as the zero-angle
+    /// reference, so the joint starts at angle zero and limits are measured
+    /// from the pose the bodies are in now.
+    pub fn capture_reference(&mut self, bodies: &RigidBodySet) {
+        if let (Some(a), Some(b)) = (
+            read_body(bodies, self.body_a),
+            read_body(bodies, self.body_b),
+        ) {
+            self.reference_rotation = a.rotation.inverse() * b.rotation;
+        }
+    }
+    /// Current hinge angle of body B relative to body A in `(-π, π]`
+    /// (right-handed about the axis, zero at the reference configuration).
+    pub fn hinge_angle(&self, bodies: &RigidBodySet) -> Real {
+        match (
+            read_body(bodies, self.body_a),
+            read_body(bodies, self.body_b),
+        ) {
+            (Some(a), Some(b)) => hinge_angle(
+                &a.rotation,
+                &b.rotation,
+                &self.reference_rotation,
+                &self.local_axis,
+            ),
+            _ => 0.0,
+        }
+    }
+    /// Impulse the lower angle limit applied during the last solve (zero while
+    /// the limit is inactive).
+    pub fn lower_limit_impulse(&self) -> Real {
+        self.lower_impulse
+    }
+    /// Impulse the upper angle limit applied during the last solve (zero while
+    /// the limit is inactive).
+    pub fn upper_limit_impulse(&self) -> Real {
+        self.upper_impulse
     }
     /// Compute a gear-ratio velocity constraint between this joint and another revolute joint.
     ///
@@ -685,7 +751,12 @@ impl DistanceJoint {
 /// is rigid; increasing `α` makes it more compliant (spring-like).
 ///
 /// The XPBD formulation directly projects positions, making it
-/// substep-stable even for large compliance values.
+/// substep-stable even for large compliance values.  Position errors are
+/// removed by [`solve_position`](Constraint::solve_position) with the
+/// multiplier [`lambda`](XpbdJoint::lambda); the velocity pass is a separate
+/// compliant row (regularised by `α/dt²` and the damping) that only governs the
+/// relative speed of the anchors along the joint, with its own accumulator, so
+/// it neither repeats the position correction nor disturbs `lambda`.
 #[derive(Debug, Clone)]
 pub struct XpbdJoint {
     /// Handle of body A.
@@ -700,12 +771,16 @@ pub struct XpbdJoint {
     pub rest_length: Real,
     /// Compliance α (m/N). 0.0 = rigid.
     pub compliance: Real,
-    /// Damping coefficient γ.
+    /// Damping coefficient γ (N·s/m).  The velocity pass treats a compliant
+    /// joint as an implicit spring-damper of stiffness `1/α` and this damping;
+    /// a rigid joint (`α = 0`) ignores it.
     pub damping: Real,
-    /// Accumulated XPBD Lagrange multiplier (reset each substep).
+    /// Accumulated XPBD Lagrange multiplier of the position pass (reset each
+    /// substep).
     pub lambda: Real,
     pub(super) r_a: Vec3,
     pub(super) r_b: Vec3,
+    pub(super) velocity_row: SoftRow,
 }
 impl XpbdJoint {
     /// Create a new XPBD joint.
@@ -729,6 +804,7 @@ impl XpbdJoint {
             lambda: 0.0,
             r_a: Vec3::zeros(),
             r_b: Vec3::zeros(),
+            velocity_row: SoftRow::inactive(),
         }
     }
     /// Reset the accumulated Lagrange multiplier at the start of a new substep.
@@ -1043,19 +1119,25 @@ impl UniversalJoint {
         self.world_axis_a.dot(&self.world_axis_b)
     }
 }
-/// A wrapper around any joint that breaks when the constraint force exceeds
-/// a threshold.
+/// A spring-damper joint between two body centres that breaks when the
+/// impulse it must transmit in one step exceeds a threshold.
 ///
-/// After breaking, the joint no longer applies any impulse.  Callers should
-/// periodically check [`BreakableJoint::is_broken`] and remove the constraint
-/// from their list if it is broken.
+/// The spring is solved as an implicit soft constraint, so the impulse of a
+/// step does not depend on the number of solver iterations.  While intact the
+/// joint reports the impulse of the current step in
+/// [`current_force`](BreakableJoint::current_force); it is reset by every
+/// [`prepare`](Constraint::prepare).  After breaking, the joint no longer
+/// applies any impulse and the solvers skip it.  Callers should periodically
+/// check [`BreakableJoint::is_broken`] and remove the constraint from their
+/// list if it is broken.
 #[derive(Debug, Clone)]
 pub struct BreakableJoint {
     /// Whether the joint has broken.
     pub broken: bool,
     /// Maximum allowed impulse per step before the joint breaks.
     pub break_threshold: Real,
-    /// Total accumulated impulse magnitude since last reset.
+    /// Magnitude of the impulse the spring has transmitted during the current
+    /// step (reset to zero by `prepare`, and by [`BreakableJoint::reset`]).
     pub accumulated_force: Real,
     pub(super) body_a: BodyHandle,
     pub(super) body_b: BodyHandle,
@@ -1065,6 +1147,7 @@ pub struct BreakableJoint {
     pub(super) damping: Real,
     pub(super) r_a: Vec3,
     pub(super) r_b: Vec3,
+    pub(super) spring_row: SoftRow,
 }
 impl BreakableJoint {
     /// Create a breakable spring-like joint.
@@ -1092,6 +1175,7 @@ impl BreakableJoint {
             damping,
             r_a: Vec3::zeros(),
             r_b: Vec3::zeros(),
+            spring_row: SoftRow::inactive(),
         }
     }
     /// Whether the joint has permanently broken.
@@ -1103,7 +1187,8 @@ impl BreakableJoint {
         self.broken = false;
         self.accumulated_force = 0.0;
     }
-    /// Current accumulated impulse (force proxy).
+    /// Impulse magnitude the joint has transmitted during the current step
+    /// (a force proxy: divide by the step length for a force).
     pub fn current_force(&self) -> Real {
         self.accumulated_force
     }
@@ -1226,6 +1311,11 @@ impl SphericalJoint {
 ///
 /// Exerts a spring force `F = -k * (distance - rest_length) - c * v_relative`
 /// along the line connecting the two anchor points.
+///
+/// The spring is integrated implicitly as a soft constraint: the impulse of a
+/// step is `dt·F` evaluated at the end of the step, accumulated over the solver
+/// iterations, so the effective stiffness is independent of the iteration count
+/// and the spring stays stable for stiff parameters and large steps.
 #[derive(Debug, Clone)]
 pub struct SpringJoint {
     /// Handle of body A.
@@ -1246,6 +1336,7 @@ pub struct SpringJoint {
     pub(super) r_b: Vec3,
     pub(super) direction: Vec3,
     pub(super) current_distance: Real,
+    pub(super) spring_row: SoftRow,
 }
 impl SpringJoint {
     /// Create a new spring joint.
@@ -1270,6 +1361,7 @@ impl SpringJoint {
             r_b: Vec3::zeros(),
             direction: Vec3::zeros(),
             current_distance: 0.0,
+            spring_row: SoftRow::inactive(),
         }
     }
 }

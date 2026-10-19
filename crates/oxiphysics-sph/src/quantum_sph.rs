@@ -204,6 +204,21 @@ impl QuantumSPH {
         norm * (-q * q).exp() * (-2.0 * q / h)
     }
 
+    /// Laplacian of the Gaussian kernel, ∇²W(r) = W''(r) + (2/r) W'(r).
+    ///
+    /// For W = A exp(−q²), q = r/h, this is
+    /// ∇²W = W (4q² − 6) / h²: negative inside q < √(3/2) and positive in the
+    /// tail, so that ∫ ∇²W dV = 0 and ∫ |x|² ∇²W dV = 6.
+    #[inline]
+    fn kernel_laplacian(&self, r: f64) -> f64 {
+        let h = self.smoothing_length;
+        if h <= 0.0 {
+            return 0.0;
+        }
+        let q = r / h;
+        self.kernel(r) * (4.0 * q * q - 6.0) / (h * h)
+    }
+
     /// Compute SPH density estimates ρ_a = ∑_b m W(|r_a − r_b|, h).
     ///
     /// Updates each particle's `density` field in place.
@@ -237,12 +252,17 @@ impl QuantumSPH {
     /// Uses the Laplacian of √ρ estimated via SPH summation:
     /// ∇²f_a ≈ ∑_b (m/ρ_b) (f_b − f_a) ∇²W(r_ab, h)
     ///
-    /// Then Q_a = −(ℏ²/2m) · (∇²√ρ_a) / √ρ_a
+    /// with the exact Gaussian-kernel Laplacian ∇²W = W (4q² − 6)/h², q = r/h.
+    /// Then Q_a = −(ℏ²/2m) · (∇²√ρ_a) / √ρ_a.
+    ///
+    /// The densities used are the particles' `density` fields (set by
+    /// [`compute_density`](Self::compute_density) or by the caller).  At the
+    /// peak of a Gaussian packet ρ ∝ exp(−|x|²/σ²) the potential is positive,
+    /// Q = 3ℏ²/(2mσ²) in the continuum limit.
     ///
     /// Returns a vector of Bohm potentials (one per particle).
     pub fn bohm_potential(&self) -> Vec<f64> {
         let n = self.particles.len();
-        let h = self.smoothing_length;
         let mut q_pot = vec![0.0f64; n];
         for (i, qp_i) in q_pot.iter_mut().enumerate() {
             let rho_i = self.particles[i].density.max(1e-30);
@@ -252,15 +272,8 @@ impl QuantumSPH {
                 let r = self.distance(i, j);
                 let rho_j = self.particles[j].density.max(1e-30);
                 let sqrt_rho_j = rho_j.sqrt();
-                // Laplacian kernel: ∇²W ≈ (10/(πh⁵)) exp(−r²/h²) [3D Gaussian]
-                let w_lapl = if h > 0.0 {
-                    let q = r / h;
-                    let norm = 1.0 / (PI.sqrt() * h).powi(3);
-                    norm * (-q * q).exp() * (6.0 - 4.0 * q * q) / (h * h)
-                } else {
-                    0.0
-                };
-                laplacian += (self.mass / rho_j) * (sqrt_rho_j - sqrt_rho_i) * w_lapl;
+                laplacian +=
+                    (self.mass / rho_j) * (sqrt_rho_j - sqrt_rho_i) * self.kernel_laplacian(r);
             }
             *qp_i = if sqrt_rho_i > 1e-15 {
                 -(self.hbar * self.hbar / (2.0 * self.mass)) * laplacian / sqrt_rho_i
@@ -368,17 +381,17 @@ impl QuantumSPH {
     ///
     /// Uses a symplectic Euler integrator:
     /// 1. Compute density.
-    /// 2. Compute Bohm potential forces.
+    /// 2. Compute the Bohm quantum acceleration a_i = −∇Q_i / m.
     /// 3. Update velocities.
     /// 4. Update positions.
     pub fn step(&mut self, dt: f64) {
         self.compute_density();
-        let q_forces = self.compute_bohm_forces();
+        let q_accelerations = self.compute_bohm_accelerations();
         let n = self.particles.len();
-        for (i, qf) in q_forces.iter().enumerate().take(n) {
+        for (i, qa) in q_accelerations.iter().enumerate().take(n) {
             // Update velocity
             for (d, vd) in self.particles[i].vel.iter_mut().enumerate() {
-                *vd += qf[d] * dt;
+                *vd += qa[d] * dt;
             }
             // Update position
             let vel = self.particles[i].vel;
@@ -388,16 +401,21 @@ impl QuantumSPH {
         }
     }
 
-    /// Compute Bohm potential force F_i = −m ∇Q_i on each particle.
+    /// Compute the Bohm quantum acceleration a_i = −∇Q_i / m of each particle.
     ///
-    /// The gradient is computed via SPH:
-    /// ∇Q_a = ∑_b m/ρ_b (Q_b − Q_a) ∇W(r_ab)
-    fn compute_bohm_forces(&self) -> Vec<[f64; 3]> {
+    /// The gradient is computed via SPH with the volume V_b = m/ρ_b of the
+    /// neighbour:
+    /// ∇Q_a = ∑_b (m/ρ_b) (Q_b − Q_a) ∇_a W(r_ab),
+    /// ∇_a W(r_ab) = W'(r_ab) (r_a − r_b)/|r_a − r_b|.
+    ///
+    /// This matches the Madelung equation ∂u/∂t = −(1/m) ∇(V + Q): the quantum
+    /// term is an acceleration, so no further factor of the mass multiplies it.
+    fn compute_bohm_accelerations(&self) -> Vec<[f64; 3]> {
         let n = self.particles.len();
         let q_pot = self.bohm_potential();
-        let mut forces = vec![[0.0f64; 3]; n];
+        let inv_mass = 1.0 / self.mass;
+        let mut accelerations = vec![[0.0f64; 3]; n];
         for i in 0..n {
-            let rho_i = self.particles[i].density.max(1e-30);
             for j in 0..n {
                 if i == j {
                     continue;
@@ -407,16 +425,17 @@ impl QuantumSPH {
                     continue;
                 }
                 let rho_j = self.particles[j].density.max(1e-30);
+                let volume_j = self.mass / rho_j;
                 let dq = q_pot[j] - q_pot[i];
                 let dw_dr = self.kernel_gradient_mag(r);
                 // Gradient direction: (r_a − r_b) / |r_a − r_b|
-                for (d, fd) in forces[i].iter_mut().enumerate() {
+                for (d, ad) in accelerations[i].iter_mut().enumerate() {
                     let dr = (self.particles[i].pos[d] - self.particles[j].pos[d]) / r;
-                    *fd += -self.mass * (self.mass / rho_j.max(rho_i)) * dq * dw_dr * dr;
+                    *ad += -inv_mass * volume_j * dq * dw_dr * dr;
                 }
             }
         }
-        forces
+        accelerations
     }
 
     /// Compute total energy: kinetic + quantum kinetic.
@@ -993,5 +1012,249 @@ mod tests {
         // T_c ∝ n^(2/3) → tc8/tc1 = 4
         let ratio = tc8 / tc1;
         assert!((ratio - 4.0).abs() < 0.01, "ratio={ratio}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bohm potential / quantum force regression tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_bohm {
+    use super::*;
+
+    /// Composite Simpson rule for `∫_a^b f(x) dx` with an even number of panels.
+    fn simpson<F: Fn(f64) -> f64>(f: F, a: f64, b: f64, panels: usize) -> f64 {
+        let n = panels + panels % 2;
+        let step = (b - a) / n as f64;
+        let mut sum = f(a) + f(b);
+        for k in 1..n {
+            let weight = if k % 2 == 1 { 4.0 } else { 2.0 };
+            sum += weight * f(a + k as f64 * step);
+        }
+        sum * step / 3.0
+    }
+
+    fn empty_solver(mass: f64, h: f64) -> QuantumSPH {
+        QuantumSPH::new(1.0, mass, h, Vec::new())
+    }
+
+    /// `∫_0^x exp(−s²/σ²) ds`.
+    fn gaussian_integral(x: f64, sigma: f64) -> f64 {
+        simpson(|s| (-(s / sigma).powi(2)).exp(), 0.0, x, 2000)
+    }
+
+    /// Inverse of [`gaussian_integral`] by bisection.
+    fn gaussian_integral_inverse(u: f64, sigma: f64, x_hi: f64) -> f64 {
+        let (mut lo, mut hi) = (0.0_f64, x_hi);
+        for _ in 0..80 {
+            let mid = 0.5 * (lo + hi);
+            if gaussian_integral(mid, sigma) < u {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        0.5 * (lo + hi)
+    }
+
+    /// Equal-mass particles on a separable inverse-CDF lattice whose density
+    /// profile is the Gaussian packet `ρ ∝ exp(−|x|² / σ²)` out to `x_max` per
+    /// axis.  `n_side` must be odd so that a particle sits at the origin.
+    fn gaussian_packet(n_side: usize, sigma: f64, x_max: f64, mass: f64, h: f64) -> QuantumSPH {
+        let u_max = gaussian_integral(x_max, sigma);
+        let du = 2.0 * u_max / (n_side - 1) as f64;
+        let half = (n_side - 1) as f64 / 2.0;
+        let axis: Vec<f64> = (0..n_side)
+            .map(|k| {
+                let u = (k as f64 - half) * du;
+                let x = gaussian_integral_inverse(u.abs(), sigma, 1.01 * x_max);
+                if u < 0.0 { -x } else { x }
+            })
+            .collect();
+        let mut particles = Vec::with_capacity(n_side * n_side * n_side);
+        for &x in &axis {
+            for &y in &axis {
+                for &z in &axis {
+                    particles.push(QuantumParticle::new([x, y, z], [0.0; 3], 1.0, 0.0));
+                }
+            }
+        }
+        QuantumSPH::new(1.0, mass, h, particles)
+    }
+
+    fn radius(p: &QuantumParticle) -> f64 {
+        (p.pos[0] * p.pos[0] + p.pos[1] * p.pos[1] + p.pos[2] * p.pos[2]).sqrt()
+    }
+
+    #[test]
+    fn kernel_laplacian_matches_finite_differences_of_the_kernel() {
+        let q = empty_solver(1.0, 0.7);
+        let eps = 1.0e-4;
+        let scale = q.kernel(0.0) / (0.7 * 0.7);
+        for &r in &[0.1, 0.4, 0.8, 1.2, 2.0] {
+            let w0 = q.kernel(r);
+            let w_plus = q.kernel(r + eps);
+            let w_minus = q.kernel(r - eps);
+            let first = (w_plus - w_minus) / (2.0 * eps);
+            let second = (w_plus - 2.0 * w0 + w_minus) / (eps * eps);
+            let expected = second + 2.0 * first / r;
+            let got = q.kernel_laplacian(r);
+            assert!(
+                (got - expected).abs() <= 1.0e-5 * scale,
+                "r = {r}: laplacian {got}, finite difference {expected}"
+            );
+            assert!(
+                (q.kernel_gradient_mag(r) - first).abs() <= 1.0e-5 * scale,
+                "r = {r}: gradient {}, finite difference {first}",
+                q.kernel_gradient_mag(r)
+            );
+        }
+    }
+
+    #[test]
+    fn kernel_laplacian_changes_sign_at_the_inflection_radius() {
+        let h = 0.5;
+        let q = empty_solver(1.0, h);
+        assert!(
+            q.kernel_laplacian(0.0) < 0.0,
+            "bulk of the kernel is concave"
+        );
+        let r_flip = h * 1.5_f64.sqrt();
+        assert!(q.kernel_laplacian(0.95 * r_flip) < 0.0);
+        assert!(q.kernel_laplacian(1.05 * r_flip) > 0.0, "tail is convex");
+        assert!(q.kernel_laplacian(r_flip).abs() < 1.0e-12 * q.kernel_laplacian(0.0).abs());
+    }
+
+    #[test]
+    fn kernel_laplacian_has_zero_mean_and_unit_second_moment() {
+        let h = 0.6;
+        let q = empty_solver(1.0, h);
+        let r_max = 8.0 * h;
+        let volume_integral = |power: i32| {
+            4.0 * PI * simpson(|r| r.powi(power) * q.kernel_laplacian(r), 0.0, r_max, 4000)
+        };
+        let absolute =
+            4.0 * PI * simpson(|r| (r * r * q.kernel_laplacian(r)).abs(), 0.0, r_max, 4000);
+        assert!(
+            volume_integral(2).abs() <= 1.0e-9 * absolute,
+            "∫ ∇²W dV = {} (scale {absolute})",
+            volume_integral(2)
+        );
+        assert!(
+            (volume_integral(4) - 6.0).abs() < 1.0e-7,
+            "∫ |x|² ∇²W dV = {}, expected 6",
+            volume_integral(4)
+        );
+    }
+
+    #[test]
+    fn bohm_potential_is_positive_at_the_peak_of_a_gaussian_packet() {
+        let (sigma, h) = (1.0, 0.5);
+        let mut qsph = gaussian_packet(11, sigma, 1.0, 1.0, h);
+        qsph.compute_density();
+        let q_pot = qsph.bohm_potential();
+        let centre = qsph.particles.len() / 2;
+        assert!(radius(&qsph.particles[centre]) < 1.0e-12);
+        // For a Gaussian packet the exact Bohm potential at the peak is
+        // 3ℏ²/(2mσ²).  The SPH estimate works on the kernel-smoothed density,
+        // which widens the packet from σ² to roughly σ² + h², lowering the peak
+        // value to about 3ℏ²/(2m(σ² + h²)); this coarse lattice (h = σ/2, packet
+        // cut at |x| = σ) lands within 15 % of that estimate (about 8 % below).
+        let smoothed_estimate =
+            3.0 * qsph.hbar * qsph.hbar / (2.0 * qsph.mass * (sigma * sigma + h * h));
+        let exact_peak = 3.0 * qsph.hbar * qsph.hbar / (2.0 * qsph.mass * sigma * sigma);
+        assert!(q_pot[centre] > 0.0, "Q(0) = {}", q_pot[centre]);
+        assert!(
+            (q_pot[centre] - smoothed_estimate).abs() < 0.15 * smoothed_estimate,
+            "Q(0) = {}, smoothed estimate {smoothed_estimate}",
+            q_pot[centre]
+        );
+        assert!(
+            q_pot[centre] < exact_peak,
+            "smoothing can only lower the peak: Q(0) = {}, exact {exact_peak}",
+            q_pot[centre]
+        );
+    }
+
+    #[test]
+    fn bohm_potential_decreases_away_from_the_packet_centre() {
+        let mut qsph = gaussian_packet(11, 1.0, 1.0, 1.0, 0.5);
+        qsph.compute_density();
+        let q_pot = qsph.bohm_potential();
+        let mut along_x: Vec<(f64, f64)> = qsph
+            .particles
+            .iter()
+            .zip(q_pot.iter())
+            .filter(|(p, _)| {
+                p.pos[1].abs() < 1.0e-12 && p.pos[2].abs() < 1.0e-12 && p.pos[0] >= 0.0
+            })
+            .map(|(p, &q)| (p.pos[0], q))
+            .collect();
+        along_x.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert!(along_x.len() >= 6);
+        for pair in along_x.windows(2) {
+            assert!(
+                pair[1].1 < pair[0].1,
+                "Q must fall with radius: {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn step_pushes_a_gaussian_packet_outward() {
+        let mut qsph = gaussian_packet(9, 1.0, 1.0, 1.0, 0.5);
+        let before: Vec<f64> = qsph.particles.iter().map(radius).collect();
+        qsph.step(0.01);
+        let after: Vec<f64> = qsph.particles.iter().map(radius).collect();
+        let mut outer = Vec::new();
+        for (i, p) in qsph.particles.iter().enumerate() {
+            if before[i] > 0.3 {
+                assert!(
+                    after[i] > before[i],
+                    "particle {i} at r = {} moved inward to {}",
+                    before[i],
+                    after[i]
+                );
+                // The velocity points outward as well.
+                let radial_v = p.vel[0] * p.pos[0] + p.vel[1] * p.pos[1] + p.vel[2] * p.pos[2];
+                assert!(radial_v > 0.0, "particle {i}: radial velocity {radial_v}");
+            }
+            outer.push((before[i], i));
+        }
+        outer.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for &(r0, i) in outer.iter().rev().take(8) {
+            assert!(after[i] > r0, "outermost particle {i} did not move outward");
+        }
+    }
+
+    #[test]
+    fn quantum_acceleration_scales_as_hbar_squared_over_mass_squared() {
+        let step_velocities = |mass: f64| {
+            let mut qsph = gaussian_packet(7, 1.0, 1.0, mass, 0.5);
+            qsph.step(1.0e-3);
+            qsph.particles.iter().map(|p| p.vel).collect::<Vec<_>>()
+        };
+        let light = step_velocities(1.0);
+        let heavy = step_velocities(2.0);
+        let v_max = light
+            .iter()
+            .flat_map(|v| v.iter().map(|c| c.abs()))
+            .fold(0.0_f64, f64::max);
+        assert!(v_max > 0.0);
+        let mut checked = 0;
+        for (vl, vh) in light.iter().zip(heavy.iter()) {
+            for d in 0..3 {
+                if vl[d].abs() > 1.0e-3 * v_max {
+                    // Q ∝ ℏ²/m and a = −∇Q/m, hence a ∝ 1/m².
+                    let ratio = vh[d] / vl[d];
+                    assert!((ratio - 0.25).abs() < 1.0e-9, "ratio {ratio}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100, "only {checked} components compared");
     }
 }

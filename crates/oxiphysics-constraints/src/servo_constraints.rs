@@ -311,7 +311,27 @@ impl ImpedanceController {
 
 // ── Adaptive servo (Ziegler–Nichols auto-tune) ────────────────────────────────
 
+/// Number of relay half-cycles (period and peak amplitude) the auto-tuner
+/// keeps; older measurements are discarded.
+const MAX_RELAY_HISTORY: usize = 16;
+
+/// Number of most recent half-cycles [`AdaptiveServo::auto_tune`] averages
+/// (two full oscillation periods).
+const TUNING_HALF_CYCLES: usize = 4;
+
+/// Smallest oscillation amplitude from which an ultimate gain is estimated.
+const MIN_OSCILLATION_AMPLITUDE: f64 = 1e-12;
+
 /// Self-tuning PID controller using the Ziegler–Nichols relay method.
+///
+/// [`relay_step`](AdaptiveServo::relay_step) drives the plant with a relay
+/// (`±relay_amplitude`, switching with the sign of the error) and records the
+/// period and the peak error of every half cycle of the resulting oscillation.
+/// [`auto_tune`](AdaptiveServo::auto_tune) turns the measurements into the
+/// ultimate period `T_u` and, through the describing function of the relay,
+/// the ultimate gain `K_u = 4·d / (π·a)` (`d` the relay amplitude, `a` the
+/// amplitude of the oscillation of the error), and from them the classic
+/// Ziegler–Nichols PID gains.
 #[derive(Debug, Clone)]
 pub struct AdaptiveServo {
     /// Current PID parameters.
@@ -320,8 +340,15 @@ pub struct AdaptiveServo {
     ultimate_gain: f64,
     /// Estimated ultimate period T_u (s).
     ultimate_period: f64,
-    /// History of oscillation half-periods.
+    /// Durations of the most recent complete oscillation half-cycles.
     half_periods: Vec<f64>,
+    /// Peak absolute error of each half cycle in `half_periods`.
+    peaks: Vec<f64>,
+    /// Peak absolute error seen so far in the current half cycle.
+    half_cycle_peak: f64,
+    /// Whether the relay has switched at least once; the half cycle before the
+    /// first switch starts at `t = 0`, not at a switch, so it is not measured.
+    switched: bool,
     /// Last relay output.
     relay_output: f64,
     /// Relay amplitude.
@@ -345,6 +372,9 @@ impl AdaptiveServo {
             ultimate_gain: 0.0,
             ultimate_period: 0.0,
             half_periods: Vec::new(),
+            peaks: Vec::new(),
+            half_cycle_peak: 0.0,
+            switched: false,
             relay_output: relay_amplitude,
             relay_amplitude,
             last_sign: 1.0,
@@ -356,48 +386,88 @@ impl AdaptiveServo {
 
     /// Feed one error sample at the current dt and return the relay output.
     ///
-    /// Internally accumulates oscillation data for Ziegler–Nichols computation.
+    /// Internally accumulates oscillation data for Ziegler–Nichols computation:
+    /// at every sign change of the error the duration and the peak absolute
+    /// error of the half cycle that just ended are recorded (the first half
+    /// cycle, which starts at `t = 0` and not at a switch, is skipped).  Only
+    /// the last 16 half cycles are kept.
     pub fn relay_step(&mut self, error: f64, dt: f64) -> f64 {
         self.time += dt;
         let sign = if error >= 0.0 { 1.0 } else { -1.0 };
         if sign != self.last_sign {
-            let hp = self.time - self.last_switch_time;
-            self.half_periods.push(hp);
+            if self.switched {
+                self.record_half_cycle(self.time - self.last_switch_time, self.half_cycle_peak);
+            }
+            self.switched = true;
+            self.half_cycle_peak = 0.0;
             self.last_switch_time = self.time;
             self.last_sign = sign;
             self.relay_output = sign * self.relay_amplitude;
         }
+        // The sample that triggered a switch belongs to the new half cycle.
+        self.half_cycle_peak = self.half_cycle_peak.max(error.abs());
         self.relay_output
+    }
+
+    /// Store one finished half cycle and drop the oldest ones beyond the
+    /// history limit.
+    fn record_half_cycle(&mut self, duration: f64, peak: f64) {
+        self.half_periods.push(duration);
+        self.peaks.push(peak);
+        let excess = self.half_periods.len().saturating_sub(MAX_RELAY_HISTORY);
+        if excess > 0 {
+            self.half_periods.drain(..excess);
+            self.peaks.drain(..excess);
+        }
     }
 
     /// Perform Ziegler–Nichols PID auto-tune based on relay oscillation data.
     ///
-    /// Requires at least 4 half-period measurements.  Returns `ServoParams`
-    /// with the suggested PID gains (PI-D variant).
+    /// Requires at least 4 complete half-cycle measurements.  The ultimate
+    /// period is twice the mean of the last four half periods, the ultimate
+    /// gain is `4·d / (π·a)` with `d` the relay amplitude and `a` the mean peak
+    /// error of the same four half cycles.  Returns `ServoParams` with the
+    /// suggested PID gains (PI-D variant).
+    ///
+    /// When there is not enough data, or the measured oscillation is
+    /// degenerate (amplitude below `1e-12`, no positive period, no relay
+    /// amplitude), the current parameters are returned unchanged and
+    /// [`is_tuned`](AdaptiveServo::is_tuned) is not set.
     pub fn auto_tune(&mut self) -> ServoParams {
-        if self.half_periods.len() < 4 {
+        let measured = self.half_periods.len().min(self.peaks.len());
+        if measured < TUNING_HALF_CYCLES {
             return self.params.clone();
         }
 
-        // Average full period from last 4 half-periods (2 full cycles)
-        let n = self.half_periods.len();
-        let tu = 2.0
-            * (self.half_periods[n - 1]
-                + self.half_periods[n - 2]
-                + self.half_periods[n - 3]
-                + self.half_periods[n - 4])
-            / 4.0;
+        let recent_mean = |values: &[f64]| {
+            let tail = &values[values.len() - TUNING_HALF_CYCLES..];
+            tail.iter().sum::<f64>() / TUNING_HALF_CYCLES as f64
+        };
+        // Average full period from the last half periods (2 full cycles).
+        let tu = 2.0 * recent_mean(&self.half_periods);
+        // Oscillation amplitude of the error over the same half cycles.
+        let amplitude = recent_mean(&self.peaks);
+        let usable = tu.is_finite()
+            && tu > 0.0
+            && amplitude.is_finite()
+            && amplitude >= MIN_OSCILLATION_AMPLITUDE
+            && self.relay_amplitude.is_finite()
+            && self.relay_amplitude > 0.0;
+        if !usable {
+            return self.params.clone();
+        }
         self.ultimate_period = tu;
 
-        // Ku from relay amplitude and oscillation amplitude (simplified)
-        let osc_amp = self.relay_amplitude;
-        let ku = 4.0 * osc_amp / (std::f64::consts::PI * osc_amp.max(1e-15));
+        // Describing-function estimate of the ultimate gain: a relay of
+        // amplitude d that produces an oscillation of amplitude a has the
+        // equivalent gain 4·d / (π·a).
+        let ku = 4.0 * self.relay_amplitude / (std::f64::consts::PI * amplitude);
         self.ultimate_gain = ku;
 
         // Ziegler–Nichols PID (classic):
         // Kp = 0.6 Ku, Ki = 2 Kp / Tu, Kd = Kp * Tu / 8
         let kp = 0.6 * ku;
-        let ki = 2.0 * kp / tu.max(1e-15);
+        let ki = 2.0 * kp / tu;
         let kd = kp * tu / 8.0;
 
         self.tuned = true;
@@ -411,6 +481,23 @@ impl AdaptiveServo {
     /// Whether the auto-tune procedure has completed.
     pub fn is_tuned(&self) -> bool {
         self.tuned
+    }
+
+    /// Ultimate gain `K_u` estimated by the last successful
+    /// [`auto_tune`](AdaptiveServo::auto_tune) (`0.0` before that).
+    pub fn ultimate_gain(&self) -> f64 {
+        self.ultimate_gain
+    }
+
+    /// Ultimate period `T_u` in seconds estimated by the last successful
+    /// [`auto_tune`](AdaptiveServo::auto_tune) (`0.0` before that).
+    pub fn ultimate_period(&self) -> f64 {
+        self.ultimate_period
+    }
+
+    /// Number of complete relay half cycles currently held (at most 16).
+    pub fn measured_half_cycles(&self) -> usize {
+        self.half_periods.len()
     }
 }
 
@@ -1070,5 +1157,180 @@ mod tests {
             "tuned gains must be non-negative"
         );
         assert!(adap.is_tuned());
+        // Every sample is its own half cycle: |error| = 1, half period 0.05 s,
+        // relay amplitude 0.1 * 500 N.
+        assert!((adap.ultimate_period() - 0.1).abs() < 1e-12);
+        let expected_ku = 4.0 * 50.0 / std::f64::consts::PI;
+        assert!((adap.ultimate_gain() - expected_ku).abs() < 1e-9);
+        assert!((p.kp - 0.6 * expected_ku).abs() < 1e-9);
+    }
+
+    // ── F0468: ultimate gain from the measured oscillation amplitude ──────────
+
+    /// Run a relay experiment on the plant `1 / (s + 1)^3` (three cascaded
+    /// first-order lags, Euler-integrated) with the given relay amplitude.
+    ///
+    /// The plant has the exact ultimate gain `K_u = 8` and ultimate period
+    /// `T_u = 2π / √3`.
+    fn relay_experiment_on_third_order_lag(relay_amplitude: f64) -> AdaptiveServo {
+        // The relay amplitude of `AdaptiveServo` is a tenth of `max_force`.
+        let mut servo =
+            AdaptiveServo::new(ServoParams::new(1.0, 0.0, 0.0, relay_amplitude * 10.0, 1.0));
+        let dt = 1e-3;
+        let (mut x1, mut x2, mut x3) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for _ in 0..60_000 {
+            // Set-point 0: the error is the negated plant output.
+            let u = servo.relay_step(-x3, dt);
+            x1 += dt * (u - x1);
+            x2 += dt * (x1 - x2);
+            x3 += dt * (x2 - x3);
+        }
+        servo
+    }
+
+    #[test]
+    fn test_adaptive_servo_estimates_ultimate_gain_of_known_plant() {
+        let true_ku = 8.0;
+        let true_tu = 2.0 * std::f64::consts::PI / 3.0_f64.sqrt();
+        // For a linear plant the estimate must not depend on the relay size.
+        for relay_amplitude in [0.5, 1.0, 4.0] {
+            let mut servo = relay_experiment_on_third_order_lag(relay_amplitude);
+            let tuned = servo.auto_tune();
+            assert!(servo.is_tuned(), "relay amplitude {relay_amplitude}");
+            let ku = servo.ultimate_gain();
+            let tu = servo.ultimate_period();
+            assert!(
+                (ku - true_ku).abs() / true_ku < 0.10,
+                "K_u = {ku}, expected {true_ku} (relay amplitude {relay_amplitude})"
+            );
+            assert!(
+                (tu - true_tu).abs() / true_tu < 0.10,
+                "T_u = {tu}, expected {true_tu} (relay amplitude {relay_amplitude})"
+            );
+            // Classic Ziegler-Nichols PID from the estimate.
+            assert!((tuned.kp - 0.6 * ku).abs() < 1e-12);
+            assert!((tuned.ki - 2.0 * tuned.kp / tu).abs() < 1e-9);
+            assert!((tuned.kd - tuned.kp * tu / 8.0).abs() < 1e-9);
+        }
+    }
+
+    /// A servo with the default relay (amplitude 50) tuned on a sine error of
+    /// the given amplitude and a 2 s period.
+    fn servo_tuned_on_sine_error(amplitude: f64) -> AdaptiveServo {
+        let mut servo = AdaptiveServo::new(default_params());
+        let dt = 0.01;
+        for k in 0..1000 {
+            // Sample between the grid points so no sample is exactly zero.
+            let t = (k as f64 + 0.5) * dt;
+            servo.relay_step(amplitude * (std::f64::consts::PI * t).sin(), dt);
+        }
+        servo.auto_tune();
+        servo
+    }
+
+    #[test]
+    fn test_adaptive_servo_gain_is_inversely_proportional_to_amplitude() {
+        let small = servo_tuned_on_sine_error(0.25);
+        let large = servo_tuned_on_sine_error(1.0);
+        assert!(small.is_tuned() && large.is_tuned());
+        let ratio = small.ultimate_gain() / large.ultimate_gain();
+        assert!(
+            (ratio - 4.0).abs() < 0.05,
+            "a 4x smaller oscillation means a 4x larger K_u, got ratio {ratio}"
+        );
+        // K_u = 4 d / (pi a) with d = 50 and a = 1 (the sampled peak is
+        // within 0.02 % of the true amplitude).
+        let expected = 4.0 * 50.0 / std::f64::consts::PI;
+        assert!((large.ultimate_gain() - expected).abs() / expected < 0.01);
+        assert!((large.ultimate_period() - 2.0).abs() < 1e-9);
+    }
+
+    /// Feed `samples` errors of constant magnitude `amplitude` and sign `sign`.
+    fn feed_half_cycle(servo: &mut AdaptiveServo, sign: f64, amplitude: f64, samples: usize) {
+        for _ in 0..samples {
+            servo.relay_step(sign * amplitude, 0.01);
+        }
+    }
+
+    #[test]
+    fn test_adaptive_servo_skips_the_half_cycle_measured_from_time_zero() {
+        let mut servo = AdaptiveServo::new(default_params());
+        // 3 s of large positive error before the first switch: this half cycle
+        // starts at t = 0, not at a relay switch, so it must not be measured.
+        feed_half_cycle(&mut servo, 1.0, 5.0, 300);
+        assert_eq!(servo.measured_half_cycles(), 0);
+        // Four more half cycles (1 s each, amplitude 0.5): the first switch
+        // ends the unmeasured half cycle, so four switches record three.
+        for half in 0..4 {
+            let sign = if half % 2 == 0 { -1.0 } else { 1.0 };
+            feed_half_cycle(&mut servo, sign, 0.5, 100);
+        }
+        assert_eq!(servo.measured_half_cycles(), 3);
+        let before = servo.params.clone();
+        let unchanged = servo.auto_tune();
+        assert_eq!(unchanged.kp, before.kp);
+        assert_eq!(unchanged.ki, before.ki);
+        assert_eq!(unchanged.kd, before.kd);
+        assert!(!servo.is_tuned(), "three half cycles are not enough");
+
+        // The fifth switch completes the fourth measured half cycle.
+        feed_half_cycle(&mut servo, -1.0, 0.5, 100);
+        assert_eq!(servo.measured_half_cycles(), 4);
+        servo.auto_tune();
+        assert!(servo.is_tuned());
+        assert!((servo.ultimate_period() - 2.0).abs() < 1e-9);
+        let expected_ku = 4.0 * 50.0 / (std::f64::consts::PI * 0.5);
+        assert!(
+            (servo.ultimate_gain() - expected_ku).abs() < 1e-9,
+            "K_u = {}, the transient 5.0 peak must not leak in",
+            servo.ultimate_gain()
+        );
+    }
+
+    #[test]
+    fn test_adaptive_servo_history_is_bounded() {
+        let mut servo = AdaptiveServo::new(default_params());
+        for half in 0..200 {
+            let sign = if half % 2 == 0 { 1.0 } else { -1.0 };
+            // Early half cycles are long and large, the last ones short.
+            let (amplitude, samples) = if half < 150 { (4.0, 50) } else { (1.0, 20) };
+            feed_half_cycle(&mut servo, sign, amplitude, samples);
+        }
+        assert_eq!(servo.measured_half_cycles(), 16);
+        servo.auto_tune();
+        // Only the most recent half cycles (0.2 s, amplitude 1) are used.
+        assert!((servo.ultimate_period() - 0.4).abs() < 1e-9);
+        let expected_ku = 4.0 * 50.0 / std::f64::consts::PI;
+        assert!((servo.ultimate_gain() - expected_ku).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_adaptive_servo_negligible_oscillation_keeps_params() {
+        let mut servo = AdaptiveServo::new(default_params());
+        for half in 0..12 {
+            let sign = if half % 2 == 0 { 1.0 } else { -1.0 };
+            feed_half_cycle(&mut servo, sign, 1e-15, 10);
+        }
+        assert!(servo.measured_half_cycles() >= 4);
+        let before = servo.params.clone();
+        let tuned = servo.auto_tune();
+        assert_eq!(
+            (tuned.kp, tuned.ki, tuned.kd),
+            (before.kp, before.ki, before.kd)
+        );
+        assert!(!servo.is_tuned(), "an unmeasurable oscillation cannot tune");
+        assert_eq!(servo.ultimate_gain(), 0.0);
+    }
+
+    #[test]
+    fn test_adaptive_servo_auto_tune_needs_four_half_cycles() {
+        let mut servo = AdaptiveServo::new(default_params());
+        let before = servo.params.clone();
+        let tuned = servo.auto_tune();
+        assert_eq!(
+            (tuned.kp, tuned.ki, tuned.kd),
+            (before.kp, before.ki, before.kd)
+        );
+        assert!(!servo.is_tuned());
     }
 }

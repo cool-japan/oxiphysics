@@ -23,8 +23,17 @@
 //! * ITTC (2014) – Recommended Procedures for Model Tests.
 //! * Morison et al. (1950) – Wave forces on offshore structures.
 //! * Chakrabarti (1987) – Hydrodynamics of Offshore Structures.
+//! * Jonkman (2007) – Dynamics Modeling and Loads Analysis of an Offshore
+//!   Floating Wind Turbine, NREL/TP-500-41958 (elastic catenary, seabed contact).
 
 use std::f64::consts::PI;
+
+mod catenary;
+
+pub use catenary::{CatenaryError, CatenarySolution, solve_static_catenary};
+
+#[cfg(test)]
+mod catenary_tests;
 
 // ---------------------------------------------------------------------------
 // Math helpers
@@ -643,15 +652,19 @@ pub fn jonswap_spectrum(omega: f64, hs: f64, tp: f64, gamma: f64) -> f64 {
 
 /// Catenary mooring line model.
 ///
-/// Models a single inextensible catenary mooring line connecting
-/// an anchor at the seabed to a fairlead on the floating body.
+/// Models a single elastic catenary mooring line connecting an anchor on the
+/// seabed to a fairlead on the floating body.  The seabed is horizontal and
+/// frictionless, so the horizontal tension is uniform along the line and any
+/// surplus length simply lies on the seabed.  The static equilibrium is the
+/// elastic catenary solved by [`solve_static_catenary`].
 #[derive(Debug, Clone)]
 pub struct MooringLine {
     /// Total unstretched length of the line (m).
     pub length: f64,
-    /// Linear mass density of the line in water (kg/m), i.e., m_line - ρA_line.
+    /// Submerged (wet) weight per unit length of the line (N/m), i.e.
+    /// `(m_line - ρ A_line)·g`.  Multiply a mass density in kg/m by `g`.
     pub wet_weight_per_metre: f64,
-    /// Axial stiffness EA (N).
+    /// Axial stiffness EA (N).  Use `f64::INFINITY` for an inextensible line.
     pub axial_stiffness: f64,
     /// Anchor position (m).
     pub anchor_pos: [f64; 3],
@@ -659,6 +672,11 @@ pub struct MooringLine {
 
 impl MooringLine {
     /// Create a new catenary mooring line.
+    ///
+    /// * `length` — unstretched line length (m).
+    /// * `wet_weight_per_metre` — submerged weight per unit length (N/m).
+    /// * `axial_stiffness` — axial stiffness EA (N).
+    /// * `anchor_pos` — anchor position (m); the anchor is on the seabed.
     pub fn new(
         length: f64,
         wet_weight_per_metre: f64,
@@ -673,58 +691,73 @@ impl MooringLine {
         }
     }
 
-    /// Compute the horizontal tension at the fairlead given horizontal scope
+    /// Solve the static catenary for horizontal scope `x_h` (m) and fairlead
+    /// height `z_h` (m, positive upward) above the anchor.
+    ///
+    /// A negative `z_h` (fairlead below the anchor) is treated as `0`.  See
+    /// [`solve_static_catenary`] for the equations and the error cases.
+    pub fn solve_catenary(&self, x_h: f64, z_h: f64) -> Result<CatenarySolution, CatenaryError> {
+        solve_static_catenary(
+            self.length,
+            self.wet_weight_per_metre,
+            self.axial_stiffness,
+            x_h,
+            z_h.max(0.0),
+        )
+    }
+
+    /// Compute the tension components at the fairlead given horizontal scope
     /// `x_h` (m) and vertical height difference `z_h` (m, positive upward).
     ///
-    /// Returns `(T_H, T_V)` – horizontal and vertical components of tension (N).
-    /// Uses the catenary equations:
+    /// Returns `(T_H, T_V)` – horizontal and vertical components of tension
+    /// (N) of the elastic catenary
     ///
     /// ```text
-    /// x_h = a * ( sinh(T_V/T_H) - sinh((T_V - w*L)/T_H) )
-    /// z_h = a * ( cosh(T_V/T_H) - cosh((T_V - w*L)/T_H) )
+    /// x_h = L_B + (T_H/w)·asinh(T_V/T_H) + T_H·L/EA          (seabed contact)
+    /// z_h = (sqrt(T_H² + T_V²) - T_H)/w + T_V²/(2·w·EA)
     /// ```
     ///
-    /// Solved by Newton-Raphson on the catenary parameter `a = T_H / (w_0)`.
+    /// with `T_V = w·L_s` the weight of the suspended length `L_s = L - L_B`.
+    /// The line is slack (`T_H = 0`) when the scope is smaller than the span
+    /// that the line can reach without tension.  Invalid line parameters give
+    /// `(0, 0)`; an inextensible line that is overstretched gives infinite
+    /// tension.  Use [`MooringLine::solve_catenary`] for explicit error
+    /// handling and the full solution.
     pub fn catenary_tension(&self, x_h: f64, z_h: f64) -> (f64, f64) {
-        let w = self.wet_weight_per_metre;
-        // Initial guess: taut line approximation.
-        let l_horiz = (x_h * x_h + z_h * z_h).sqrt().max(1e-3);
-        let mut t_h = w * l_horiz * 0.5;
-        // Newton-Raphson on catenary equations.
-        for _ in 0..50 {
-            if t_h < 1e-3 {
-                t_h = 1e-3;
-            }
-            let a = t_h / w;
-            // Touchdown condition: check if line is fully taut or has a lazy wave.
-            let sinh_val = (z_h / a + (1.0 + (z_h / a).powi(2)).sqrt()).ln(); // asinh
-            let x_cat = a * ((self.length / a).sinh() - sinh_val.sinh());
-            let fx = x_cat - x_h;
-            let dfx = (self.length / a).cosh() - 1.0;
-            let delta = -fx / (dfx.max(1e-6));
-            t_h += delta.max(-t_h * 0.5).min(t_h * 2.0);
-            if fx.abs() < 1e-4 {
-                break;
-            }
+        match self.solve_catenary(x_h, z_h) {
+            Ok(solution) => (solution.horizontal_tension, solution.vertical_tension),
+            Err(CatenaryError::LineTooShort { .. }) => (f64::INFINITY, f64::INFINITY),
+            Err(_) => (0.0, 0.0),
         }
-        let a = t_h / w;
-        let t_v = t_h * ((self.length / a).sinh());
-        (t_h, t_v)
     }
 
     /// Compute the fairlead restoring force vector given fairlead position (m).
+    ///
+    /// The force acts on the vessel: horizontally towards the anchor with
+    /// magnitude `T_H` and downward with `T_V`.  With the fairlead directly
+    /// above the anchor (horizontal offset below 1 mm) the horizontal direction
+    /// is undefined, so only the downward weight of the hanging line is
+    /// returned.
     pub fn restoring_force(&self, fairlead_pos: [f64; 3]) -> [f64; 3] {
         let dx = sub3(fairlead_pos, self.anchor_pos);
         let x_h = (dx[0] * dx[0] + dx[1] * dx[1]).sqrt();
         let z_h = dx[2]; // positive upward
-        if x_h < 1e-3 {
-            return [0.0; 3];
-        }
         let (t_h, t_v) = self.catenary_tension(x_h, z_h);
+        if x_h < 1e-3 {
+            return [0.0, 0.0, -t_v];
+        }
         // Horizontal direction from anchor to fairlead.
         let horiz_dir = normalize3([dx[0], dx[1], 0.0]);
-        // Force on vessel is tension directed toward anchor.
-        [-horiz_dir[0] * t_h, -horiz_dir[1] * t_h, -t_v]
+        // Force on vessel is tension directed toward anchor (zero-safe product
+        // so that an infinite tension does not produce NaN components).
+        let pull = |direction: f64| {
+            if direction == 0.0 {
+                0.0
+            } else {
+                -direction * t_h
+            }
+        };
+        [pull(horiz_dir[0]), pull(horiz_dir[1]), -t_v]
     }
 }
 
@@ -1401,14 +1434,26 @@ mod tests {
 
     #[test]
     fn test_mooring_restoring_force_direction() {
-        // Anchor at origin, fairlead 100 m to port (+Y) and 50 m above seabed.
+        // Anchor 50 m below the fairlead; the fairlead is 125 m to port (+Y),
+        // inside the band where the line is taut and still touches the seabed
+        // (the line is slack for scopes up to ~100 m).
         let line = MooringLine::new(150.0, 200.0, 1e9, [0.0, 0.0, -50.0]);
-        let f = line.restoring_force([0.0, 100.0, 0.0]);
-        // Horizontal force should pull toward anchor (−Y).
+        let f = line.restoring_force([0.0, 125.0, 0.0]);
+        // Horizontal force should pull toward anchor (−Y), the vertical
+        // component is the weight of the suspended part (downward, ~w·L_s).
         assert!(
-            f[1] < 0.0,
+            f[1] < -1.0e3,
             "horizontal restoring force should be in -Y: f_y={}",
             f[1]
+        );
+        assert!(
+            f[0].abs() < 1e-12,
+            "no force out of the anchor-fairlead plane"
+        );
+        assert!(
+            f[2] < -200.0 * 50.0 && f[2] > -200.0 * 150.0,
+            "vertical force must be the weight of the suspended length: f_z={}",
+            f[2]
         );
     }
 
@@ -1416,8 +1461,16 @@ mod tests {
     fn test_mooring_zero_horizontal_no_horizontal_force() {
         let line = MooringLine::new(150.0, 200.0, 1e9, [0.0, 0.0, -50.0]);
         let f = line.restoring_force([0.0, 0.0, 0.0]);
-        // Horizontal offset < 1e-3 → zero force.
-        assert_eq!(f, [0.0; 3]);
+        // Horizontal offset < 1e-3: no horizontal direction, hence no horizontal
+        // force; the 50 m of line hanging from the fairlead (the other 100 m
+        // lie on the seabed) still pull it down with their weight, 200·50 N
+        // reduced by the tiny elastic stretch.
+        assert_eq!((f[0], f[1]), (0.0, 0.0));
+        assert!(
+            (f[2] + 200.0 * 50.0).abs() < 0.1,
+            "hanging weight expected, got f_z={}",
+            f[2]
+        );
     }
 
     // -----------------------------------------------------------------------

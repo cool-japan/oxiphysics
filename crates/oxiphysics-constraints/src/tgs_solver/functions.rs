@@ -371,8 +371,15 @@ mod tests {
         let mut constraints: Vec<Box<dyn Constraint>> = vec![Box::new(c)];
         let solver = TgsSolver::new(3, 5, Vec3::zeros());
         let stats = solver.step(&mut constraints, &mut bodies, 1.0 / 60.0);
-        assert_eq!(stats.iterations_used, 15);
-        assert!(stats.converged);
+        // `velocity_iterations` is a budget per substep: every substep runs at
+        // least one sweep and none more than five.
+        assert!(
+            (3..=15).contains(&stats.iterations_used),
+            "iterations_used = {}",
+            stats.iterations_used
+        );
+        assert!(stats.converged, "residual = {}", stats.residual);
+        assert!(stats.residual <= solver.tolerance);
     }
     #[test]
     fn test_free_baumgarte_bias() {
@@ -668,7 +675,12 @@ mod tests {
         let mut constraints: Vec<Box<dyn Constraint>> = vec![Box::new(c)];
         let solver = TgsSolver::new(2, 4, Vec3::zeros());
         let stats = solver.solve(&mut constraints, &mut bodies, 1.0 / 60.0);
-        assert_eq!(stats.iterations_used, 8);
+        assert!(
+            (2..=8).contains(&stats.iterations_used),
+            "iterations_used = {}",
+            stats.iterations_used
+        );
+        assert!(stats.converged);
     }
     #[test]
     fn test_warm_start_state_new() {
@@ -740,6 +752,38 @@ mod tests {
         let solver = AdaptiveTgsSolver::new(4, Vec3::zeros(), 0.01);
         let substeps = solver.compute_substeps(1.0, 1.0 / 60.0);
         assert!(substeps >= 1, "should require at least 1 substep");
+    }
+    #[test]
+    fn test_adaptive_tgs_substep_range_never_panics() {
+        let mut solver = AdaptiveTgsSolver::new(4, Vec3::zeros(), 0.01);
+        // Inverted range: the lower bound wins.
+        solver.min_substeps = 10;
+        solver.max_substeps = 2;
+        assert_eq!(solver.compute_substeps(100.0, 1.0 / 60.0), 10);
+        assert_eq!(solver.compute_substeps(0.0, 1.0 / 60.0), 10);
+        // A zero lower bound would integrate nothing: at least one substep.
+        solver.min_substeps = 0;
+        solver.max_substeps = 8;
+        assert_eq!(solver.compute_substeps(0.0, 1.0 / 60.0), 1);
+        assert_eq!(solver.compute_substeps(1.0, 1.0 / 60.0), 2);
+        // Degenerate displacement limits saturate at the upper bound.
+        solver.max_displacement_per_substep = 0.0;
+        assert_eq!(solver.compute_substeps(1.0, 1.0 / 60.0), 8);
+        // And a step with the broken range really integrates.
+        let mut bodies = RigidBodySet::new();
+        let mut b = RigidBody::new(1.0);
+        b.velocity = Vec3::new(1.0, 0.0, 0.0);
+        b.gravity_scale = 0.0;
+        let hb = bodies.insert(b);
+        solver.min_substeps = 0;
+        solver.max_displacement_per_substep = 0.1;
+        let mut constraints: Vec<Box<dyn Constraint>> = Vec::new();
+        solver.step(&mut constraints, &mut bodies, 1.0 / 60.0);
+        let x = bodies
+            .get(hb)
+            .map(|b| b.transform.position.x)
+            .unwrap_or(0.0);
+        assert!((x - 1.0 / 60.0).abs() < 1e-12, "x = {x}");
     }
     #[test]
     fn test_adaptive_tgs_compute_substeps_clamped_to_max() {
@@ -926,7 +970,13 @@ mod tests {
         let (stats, diags) =
             solver.step_with_diagnostics(&mut constraints, &mut bodies, 1.0 / 60.0);
         assert_eq!(diags.len(), 3, "should have one diagnostic per substep");
-        assert_eq!(stats.iterations_used, 12);
+        // At most 4 sweeps per substep, at least one.
+        assert!(
+            (3..=12).contains(&stats.iterations_used),
+            "iterations_used = {}",
+            stats.iterations_used
+        );
+        assert!(stats.converged, "residual = {}", stats.residual);
     }
     #[test]
     fn test_energy_monitoring_enabled_does_not_panic() {
@@ -985,7 +1035,11 @@ mod tests {
         let mut state = TgsWarmStartState::new(1);
         let dt = 1.0 / 60.0;
         let stats = solver.step_warm(&mut constraints, &mut bodies, dt, &mut state);
-        assert_eq!(stats.iterations_used, 8);
+        assert!(
+            (2..=8).contains(&stats.iterations_used),
+            "iterations_used = {}",
+            stats.iterations_used
+        );
         assert!((state.prev_dt - dt).abs() < 1e-12);
         assert_eq!(state.age, 1);
     }

@@ -406,6 +406,87 @@ mod tests_extended {
         assert_eq!(a.classify(), "oversteer");
     }
     #[test]
+    fn test_understeer_gradient_matches_the_bicycle_model_formula() {
+        // m = 1500 kg, Cf = Cr = 80 kN/rad, 60 % of the weight on the front axle.
+        let (m, cf, cr, front_fraction, wheelbase) = (1500.0, 8.0e4, 8.0e4, 0.6, 2.7);
+        let analyzer = UndersteerAnalyzer::new(wheelbase, cf, cr, m, front_fraction);
+        // distances from the centre of mass: the heavier axle is the closer one
+        let b_rear = wheelbase * front_fraction;
+        let a_front = wheelbase * (1.0 - front_fraction);
+        let expected = crate::stability::understeer_gradient(m, cf, cr, a_front, b_rear) * 9.81;
+        let k = analyzer.understeer_gradient();
+        assert!(
+            (k - expected).abs() < 1e-12,
+            "K = {k} rad/g, bicycle model {expected} rad/g"
+        );
+        // ~2.1 deg/g: a realistic, mildly understeering passenger car
+        assert!(
+            (k - 0.036_787_5).abs() < 1e-6,
+            "K = {k} rad/g, hand calculation 0.0367875 rad/g"
+        );
+    }
+    #[test]
+    fn test_understeer_gradient_does_not_depend_on_the_wheelbase_alone() {
+        // For a fixed load distribution the wheelbase cancels out of K; the old
+        // extra division by L made K shrink with the wheelbase.
+        let short = UndersteerAnalyzer::new(2.4, 7.0e4, 9.0e4, 1400.0, 0.58);
+        let long = UndersteerAnalyzer::new(3.2, 7.0e4, 9.0e4, 1400.0, 0.58);
+        let (k_short, k_long) = (short.understeer_gradient(), long.understeer_gradient());
+        assert!(
+            (k_short - k_long).abs() < 1e-12,
+            "K(L = 2.4) = {k_short}, K(L = 3.2) = {k_long}"
+        );
+    }
+    #[test]
+    fn test_characteristic_speed_is_sqrt_of_g_l_over_k() {
+        let analyzer = UndersteerAnalyzer::new(2.7, 8.0e4, 8.0e4, 1500.0, 0.6);
+        let k = analyzer.understeer_gradient();
+        let v_char = analyzer
+            .characteristic_speed()
+            .expect("an understeering car has a characteristic speed");
+        let expected = (9.81_f64 * 2.7 / k).sqrt();
+        assert!(
+            (v_char - expected).abs() < 1e-9,
+            "v_char = {v_char} m/s, sqrt(gL/K) = {expected} m/s"
+        );
+        // sqrt(720) m/s = 96.6 km/h for K = 2.1 deg/g
+        assert!((v_char - 26.83).abs() < 0.01, "v_char = {v_char} m/s");
+        // At the characteristic speed the steer angle is twice the Ackermann angle.
+        let radius = 80.0;
+        let delta = analyzer.predicted_steer_angle(v_char, radius);
+        assert!(
+            (delta - 2.0 * 2.7 / radius).abs() < 1e-9,
+            "delta = {delta} rad, expected {}",
+            2.0 * 2.7 / radius
+        );
+    }
+    #[test]
+    fn test_critical_speed_is_sqrt_of_minus_g_l_over_k() {
+        let analyzer = UndersteerAnalyzer::new(2.5, 1.2e5, 6.0e4, 1500.0, 0.35);
+        let k = analyzer.understeer_gradient();
+        assert!(k < 0.0, "expected oversteer, got K = {k}");
+        let v_crit = analyzer
+            .critical_speed()
+            .expect("an oversteering car has a critical speed");
+        let expected = (-9.81_f64 * 2.5 / k).sqrt();
+        assert!(
+            (v_crit - expected).abs() < 1e-9,
+            "v_crit = {v_crit} m/s, sqrt(-gL/K) = {expected} m/s"
+        );
+    }
+    #[test]
+    fn test_neutral_steer_when_stiffness_follows_the_axle_load() {
+        // Cornering stiffness proportional to the static axle load: K = 0.
+        let m = 1600.0;
+        let front_fraction = 0.55;
+        let load_front = m * 9.81 * front_fraction;
+        let load_rear = m * 9.81 * (1.0 - front_fraction);
+        let analyzer =
+            UndersteerAnalyzer::new(2.6, 10.0 * load_front, 10.0 * load_rear, m, front_fraction);
+        assert!(analyzer.understeer_gradient().abs() < 1e-12);
+        assert_eq!(analyzer.classify(), "neutral");
+    }
+    #[test]
     fn test_predicted_steer_angle_increases_with_speed_for_understeer() {
         let a = UndersteerAnalyzer::new(2.5, 80_000.0, 100_000.0, 1500.0, 0.6);
         let angle_low = a.predicted_steer_angle(10.0, 50.0);

@@ -187,6 +187,108 @@ fn forced_uniform_flow_accelerates_with_the_prescribed_force() {
 }
 
 #[test]
+fn two_dimensional_simulations_ignore_the_z_component_of_the_force() {
+    // D2Q9 has no z direction.  A z component of the force used to enter the
+    // force-shifted velocity (u_z = F_z / 2 rho) and spoil the moments of the
+    // equilibrium and of the Guo source, so the mass leaked at a rate of about
+    // 1e-9 per cell and step.
+    let run = |force: [f64; 3]| {
+        let mut cfg = LbmConfig::d2q9(8, 6, 0.1);
+        cfg.body_force = Some(force);
+        let mut sim = LbmSimulation::new(cfg);
+        let mass_before = total_mass(&sim);
+        sim.step_n(100);
+        (sim, mass_before)
+    };
+    let (planar, _) = run([1.0e-5, -2.0e-5, 0.0]);
+    let (with_fz, mass_before) = run([1.0e-5, -2.0e-5, 3.0e-5]);
+
+    assert!(
+        ((total_mass(&with_fz) - mass_before) / mass_before).abs() < 1e-13,
+        "F_z must not change the mass: {mass_before} -> {}",
+        total_mass(&with_fz)
+    );
+    assert_eq!(planar.get_density_field(), with_fz.get_density_field());
+    assert_eq!(planar.get_velocity_field(), with_fz.get_velocity_field());
+    for v in with_fz.get_velocity_field() {
+        assert!((v[0] - 100.5e-5).abs() < 1e-12, "u_x = {}", v[0]);
+        assert!((v[1] + 201.0e-5).abs() < 1e-12, "u_y = {}", v[1]);
+        assert_eq!(v[2], 0.0);
+    }
+}
+
+#[test]
+fn two_dimensional_collision_kernel_drops_the_z_force() {
+    let table = table_for(LatticeType::D2Q9);
+    let (rho, u) = (1.02, [0.03, -0.02, 0.0]);
+    let stress = [
+        [1.0e-4, 5.0e-5, 0.0],
+        [5.0e-5, -1.0e-4, 0.0],
+        [0.0, 0.0, 0.0],
+    ];
+    let before = populations_with_stress(&table, rho, u, stress);
+    let collide = |force: [f64; 3]| {
+        let mut pop = before.clone();
+        let setup = CollisionSetup {
+            omega: 1.4,
+            smagorinsky_cs: None,
+            force,
+        };
+        collide_cell(&mut pop, &table, &setup);
+        pop
+    };
+    let planar = collide([2.0e-4, -1.0e-4, 0.0]);
+    let with_fz = collide([2.0e-4, -1.0e-4, 7.0e-4]);
+    assert_eq!(planar, with_fz);
+    let mass: f64 = with_fz.iter().sum();
+    assert!((mass - rho).abs() < 1e-15, "mass {mass} vs {rho}");
+
+    // The same kernel keeps the z force on a three-dimensional lattice.
+    let table_3d = table_for(LatticeType::D3Q19);
+    let mut pop = table_3d.weights.clone();
+    let setup = CollisionSetup {
+        omega: 1.4,
+        smagorinsky_cs: None,
+        force: [0.0, 0.0, 7.0e-4],
+    };
+    collide_cell(&mut pop, &table_3d, &setup);
+    let momentum_z: f64 = pop
+        .iter()
+        .zip(&table_3d.velocities)
+        .map(|(f, c)| f * c[2])
+        .sum();
+    assert!((momentum_z - 7.0e-4).abs() < 1e-15, "p_z = {momentum_z}");
+}
+
+#[test]
+fn z_force_of_a_two_dimensional_run_survives_a_time_step_change() {
+    // The rescaling to a new dt re-expresses the previous half-force velocity
+    // shift; it must drop F_z as the collision does.
+    let mut cfg = LbmConfig::d2q9(8, 8, 0.1);
+    cfg.body_force = Some([1.0e-5, 0.0, 4.0e-5]);
+    let mut sim = LbmSimulation::new(cfg);
+    sim.step_n(20);
+    let mass_before = total_mass(&sim);
+    for _ in 0..40 {
+        sim.step(0.5);
+    }
+    assert!(
+        ((total_mass(&sim) - mass_before) / mass_before).abs() < 1e-13,
+        "mass {mass_before} -> {}",
+        total_mass(&sim)
+    );
+    let expected_physical = 1.0e-5 * (sim.elapsed_time + 0.5);
+    for v in sim.get_velocity_field() {
+        assert!(
+            (v[0] / 0.5 - expected_physical).abs() < 1e-10,
+            "u_phys = {} expected {expected_physical}",
+            v[0] / 0.5
+        );
+        assert_eq!(v[2], 0.0);
+    }
+}
+
+#[test]
 fn forced_flow_without_force_component_stays_zero() {
     let mut cfg = LbmConfig::d3q19(5, 5, 5, 0.1);
     cfg.body_force = Some([2e-5, 0.0, 0.0]);

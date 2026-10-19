@@ -160,13 +160,13 @@ impl Components {
         let mut label_of_root: Vec<usize> = vec![usize::MAX; n];
         let mut id = vec![0usize; n];
         let mut count = 0usize;
-        for v in 0..n {
+        for (v, slot) in id.iter_mut().enumerate() {
             let root = find(&mut parent, v);
             if label_of_root[root] == usize::MAX {
                 label_of_root[root] = count;
                 count += 1;
             }
-            id[v] = label_of_root[root];
+            *slot = label_of_root[root];
         }
         Self { id, count }
     }

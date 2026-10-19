@@ -85,12 +85,18 @@ pub fn sub3(a: &Vec3f, b: &Vec3f) -> Vec3f {
 }
 /// Compute eigendecomposition of a symmetric 3×3 tensor using Jacobi iteration.
 ///
-/// Returns eigenvalues in descending order with corresponding eigenvectors.
+/// Returns eigenvalues in descending order with corresponding unit
+/// eigenvectors (`vectors[k]` belongs to `values[k]`); repeated eigenvalues
+/// still get an orthonormal set.  The iteration stops once every off-diagonal
+/// entry is below `1e-12` times the largest entry of the tensor, so the
+/// result does not depend on the scale of the tensor (stresses in Pa and
+/// strain rates in 1/s are resolved alike).
 pub fn eig3(t: &Tensor3) -> Eigen3 {
     let mut a = voigt_to_mat3(t);
     let mut v = mat3_identity();
-    pub(super) const MAX_ITER: usize = 64;
-    pub(super) const EPS: f64 = 1e-12;
+    const MAX_ITER: usize = 64;
+    const RELATIVE_EPS: f64 = 1e-12;
+    let tolerance = RELATIVE_EPS * a.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
     for _ in 0..MAX_ITER {
         let mut max_val = 0.0_f64;
         let mut p = 0usize;
@@ -105,7 +111,7 @@ pub fn eig3(t: &Tensor3) -> Eigen3 {
                 }
             }
         }
-        if max_val < EPS {
+        if max_val <= tolerance {
             break;
         }
         let a_pp = a[p * 3 + p];
@@ -371,6 +377,53 @@ mod tests {
         assert!(d01 < EPS_LOOSE, "eigenvectors 0,1 not orthogonal: {d01}");
         assert!(d02 < EPS_LOOSE, "eigenvectors 0,2 not orthogonal: {d02}");
         assert!(d12 < EPS_LOOSE, "eigenvectors 1,2 not orthogonal: {d12}");
+    }
+    #[test]
+    fn test_eig3_is_scale_invariant() {
+        // The off-diagonal convergence test used to be absolute (1e-12), so a
+        // tensor with entries below 1e-12 was returned as "already diagonal".
+        let base = [3.0, 1.0, 0.5, 1.0, -0.6, 0.4_f64];
+        let reference = eig3(&base);
+        for scale in [1e-30, 1e-14, 1e-6, 1.0, 1e6, 1e12] {
+            let t: Tensor3 = std::array::from_fn(|i| base[i] * scale);
+            let eig = eig3(&t);
+            for k in 0..3 {
+                assert!(
+                    (eig.values[k] - reference.values[k] * scale).abs() <= 1e-9 * scale,
+                    "scale {scale}: {:?} vs {:?}",
+                    eig.values,
+                    reference.values
+                );
+                let alignment = dot3(&eig.vectors[k], &reference.vectors[k]).abs();
+                assert!(
+                    (alignment - 1.0).abs() < 1e-9,
+                    "scale {scale}: eigenvector {k} misaligned ({alignment})"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_eig3_resolves_pure_shear_at_tiny_scale() {
+        let tau = 1e-14;
+        let eig = eig3(&[0.0, 0.0, 0.0, tau, 0.0, 0.0]);
+        assert!((eig.values[0] - tau).abs() < 1e-22, "{:?}", eig.values);
+        assert!(eig.values[1].abs() < 1e-22, "{:?}", eig.values);
+        assert!((eig.values[2] + tau).abs() < 1e-22, "{:?}", eig.values);
+        let half_sqrt2 = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((eig.vectors[0][0].abs() - half_sqrt2).abs() < 1e-9);
+        assert!((eig.vectors[0][1].abs() - half_sqrt2).abs() < 1e-9);
+        assert!(eig.vectors[0][2].abs() < 1e-9);
+    }
+    #[test]
+    fn test_eig3_zero_tensor_has_an_orthonormal_frame() {
+        let eig = eig3(&[0.0; 6]);
+        assert_eq!(eig.values, [0.0; 3]);
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((dot3(&eig.vectors[i], &eig.vectors[j]) - expected).abs() < 1e-12);
+            }
+        }
     }
     #[test]
     fn test_eig3_reconstruction() {

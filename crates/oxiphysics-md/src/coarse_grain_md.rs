@@ -23,6 +23,16 @@ use std::f64::consts::PI;
 /// Boltzmann constant in kJ mol⁻¹ K⁻¹ (`R = N_A k_B`, CODATA 2018).
 const KB_KJ_PER_MOL_K: f64 = 8.314_462_618e-3;
 
+/// Coulomb prefactor `1/(4π ε₀)` in kJ mol⁻¹ nm e⁻².
+const COULOMB_KJ_NM_PER_E2: f64 = 138.935;
+
+/// Distance floor (nm) of the non-bonded kernel: closer pairs interact as if
+/// separated by this distance, which keeps energies and forces finite.
+const MIN_PAIR_DISTANCE: f64 = 0.1;
+
+/// Charge magnitude (e) below which a bead carries no electrostatic interaction.
+const NEGLIGIBLE_CHARGE: f64 = 1e-10;
+
 // ---------------------------------------------------------------------------
 // Helper geometry
 // ---------------------------------------------------------------------------
@@ -295,28 +305,99 @@ impl CgForceField {
     /// Yukawa (screened Coulomb) energy between charges qi and qj at r \[nm\].
     /// Returns energy in kJ mol⁻¹.
     pub fn electrostatic_energy(&self, qi: f64, qj: f64, r: f64) -> f64 {
-        // ε₀ in kJ mol⁻¹ nm e⁻² context: factor ≈ 138.935 kJ mol⁻¹ nm e⁻²
-        const KE: f64 = 138.935;
-        KE * qi * qj / r * (-r / self.electrostatic_screening).exp()
+        COULOMB_KJ_NM_PER_E2 * qi * qj / r * (-r / self.electrostatic_screening).exp()
     }
 
-    /// Total non-bonded energy of a bead array (all unique pairs).
+    /// Total non-bonded energy of a bead array (all unique pairs, no periodic
+    /// boundaries).
     /// Returns energy in kJ mol⁻¹.
+    ///
+    /// A bead array carries no topology, so bonded neighbours are *not* excluded
+    /// here; [`CgSimulation::total_potential_energy`] applies the exclusions of 1-2
+    /// and 1-3 pairs of the simulated molecules and the minimum image.
     pub fn total_nonbonded(&self, beads: &[CgBead]) -> f64 {
         let mut e = 0.0;
         let n = beads.len();
         for i in 0..n {
             for j in (i + 1)..n {
-                let r = dist3(beads[i].pos, beads[j].pos).max(0.1);
+                let r = dist3(beads[i].pos, beads[j].pos).max(MIN_PAIR_DISTANCE);
                 let ti = bead_type_index(beads[i].type_);
                 let tj = bead_type_index(beads[j].type_);
                 e += self.lj_energy(ti, tj, r);
-                if beads[i].charge.abs() > 1e-10 || beads[j].charge.abs() > 1e-10 {
+                if beads[i].charge.abs() > NEGLIGIBLE_CHARGE
+                    || beads[j].charge.abs() > NEGLIGIBLE_CHARGE
+                {
                     e += self.electrostatic_energy(beads[i].charge, beads[j].charge, r);
                 }
             }
         }
         e
+    }
+
+    /// Energy, force factor and virial of the non-bonded interaction (Lennard-Jones
+    /// plus Yukawa electrostatics) between two beads whose minimum-image
+    /// separation vector is `r_vec = r_i − r_j`.
+    ///
+    /// The distance is floored at [`MIN_PAIR_DISTANCE`], exactly as in
+    /// [`CgForceField::total_nonbonded`], so energy, force and virial of every
+    /// caller stay mutually consistent.
+    fn pair_terms(&self, bead_i: &CgBead, bead_j: &CgBead, r_vec: [f64; 3]) -> PairTerms {
+        let r = norm3(r_vec).max(MIN_PAIR_DISTANCE);
+        let ti = bead_type_index(bead_i.type_);
+        let tj = bead_type_index(bead_j.type_);
+        let (eps, sigma) = self.lj_params[ti][tj];
+        let sr6 = (sigma / r).powi(6);
+        let sr12 = sr6 * sr6;
+        let mut energy = self.lj_energy(ti, tj, r);
+        // F_r = -dU/dr = 4ε (12 sr12 - 6 sr6) / r; the force on bead i is F_r r_vec / r.
+        let mut force_factor = 4.0 * eps * (12.0 * sr12 - 6.0 * sr6) / (r * r);
+        // r dU/dr for LJ-12-6.
+        let mut virial = 4.0 * eps * (-12.0 * sr12 + 6.0 * sr6);
+        let lambda = self.electrostatic_screening;
+        let charged =
+            bead_i.charge.abs() > NEGLIGIBLE_CHARGE || bead_j.charge.abs() > NEGLIGIBLE_CHARGE;
+        if charged && lambda > 0.0 {
+            // U = K qi qj e^{-r/λ} / r  =>  -dU/dr = K qi qj e^{-r/λ} (1/r² + 1/(λ r)).
+            let qq = COULOMB_KJ_NM_PER_E2 * bead_i.charge * bead_j.charge;
+            let screening = (-r / lambda).exp();
+            energy += self.electrostatic_energy(bead_i.charge, bead_j.charge, r);
+            force_factor += qq * screening * (1.0 / (r * r) + 1.0 / (lambda * r)) / r;
+            virial -= qq * screening * (1.0 / r + 1.0 / lambda);
+        }
+        PairTerms {
+            energy,
+            force_factor,
+            virial,
+        }
+    }
+}
+
+/// Energy, force and virial of one non-bonded bead pair.
+struct PairTerms {
+    /// Pair energy `U` \[kJ mol⁻¹\].
+    energy: f64,
+    /// Factor `-dU/dr / r` that multiplies the minimum-image vector `r_i − r_j` to
+    /// give the force on bead `i` \[kJ mol⁻¹ nm⁻²\] (the force on `j` is opposite).
+    force_factor: f64,
+    /// Pair virial `r dU/dr` \[kJ mol⁻¹\].
+    virial: f64,
+}
+
+/// Bead pairs that do not interact non-bonded: bonded 1-2 neighbours and the end
+/// beads of every angle (1-3 pairs).
+///
+/// For every bead the sorted list of excluded partners with a *higher* global bead
+/// index is stored, so a lookup is a binary search in a list of a few entries.
+struct Exclusions {
+    partners: Vec<Vec<usize>>,
+}
+
+impl Exclusions {
+    /// Whether the global bead pair `(i, j)` with `i < j` is excluded.
+    fn contains(&self, i: usize, j: usize) -> bool {
+        self.partners
+            .get(i)
+            .is_some_and(|list| list.binary_search(&j).is_ok())
     }
 }
 
@@ -339,8 +420,10 @@ fn bead_type_index(t: CgBeadType) -> usize {
 /// NVT coarse-grained simulation with Langevin thermostat in an orthorhombic
 /// periodic box.
 ///
-/// Non-bonded pairs interact through the minimum image of their separation, and
-/// the box edge lengths [`CgSimulation::box_lengths`] define the volume used by
+/// Non-bonded pairs (Lennard-Jones plus Yukawa electrostatics of charged beads)
+/// interact through the minimum image of their separation, except for the 1-2 pairs
+/// joined by a bond and the 1-3 end beads of an angle of the same molecule, which
+/// are excluded.  The box edge lengths [`CgSimulation::box_lengths`] define the volume used by
 /// [`CgSimulation::pressure`] and the number density used by
 /// [`CgSimulation::rdf`].  Bead positions are never wrapped back into the box, so
 /// they stay *unwrapped*: [`CgSimulation::diffusion_coefficient`] measures the
@@ -472,14 +555,30 @@ impl CgSimulation {
         }
     }
 
+    /// Total potential energy of the system \[kJ mol⁻¹\].
+    ///
+    /// The sum of the bonded energy of every molecule
+    /// ([`CgMolecule::bonded_energy`]) and the non-bonded Lennard-Jones plus Yukawa
+    /// energy of all non-excluded bead pairs (minimum image, bonded 1-2 and 1-3
+    /// pairs of a molecule excluded, separations floored at 0.1 nm).  The forces of
+    /// the simulation are exactly the negative gradient of this energy for pair
+    /// separations above 0.1 nm.
+    pub fn total_potential_energy(&self) -> f64 {
+        let beads = self.all_beads();
+        let mut energy: f64 = self.molecules.iter().map(CgMolecule::bonded_energy).sum();
+        self.for_each_nonbonded_pair(&beads, |_, _, _, terms| energy += terms.energy);
+        energy
+    }
+
     /// Instantaneous pressure estimate via the virial theorem \[kJ mol⁻¹ nm⁻³\].
     ///
     /// `P = N k_B T / V - W / (3 V)` with `V = Lx · Ly · Lz` the volume of the
     /// periodic box, `T` the target temperature and `W = Σ r dU/dr` the
-    /// configurational virial of the Lennard-Jones pairs (minimum-image
-    /// separations) and of the harmonic bonds.  The cosine-harmonic angle terms
-    /// depend only on the angle, which is invariant under a uniform rescaling of
-    /// the system, so they contribute nothing to the virial.
+    /// configurational virial of the non-bonded pairs (Lennard-Jones plus Yukawa at
+    /// minimum-image separations, with the same bonded exclusions as the forces)
+    /// and of the harmonic bonds.  The cosine-harmonic angle terms depend only on
+    /// the angle, which is invariant under a uniform rescaling of the system, so
+    /// they contribute nothing to the virial.
     ///
     /// Returns `0.0` for an empty system and `NaN` if the box volume is not
     /// finite and positive.
@@ -495,21 +594,9 @@ impl CgSimulation {
         }
         let kbt = KB_KJ_PER_MOL_K * self.temp;
         let ideal = (n as f64) * kbt / volume;
-        // Σ r dU/dr over all pairs
+        // Σ r dU/dr over all non-excluded pairs
         let mut virial = 0.0f64;
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let rij = minimum_image(sub3(beads[i].pos, beads[j].pos), self.box_lengths);
-                let r = norm3(rij).max(0.1);
-                let ti = bead_type_index(beads[i].type_);
-                let tj = bead_type_index(beads[j].type_);
-                let (eps, sigma) = self.ff.lj_params[ti][tj];
-                let sr = sigma / r;
-                let sr6 = sr.powi(6);
-                // r dU/dr for LJ-12-6: 4ε(-12σ¹²/r¹² + 6σ⁶/r⁶)
-                virial += 4.0 * eps * (-12.0 * sr6 * sr6 + 6.0 * sr6);
-            }
-        }
+        self.for_each_nonbonded_pair(&beads, |_, _, _, terms| virial += terms.virial);
         // Harmonic bonds: r dU/dr = k (r - r0) r.  Molecules are never wrapped,
         // so the intramolecular separation is the plain bead distance.
         for mol in &self.molecules {
@@ -627,24 +714,60 @@ impl CgSimulation {
             offset += mol.beads.len();
         }
 
-        // Non-bonded forces between all beads across molecules
+        // Non-bonded forces between all non-excluded beads across molecules.
         let beads: Vec<&CgBead> = self.all_beads();
-        for i in 0..total {
-            for j in (i + 1)..total {
-                let rij = minimum_image(sub3(beads[i].pos, beads[j].pos), self.box_lengths);
-                let r = norm3(rij).max(0.1);
-                let ti = bead_type_index(beads[i].type_);
-                let tj = bead_type_index(beads[j].type_);
-                let (eps, sigma) = self.ff.lj_params[ti][tj];
-                let sr = sigma / r;
-                let sr6 = sr.powi(6);
-                let fmag = 4.0 * eps * (12.0 * sr6 * sr6 - 6.0 * sr6) / (r * r);
-                let fv = scale3(rij, fmag);
-                forces[i] = add3(forces[i], fv);
-                forces[j] = sub3(forces[j], fv);
+        self.for_each_nonbonded_pair(&beads, |i, j, r_vec, terms| {
+            let fv = scale3(r_vec, terms.force_factor);
+            forces[i] = add3(forces[i], fv);
+            forces[j] = sub3(forces[j], fv);
+        });
+        forces
+    }
+
+    /// Bonded 1-2 pairs and 1-3 angle end pairs of every molecule as global bead
+    /// indices (molecule order, beads numbered consecutively).
+    fn exclusions(&self) -> Exclusions {
+        let total: usize = self.molecules.iter().map(|m| m.beads.len()).sum();
+        let mut partners = vec![Vec::new(); total];
+        let mut offset = 0usize;
+        for mol in &self.molecules {
+            let bond_pairs = mol.bonds.iter().map(|&(i, j, _, _)| (i, j));
+            let angle_pairs = mol.angles.iter().map(|&(i, _, k, _, _)| (i, k));
+            for (a, b) in bond_pairs.chain(angle_pairs) {
+                let (lo, hi) = (offset + a.min(b), offset + a.max(b));
+                if let Some(list) = partners.get_mut(lo) {
+                    list.push(hi);
+                }
+            }
+            offset += mol.beads.len();
+        }
+        for list in &mut partners {
+            list.sort_unstable();
+            list.dedup();
+        }
+        Exclusions { partners }
+    }
+
+    /// Visit every non-excluded bead pair once as `(i, j, r_i − r_j, terms)` with
+    /// the minimum-image separation vector, in the order `i < j`.
+    ///
+    /// This is the single pair kernel behind the forces, the potential energy and
+    /// the virial pressure, so the three always agree on exclusions, the minimum
+    /// image and the distance floor.
+    fn for_each_nonbonded_pair<F>(&self, beads: &[&CgBead], mut visit: F)
+    where
+        F: FnMut(usize, usize, [f64; 3], PairTerms),
+    {
+        let exclusions = self.exclusions();
+        for i in 0..beads.len() {
+            for j in (i + 1)..beads.len() {
+                if exclusions.contains(i, j) {
+                    continue;
+                }
+                let r_vec = minimum_image(sub3(beads[i].pos, beads[j].pos), self.box_lengths);
+                visit(i, j, r_vec, self.ff.pair_terms(beads[i], beads[j], r_vec));
             }
         }
-        forces
     }
 
     /// Box-Muller Gaussian RNG (seeded LCG, no external crates).
@@ -849,6 +972,9 @@ impl MsIbi {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod exclusion_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1226,13 +1352,28 @@ mod tests {
     }
 
     /// Total potential energy of the simulation, evaluated independently of the
-    /// force and virial code: minimum-image LJ over all pairs (with the same 0.1 nm
-    /// distance floor) plus the bonded energy of every molecule.
+    /// force and virial code: minimum-image LJ over all pairs that are neither
+    /// bonded (1-2) nor the ends of an angle (1-3) in the same molecule (with the
+    /// same 0.1 nm distance floor) plus the bonded energy of every molecule.
     fn reference_potential_energy(sim: &CgSimulation) -> f64 {
         let beads: Vec<&CgBead> = sim.molecules.iter().flat_map(|m| m.beads.iter()).collect();
+        let mut excluded: Vec<(usize, usize)> = Vec::new();
+        let mut offset = 0;
+        for mol in &sim.molecules {
+            for &(a, b, _, _) in &mol.bonds {
+                excluded.push((offset + a.min(b), offset + a.max(b)));
+            }
+            for &(a, _, c, _, _) in &mol.angles {
+                excluded.push((offset + a.min(c), offset + a.max(c)));
+            }
+            offset += mol.beads.len();
+        }
         let mut energy = 0.0;
         for i in 0..beads.len() {
             for j in (i + 1)..beads.len() {
+                if excluded.contains(&(i, j)) {
+                    continue;
+                }
                 let d = minimum_image(sub3(beads[i].pos, beads[j].pos), sim.box_lengths);
                 let r = norm3(d).max(0.1);
                 energy += sim.ff.lj_energy(

@@ -243,12 +243,10 @@ fn test_ocean_step_matches_all_pairs_reference_with_variable_h() {
             p.pressure,
             ref_p[i]
         );
-        for c in 0..3 {
+        for (c, (&acc, &reference)) in p.acc.iter().zip(ref_acc[i].iter()).enumerate() {
             assert!(
-                (p.acc[c] - ref_acc[i][c]).abs() <= 1.0e-9 * (1.0 + ref_acc[i][c].abs()),
-                "acc[{i}][{c}]: {} vs {}",
-                p.acc[c],
-                ref_acc[i][c]
+                (acc - reference).abs() <= 1.0e-9 * (1.0 + reference.abs()),
+                "acc[{i}][{c}]: {acc} vs {reference}"
             );
         }
     }

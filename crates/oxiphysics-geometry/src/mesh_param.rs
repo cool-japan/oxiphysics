@@ -8,6 +8,17 @@
 
 use std::collections::HashMap;
 
+mod boundary;
+mod embedding;
+mod lscm;
+mod solve;
+
+pub use boundary::{boundary_loop, boundary_loops};
+pub use lscm::lscm_solve;
+
+use crate::error::Result;
+use embedding::{EdgeWeights, circle_embedding};
+
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
@@ -212,6 +223,11 @@ pub fn vertex_neighbors(vertex_idx: usize, triangles: &[[usize; 3]]) -> Vec<usiz
 }
 
 /// Return the set of boundary vertices (those on at least one boundary edge).
+///
+/// The vertices are listed in ascending id order, which is *not* the order in which
+/// they follow each other around the boundary.  Use [`boundary_loop`] or
+/// [`boundary_loops`] when that order matters, for example to place the boundary on
+/// a circle.
 pub fn boundary_vertices(n_verts: usize, triangles: &[[usize; 3]]) -> Vec<usize> {
     // An edge is a boundary edge if it has no twin.
     // Build directed-edge count; boundary edges appear exactly once.
@@ -259,82 +275,60 @@ pub fn is_boundary_vertex(v: usize, triangles: &[[usize; 3]]) -> bool {
 // LSCM Parameterization
 // ---------------------------------------------------------------------------
 
-/// Least Squares Conformal Maps parameterization.
+/// Least Squares Conformal Maps parameterization (Lévy, Petitjean, Ray and
+/// Maillot, SIGGRAPH 2002).
+///
+/// Unfolds a disc-like patch into the plane while preserving angles as well as a
+/// piecewise-linear map can: a developable patch (a plane, or a strip of facets
+/// around a cylinder or cone) is unfolded exactly, with zero
+/// [`conformal_energy`](Self::conformal_energy); any other patch gets the map of
+/// least angle distortion.  LSCM has a free boundary, so, unlike
+/// [`TutteParameterization`], it needs no convex boundary and does not guarantee an
+/// injective map: strongly curved patches can fold over.
+///
+/// The sparse system is solved with Jacobi-preconditioned conjugate gradients, whose
+/// iteration count grows with the diameter of the patch: the cost rises faster than
+/// linearly with the number of vertices, and a patch of some ten thousand vertices
+/// takes seconds.  Tutte and harmonic maps are about an order of magnitude cheaper.
 pub struct LscmParameterization;
 
 impl LscmParameterization {
-    /// Compute UV coordinates for the mesh using a simplified LSCM approach.
+    /// Compute UV coordinates for the mesh with Least Squares Conformal Maps.
     ///
-    /// Pins the first two boundary vertices and solves iteratively.
-    pub fn compute(mesh: &ParamTriMesh) -> Vec<[f64; 2]> {
-        let n = mesh.vertex_count();
-        if n == 0 {
-            return Vec::new();
-        }
-
-        let bv = boundary_vertices(n, &mesh.triangles);
-
-        // Pin two boundary vertices
-        let pin0 = if bv.is_empty() { 0 } else { bv[0] };
-        let pin1 = if bv.len() < 2 {
-            (pin0 + 1).min(n - 1)
-        } else {
-            bv[1]
-        };
-
-        let mut uvs = vec![[0.0f64; 2]; n];
-        // Set pinned vertices
-        uvs[pin0] = [0.0, 0.0];
-        uvs[pin1] = [1.0, 0.0];
-
-        // Iterative Gauss-Seidel relaxation using conformal weights
-        for _iter in 0..200 {
-            for vi in 0..n {
-                if vi == pin0 || vi == pin1 {
-                    continue;
-                }
-                // Collect triangles containing vi
-                let mut sum_u = 0.0f64;
-                let mut sum_v = 0.0f64;
-                let mut weight_total = 0.0f64;
-
-                for tri in &mesh.triangles {
-                    let local_opt = tri.iter().position(|&x| x == vi);
-                    let local = match local_opt {
-                        Some(l) => l,
-                        None => continue,
-                    };
-
-                    let vj = tri[(local + 1) % 3];
-                    let vk = tri[(local + 2) % 3];
-
-                    let pi = mesh.positions[vi];
-                    let pj = mesh.positions[vj];
-                    let pk = mesh.positions[vk];
-
-                    // Cotangent weights
-                    let ej = sub3(pj, pi);
-                    let ek = sub3(pk, pi);
-                    let area2 = length3(cross3(ej, ek));
-                    let w = if area2 > 1e-15 { 1.0 / area2 } else { 0.0 };
-
-                    sum_u += w * (uvs[vj][0] + uvs[vk][0]);
-                    sum_v += w * (uvs[vj][1] + uvs[vk][1]);
-                    weight_total += 2.0 * w;
-                }
-
-                if weight_total > 1e-15 {
-                    uvs[vi] = [sum_u / weight_total, sum_v / weight_total];
-                }
-            }
-        }
-
-        uvs
+    /// The two boundary vertices that are farthest apart are pinned (the one with
+    /// the smaller id to `(0, 0)`, the other to `(d, 0)` with `d` their 3-D
+    /// distance) and every other vertex is placed to minimise the area-weighted
+    /// conformal energy, which means solving a sparse symmetric positive definite
+    /// system.  The pair is exact for boundaries of up to 4096 vertices; a longer
+    /// boundary gets a pair found by a double sweep, at least half the diameter
+    /// apart.  The UV layout therefore has the scale of the mesh and a planar
+    /// mesh is reproduced isometrically.  Use [`lscm_solve`] to choose the pins
+    /// yourself.  The triangles must be wound consistently; vertices that no
+    /// triangle uses receive `[0, 0]`.
+    ///
+    /// # Errors
+    /// * [`Error::InvalidMesh`](crate::error::Error::InvalidMesh) for a mesh
+    ///   without triangles, with several connected components or without a
+    ///   boundary (a closed surface cannot be unfolded);
+    /// * [`Error::IndexOutOfBounds`](crate::error::Error::IndexOutOfBounds) for a
+    ///   triangle that refers to a missing vertex;
+    /// * [`Error::DegenerateGeometry`](crate::error::Error::DegenerateGeometry) for
+    ///   non-finite positions or a mesh made of degenerate triangles;
+    /// * [`Error::ConvergenceFailure`](crate::error::Error::ConvergenceFailure) if
+    ///   the linear solver stalls.
+    pub fn compute(mesh: &ParamTriMesh) -> Result<Vec<[f64; 2]>> {
+        lscm::parameterize(mesh)
     }
 
-    /// Compute conformal energy: sum of |J - R|^2 per triangle.
+    /// Conformal (angle) distortion energy of a UV mapping, summed over triangles.
     ///
-    /// J is the Jacobian of the UV mapping, R is the closest rotation.
+    /// For every triangle let `J` be the 3x2 Jacobian of the map from UV space to
+    /// the 3-D triangle, with singular values `σ₁ ≥ σ₂`.  The triangle contributes
+    /// `‖J‖²_F · area_uv − 2 · area_3d = area_uv · (σ₁ − σ₂)²`, which vanishes
+    /// exactly when the triangle is mapped by a similarity (rotation, translation
+    /// and uniform scaling) and grows with the angle distortion.  A triangle of
+    /// zero UV area counts as its full 3-D area; a triangle of zero 3-D area is
+    /// skipped.
     pub fn conformal_energy(
         positions: &[[f64; 3]],
         uvs: &[[f64; 2]],
@@ -387,10 +381,11 @@ impl LscmParameterization {
                 (e2[2] * f1[0] - e1[2] * f2[0]) * inv_det,
             ];
 
-            // Conformal energy: |Ju|^2 + |Jv|^2 - 2 (should be 0 for conformal)
+            // ‖J‖²_F · area_uv − 2 · area_3d = area_uv · (σ₁ − σ₂)², because
+            // area_3d = area_uv · σ₁ σ₂ and ‖J‖²_F = σ₁² + σ₂².  The absolute value
+            // only removes negative rounding noise.
             let norm_ju = dot3(ju, ju);
             let norm_jv = dot3(jv, jv);
-            // LSCM energy = |Ju - perp(Jv)|^2; simplified as |Ju|^2 + |Jv|^2 - 2*area_3d/area_uv
             let area_uv = det_f.abs() * 0.5;
             let stretch = (norm_ju + norm_jv) * area_uv - 2.0 * area_3d;
             energy += stretch.abs();
@@ -405,66 +400,99 @@ impl LscmParameterization {
 // ---------------------------------------------------------------------------
 
 /// Tutte (barycentric) parameterization.
+///
+/// Pins the longest boundary loop of a disc-like patch to the unit circle and puts
+/// every other vertex at the barycentre of its neighbours.  The result is a
+/// bijection onto the disc whenever the patch is a triangulated disc (Tutte 1963),
+/// so no UV triangle folds.  Distortion is not controlled; see
+/// [`HarmonicMapParameterization`] for the angle-aware variant.
 pub struct TutteParameterization;
 
 impl TutteParameterization {
     /// Compute UV coordinates using Tutte's method.
     ///
-    /// Maps boundary vertices to a circle and solves the Laplacian
-    /// system for interior vertices using Gauss-Seidel iteration.
-    pub fn compute(mesh: &ParamTriMesh) -> Vec<[f64; 2]> {
-        let n = mesh.vertex_count();
-        if n == 0 {
-            return Vec::new();
-        }
-
-        let bv = boundary_vertices(n, &mesh.triangles);
-        if bv.is_empty() {
-            // No boundary: return zeros
-            return vec![[0.0; 2]; n];
-        }
-
-        let boundary_uvs = Self::map_boundary_to_circle(&bv, n);
-
-        let mut uvs = vec![[0.0f64; 2]; n];
-        // Assign boundary UVs
-        for &bvi in bv.iter() {
-            uvs[bvi] = boundary_uvs[bvi];
-        }
-
-        let is_boundary: Vec<bool> = (0..n).map(|v| bv.contains(&v)).collect();
-
-        // Gauss-Seidel for interior vertices
-        for _iter in 0..500 {
-            for vi in 0..n {
-                if is_boundary[vi] {
-                    continue;
-                }
-                let neighbors = vertex_neighbors(vi, &mesh.triangles);
-                if neighbors.is_empty() {
-                    continue;
-                }
-                let k = neighbors.len() as f64;
-                let sum_u: f64 = neighbors.iter().map(|&nb| uvs[nb][0]).sum();
-                let sum_v: f64 = neighbors.iter().map(|&nb| uvs[nb][1]).sum();
-                uvs[vi] = [sum_u / k, sum_v / k];
-            }
-        }
-
-        uvs
+    /// The longest boundary loop ([`boundary_loop`]) is placed on the unit circle
+    /// in loop order, with angles proportional to the arc length along the loop
+    /// ([`map_boundary_loop_to_circle`](Self::map_boundary_loop_to_circle)); the
+    /// interior vertices solve the uniform-weight Laplace system, which is
+    /// assembled once as a sparse matrix and solved with preconditioned conjugate
+    /// gradients.  Vertices that no triangle uses receive `[0, 0]`.  Boundary loops
+    /// other than the longest one (holes) are left free.
+    ///
+    /// # Errors
+    /// * [`Error::InvalidMesh`](crate::error::Error::InvalidMesh) for a mesh
+    ///   without triangles, with several connected components or without a
+    ///   boundary (a closed surface cannot be embedded in the disc);
+    /// * [`Error::IndexOutOfBounds`](crate::error::Error::IndexOutOfBounds) for a
+    ///   triangle that refers to a missing vertex;
+    /// * [`Error::ConvergenceFailure`](crate::error::Error::ConvergenceFailure) if
+    ///   the linear solver stalls.
+    pub fn compute(mesh: &ParamTriMesh) -> Result<Vec<[f64; 2]>> {
+        circle_embedding(mesh, EdgeWeights::Uniform)
     }
 
-    /// Map boundary vertices equally spaced on the unit circle.
+    /// Map boundary vertices equally spaced on the unit circle, in the order given.
     ///
-    /// Returns a Vec of length `n_verts` where only boundary indices are set;
-    /// interior entries are `[0.0, 0.0]`.
+    /// `boundary` must list the vertices in the order in which they follow each
+    /// other around the boundary (see [`boundary_loop`]); vertex-id order is not
+    /// loop order.  Returns a Vec of length `n_verts` where only boundary indices
+    /// are set; interior entries are `[0.0, 0.0]`.  Ids that are not smaller than
+    /// `n_verts` are skipped.
     pub fn map_boundary_to_circle(boundary: &[usize], n_verts: usize) -> Vec<[f64; 2]> {
         use std::f64::consts::TAU;
         let mut uvs = vec![[0.0f64; 2]; n_verts];
         let nb = boundary.len();
         for (i, &bv) in boundary.iter().enumerate() {
             let angle = TAU * i as f64 / nb as f64;
-            uvs[bv] = [angle.cos(), angle.sin()];
+            if let Some(slot) = uvs.get_mut(bv) {
+                *slot = [angle.cos(), angle.sin()];
+            }
+        }
+        uvs
+    }
+
+    /// Map an ordered boundary loop onto the unit circle in proportion to arc length.
+    ///
+    /// `boundary_loop` lists the boundary vertices in loop order (see
+    /// [`boundary_loop`]); the first one is placed at angle 0 and every following
+    /// vertex at the angle `2π · s / L`, where `s` is the 3-D length of the loop up
+    /// to that vertex and `L` its total length (closing edge included).  A loop of
+    /// zero length falls back to equally spaced angles.  Vertices of the loop that
+    /// lie outside `positions` or `n_verts` are skipped.
+    ///
+    /// Returns a Vec of length `n_verts` where only loop vertices are set; all other
+    /// entries are `[0.0, 0.0]`.
+    pub fn map_boundary_loop_to_circle(
+        positions: &[[f64; 3]],
+        boundary_loop: &[usize],
+        n_verts: usize,
+    ) -> Vec<[f64; 2]> {
+        use std::f64::consts::TAU;
+        let mut uvs = vec![[0.0f64; 2]; n_verts];
+        let count = boundary_loop.len();
+        let mut arc = Vec::with_capacity(count + 1);
+        arc.push(0.0f64);
+        for k in 0..count {
+            let from = positions.get(boundary_loop[k]);
+            let to = positions.get(boundary_loop[(k + 1) % count]);
+            let length = match (from, to) {
+                (Some(&a), Some(&b)) => length3(sub3(b, a)),
+                _ => 0.0,
+            };
+            arc.push(arc[k] + length);
+        }
+        let total = arc.last().copied().unwrap_or(0.0);
+        let proportional = total.is_finite() && total > 0.0;
+        for (k, &vertex) in boundary_loop.iter().enumerate() {
+            let fraction = if proportional {
+                arc[k] / total
+            } else {
+                k as f64 / count as f64
+            };
+            let angle = TAU * fraction;
+            if let Some(slot) = uvs.get_mut(vertex) {
+                *slot = [angle.cos(), angle.sin()];
+            }
         }
         uvs
     }
@@ -836,92 +864,27 @@ pub fn fill_holes(triangles: &mut Vec<[usize; 3]>, n_verts: usize) {
 
 /// Harmonic map UV parameterization (also known as harmonic embedding).
 ///
-/// Maps boundary vertices to a fixed convex boundary (circle) and solves
-/// the discrete harmonic (Laplacian) system with cotangent weights for
-/// interior vertices.  This provides a more accurate conformal-ish mapping
-/// than uniform Tutte.
+/// Maps the longest boundary loop of a disc-like patch to the unit circle and
+/// solves the discrete harmonic (Laplace) system with cotangent weights for the
+/// interior vertices.  This follows the geometry of the mesh and distorts angles
+/// less than the uniform weights of [`TutteParameterization`]; cotangent weights
+/// are clamped to a small positive value so that the map stays a bijection onto
+/// the disc.
 pub struct HarmonicMapParameterization;
 
 impl HarmonicMapParameterization {
     /// Compute cotangent-weighted UV coordinates for the mesh.
     ///
-    /// Boundary vertices are fixed on a unit circle.
-    /// Interior vertices are solved by Gauss-Seidel iteration with
-    /// cotangent weights.
-    pub fn compute(mesh: &ParamTriMesh) -> Vec<[f64; 2]> {
-        let n = mesh.vertex_count();
-        if n == 0 {
-            return Vec::new();
-        }
-
-        let bv = boundary_vertices(n, &mesh.triangles);
-        if bv.is_empty() {
-            return vec![[0.0; 2]; n];
-        }
-
-        // Map boundary to circle.
-        let boundary_uvs = TutteParameterization::map_boundary_to_circle(&bv, n);
-        let mut uvs = vec![[0.0f64; 2]; n];
-        let is_boundary: Vec<bool> = (0..n).map(|v| bv.contains(&v)).collect();
-
-        for &bvi in &bv {
-            uvs[bvi] = boundary_uvs[bvi];
-        }
-
-        // Precompute cotangent weights.
-        // w_ij = cot(alpha_ij) + cot(beta_ij) where alpha, beta are opposite angles.
-        // For simplicity use area-based weights (simpler to compute but still SPD).
-        let cot_weight = |vi: usize, vj: usize| -> f64 {
-            let mut w = 0.0f64;
-            for tri in &mesh.triangles {
-                // Find if vi and vj are both in this triangle.
-                let pos_i = tri.iter().position(|&v| v == vi);
-                let pos_j = tri.iter().position(|&v| v == vj);
-                if let (Some(pi), Some(pj)) = (pos_i, pos_j) {
-                    // The opposite vertex.
-                    let pk = 3 - pi - pj; // since 0+1+2=3
-                    let vk = tri[pk];
-                    let pk_pos = mesh.positions[vk];
-                    let pi_pos = mesh.positions[vi];
-                    let pj_pos = mesh.positions[vj];
-                    let ei = sub3(pi_pos, pk_pos);
-                    let ej = sub3(pj_pos, pk_pos);
-                    let dot = dot3(ei, ej);
-                    let cross_n = length3(cross3(ei, ej));
-                    if cross_n > 1e-15 {
-                        w += dot / cross_n; // = cot(angle at vk)
-                    }
-                }
-            }
-            w.max(0.0) // clamp to avoid negative weights
-        };
-
-        // Gauss-Seidel with cotangent weights.
-        for _iter in 0..500 {
-            for vi in 0..n {
-                if is_boundary[vi] {
-                    continue;
-                }
-                let neighbors = vertex_neighbors(vi, &mesh.triangles);
-                if neighbors.is_empty() {
-                    continue;
-                }
-                let mut sum_u = 0.0f64;
-                let mut sum_v = 0.0f64;
-                let mut sum_w = 0.0f64;
-                for &vj in &neighbors {
-                    let w = cot_weight(vi, vj).max(1e-10);
-                    sum_u += w * uvs[vj][0];
-                    sum_v += w * uvs[vj][1];
-                    sum_w += w;
-                }
-                if sum_w > 1e-15 {
-                    uvs[vi] = [sum_u / sum_w, sum_v / sum_w];
-                }
-            }
-        }
-
-        uvs
+    /// The longest boundary loop is fixed on the unit circle in loop order with
+    /// angles proportional to the arc length; the cotangent weights of every edge
+    /// (the sum of the cotangents of the angles opposite to it) are computed once
+    /// into a sparse system that is solved with preconditioned conjugate
+    /// gradients.  Vertices that no triangle uses receive `[0, 0]`.
+    ///
+    /// # Errors
+    /// The same as [`TutteParameterization::compute`].
+    pub fn compute(mesh: &ParamTriMesh) -> Result<Vec<[f64; 2]>> {
+        circle_embedding(mesh, EdgeWeights::Cotangent)
     }
 }
 
@@ -1317,6 +1280,9 @@ pub fn parameterization_quality_report(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod param_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1433,7 +1399,7 @@ mod tests {
     fn test_harmonic_map_single_triangle() {
         // Single triangle: 3 boundary vertices -> harmonic should place them on circle.
         let mesh = flat_triangle_mesh();
-        let uvs = HarmonicMapParameterization::compute(&mesh);
+        let uvs = HarmonicMapParameterization::compute(&mesh).unwrap();
         assert_eq!(uvs.len(), 3);
     }
 
@@ -1456,7 +1422,7 @@ mod tests {
                 mesh.add_triangle(v00, v11, v01);
             }
         }
-        let uvs = HarmonicMapParameterization::compute(&mesh);
+        let uvs = HarmonicMapParameterization::compute(&mesh).unwrap();
         assert_eq!(uvs.len(), 9);
         // No UV should be NaN.
         for uv in &uvs {

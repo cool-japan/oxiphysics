@@ -195,7 +195,7 @@ impl ConfidenceInterval {
         let mut rng = Lcg64::new(seed);
         let mut boot_means: Vec<f64> = (0..n_bootstrap)
             .map(|_| {
-                let sum: f64 = (0..n).map(|_| data[rng.next_usize() % n]).sum();
+                let sum: f64 = (0..n).map(|_| data[rng.next_below(n)]).sum();
                 sum / n as f64
             })
             .collect();
@@ -1180,10 +1180,17 @@ pub fn ensemble_spread(ensemble: &[Vec<f64>]) -> Vec<f64> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Simple LCG RNG (no external dependency needed for bootstrap)
+// Seeded RNG (no external dependency needed for bootstrap)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A minimal 64-bit linear congruential generator for bootstrap resampling.
+/// A minimal seeded 64-bit generator for bootstrap resampling.
+///
+/// The state advances as a 64-bit linear congruential generator and every
+/// output goes through the SplitMix64 finaliser.  The raw LCG state is a poor
+/// source of bits: bit `k` has period `2^(k+1)`, so `state % n` for `n = 2^k`
+/// cycles through a permutation, every bootstrap resample of `n` points would
+/// then be the whole sample and the interval would collapse to a point.  The
+/// finaliser mixes all state bits into every output bit.
 struct Lcg64 {
     state: u64,
 }
@@ -1201,11 +1208,30 @@ impl Lcg64 {
             .state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
-        self.state
+        // SplitMix64 finaliser
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
     }
 
-    fn next_usize(&mut self) -> usize {
-        self.next_u64() as usize
+    /// Uniform integer in `0..n` (Lemire's multiply-shift method, rejecting
+    /// the few draws that would bias the result); `0` for `n <= 1`.
+    fn next_below(&mut self, n: usize) -> usize {
+        if n <= 1 {
+            return 0;
+        }
+        let range = n as u64;
+        let mut product = u128::from(self.next_u64()) * u128::from(range);
+        let mut low = product as u64;
+        if low < range {
+            let threshold = range.wrapping_neg() % range;
+            while low < threshold {
+                product = u128::from(self.next_u64()) * u128::from(range);
+                low = product as u64;
+            }
+        }
+        (product >> 64) as usize
     }
 }
 
@@ -1257,6 +1283,39 @@ mod tests {
         let data: Vec<f64> = (0..30).map(|i| i as f64 * 0.5).collect();
         let ci = ConfidenceInterval::bootstrap(&data, 0.95, 500, 42);
         assert!(ci.width() > 0.0, "bootstrap CI should have positive width");
+    }
+
+    #[test]
+    fn test_ci_bootstrap_power_of_two_sizes_are_not_degenerate() {
+        // The raw LCG `% n` made every resample of n = 2^k points a
+        // permutation of the sample, so every bootstrap mean equalled the
+        // sample mean and the CI collapsed to a point.
+        let ci = ConfidenceInterval::bootstrap(&[1.0, 2.0, 3.0, 4.0], 0.95, 2000, 7);
+        assert!(ci.width() > 0.5, "width {}", ci.width());
+        for n in [2_usize, 4, 8, 16, 64] {
+            let data: Vec<f64> = (1..=n).map(|i| i as f64).collect();
+            let ci = ConfidenceInterval::bootstrap(&data, 0.95, 4000, 7);
+            // Normal approximation: se of the resample mean is σ/√n, with the
+            // population variance σ² = (n² − 1)/12 of the values 1..=n.
+            let sigma = (((n * n - 1) as f64) / 12.0).sqrt();
+            let expected = 2.0 * 1.96 * sigma / (n as f64).sqrt();
+            assert!(
+                ci.width() > 0.6 * expected && ci.width() < 1.4 * expected,
+                "n = {n}: width {} vs normal approximation {expected}",
+                ci.width()
+            );
+            assert!(ci.contains(ci.mean), "n = {n}");
+        }
+    }
+
+    #[test]
+    fn test_ci_bootstrap_is_reproducible_per_seed() {
+        let data: Vec<f64> = (0..16).map(|i| (i * i) as f64).collect();
+        let a = ConfidenceInterval::bootstrap(&data, 0.9, 500, 3);
+        let b = ConfidenceInterval::bootstrap(&data, 0.9, 500, 3);
+        let c = ConfidenceInterval::bootstrap(&data, 0.9, 500, 4);
+        assert_eq!((a.lower, a.upper), (b.lower, b.upper));
+        assert!((a.lower, a.upper) != (c.lower, c.upper));
     }
 
     #[test]
@@ -1819,5 +1878,47 @@ mod tests {
         let mut r1 = Lcg64::new(1);
         let mut r2 = Lcg64::new(2);
         assert_ne!(r1.next_u64(), r2.next_u64());
+    }
+
+    #[test]
+    fn test_lcg_low_bits_are_not_periodic() {
+        // The raw state's 3 low bits repeat with period 8 (seed 42: 6, 5, 0, 7,
+        // 2, 1, 4, 3, ...).
+        let mut rng = Lcg64::new(42);
+        let low: Vec<u64> = (0..64).map(|_| rng.next_u64() & 7).collect();
+        assert!(
+            (0..low.len() - 8).any(|i| low[i] != low[i + 8]),
+            "low bits repeat with period 8: {low:?}"
+        );
+        for residue in 0..8 {
+            assert!(low.contains(&residue), "residue {residue} never drawn");
+        }
+    }
+
+    #[test]
+    fn test_lcg_next_below_is_in_range_and_uniform() {
+        let mut rng = Lcg64::new(2024);
+        assert_eq!((rng.next_below(0), rng.next_below(1)), (0, 0));
+        for (n, draws) in [(2_usize, 20_000_usize), (3, 30_000), (8, 80_000)] {
+            let mut counts = vec![0_usize; n];
+            for _ in 0..draws {
+                counts[rng.next_below(n)] += 1;
+            }
+            let expected = draws / n;
+            for (k, &c) in counts.iter().enumerate() {
+                assert!(
+                    c.abs_diff(expected) < expected / 20,
+                    "n = {n}, value {k}: {c} of {draws}"
+                );
+            }
+        }
+        assert!((0..1000).all(|_| rng.next_below(1000) < 1000));
+        // Serial independence: consecutive pairs over `0..4` fill all 16 cells.
+        let mut pairs = [0_usize; 16];
+        for _ in 0..64_000 {
+            let (a, b) = (rng.next_below(4), rng.next_below(4));
+            pairs[4 * a + b] += 1;
+        }
+        assert!(pairs.iter().all(|&c| c.abs_diff(4000) < 400), "{pairs:?}");
     }
 }

@@ -13,7 +13,8 @@
 //!   (Strang split-step Fourier integrator, exactly number conserving)
 //! - [`QuantumVortex`] — quantized vortex with Biot-Savart velocity field
 //! - [`VortexDynamics`] — multi-vortex Biot-Savart interactions
-//! - [`SuperfluidLbm`] — two-fluid model (superfluid + normal components)
+//! - [`SuperfluidLbm`] — two-fluid model: D1Q3 BGK lattice Boltzmann normal fluid,
+//!   inviscid (Euler) superfluid and momentum-conserving mutual friction
 //! - [`QuantumTurbulence`] — vortex tangle and Kolmogorov spectrum
 //! - [`SchroedingerLbm`] — LBM solution of Schrödinger equation (Madelung)
 //! - [`BoseEinsteinCondensate`] — BEC with Thomas-Fermi profile and solitons
@@ -27,6 +28,10 @@
 use crate::error::Error;
 use oxifft::Complex;
 use std::f64::consts::PI;
+
+mod superfluid;
+
+pub use superfluid::SuperfluidLbm;
 
 // ---------------------------------------------------------------------------
 // Physical constants
@@ -360,7 +365,7 @@ impl GrossPitaevskiiLbm {
         let g = self.params.coupling;
         for (z, &v) in psi.iter_mut().zip(&self.potential) {
             let w = v + g * z.norm_sqr();
-            *z = *z * Complex::cis(-w * scale);
+            *z *= Complex::cis(-w * scale);
         }
     }
 
@@ -387,7 +392,7 @@ impl GrossPitaevskiiLbm {
         let kinetic_scale = 0.5 * self.params.hbar * self.dt / self.params.mass;
         for (j, c) in spectrum.iter_mut().enumerate() {
             let k = self.wavenumber(j);
-            *c = *c * Complex::cis(-kinetic_scale * k * k);
+            *c *= Complex::cis(-kinetic_scale * k * k);
         }
         psi = oxifft::ifft(&spectrum);
 
@@ -610,101 +615,8 @@ impl VortexDynamics {
 // SuperfluidLbm
 // ---------------------------------------------------------------------------
 
-/// Two-fluid model LBM for He-II: superfluid + normal fluid components.
-///
-/// Landau two-fluid decomposition: total density ρ = ρ_s + ρ_n.
-/// Superfluid fraction f_s = ρ_s/ρ approaches 1 at T = 0.
-#[derive(Debug, Clone)]
-pub struct SuperfluidLbm {
-    /// Number of lattice sites.
-    pub nx: usize,
-    /// Superfluid density ρ_s(x).
-    pub rho_s: Vec<f64>,
-    /// Normal fluid density ρ_n(x).
-    pub rho_n: Vec<f64>,
-    /// Superfluid velocity field v_s(x).
-    pub vel_s: Vec<f64>,
-    /// Normal fluid velocity field v_n(x).
-    pub vel_n: Vec<f64>,
-    /// Temperature (K).
-    pub temperature: f64,
-    /// Critical temperature T_c (K).
-    pub t_critical: f64,
-    /// Mutual friction coefficient α.
-    pub alpha: f64,
-    /// BGK relaxation time for normal component.
-    pub tau_n: f64,
-    /// Lattice spacing Δx.
-    pub dx: f64,
-    /// Time step Δt.
-    pub dt: f64,
-}
-
-impl SuperfluidLbm {
-    /// Create a two-fluid LBM lattice.
-    ///
-    /// # Arguments
-    /// * `nx`         – number of lattice sites
-    /// * `temperature`– current temperature (K)
-    /// * `t_critical` – critical temperature (K)
-    /// * `alpha`      – mutual friction coefficient
-    /// * `tau_n`      – normal fluid relaxation time
-    /// * `dx`         – lattice spacing
-    /// * `dt`         – time step
-    pub fn new(
-        nx: usize,
-        temperature: f64,
-        t_critical: f64,
-        alpha: f64,
-        tau_n: f64,
-        dx: f64,
-        dt: f64,
-    ) -> Self {
-        let fs = superfluid_fraction(temperature, t_critical);
-        let rho_s = vec![fs; nx];
-        let rho_n = vec![1.0 - fs; nx];
-        Self {
-            nx,
-            rho_s,
-            rho_n,
-            vel_s: vec![0.0; nx],
-            vel_n: vec![0.0; nx],
-            temperature,
-            t_critical,
-            alpha,
-            tau_n,
-            dx,
-            dt,
-        }
-    }
-
-    /// Superfluid fraction at current temperature.
-    pub fn superfluid_fraction(&self) -> f64 {
-        superfluid_fraction(self.temperature, self.t_critical)
-    }
-
-    /// Total density at site i.
-    pub fn total_density(&self, i: usize) -> f64 {
-        self.rho_s[i] + self.rho_n[i]
-    }
-
-    /// Advance one time step: mutual friction coupling + BGK for normal fluid.
-    pub fn step(&mut self) {
-        let alpha = self.alpha;
-        let dt = self.dt;
-        for i in 0..self.nx {
-            let dv = self.vel_s[i] - self.vel_n[i];
-            // mutual friction: F_mf = α·ρ_s·(v_n - v_s)
-            let f_mf = alpha * self.rho_s[i] * (-dv);
-            // update normal velocity
-            let rho_n_i = self.rho_n[i].max(1e-30);
-            self.vel_n[i] += f_mf / rho_n_i * dt;
-            // superfluid gets equal and opposite
-            let rho_s_i = self.rho_s[i].max(1e-30);
-            self.vel_s[i] -= f_mf / rho_s_i * dt;
-        }
-    }
-}
+// The two-fluid model lives in `superfluid.rs`; it is re-exported at the top of
+// this file so that `quantum_lbm::SuperfluidLbm` remains the public path.
 
 /// Compute the superfluid fraction using the two-fluid model approximation.
 ///
@@ -1412,8 +1324,18 @@ mod tests {
     #[test]
     fn test_superfluid_lbm_step() {
         let mut sf = SuperfluidLbm::new(16, 1.0, 2.17, 0.1, 0.6, 1.0, 0.01);
+        sf.vel_s.fill(0.05);
+        sf.vel_n.fill(-0.02);
+        let slip_before = sf.vel_s[0] - sf.vel_n[0];
         sf.step();
-        assert!(sf.vel_n.iter().all(|v| v.is_finite()));
+        assert!(sf.vel_s.iter().chain(&sf.vel_n).all(|v| v.is_finite()));
+        // Mutual friction drags the two components towards each other: the
+        // counter-flow decays (it used to grow) but does not reverse.
+        let slip_after = sf.vel_s[0] - sf.vel_n[0];
+        assert!(
+            slip_after > 0.0 && slip_after < slip_before,
+            "slip {slip_before} -> {slip_after}"
+        );
     }
 
     // ---- QuantumTurbulence ------------------------------------------------

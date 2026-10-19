@@ -54,12 +54,90 @@ pub fn sph_compute_pressure(particles: &mut [SphParticle], config: &SphConfig) {
         p.pressure = config.pressure_k * (ratio.powi(7) - 1.0);
     }
 }
-/// Compute SPH forces: pressure gradient + viscosity + gravity + surface tension.
+/// Outward surface normals of an SPH particle set: the discrete colour-field
+/// normal of Akinci et al. (2013, eq. 5), oriented out of the fluid.
+///
+/// `n_i = -h Σ_j (m_j / ρ_j) ∇W_poly6(x_i - x_j, h)` is the colour-field
+/// gradient (which points into the fluid) scaled by the smoothing radius `h`
+/// and negated, so that it is dimensionless and points out of the fluid.  At a
+/// free-surface particle all neighbours lie on one side and `|n_i|` is large;
+/// inside the bulk the contributions of the neighbours cancel and `n_i ≈ 0`.
+/// Neighbours with a non-positive density carry no volume and are ignored.
+pub fn sph_surface_normals(particles: &[SphParticle], config: &SphConfig) -> Vec<[f64; 3]> {
+    let mut normals = Vec::with_capacity(particles.len());
+    for (i, p_i) in particles.iter().enumerate() {
+        let mut colour_gradient = [0.0f64; 3];
+        for (j, p_j) in particles.iter().enumerate() {
+            if i == j || p_j.density <= 0.0 {
+                continue;
+            }
+            let r_vec = sub3(p_i.position, p_j.position);
+            let r = length3(r_vec);
+            if r > config.h || r < 1e-15 {
+                continue;
+            }
+            let grad = SphKernels::poly6_grad(r_vec, r, config.h);
+            colour_gradient = add3(colour_gradient, scale3(grad, p_j.mass / p_j.density));
+        }
+        normals.push(scale3(colour_gradient, -config.h));
+    }
+    normals
+}
+/// Surface-tension acceleration of particle `p_i` due to its neighbour `p_j`
+/// (Akinci et al. 2013): the cohesion pull `-γ m_j C(r) (x_i - x_j)/r` plus the
+/// curvature-minimising term `-γ (n_i - n_j)`, both scaled by the
+/// particle-deficiency correction `K_ij = 2 ρ_0 / (ρ_i + ρ_j)`.
+///
+/// `r_vec = x_i - x_j` and `r = |r_vec|` with `0 < r <= h`.
+fn surface_tension_acceleration(
+    p_i: &SphParticle,
+    p_j: &SphParticle,
+    normal_i: [f64; 3],
+    normal_j: [f64; 3],
+    r_vec: [f64; 3],
+    r: f64,
+    config: &SphConfig,
+) -> [f64; 3] {
+    let density_sum = p_i.density + p_j.density;
+    if density_sum <= 0.0 {
+        return [0.0; 3];
+    }
+    let k_ij = 2.0 * config.rest_density / density_sum;
+    let gamma = config.surface_tension;
+    let cohesion = scale3(
+        r_vec,
+        -gamma * p_j.mass * SphKernels::cohesion(r, config.h) / r,
+    );
+    let curvature = scale3(sub3(normal_i, normal_j), -gamma);
+    scale3(add3(cohesion, curvature), k_ij)
+}
+/// Compute SPH force densities (N/m³): pressure gradient + viscosity +
+/// gravity + surface tension.
+///
+/// Every term is a force per unit volume, which is what [`sph_integrate`]
+/// expects (`a = f / ρ`):
+///
+/// * pressure: `-ρ_i Σ_j m_j (p_i/ρ_i² + p_j/ρ_j²) ∇W_spiky`, the symmetric SPH
+///   pressure acceleration multiplied by `ρ_i`;
+/// * viscosity: `μ Σ_j m_j (v_j - v_i)/ρ_j ∇²W_viscosity`;
+/// * gravity: `ρ_i g`;
+/// * surface tension (only when `config.surface_tension > 0`):
+///   `ρ_i a_i` with the Akinci et al. (2013) cohesion and curvature
+///   acceleration `a_i`, see [`SphConfig::surface_tension`].
+///
+/// Densities and pressures must be up to date (see [`sph_compute_density`] and
+/// [`sph_compute_pressure`]).
 pub fn sph_compute_forces(particles: &mut [SphParticle], config: &SphConfig) {
     let n = particles.len();
+    let normals = if config.surface_tension > 0.0 {
+        sph_surface_normals(particles, config)
+    } else {
+        Vec::new()
+    };
     let mut forces = vec![[0.0f64; 3]; n];
     for i in 0..n {
-        let mut f_pressure = [0.0f64; 3];
+        let mut a_pressure = [0.0f64; 3];
+        let mut a_tension = [0.0f64; 3];
         let mut f_viscosity = [0.0f64; 3];
         for j in 0..n {
             if i == j {
@@ -74,17 +152,35 @@ pub fn sph_compute_forces(particles: &mut [SphParticle], config: &SphConfig) {
                 / (particles[i].density * particles[i].density)
                 + particles[j].pressure / (particles[j].density * particles[j].density);
             let grad = SphKernels::spiky_grad(r_vec, r, config.h);
-            f_pressure = add3(
-                f_pressure,
+            a_pressure = add3(
+                a_pressure,
                 scale3(grad, -particles[j].mass * pressure_factor),
             );
             let v_diff = sub3(particles[j].velocity, particles[i].velocity);
             let lap = SphKernels::viscosity_laplacian(r, config.h);
             let visc_factor = config.viscosity * particles[j].mass * lap / particles[j].density;
             f_viscosity = add3(f_viscosity, scale3(v_diff, visc_factor));
+            if let (Some(&normal_i), Some(&normal_j)) = (normals.get(i), normals.get(j)) {
+                a_tension = add3(
+                    a_tension,
+                    surface_tension_acceleration(
+                        &particles[i],
+                        &particles[j],
+                        normal_i,
+                        normal_j,
+                        r_vec,
+                        r,
+                        config,
+                    ),
+                );
+            }
         }
-        let f_gravity = scale3(config.gravity, particles[i].density);
-        forces[i] = add3(add3(f_pressure, f_viscosity), f_gravity);
+        let density_i = particles[i].density;
+        // `a_pressure` and `a_tension` are accelerations and become force
+        // densities with the factor `ρ_i`; the viscosity term already is one.
+        let f_pressure_and_tension = scale3(add3(a_pressure, a_tension), density_i);
+        let f_gravity = scale3(config.gravity, density_i);
+        forces[i] = add3(add3(f_pressure_and_tension, f_viscosity), f_gravity);
     }
     for (i, p) in particles.iter_mut().enumerate() {
         p.force = forces[i];
@@ -428,16 +524,21 @@ pub fn g2p_transfer(
             p.velocity[d] = flip_ratio * flip + (1.0 - flip_ratio) * pic;
         }
         p.velocity_grid = v_new;
-        for d in 0..3 {
-            let x = p.position[d] + p.velocity[d] * dt;
+        let axes = p
+            .position
+            .iter_mut()
+            .zip(p.velocity.iter_mut())
+            .zip(extent.iter());
+        for ((position, velocity), &upper) in axes {
+            let x = *position + *velocity * dt;
             if x < 0.0 {
-                p.position[d] = 0.0;
-                p.velocity[d] = p.velocity[d].max(0.0);
-            } else if x > extent[d] {
-                p.position[d] = extent[d];
-                p.velocity[d] = p.velocity[d].min(0.0);
+                *position = 0.0;
+                *velocity = velocity.max(0.0);
+            } else if x > upper {
+                *position = upper;
+                *velocity = velocity.min(0.0);
             } else {
-                p.position[d] = x;
+                *position = x;
             }
         }
     }

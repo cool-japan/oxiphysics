@@ -5,12 +5,13 @@
 //!
 //! Implements the projection-based ISPH method:
 //! 1. Predict velocity using explicit integration (ignoring pressure).
-//! 2. Solve the pressure Poisson equation ∇²P = ρ/Δt · ∇·v*.
+//! 2. Solve the pressure Poisson equation ∇²P = ρ/Δt · ∇·v* (Brookshaw SPH
+//!    Laplacian, free-surface particles pinned to P = 0).
 //! 3. Correct velocity with the pressure gradient.
 //!
 //! # Included types
 //! - [`IsphParticle`] — per-particle state: position, velocity, pressure, intermediate velocity
-//! - [`IsphPressureSolver`] — Poisson solver (Jacobi/Gauss-Seidel iteration)
+//! - [`IsphPressureSolver`] — Poisson solver (relaxed Gauss–Seidel/SOR iteration)
 //! - [`IsphStep`] — full ISPH timestep
 //! - [`DivergenceFreeCondition`] — check ∇·v = 0 after pressure correction
 //! - [`VelocityDivergence`] — compute ∇·v at each particle via SPH summation
@@ -260,14 +261,24 @@ impl PressureGradient {
 /// Parameters for the ISPH pressure Poisson solver.
 #[derive(Debug, Clone)]
 pub struct IsphPressureSolverParams {
-    /// Maximum Jacobi/GS iterations.
+    /// Maximum relaxed Gauss–Seidel sweeps.
     pub max_iter: usize,
-    /// Convergence tolerance on relative pressure change.
+    /// Convergence tolerance on the pressure change of one sweep, relative to
+    /// the largest pressure magnitude of the field.
     pub tolerance: f64,
-    /// Relaxation parameter ω ∈ (0, 2).
+    /// Relaxation parameter ω ∈ (0, 2) of the successive over-relaxation
+    /// (`1` is plain Gauss–Seidel, `< 1` under-relaxes).
     pub relaxation: f64,
     /// Rest density (kg/m³).
     pub rest_density: f64,
+    /// Clamp negative pressures to zero after every sweep.
+    ///
+    /// `false` (default) solves the pressure Poisson equation exactly, so the
+    /// projection removes expansion as well as compression.  `true` suppresses
+    /// tension, i.e. the fluid may separate where it would be stretched, which
+    /// avoids the tensile (particle-clumping) instability at the price of a
+    /// divergence that is left uncorrected in those regions.
+    pub clamp_negative_pressure: bool,
 }
 
 impl Default for IsphPressureSolverParams {
@@ -277,14 +288,50 @@ impl Default for IsphPressureSolverParams {
             tolerance: 1e-4,
             relaxation: 0.5,
             rest_density: 1000.0,
+            clamp_negative_pressure: false,
         }
     }
 }
 
+/// A particle whose SPH position divergence
+/// `(∇·r)ᵢ = Σⱼ Vⱼ (xⱼ − xᵢ)·∇ᵢWᵢⱼ = −Σⱼ Vⱼ r dW/dr` falls below this value has a
+/// truncated kernel support and is treated as a free-surface particle (Dirichlet
+/// condition p = 0).
+///
+/// A particle with a complete support has `∇·r ≈ 3` (2.8–2.95 on a lattice with
+/// `h = 1.2 Δx`, 2.7–3.0 when the particles are displaced randomly by 10 % of the
+/// spacing); the outermost layer of such a lattice has at most 2.1 (2.2 with the
+/// disorder) and an isolated particle 0.  `2.4 = 0.8 · 3` lies between the two
+/// classes, whereas a kernel-sum criterion (a complete support sums to
+/// 1 ± 10 % under the same disorder) misclassifies interior particles.
+const FREE_SURFACE_POSITION_DIVERGENCE: f64 = 2.4;
+
+/// Brookshaw/Morris SPH Laplacian weight of the neighbour `j` of a particle at
+/// distance `r`,
+///
+/// `cᵢⱼ = 2 Vⱼ (−dW/dr) r / (r² + η²) ≥ 0`,  `η² = 0.01 h²`,
+///
+/// such that `∇²Aᵢ ≈ Σⱼ cᵢⱼ (Aⱼ − Aᵢ)` for any scalar or vector field `A`.  The
+/// weight is positive because `dW/dr < 0`: the Laplacian of a field diffuses the
+/// difference `Aⱼ − Aᵢ`.
+fn laplacian_weight(vol_j: f64, r: f64, h: f64) -> f64 {
+    let eta_sq = 0.01 * h * h;
+    2.0 * vol_j * (-kernel_dw_dr(r, h)) * r / (r * r + eta_sq)
+}
+
 /// Iterative pressure Poisson solver for ISPH.
 ///
-/// Solves ∇²P = ρ/Δt · ∇·v* using a relaxed Jacobi iteration with
-/// diagonal approximation of the Laplacian operator.
+/// Solves `∇²P = ρ₀/Δt · ∇·v*` with the Brookshaw SPH Laplacian
+/// `Σⱼ cᵢⱼ (Pⱼ − Pᵢ) = bᵢ`, `bᵢ = ρ₀/Δt · (∇·v*)ᵢ` (see `laplacian_weight`),
+/// using relaxed Gauss–Seidel (SOR) sweeps
+///
+/// `Pᵢ ← (1 − ω) Pᵢ + ω (Σⱼ cᵢⱼ Pⱼ − bᵢ) / Σⱼ cᵢⱼ`.
+///
+/// The Laplacian is singular for pure Neumann data, so particles with a
+/// truncated kernel support (the free surface, see
+/// [`detect_free_surface`](Self::detect_free_surface)) are pinned to `P = 0`.
+/// Compression (`∇·v* < 0`) then produces positive pressure inside the fluid.
+/// The neighbour couplings are assembled once per solve, not once per sweep.
 pub struct IsphPressureSolver {
     /// Solver parameters.
     pub params: IsphPressureSolverParams,
@@ -298,66 +345,182 @@ impl IsphPressureSolver {
         Self { params, h }
     }
 
-    /// Run one pressure-Poisson solve; updates `p.pressure` for each particle.
+    /// Flag the free-surface particles of `particles`.
     ///
-    /// Returns `(iterations, max_pressure_change)`.
-    pub fn solve(&self, particles: &mut [IsphParticle], dt: f64) -> (usize, f64) {
-        let n = particles.len();
+    /// A particle is a free-surface particle when the SPH divergence of the
+    /// position field, `(∇·r)ᵢ = Σⱼ (mⱼ/ρⱼ) (xⱼ − xᵢ)·∇ᵢW(rᵢⱼ, h)` over the
+    /// particles within `2h`, is below `2.4`: it equals the space dimension 3 for a
+    /// complete kernel support and drops towards 0 when part of the support is
+    /// empty.  The indicator keeps a wide margin against the number-density
+    /// disorder of a real particle distribution.  The result is index-aligned
+    /// with `particles`; an invalid smoothing length flags every particle.
+    pub fn detect_free_surface(&self, particles: &[IsphParticle]) -> Vec<bool> {
         let h = self.h;
-        let rho0 = self.params.rest_density;
-        let omega = self.params.relaxation;
-
-        let mut iters = 0usize;
-        let mut max_change = f64::INFINITY;
-
-        while iters < self.params.max_iter && max_change > self.params.tolerance {
-            max_change = 0.0_f64;
-            let old_pressures: Vec<f64> = particles.iter().map(|p| p.pressure).collect();
-
-            for i in 0..n {
-                let xi = particles[i].position;
-                let div_vi = particles[i].div_velocity;
-
-                // Diagonal coefficient aᵢᵢ ≈ Σⱼ (mⱼ/ρⱼ) |∇Wᵢⱼ|² × 2/ρᵢ
-                let mut a_diag = 0.0_f64;
-                let mut rhs = rho0 / dt * div_vi;
-
-                // Off-diagonal contribution to residual
-                let mut off_diag_sum = 0.0_f64;
-                for j in 0..n {
+        if !(h > 0.0 && h.is_finite()) {
+            return vec![true; particles.len()];
+        }
+        let support = 2.0 * h;
+        particles
+            .iter()
+            .enumerate()
+            .map(|(i, particle_i)| {
+                let mut position_divergence = 0.0_f64;
+                for (j, particle_j) in particles.iter().enumerate() {
                     if i == j {
                         continue;
                     }
-                    let xj = particles[j].position;
-                    let rij = vec3_sub(xi, xj);
-                    let r = vec3_norm(rij);
-                    if r >= 2.0 * h {
-                        continue;
+                    let r = vec3_norm(vec3_sub(particle_i.position, particle_j.position));
+                    if r < support {
+                        // (xⱼ − xᵢ)·∇ᵢWᵢⱼ = −r dW/dr, positive for a decreasing kernel.
+                        position_divergence -= particle_j.volume() * r * kernel_dw_dr(r, h);
                     }
-                    let grad_w = kernel_grad(rij, h);
-                    let vol_j = particles[j].mass / particles[j].density.max(1e-300);
-                    let g2 = vec3_dot(grad_w, grad_w);
-                    let rhoi = particles[i].density.max(1e-300);
-                    let rhoj = particles[j].density.max(1e-300);
-                    a_diag += vol_j * g2 * (1.0 / rhoi + 1.0 / rhoj);
-                    off_diag_sum += vol_j * g2 * old_pressures[j] * (1.0 / rhoi + 1.0 / rhoj);
                 }
+                position_divergence < FREE_SURFACE_POSITION_DIVERGENCE
+            })
+            .collect()
+    }
 
-                rhs -= off_diag_sum;
-                let new_p = if a_diag.abs() > 1e-300 {
-                    (1.0 - omega) * old_pressures[i] + omega * rhs / a_diag
-                } else {
-                    old_pressures[i]
-                };
-                let new_p = new_p.max(0.0); // Non-negative pressure enforcement
+    /// Run one pressure-Poisson solve; updates `p.pressure` for each particle.
+    ///
+    /// The right-hand side is read from `p.div_velocity` (see
+    /// [`VelocityDivergence`]); free-surface particles
+    /// ([`detect_free_surface`](Self::detect_free_surface)) get `p = 0`.
+    ///
+    /// Returns `(iterations, max_pressure_change)`, where the second value is the
+    /// largest absolute pressure change of the last sweep.
+    pub fn solve(&self, particles: &mut [IsphParticle], dt: f64) -> (usize, f64) {
+        let free_surface = self.detect_free_surface(particles);
+        self.solve_with_dirichlet(particles, dt, &free_surface)
+    }
 
-                let dp = (new_p - old_pressures[i]).abs();
-                if dp > max_change {
-                    max_change = dp;
-                }
-                particles[i].pressure = new_p;
+    /// [`solve`](Self::solve) with caller-supplied Dirichlet particles.
+    ///
+    /// `dirichlet[i] == true` pins particle `i` to `p = 0` (missing entries count
+    /// as `false`).  Particles without any neighbour inside `2h` are pinned as
+    /// well.  When no particle is pinned (a closed domain) the pressure is only
+    /// determined up to a constant: the right-hand side is then made compatible
+    /// (zero volume-weighted mean) and the pressure normalised to zero
+    /// volume-weighted mean.  Non-positive or non-finite `dt` or `h` leave the
+    /// particles untouched and return `(0, 0.0)`.
+    pub fn solve_with_dirichlet(
+        &self,
+        particles: &mut [IsphParticle],
+        dt: f64,
+        dirichlet: &[bool],
+    ) -> (usize, f64) {
+        let n = particles.len();
+        let h = self.h;
+        if n == 0 || !(h > 0.0 && h.is_finite()) || !(dt > 0.0 && dt.is_finite()) {
+            return (0, 0.0);
+        }
+        let support = 2.0 * h;
+        let is_pinned = |i: usize| dirichlet.get(i).copied().unwrap_or(false);
+        let any_pinned = (0..n).any(is_pinned);
+
+        // Assemble the sparse Laplacian once: couplings cᵢⱼ to the unpinned
+        // neighbours (pinned neighbours contribute cᵢⱼ·0) and the diagonal Σⱼ cᵢⱼ.
+        let volumes: Vec<f64> = particles.iter().map(IsphParticle::volume).collect();
+        let mut couplings: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+        let mut diagonal = vec![0.0_f64; n];
+        for i in 0..n {
+            if is_pinned(i) {
+                continue;
             }
+            for j in 0..n {
+                if i == j {
+                    continue;
+                }
+                let r = vec3_norm(vec3_sub(particles[i].position, particles[j].position));
+                if r >= support {
+                    continue;
+                }
+                let c_ij = laplacian_weight(volumes[j], r, h);
+                if c_ij <= 0.0 {
+                    continue;
+                }
+                diagonal[i] += c_ij;
+                if !is_pinned(j) {
+                    couplings[i].push((j, c_ij));
+                }
+            }
+        }
+        let active: Vec<bool> = (0..n).map(|i| !is_pinned(i) && diagonal[i] > 0.0).collect();
+
+        let rho0 = self.params.rest_density;
+        let mut rhs: Vec<f64> = particles
+            .iter()
+            .map(|p| rho0 / dt * p.div_velocity)
+            .collect();
+        let mut pressure: Vec<f64> = particles
+            .iter()
+            .zip(active.iter())
+            .map(|(p, &is_active)| if is_active { p.pressure } else { 0.0 })
+            .collect();
+
+        // Closed domain: pure Neumann problem, solvable only for a compatible
+        // right-hand side and unique only up to an additive constant.
+        let singular = !any_pinned && active.iter().any(|&a| a);
+        let volume_total: f64 = (0..n).filter(|&i| active[i]).map(|i| volumes[i]).sum();
+        let weighted_mean = |field: &[f64]| -> f64 {
+            if volume_total > 0.0 {
+                (0..n)
+                    .filter(|&i| active[i])
+                    .map(|i| volumes[i] * field[i])
+                    .sum::<f64>()
+                    / volume_total
+            } else {
+                0.0
+            }
+        };
+        if singular {
+            let mean_rhs = weighted_mean(&rhs);
+            for (i, b) in rhs.iter_mut().enumerate() {
+                if active[i] {
+                    *b -= mean_rhs;
+                }
+            }
+        }
+
+        let omega = self.params.relaxation;
+        let clamp = self.params.clamp_negative_pressure;
+        let mut iters = 0usize;
+        let mut max_change = f64::INFINITY;
+        let mut relative_change = f64::INFINITY;
+
+        while iters < self.params.max_iter && relative_change > self.params.tolerance {
+            max_change = 0.0_f64;
+            for i in 0..n {
+                if !active[i] {
+                    continue;
+                }
+                let neighbour_sum: f64 = couplings[i].iter().map(|&(j, c)| c * pressure[j]).sum();
+                let target = (neighbour_sum - rhs[i]) / diagonal[i];
+                let mut updated = (1.0 - omega) * pressure[i] + omega * target;
+                if clamp {
+                    updated = updated.max(0.0);
+                }
+                max_change = max_change.max((updated - pressure[i]).abs());
+                pressure[i] = updated;
+            }
+            if singular {
+                let mean_pressure = weighted_mean(&pressure);
+                for (i, p) in pressure.iter_mut().enumerate() {
+                    if active[i] {
+                        *p -= mean_pressure;
+                    }
+                }
+            }
+            let scale = pressure.iter().fold(0.0_f64, |m, p| m.max(p.abs()));
+            relative_change = if scale > 0.0 {
+                max_change / scale
+            } else {
+                max_change
+            };
             iters += 1;
+        }
+
+        for (particle, &value) in particles.iter_mut().zip(pressure.iter()) {
+            particle.pressure = value;
         }
         (iters, max_change)
     }
@@ -410,10 +573,11 @@ impl IsphStep {
         for i in 0..n {
             let xi = pos[i];
             let vi = vel[i];
-            let rhoi = rho[i];
 
-            // Viscous acceleration via SPH Laplacian approximation
-            // a_visc = ν Σⱼ mⱼ/ρⱼ (vⱼ - vᵢ) · ∇²W
+            // Viscous acceleration a_visc = ν ∇²v with the Brookshaw/Morris SPH
+            // Laplacian ∇²vᵢ ≈ Σⱼ cᵢⱼ (vⱼ − vᵢ), cᵢⱼ = 2 Vⱼ (−dW/dr) r / (r² + η²) ≥ 0,
+            // which diffuses velocity differences.  ν is the kinematic viscosity,
+            // so no division by the density.
             let mut a_visc = [0.0_f64; 3];
             for j in 0..n {
                 if i == j {
@@ -426,10 +590,8 @@ impl IsphStep {
                     continue;
                 }
                 let dv = vec3_sub(vel[j], vi);
-                let dw = kernel_dw_dr(r, h);
-                let laplacian_coeff = 2.0 * dw / (r.max(1e-14) * rhoi);
-                let vol_j = mas[j] / rho[j];
-                a_visc = vec3_add(a_visc, vec3_scale(dv, nu * vol_j * laplacian_coeff));
+                let c_ij = laplacian_weight(mas[j] / rho[j], r, h);
+                a_visc = vec3_add(a_visc, vec3_scale(dv, nu * c_ij));
             }
 
             let v_star = vec3_add(vec3_add(vi, vec3_scale(g, dt)), vec3_scale(a_visc, dt));
@@ -448,6 +610,12 @@ impl IsphStep {
     }
 
     /// Advance the particle system by one timestep `dt`.
+    ///
+    /// Free-surface particles are pinned to `p = 0` by the pressure solve (see
+    /// [`IsphPressureSolver::detect_free_surface`]).  The SPH divergence and
+    /// pressure-gradient operators have a truncated support there, so the
+    /// corrected velocity is divergence-free in the interior but keeps a divergence
+    /// error within about two smoothing lengths of the free surface.
     ///
     /// Returns solver statistics from the pressure solve.
     pub fn advance(&self, particles: &mut [IsphParticle], dt: f64) -> (usize, f64) {
@@ -773,15 +941,52 @@ impl IsphTurbulence {
         (self.cs * self.delta).powi(2) * s_mag
     }
 
+    /// SGS eddy viscosity νₜ of every particle, `result[i] == eddy_viscosity(i, …)`.
+    ///
+    /// Each νₜ is evaluated exactly once, which is what
+    /// [`sgs_accelerations`](Self::sgs_accelerations) needs for the pair-averaged
+    /// viscosity.
+    pub fn eddy_viscosities(&self, particles: &[IsphParticle]) -> Vec<f64> {
+        (0..particles.len())
+            .map(|i| self.eddy_viscosity(i, particles))
+            .collect()
+    }
+
     /// SGS viscous acceleration for particle i.
     ///
-    /// a_sgs = ∇ · (2 νₜ S̃) ≈ Σⱼ mⱼ/ρⱼ νₜ (vⱼ−vᵢ) laplacian_W
+    /// `a_sgs = ∇·(νₜ ∇v) ≈ Σⱼ cᵢⱼ ν̄ᵢⱼ (vⱼ − vᵢ)` with the Brookshaw/Morris weight
+    /// `cᵢⱼ = 2 Vⱼ (−dW/dr) r / (r² + η²) ≥ 0` and the pair-averaged eddy
+    /// viscosity `ν̄ᵢⱼ = ½ (νₜᵢ + νₜⱼ)`.  νₜ is kinematic, so there is no division
+    /// by the density, and the term diffuses velocity differences.
+    ///
+    /// Only νₜ of particle `i` and of its neighbours within `2h` is evaluated;
+    /// use [`sgs_accelerations`](Self::sgs_accelerations) for all particles.
     pub fn sgs_acceleration(&self, i: usize, particles: &[IsphParticle]) -> Vec3 {
-        let nu_t = self.eddy_viscosity(i, particles);
+        self.sgs_acceleration_with(i, particles, |j| self.eddy_viscosity(j, particles))
+    }
+
+    /// SGS viscous acceleration of every particle (see
+    /// [`sgs_acceleration`](Self::sgs_acceleration)); the eddy viscosities are
+    /// computed once for all particles.
+    pub fn sgs_accelerations(&self, particles: &[IsphParticle]) -> Vec<Vec3> {
+        let nu_t = self.eddy_viscosities(particles);
+        (0..particles.len())
+            .map(|i| self.sgs_acceleration_with(i, particles, |j| nu_t[j]))
+            .collect()
+    }
+
+    /// SGS acceleration of particle `i` given the eddy viscosity `nu_t(j)` of any
+    /// particle `j`.
+    fn sgs_acceleration_with(
+        &self,
+        i: usize,
+        particles: &[IsphParticle],
+        nu_t: impl Fn(usize) -> f64,
+    ) -> Vec3 {
         let h = self.h;
         let xi = particles[i].position;
         let vi = particles[i].velocity;
-        let rhoi = particles[i].density.max(1e-300);
+        let nu_i = nu_t(i);
         let mut acc = [0.0_f64; 3];
         for (j, pj) in particles.iter().enumerate() {
             if i == j {
@@ -792,10 +997,10 @@ impl IsphTurbulence {
             if r >= 2.0 * h {
                 continue;
             }
-            let dw = kernel_dw_dr(r, h);
+            let nu_ij = 0.5 * (nu_i + nu_t(j));
+            let c_ij = laplacian_weight(pj.mass / pj.density.max(1e-300), r, h);
             let dv = vec3_sub(pj.velocity, vi);
-            let coeff = 2.0 * nu_t * pj.mass / pj.density.max(1e-300) * dw / (r.max(1e-14) * rhoi);
-            acc = vec3_add(acc, vec3_scale(dv, coeff));
+            acc = vec3_add(acc, vec3_scale(dv, nu_ij * c_ij));
         }
         acc
     }
@@ -1057,22 +1262,311 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_pressure_solver_returns_nonneg_pressure() {
-        let mut particles: Vec<IsphParticle> = (0..5)
-            .map(|i| make_particle([i as f64 * 0.1, 0.0, 0.0]))
-            .collect();
-        for p in particles.iter_mut() {
-            p.div_velocity = 0.01;
+    // ── Lattice fixtures for the projection tests ─────────────────────────────
+
+    /// `n`³ lattice of fluid particles (spacing `s`, centred on the origin) with
+    /// density `rho0` and mass `rho0 s³`, so every particle owns the volume `s³`.
+    fn fluid_lattice(n: usize, s: f64, rho0: f64) -> Vec<IsphParticle> {
+        let half = (n as f64 - 1.0) / 2.0;
+        let mut particles = Vec::with_capacity(n * n * n);
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let position = [
+                        (ix as f64 - half) * s,
+                        (iy as f64 - half) * s,
+                        (iz as f64 - half) * s,
+                    ];
+                    particles.push(IsphParticle::new(position, rho0 * s * s * s, rho0));
+                }
+            }
         }
-        let params = IsphPressureSolverParams {
-            rest_density: 1000.0,
-            ..Default::default()
-        };
-        let solver = IsphPressureSolver::new(0.3, params);
-        solver.solve(&mut particles, 0.01);
+        particles
+    }
+
+    fn lattice_centre_index(particles: &[IsphParticle]) -> usize {
+        particles
+            .iter()
+            .position(|p| p.position.iter().all(|c| c.abs() < 1e-12))
+            .expect("lattice has a centre particle")
+    }
+
+    /// Particle whose complete kernel support (and that of its neighbours) lies
+    /// inside the lattice, far from the pinned free-surface shell.
+    fn is_deep_interior(p: &IsphParticle, s: f64) -> bool {
+        p.position.iter().all(|c| c.abs() <= s + 1e-12)
+    }
+
+    fn converged_params(rho0: f64) -> IsphPressureSolverParams {
+        IsphPressureSolverParams {
+            max_iter: 3000,
+            tolerance: 1e-12,
+            relaxation: 1.0,
+            rest_density: rho0,
+            clamp_negative_pressure: false,
+        }
+    }
+
+    /// Residual `Σⱼ cᵢⱼ (pⱼ − pᵢ) − bᵢ` of the pressure Poisson equation at
+    /// particle `i` (all particles inside `2h` contribute).
+    fn poisson_residual(particles: &[IsphParticle], i: usize, h: f64, b_i: f64) -> f64 {
+        let mut sum = 0.0;
+        for (j, pj) in particles.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let r = vec3_norm(vec3_sub(particles[i].position, pj.position));
+            if r < 2.0 * h {
+                sum += laplacian_weight(pj.volume(), r, h) * (pj.pressure - particles[i].pressure);
+            }
+        }
+        sum - b_i
+    }
+
+    /// Lattice with the strained velocity `v* = (sign·x, 0, 0)` (∇·v* = sign, so
+    /// −1 compresses and +1 expands the block) and its SPH divergence evaluated.
+    fn strained_lattice(s: f64, h: f64, rho0: f64, sign: f64) -> Vec<IsphParticle> {
+        let mut particles = fluid_lattice(9, s, rho0);
+        for p in particles.iter_mut() {
+            p.velocity = [sign * p.position[0], 0.0, 0.0];
+        }
+        VelocityDivergence::new(h).compute(&mut particles);
+        particles
+    }
+
+    #[test]
+    fn test_detect_free_surface_flags_only_the_outer_shell() {
+        let s = 0.1;
+        let h = 1.2 * s;
+        let particles = fluid_lattice(9, s, 1000.0);
+        let solver = IsphPressureSolver::new(h, IsphPressureSolverParams::default());
+        let flags = solver.detect_free_surface(&particles);
+        assert_eq!(flags.len(), particles.len());
+        assert_eq!(
+            flags.iter().filter(|&&f| f).count(),
+            9 * 9 * 9 - 7 * 7 * 7,
+            "exactly the outermost lattice layer is free surface"
+        );
+        for (p, &flag) in particles.iter().zip(flags.iter()) {
+            let on_shell = p.position.iter().any(|c| c.abs() > 3.5 * s);
+            assert_eq!(flag, on_shell, "particle at {:?}", p.position);
+        }
+    }
+
+    #[test]
+    fn test_detect_free_surface_flags_everything_for_invalid_h() {
+        let particles = fluid_lattice(3, 0.1, 1000.0);
+        let solver = IsphPressureSolver::new(0.0, IsphPressureSolverParams::default());
+        assert!(solver.detect_free_surface(&particles).iter().all(|&f| f));
+    }
+
+    #[test]
+    fn test_pressure_solver_compression_matches_cube_poisson_solution() {
+        // v* = (−x, 0, 0) compresses the block (∇·v* = −1).  The PPE
+        // ∇²p = ρ₀/Δt ∇·v* with p = 0 on the free-surface shell is the Poisson
+        // problem of a cube of side L = 8 s, whose centre value is
+        // 0.0562 L² ρ₀/Δt (positive: compression raises the pressure).  The former
+        // operator solved Σ c (pᵢ + pⱼ) = b, whose solution is negative here and
+        // was clamped to zero.
+        let (s, rho0, dt) = (0.1, 1000.0, 1e-3);
+        let h = 1.2 * s;
+        let mut particles = strained_lattice(s, h, rho0, -1.0);
+        let solver = IsphPressureSolver::new(h, converged_params(rho0));
+        let (iters, change) = solver.solve(&mut particles, dt);
+        assert!(iters < 3000, "solver did not converge: {iters} sweeps");
+        assert!(change.is_finite());
+
+        let centre = lattice_centre_index(&particles);
+        let expected = 0.0562 * (8.0 * s).powi(2) * rho0 / dt;
+        let p_centre = particles[centre].pressure;
+        assert!(
+            p_centre > 0.0,
+            "compression must give p > 0, got {p_centre}"
+        );
+        assert!(
+            (p_centre - expected).abs() < 0.12 * expected,
+            "p(centre) = {p_centre}, cube solution {expected}"
+        );
+        let p_max = particles.iter().map(|p| p.pressure).fold(0.0, f64::max);
+        assert!(
+            (p_max - p_centre).abs() < 1e-9 * p_max,
+            "maximum at the centre"
+        );
         for p in &particles {
-            assert!(p.pressure >= 0.0, "pressure must be non-negative");
+            assert!(
+                p.pressure >= -1e-9 * p_max,
+                "negative pressure {}",
+                p.pressure
+            );
+        }
+
+        // Free-surface shell pinned to zero.
+        let flags = solver.detect_free_surface(&particles);
+        for (p, &flag) in particles.iter().zip(flags.iter()) {
+            if flag {
+                assert_eq!(p.pressure, 0.0);
+            }
+        }
+
+        // The converged field solves the Poisson equation at every free particle.
+        let b_scale = particles
+            .iter()
+            .map(|p| (rho0 / dt * p.div_velocity).abs())
+            .fold(0.0, f64::max);
+        for (i, p) in particles.iter().enumerate() {
+            if flags[i] {
+                continue;
+            }
+            let residual = poisson_residual(&particles, i, h, rho0 / dt * p.div_velocity);
+            assert!(
+                residual.abs() < 1e-6 * b_scale,
+                "PPE residual {residual} at {:?} (|b| ≤ {b_scale})",
+                p.position
+            );
+        }
+    }
+
+    #[test]
+    fn test_pressure_solver_default_params_reach_the_pressure_level() {
+        // With the stock parameters (100 under-relaxed sweeps) the pressure is
+        // already within a percent of the converged cube solution.
+        let (s, rho0, dt) = (0.1, 1000.0, 1e-3);
+        let h = 1.2 * s;
+        let mut particles = strained_lattice(s, h, rho0, -1.0);
+        let solver = IsphPressureSolver::new(h, IsphPressureSolverParams::default());
+        let (iters, _) = solver.solve(&mut particles, dt);
+        assert!(iters <= 100);
+        let centre = lattice_centre_index(&particles);
+        let expected = 0.0562 * (8.0 * s).powi(2) * rho0 / dt;
+        assert!(particles[centre].pressure > 0.85 * expected);
+        assert!(particles[centre].pressure < 1.12 * expected);
+    }
+
+    #[test]
+    fn test_isph_advance_removes_interior_divergence() {
+        // After one projection step the deep-interior divergence of the corrected
+        // field is below a tenth of the predicted one.  (Particles next to the
+        // pinned free-surface shell keep a divergence error: their kernel support
+        // is truncated, so they are not part of the measurement.)
+        let (s, rho0, dt) = (0.1, 1000.0, 1e-3);
+        let h = 1.2 * s;
+        let mut particles = strained_lattice(s, h, rho0, -1.0);
+        let max_deep_div = |ps: &[IsphParticle]| {
+            ps.iter()
+                .filter(|p| is_deep_interior(p, s))
+                .map(|p| p.div_velocity.abs())
+                .fold(0.0, f64::max)
+        };
+        let before = max_deep_div(&particles);
+        assert!(before > 0.9, "predicted divergence {before}");
+
+        let solver = IsphPressureSolver::new(h, converged_params(rho0));
+        let step = IsphStep::new(h, solver, 0.0, [0.0; 3]);
+        let (iters, _) = step.advance(&mut particles, dt);
+        assert!(iters < 3000);
+        VelocityDivergence::new(h).compute(&mut particles);
+        let after = max_deep_div(&particles);
+        assert!(
+            after < 0.1 * before,
+            "interior divergence {before} -> {after}, expected a > 90 % drop"
+        );
+        let centre = lattice_centre_index(&particles);
+        assert!(particles[centre].pressure > 0.0);
+    }
+
+    #[test]
+    fn test_pressure_solver_expansion_gives_tension_unless_clamped() {
+        // v* = (+x, 0, 0) (∇·v* = +1): the exact projection has negative
+        // pressure inside; the clamped solver keeps p = 0 (fluid may separate).
+        let (s, rho0, dt) = (0.1, 1000.0, 1e-3);
+        let h = 1.2 * s;
+        let centre_pressure = |clamp: bool| {
+            let mut particles = strained_lattice(s, h, rho0, 1.0);
+            let params = IsphPressureSolverParams {
+                clamp_negative_pressure: clamp,
+                ..converged_params(rho0)
+            };
+            IsphPressureSolver::new(h, params).solve(&mut particles, dt);
+            let min_p = particles.iter().map(|p| p.pressure).fold(0.0, f64::min);
+            (particles[lattice_centre_index(&particles)].pressure, min_p)
+        };
+        let expected = 0.0562 * (8.0 * s).powi(2) * rho0 / dt;
+        let (exact_centre, _) = centre_pressure(false);
+        assert!(
+            (exact_centre + expected).abs() < 0.12 * expected,
+            "p(centre) = {exact_centre}, expected {}",
+            -expected
+        );
+        let (clamped_centre, clamped_min) = centre_pressure(true);
+        assert_eq!(clamped_centre, 0.0);
+        assert!(clamped_min >= 0.0, "clamped pressure {clamped_min} < 0");
+    }
+
+    #[test]
+    fn test_pressure_solver_closed_domain_fixes_the_pressure_level() {
+        // Without any pinned particle the Neumann problem is only defined up to a
+        // constant and for a zero-mean right-hand side: the solver removes the
+        // mean of b and normalises the pressure to zero mean.
+        let (s, rho0, dt) = (0.1, 1000.0, 1e-3);
+        let h = 1.2 * s;
+        let mut particles = strained_lattice(s, h, rho0, -1.0);
+        let n = particles.len();
+        let solver = IsphPressureSolver::new(h, converged_params(rho0));
+        let (iters, _) = solver.solve_with_dirichlet(&mut particles, dt, &vec![false; n]);
+        assert!(iters < 3000, "closed-domain solve did not converge");
+        assert!(particles.iter().all(|p| p.pressure.is_finite()));
+        let p_max = particles
+            .iter()
+            .map(|p| p.pressure.abs())
+            .fold(0.0, f64::max);
+        assert!(p_max > 0.0);
+        let mean = particles.iter().map(|p| p.pressure).sum::<f64>() / n as f64;
+        assert!(mean.abs() < 1e-9 * p_max, "mean pressure {mean}");
+
+        // Poisson equation with the mean-compensated right-hand side.
+        let mean_b = particles
+            .iter()
+            .map(|p| rho0 / dt * p.div_velocity)
+            .sum::<f64>()
+            / n as f64;
+        let b_scale = particles
+            .iter()
+            .map(|p| (rho0 / dt * p.div_velocity).abs())
+            .fold(0.0, f64::max);
+        for (i, p) in particles.iter().enumerate() {
+            let residual = poisson_residual(&particles, i, h, rho0 / dt * p.div_velocity - mean_b);
+            assert!(
+                residual.abs() < 1e-6 * b_scale,
+                "closed-domain residual {residual} at particle {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pressure_solver_rejects_non_positive_dt() {
+        let s = 0.1;
+        let mut particles = strained_lattice(s, 1.2 * s, 1000.0, -1.0);
+        for p in particles.iter_mut() {
+            p.pressure = 5.0;
+        }
+        let solver = IsphPressureSolver::new(1.2 * s, IsphPressureSolverParams::default());
+        for dt in [0.0, -1e-3, f64::NAN, f64::INFINITY] {
+            assert_eq!(solver.solve(&mut particles, dt), (0, 0.0), "dt = {dt}");
+            assert!(particles.iter().all(|p| p.pressure == 5.0));
+        }
+    }
+
+    #[test]
+    fn test_pressure_solver_isolated_particles_stay_at_zero() {
+        let mut particles = two_particles_separated(10.0);
+        for p in particles.iter_mut() {
+            p.div_velocity = -1.0;
+            p.pressure = 3.0;
+        }
+        let solver = IsphPressureSolver::new(0.1, IsphPressureSolverParams::default());
+        solver.solve(&mut particles, 1e-3);
+        for p in &particles {
+            assert_eq!(p.pressure, 0.0);
         }
     }
 
@@ -1213,6 +1707,162 @@ mod tests {
         }
     }
 
+    // ── Viscosity and SGS regression tests ────────────────────────────────────
+
+    /// Lattice carrying the shear-wave velocity `v = (shear·y + amplitude·cos(k y), 0, 0)`.
+    fn shear_wave_lattice(
+        s: f64,
+        rho0: f64,
+        shear: f64,
+        amplitude: f64,
+        wavenumber: f64,
+    ) -> Vec<IsphParticle> {
+        let mut particles = fluid_lattice(9, s, rho0);
+        for p in particles.iter_mut() {
+            let y = p.position[1];
+            p.velocity = [shear * y + amplitude * (wavenumber * y).cos(), 0.0, 0.0];
+        }
+        particles
+    }
+
+    fn viscous_step(h: f64, nu: f64) -> IsphStep {
+        let solver = IsphPressureSolver::new(h, IsphPressureSolverParams::default());
+        IsphStep::new(h, solver, nu, [0.0; 3])
+    }
+
+    #[test]
+    fn test_predict_viscosity_diffuses_a_velocity_wave() {
+        // vₓ = cos(k y), λ = 16 s: at the crest ∇²vₓ = −k², so one viscous step
+        // changes vₓ = 1 by −ν k² Δt.  The former anti-diffusive sign gave +ν k² Δt
+        // (scaled by 1/ρ).  The Brookshaw Laplacian is accurate to a few percent.
+        let (s, nu, dt) = (0.1, 0.01, 1e-3);
+        let h = 1.2 * s;
+        let k = 2.0 * PI / (16.0 * s);
+        let mut particles = shear_wave_lattice(s, 1000.0, 0.0, 1.0, k);
+        viscous_step(h, nu).predict(&mut particles, dt);
+        let centre = lattice_centre_index(&particles);
+        let dv = particles[centre].velocity_star[0] - particles[centre].velocity[0];
+        let expected = -nu * k * k * dt;
+        assert!(dv < 0.0, "viscosity must damp the crest, Δvₓ = {dv}");
+        assert!(
+            (dv - expected).abs() < 0.1 * expected.abs(),
+            "Δvₓ = {dv}, expected ≈ {expected}"
+        );
+        assert!(particles[centre].velocity_star[1].abs() < 1e-15);
+        assert!(particles[centre].velocity_star[2].abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_predict_viscosity_is_kinematic_and_independent_of_density() {
+        // ν is the kinematic viscosity: the same wave in water and in air (volumes
+        // unchanged) relaxes identically.
+        let (s, nu, dt) = (0.1, 0.01, 1e-3);
+        let h = 1.2 * s;
+        let k = 2.0 * PI / (16.0 * s);
+        let change = |rho0: f64| {
+            let mut particles = shear_wave_lattice(s, rho0, 0.0, 1.0, k);
+            viscous_step(h, nu).predict(&mut particles, dt);
+            let centre = lattice_centre_index(&particles);
+            particles[centre].velocity_star[0] - particles[centre].velocity[0]
+        };
+        let water = change(1000.0);
+        let air = change(1.2);
+        assert!(
+            (water - air).abs() < 1e-12 * water.abs(),
+            "Δvₓ(water) = {water}, Δvₓ(air) = {air}"
+        );
+    }
+
+    #[test]
+    fn test_predict_viscosity_leaves_uniform_flow_unchanged() {
+        let s = 0.1;
+        let mut particles = shear_wave_lattice(s, 1000.0, 0.0, 0.0, 1.0);
+        for p in particles.iter_mut() {
+            p.velocity = [0.3, -0.2, 0.1];
+        }
+        viscous_step(1.2 * s, 0.05).predict(&mut particles, 1e-3);
+        for p in &particles {
+            for (star, v) in p.velocity_star.iter().zip(p.velocity.iter()) {
+                assert!((star - v).abs() < 1e-14);
+            }
+        }
+    }
+
+    #[test]
+    fn test_sgs_acceleration_is_diffusive_and_kinematic() {
+        // vₓ = S₀ y + a cos(k y): |S̃| = |∂ᵧvₓ|, so the SGS flux is (CₛΔ)² (∂ᵧvₓ)²
+        // and at y = 0 the acceleration is ∂ᵧ((CₛΔ)² (∂ᵧvₓ)²) = −2 (CₛΔ)² S₀ a k²
+        // (negative: it damps the cosine perturbation).  The former implementation
+        // had the opposite sign and divided by the density.
+        let (s, rho0) = (0.1, 1000.0);
+        let h = 1.2 * s;
+        let k = 2.0 * PI / (16.0 * s);
+        let (shear, amplitude) = (1.0, 0.05);
+        let (cs, delta) = (0.15, h);
+        let turbulence = IsphTurbulence::new(cs, delta, h);
+        let expected = -2.0 * (cs * delta).powi(2) * shear * amplitude * k * k;
+
+        let acceleration = |rho: f64| {
+            let particles = shear_wave_lattice(s, rho, shear, amplitude, k);
+            let centre = lattice_centre_index(&particles);
+            turbulence.sgs_acceleration(centre, &particles)
+        };
+        let water = acceleration(rho0);
+        assert!(
+            water[0] < 0.0,
+            "SGS term must be diffusive, a_x = {}",
+            water[0]
+        );
+        assert!(
+            (water[0] - expected).abs() < 0.2 * expected.abs(),
+            "a_x = {}, expected ≈ {expected}",
+            water[0]
+        );
+        assert!(water[1].abs() < 1e-12 && water[2].abs() < 1e-12);
+        let air = acceleration(1.2);
+        assert!(
+            (water[0] - air[0]).abs() < 1e-9 * water[0].abs(),
+            "kinematic eddy viscosity must not depend on ρ: {} vs {}",
+            water[0],
+            air[0]
+        );
+    }
+
+    #[test]
+    fn test_sgs_batch_methods_match_single_particle_calls() {
+        let (s, rho0) = (0.1, 1000.0);
+        let h = 1.2 * s;
+        let k = 2.0 * PI / (16.0 * s);
+        let particles = shear_wave_lattice(s, rho0, 1.0, 0.05, k);
+        let turbulence = IsphTurbulence::new(0.15, h, h);
+        let nu_t = turbulence.eddy_viscosities(&particles);
+        let batch = turbulence.sgs_accelerations(&particles);
+        assert_eq!(nu_t.len(), particles.len());
+        assert_eq!(batch.len(), particles.len());
+        let centre = lattice_centre_index(&particles);
+        assert!((nu_t[centre] - turbulence.eddy_viscosity(centre, &particles)).abs() < 1e-18);
+        let single = turbulence.sgs_acceleration(centre, &particles);
+        for (b, s1) in batch[centre].iter().zip(single.iter()) {
+            assert!((b - s1).abs() < 1e-15, "{b} vs {s1}");
+        }
+        assert!(nu_t.iter().all(|&v| v >= 0.0 && v.is_finite()));
+    }
+
+    #[test]
+    fn test_sgs_acceleration_vanishes_for_uniform_flow() {
+        let s = 0.1;
+        let mut particles = shear_wave_lattice(s, 1000.0, 0.0, 0.0, 1.0);
+        for p in particles.iter_mut() {
+            p.velocity = [0.5, 0.5, -0.25];
+        }
+        let turbulence = IsphTurbulence::new(0.15, 1.2 * s, 1.2 * s);
+        for acc in turbulence.sgs_accelerations(&particles) {
+            for a in acc {
+                assert!(a.abs() < 1e-14, "uniform flow has no SGS force, got {a}");
+            }
+        }
+    }
+
     // ── IsphStats ─────────────────────────────────────────────────────────────
 
     #[test]
@@ -1307,3 +1957,6 @@ mod tests {
         assert!(y1 < y0, "particle should move downward under gravity");
     }
 }
+
+#[cfg(test)]
+mod disorder_tests;

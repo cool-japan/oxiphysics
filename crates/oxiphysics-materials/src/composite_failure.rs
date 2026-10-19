@@ -243,7 +243,8 @@ impl TsaiHillCriterion {
         let s1 = stress.sigma1 / f1;
         let s2 = stress.sigma2 / f2;
         let s12 = stress.tau12 / self.strength.f12;
-        s1 * s1 - s1 * s2 + s2 * s2 + s12 * s12
+        // The interaction term is σ₁σ₂ / F₁² (not σ₁σ₂ / (F₁F₂)).
+        s1 * s1 - stress.sigma1 * stress.sigma2 / (f1 * f1) + s2 * s2 + s12 * s12
     }
 
     /// Returns the Tsai-Hill failure index H (= √H²).
@@ -276,12 +277,18 @@ impl TsaiHillCriterion {
 
     /// Finds the biaxial strength envelope at a given stress ratio σ₂/σ₁ = k.
     ///
-    /// Returns σ₁ at failure.
+    /// Returns σ₁ > 0 (fibre-direction tension) at failure along the ray
+    /// σ₂ = k·σ₁, so F₁ = F₁ᵗ and F₂ is F₂ᵗ for k ≥ 0 (σ₂ in tension) or F₂c
+    /// for k < 0 (σ₂ in compression).
     pub fn biaxial_strength(&self, k: f64) -> f64 {
         // H²(σ₁, k·σ₁, 0) = 1
         // A σ₁² = 1  →  σ₁ = 1/√A
-        let f1 = self.strength.f1t.max(self.strength.f1c);
-        let f2 = self.strength.f2t.max(self.strength.f2c);
+        let f1 = self.strength.f1t;
+        let f2 = if k >= 0.0 {
+            self.strength.f2t
+        } else {
+            self.strength.f2c
+        };
         let a = 1.0 / (f1 * f1) - k / (f1 * f1) + k * k / (f2 * f2);
         if a <= 0.0 {
             f64::INFINITY
@@ -467,36 +474,108 @@ impl PuckCriterion {
         }
     }
 
-    /// Computes the IFF exposure on the action plane at ψ = 0° (simplified).
+    /// Action-plane fracture parameters R⊥⊥ᴬ, p⊥⊥⁻ and τ₂₁c that govern the
+    /// transverse-compression modes (B and C) of the Puck IFF criterion.
     ///
-    /// For Mode A (σ_n > 0):
-    /// f_E,IFF = √\[(τ_nt/F_2A)² + (σ_n/F_2t)²\] + p₊₁₂ σ_n / F_2A
+    /// With S₂₁ the in-plane shear strength, F₂c the transverse compressive
+    /// strength and p⁻ = `p_minus_12`:
     ///
-    /// Uses simplified 2-D (in-plane) version.
+    /// - R⊥⊥ᴬ = S₂₁/(2p⁻) · (√(1 + 2p⁻F₂c/S₂₁) − 1)  (= F₂c / (1 + √(1 + 2p⁻F₂c/S₂₁)))
+    /// - p⊥⊥⁻ = p⁻ · R⊥⊥ᴬ / S₂₁
+    /// - τ₂₁c = S₂₁ · √(1 + 2p⊥⊥⁻)
+    ///
+    /// These satisfy F₂c = 2(1 + p⊥⊥⁻)·R⊥⊥ᴬ.
+    pub fn action_plane_parameters(&self) -> PuckActionPlaneParameters {
+        let s21 = self.strength.f12;
+        let f2c = self.strength.f2c;
+        let p = self.p_minus_12;
+        // Rationalised form of S21/(2p)(sqrt(1+x)-1), finite for p -> 0.
+        let r_perp_perp_a = f2c / (1.0 + (1.0 + 2.0 * p * f2c / s21).sqrt());
+        let p_perp_perp = p * r_perp_perp_a / s21;
+        let tau21_c = s21 * (1.0 + 2.0 * p_perp_perp).sqrt();
+        PuckActionPlaneParameters {
+            r_perp_perp_a,
+            p_perp_perp,
+            tau21_c,
+        }
+    }
+
+    /// Returns `true` when σ₂ < 0 lies in the Mode B domain
+    /// (|σ₂/τ₂₁| ≤ R⊥⊥ᴬ/τ₂₁c) rather than the Mode C domain.
+    fn is_mode_b_domain(&self, stress: PlaneStress) -> bool {
+        let prm = self.action_plane_parameters();
+        stress.sigma2.abs() * prm.tau21_c <= prm.r_perp_perp_a * stress.tau12.abs()
+    }
+
+    /// Computes the IFF exposure for Mode A (σ₂ ≥ 0, transverse tension).
+    ///
+    /// f_E,IFF = √\[(τ₂₁/S₂₁)² + (1 − p⁺F₂ᵗ/S₂₁)²(σ₂/F₂ᵗ)²\] + p⁺σ₂/S₂₁
+    ///
+    /// The plane-stress (in-plane) form of Puck's Mode A on the action plane
+    /// at θ = 0°.  It equals 1 for pure transverse tension σ₂ = F₂ᵗ and for
+    /// pure shear τ₂₁ = S₂₁.  Returns 0 for σ₂ < 0.
     pub fn iff_exposure_mode_a(&self, stress: PlaneStress) -> f64 {
         if stress.sigma2 < 0.0 {
             return 0.0;
         }
         let s2 = stress.sigma2;
         let s12 = stress.tau12;
-        let f2a = self.strength.f12; // approximate action-plane shear strength
+        let s21 = self.strength.f12;
         let f2t = self.strength.f2t;
-        let sq = ((s12 / f2a).powi(2) + (s2 / f2t).powi(2)).sqrt();
-        sq + self.p_plus_12 * s2 / f2a
+        let tension_weight = 1.0 - self.p_plus_12 * f2t / s21;
+        let sq = ((s12 / s21).powi(2) + (tension_weight * s2 / f2t).powi(2)).sqrt();
+        sq + self.p_plus_12 * s2 / s21
     }
 
-    /// Computes the IFF exposure for Mode B/C (σ_n ≤ 0).
+    /// Computes the IFF exposure for Mode B (σ₂ < 0, shear dominated).
     ///
-    /// f_E,IFF = (1/F_2A) √\[τ_nt² + (p₋₁₂ σ_n)²\] + p₋₁₂ σ_n / F_2A
-    pub fn iff_exposure_mode_bc(&self, stress: PlaneStress) -> f64 {
+    /// f_E,IFF = (1/S₂₁) · (√\[τ₂₁² + (p⁻σ₂)²\] + p⁻σ₂)
+    ///
+    /// Valid in the Mode B domain |σ₂/τ₂₁| ≤ R⊥⊥ᴬ/τ₂₁c; returns 0 for σ₂ ≥ 0.
+    /// It is identically 0 at τ₂₁ = 0, which is why pure transverse compression
+    /// is handled by [`PuckCriterion::iff_exposure_mode_c`].
+    pub fn iff_exposure_mode_b(&self, stress: PlaneStress) -> f64 {
         if stress.sigma2 >= 0.0 {
             return 0.0;
         }
         let s2 = stress.sigma2; // negative
         let s12 = stress.tau12;
-        let f2a = self.strength.f12;
+        let s21 = self.strength.f12;
         let sq = (s12 * s12 + (self.p_minus_12 * s2).powi(2)).sqrt();
-        (sq + self.p_minus_12 * s2) / f2a
+        (sq + self.p_minus_12 * s2) / s21
+    }
+
+    /// Computes the IFF exposure for Mode C (σ₂ < 0, compression dominated).
+    ///
+    /// f_E,IFF = \[(τ₂₁/(2(1 + p⊥⊥⁻)S₂₁))² + (σ₂/F₂c)²\] · F₂c/(−σ₂)
+    ///
+    /// Valid in the Mode C domain |τ₂₁/σ₂| ≤ τ₂₁c/R⊥⊥ᴬ; returns 0 for σ₂ ≥ 0.
+    /// For pure transverse compression it reduces to |σ₂|/F₂c.
+    pub fn iff_exposure_mode_c(&self, stress: PlaneStress) -> f64 {
+        if stress.sigma2 >= 0.0 {
+            return 0.0;
+        }
+        let prm = self.action_plane_parameters();
+        let s2 = stress.sigma2; // negative
+        let shear_term = stress.tau12 / (2.0 * (1.0 + prm.p_perp_perp) * self.strength.f12);
+        let comp_term = s2 / self.strength.f2c;
+        (shear_term * shear_term + comp_term * comp_term) * self.strength.f2c / (-s2)
+    }
+
+    /// Computes the IFF exposure for the transverse-compression modes (σ₂ < 0).
+    ///
+    /// Selects Mode B when |σ₂/τ₂₁| ≤ R⊥⊥ᴬ/τ₂₁c and Mode C otherwise, so pure
+    /// transverse compression (τ₂₁ = 0) is governed by Mode C and reaches 1 at
+    /// σ₂ = −F₂c.  Returns 0 for σ₂ ≥ 0.
+    pub fn iff_exposure_mode_bc(&self, stress: PlaneStress) -> f64 {
+        if stress.sigma2 >= 0.0 {
+            return 0.0;
+        }
+        if self.is_mode_b_domain(stress) {
+            self.iff_exposure_mode_b(stress)
+        } else {
+            self.iff_exposure_mode_c(stress)
+        }
     }
 
     /// Returns the maximum IFF exposure considering all modes.
@@ -513,13 +592,10 @@ impl PuckCriterion {
         }
         if stress.sigma2 >= 0.0 {
             PuckIffMode::ModeA
+        } else if self.is_mode_b_domain(stress) {
+            PuckIffMode::ModeB
         } else {
-            // Distinguish B vs C by shear dominance
-            if stress.tau12.abs() > self.strength.f12 * 0.5 {
-                PuckIffMode::ModeB
-            } else {
-                PuckIffMode::ModeC
-            }
+            PuckIffMode::ModeC
         }
     }
 
@@ -528,19 +604,39 @@ impl PuckCriterion {
         self.ff_exposure(stress) >= 1.0 || self.iff_exposure(stress) >= 1.0
     }
 
-    /// Estimates the fracture plane angle θ_fp (degrees) for IFF Mode C.
+    /// Fracture plane angle θ_fp (degrees) of the IFF action plane.
     ///
-    /// θ_fp ≈ arccos(F₂c / (2·F₂c + p₋₁₂·|σ₂|))  (approximate Puck formula)
+    /// θ_fp = 0° in Modes A and B.  In Mode C (Puck & Schürmann 2002)
+    ///
+    /// cos θ_fp = √\[((R⊥⊥ᴬ/S₂₁)²(τ₂₁/σ₂)² + 1) / (2(1 + p⊥⊥⁻))\]
+    ///
+    /// which is the plane that maximises the action-plane exposure; it equals
+    /// arccos(1/√(2(1 + p⊥⊥⁻))) ≈ 51° for pure transverse compression and falls
+    /// to 0° at the Mode B/C transition.
     pub fn fracture_plane_angle(&self, stress: PlaneStress) -> f64 {
-        if stress.sigma2 >= 0.0 {
-            return 0.0; // Mode A: fracture perpendicular to load
-        }
-        let denom = 2.0 * self.strength.f2c + self.p_minus_12 * stress.sigma2.abs();
-        if denom < 1e-20 {
+        if stress.sigma2 >= 0.0 || self.is_mode_b_domain(stress) {
             return 0.0;
         }
-        (self.strength.f2c / denom).acos().to_degrees()
+        let prm = self.action_plane_parameters();
+        let shear_ratio = stress.tau12 / stress.sigma2;
+        let weight = (prm.r_perp_perp_a / self.strength.f12).powi(2) * shear_ratio * shear_ratio;
+        let cos_sq = (weight + 1.0) / (2.0 * (1.0 + prm.p_perp_perp));
+        cos_sq.sqrt().clamp(0.0, 1.0).acos().to_degrees()
     }
+}
+
+/// Action-plane fracture parameters of the Puck IFF criterion for σ₂ < 0.
+///
+/// Obtained from [`PuckCriterion::action_plane_parameters`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PuckActionPlaneParameters {
+    /// Fracture resistance R⊥⊥ᴬ of the action plane against shear due to
+    /// transverse compression (Pa).
+    pub r_perp_perp_a: f64,
+    /// Inclination parameter p⊥⊥⁻ of the (⊥⊥) fracture envelope (dimensionless).
+    pub p_perp_perp: f64,
+    /// Shear stress τ₂₁c at the transition between Mode B and Mode C (Pa).
+    pub tau21_c: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -550,9 +646,11 @@ impl PuckCriterion {
 /// Stiffness degradation rule applied after ply failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DegradationRule {
-    /// Total degradation — set failed stiffness components to near zero.
+    /// Total degradation — the ply stiffness is knocked down to 1 % after
+    /// fibre fracture and to 10 % after inter-fibre fracture.
     Total,
-    /// Partial degradation — reduce by a factor (e.g., 10%).
+    /// Partial degradation — the ply stiffness is knocked down to 50 % after
+    /// fibre fracture and to 70 % after inter-fibre fracture.
     Partial,
     /// No degradation — track failure but keep original stiffness.
     None,
@@ -565,13 +663,19 @@ pub struct PlyState {
     pub angle_deg: f64,
     /// Ply thickness (m).
     pub thickness: f64,
-    /// In-plane stiffness matrix Q \[Q11, Q22, Q12, Q66\] (Pa).
+    /// Current (degraded) in-plane stiffness matrix Q \[Q11, Q22, Q12, Q66\] (Pa),
+    /// always equal to `q_virgin · degradation`.
     pub q_matrix: [f64; 4],
+    /// Virgin (undamaged) in-plane stiffness matrix \[Q11, Q22, Q12, Q66\] (Pa).
+    ///
+    /// Ply stresses are evaluated with this matrix when they are compared with
+    /// the strengths of the intact material.
+    pub q_virgin: [f64; 4],
     /// Whether fiber fracture has occurred.
     pub ff_failed: bool,
     /// Whether inter-fiber fracture has occurred.
     pub iff_failed: bool,
-    /// Degradation factor applied (0..1, 1 = no degradation).
+    /// Cumulative stiffness knock-down factor (0..1, 1 = no degradation).
     pub degradation: f64,
 }
 
@@ -586,10 +690,12 @@ impl PlyState {
         let q22 = e2 / denom;
         let q12 = nu12 * e2 / denom;
         let q66 = g12;
+        let q = [q11, q22, q12, q66];
         Self {
             angle_deg,
             thickness,
-            q_matrix: [q11, q22, q12, q66],
+            q_matrix: q,
+            q_virgin: q,
             ff_failed: false,
             iff_failed: false,
             degradation: 1.0,
@@ -597,10 +703,14 @@ impl PlyState {
     }
 
     /// Applies stiffness degradation according to rule and failure mode.
+    ///
+    /// The knock-down is applied to the virgin stiffness exactly once
+    /// (`q_matrix = q_virgin · degradation`), so repeated calls are idempotent
+    /// and damage is irreversible: the cumulative factor never increases.
     pub fn apply_degradation(&mut self, rule: DegradationRule, ff: bool, iff: bool) {
         self.ff_failed |= ff;
         self.iff_failed |= iff;
-        self.degradation = match rule {
+        let factor = match rule {
             DegradationRule::Total => {
                 if ff {
                     0.01
@@ -621,8 +731,9 @@ impl PlyState {
             }
             DegradationRule::None => 1.0,
         };
-        for q in &mut self.q_matrix {
-            *q *= self.degradation;
+        self.degradation = self.degradation.min(factor);
+        for (q, q0) in self.q_matrix.iter_mut().zip(self.q_virgin.iter()) {
+            *q = q0 * self.degradation;
         }
     }
 
@@ -649,7 +760,7 @@ impl PlyState {
 
 /// Progressive damage analysis of a composite laminate.
 ///
-/// Performs ply-by-ply failure analysis using the chosen criterion,
+/// Performs ply-by-ply failure analysis with the maximum-stress criterion,
 /// applies stiffness degradation, and tracks first-ply failure (FPF)
 /// and last-ply failure (LPF) loads.
 #[derive(Debug, Clone)]
@@ -660,9 +771,13 @@ pub struct ProgressiveDamage {
     pub rule: DegradationRule,
     /// Strength per ply.
     pub strengths: Vec<PlyStrength>,
-    /// Applied load multiplier at FPF (0 = not yet reached).
+    /// Load factor λ of the first ply failure found by the last
+    /// [`ProgressiveDamage::progressive_failure_sweep`] (0 = no sweep has been
+    /// run yet, or the last sweep activated no failure mode).
     pub fpf_load: f64,
-    /// Applied load multiplier at LPF (0 = not yet reached).
+    /// Load factor λ of the last failure event of the last sweep, after which
+    /// no further failure mode can be activated (0 = no sweep has been run
+    /// yet, or the last sweep activated no failure mode).
     pub lpf_load: f64,
 }
 
@@ -693,11 +808,14 @@ impl ProgressiveDamage {
 
     /// Computes the laminate ABD A-matrix (membrane stiffness, 3×3) using CLT.
     ///
+    /// Each ply contributes its current (degraded) stiffness `q_matrix`, which
+    /// already carries the knock-down factor, times its thickness.
+    ///
     /// Returns \[A11, A22, A12, A16, A26, A66\] (Pa·m).
     pub fn a_matrix(&self) -> [f64; 6] {
         let mut a = [0.0_f64; 6];
         for ply in &self.plies {
-            let t = ply.thickness * ply.degradation;
+            let t = ply.thickness;
             let q = transformed_q(&ply.q_matrix, ply.angle_deg.to_radians());
             a[0] += q[0] * t;
             a[1] += q[1] * t;
@@ -709,78 +827,254 @@ impl ProgressiveDamage {
         a
     }
 
-    /// Performs a progressive failure sweep at a given load vector \[N₁, N₂, N₆\] (Pa·m).
+    /// The full symmetric 3×3 membrane stiffness matrix
+    /// \[\[A11, A12, A16\], \[A12, A22, A26\], \[A16, A26, A66\]\] (Pa·m).
+    pub fn a_matrix_full(&self) -> [[f64; 3]; 3] {
+        let [a11, a22, a12, a16, a26, a66] = self.a_matrix();
+        [[a11, a12, a16], [a12, a22, a26], [a16, a26, a66]]
+    }
+
+    /// Event-driven progressive failure analysis under the proportional
+    /// membrane load `λ · applied_load`, with `applied_load = [N₁, N₂, N₆]`
+    /// (force resultants, Pa·m) in laminate axes.
     ///
-    /// Returns the load factor at first-ply failure and updates ply states.
-    pub fn progressive_failure_sweep(&mut self, applied_load: [f64; 3], n_steps: usize) -> f64 {
-        let load_max = 2.0; // sweep load factor from 0 to 2
-        let d_lambda = load_max / n_steps as f64;
-        let mut first_failure_lambda = f64::INFINITY;
-
-        for step in 1..=n_steps {
-            let lambda = step as f64 * d_lambda;
-            let n = [
-                applied_load[0] * lambda,
-                applied_load[1] * lambda,
-                applied_load[2] * lambda,
+    /// The laminate response is linear between failure events.  At every stage
+    /// the mid-plane strains per unit load follow from the full coupled
+    /// system `A ε = N` (including A₁₂, A₁₆ and A₂₆), the ply stresses per unit
+    /// load follow from the virgin ply stiffness, and the load factor at which
+    /// each still-active failure mode of the maximum-stress criterion is
+    /// reached is `strength / |σ(λ = 1)|`.  The smallest of these (never
+    /// smaller than the current load level, so cascades fail at the current
+    /// level) is the next event: every ply and mode reaching its strength
+    /// there fails simultaneously, the ply stiffness is degraded according to
+    /// [`ProgressiveDamage::rule`], `A` is re-assembled and the next event is
+    /// searched, until no failure mode can be activated any more.
+    ///
+    /// Fibre fracture (σ₁) ends the ply; inter-fibre fracture (σ₂ or τ₁₂)
+    /// leaves the fibre mode active.  Only the membrane stiffness `A` is used
+    /// (bending–extension coupling `B` is neglected, which is exact for
+    /// symmetric laminates).  The analysis starts from the current damage
+    /// state of the plies and updates them in place.
+    ///
+    /// Returns the load factor at first-ply failure (`f64::INFINITY` when no
+    /// failure mode is ever activated, e.g. for zero load) and sets
+    /// [`ProgressiveDamage::fpf_load`] and [`ProgressiveDamage::lpf_load`].
+    ///
+    /// # Errors
+    /// * [`crate::Error::DimensionMismatch`] if there is not exactly one
+    ///   strength entry per ply.
+    /// * [`crate::Error::General`] if a load component or a membrane stiffness
+    ///   entry is not finite, or a strength is not finite.
+    /// * [`crate::Error::ParameterOutOfRange`] if one of the in-plane strengths
+    ///   F₁ᵗ, F₁c, F₂ᵗ, F₂c, F₁₂ of a ply is not strictly positive (a zero
+    ///   strength would turn the failure index infinite and the mode would be
+    ///   silently treated as unloaded).
+    /// * [`crate::Error::Singularity`] if the membrane stiffness matrix `A` is
+    ///   singular (e.g. an empty laminate).
+    pub fn progressive_failure_sweep(
+        &mut self,
+        applied_load: [f64; 3],
+    ) -> Result<f64, crate::Error> {
+        if self.strengths.len() != self.plies.len() {
+            return Err(crate::Error::DimensionMismatch {
+                expected: format!("{} ply strengths (one per ply)", self.plies.len()),
+                actual: format!("{} ply strengths", self.strengths.len()),
+            });
+        }
+        for &component in &applied_load {
+            crate::require_finite("applied_load", component)?;
+        }
+        for strength in &self.strengths {
+            let in_plane = [
+                ("f1t", strength.f1t),
+                ("f1c", strength.f1c),
+                ("f2t", strength.f2t),
+                ("f2c", strength.f2c),
+                ("f12", strength.f12),
             ];
-            // Compute average in-plane strains from A-matrix (simplified: isotropic approx)
-            let a = self.a_matrix();
-            let total_t: f64 = self
-                .plies
-                .iter()
-                .map(|p| p.thickness)
-                .sum::<f64>()
-                .max(1e-12);
-            let eps1 = n[0] / (a[0].max(1e-12) * total_t);
-            let eps2 = n[1] / (a[1].max(1e-12) * total_t);
-            let gam12 = n[2] / (a[5].max(1e-12) * total_t);
-
-            let mut any_new_failure = false;
-            for (i, ply) in self.plies.iter_mut().enumerate() {
-                if ply.ff_failed && ply.iff_failed {
-                    continue;
-                }
-                // Transform strains to ply axes and compute stress
-                let theta = ply.angle_deg.to_radians();
-                let c = theta.cos();
-                let s = theta.sin();
-                let eps1_ply = c * c * eps1 + s * s * eps2 + c * s * gam12;
-                let eps2_ply = s * s * eps1 + c * c * eps2 - c * s * gam12;
-                let gam12_ply = -2.0 * c * s * eps1 + 2.0 * c * s * eps2 + (c * c - s * s) * gam12;
-                let q = &ply.q_matrix;
-                let stress = PlaneStress::new(
-                    q[0] * eps1_ply + q[2] * eps2_ply,
-                    q[2] * eps1_ply + q[1] * eps2_ply,
-                    q[3] * gam12_ply,
-                );
-                if i < self.strengths.len() {
-                    let crit = MaxStressCriterion::new(self.strengths[i].clone());
-                    if crit.has_failed(stress) && !ply.ff_failed {
-                        ply.ff_failed = true;
-                        ply.degradation = match self.rule {
-                            DegradationRule::Total => 0.01,
-                            DegradationRule::Partial => 0.5,
-                            DegradationRule::None => 1.0,
-                        };
-                        any_new_failure = true;
-                        if first_failure_lambda > lambda {
-                            first_failure_lambda = lambda;
-                        }
-                    }
-                }
+            for (name, value) in in_plane {
+                crate::require_finite(name, value)?;
+                crate::require_positive(name, value)?;
             }
-            let _ = any_new_failure;
-            if self.all_failed() {
-                self.lpf_load = lambda;
+        }
+
+        let criteria: Vec<MaxStressCriterion> = self
+            .strengths
+            .iter()
+            .cloned()
+            .map(MaxStressCriterion::new)
+            .collect();
+        let rule = self.rule;
+        let mut lambda = 0.0_f64;
+        let mut first_failure = f64::INFINITY;
+        let mut any_failure = false;
+
+        loop {
+            let membrane_stiffness = self.a_matrix_full();
+            if membrane_stiffness
+                .iter()
+                .flatten()
+                .any(|entry| !entry.is_finite())
+            {
+                return Err(crate::Error::General(
+                    "laminate membrane stiffness matrix A is not finite \
+                     (check the ply thicknesses and elastic constants)"
+                        .to_string(),
+                ));
+            }
+            let strains_per_unit_load =
+                solve_3x3(membrane_stiffness, applied_load).ok_or_else(|| {
+                    crate::Error::singular(
+                        "progressive_failure_sweep",
+                        "laminate membrane stiffness matrix A is singular",
+                    )
+                })?;
+
+            let mut lambda_min = f64::INFINITY;
+            let mut loads: Vec<PlyFailureLoads> = Vec::with_capacity(self.plies.len());
+            for (ply, criterion) in self.plies.iter().zip(criteria.iter()) {
+                let ply_loads = PlyFailureLoads::evaluate(ply, criterion, strains_per_unit_load);
+                lambda_min = lambda_min.min(ply_loads.ff).min(ply_loads.iff);
+                loads.push(ply_loads);
+            }
+            if !lambda_min.is_finite() {
                 break;
             }
+
+            let lambda_event = lambda.max(lambda_min);
+            let threshold = lambda_event * (1.0 + SIMULTANEOUS_FAILURE_TOLERANCE);
+            for (ply, ply_loads) in self.plies.iter_mut().zip(loads.iter()) {
+                let ff = ply_loads.ff <= threshold;
+                let iff = ply_loads.iff <= threshold;
+                if ff || iff {
+                    ply.apply_degradation(rule, ff, iff);
+                }
+            }
+            if !any_failure {
+                first_failure = lambda_event;
+                any_failure = true;
+            }
+            lambda = lambda_event;
         }
-        if first_failure_lambda < f64::INFINITY {
-            self.fpf_load = first_failure_lambda;
-        }
-        first_failure_lambda
+
+        // Both load factors describe this sweep only: a sweep that finds no
+        // active failure mode must not leave the values of an earlier sweep.
+        self.fpf_load = if any_failure { first_failure } else { 0.0 };
+        self.lpf_load = if any_failure { lambda } else { 0.0 };
+        Ok(first_failure)
     }
+}
+
+/// Relative tolerance within which failure events are treated as simultaneous.
+const SIMULTANEOUS_FAILURE_TOLERANCE: f64 = 1.0e-9;
+
+/// Load factors at which the fibre and inter-fibre failure modes of one ply are
+/// reached, for the current damage state and a proportional load.
+struct PlyFailureLoads {
+    /// Load factor of fibre fracture (σ₁ against F₁ᵗ/F₁c); `INFINITY` if inactive.
+    ff: f64,
+    /// Load factor of inter-fibre fracture (σ₂ against F₂ᵗ/F₂c or τ₁₂ against
+    /// F₁₂); `INFINITY` if inactive.
+    iff: f64,
+}
+
+impl PlyFailureLoads {
+    /// Evaluates the still-active failure modes of `ply` for the laminate
+    /// mid-plane strains `strains` (per unit load, laminate axes).
+    fn evaluate(ply: &PlyState, criterion: &MaxStressCriterion, strains: [f64; 3]) -> Self {
+        if ply.ff_failed {
+            // Fibre fracture exhausts the ply.
+            return Self {
+                ff: f64::INFINITY,
+                iff: f64::INFINITY,
+            };
+        }
+        let stress = ply_stress_from_laminate_strain(ply, strains);
+        let [fi_fibre, fi_transverse, fi_shear] = criterion.failure_indices(stress);
+        let iff = if ply.iff_failed {
+            f64::INFINITY
+        } else {
+            load_factor_from_index(fi_transverse.max(fi_shear))
+        };
+        Self {
+            ff: load_factor_from_index(fi_fibre),
+            iff,
+        }
+    }
+}
+
+/// Load factor `1 / FI` for a failure index per unit load; `INFINITY` when the
+/// mode is unloaded.
+fn load_factor_from_index(failure_index: f64) -> f64 {
+    if failure_index > 0.0 && failure_index.is_finite() {
+        1.0 / failure_index
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// Ply-axis stress of the intact material for laminate mid-plane strains
+/// `[ε_x, ε_y, γ_xy]`: strains are rotated into the ply axes and multiplied by
+/// the virgin ply stiffness.
+fn ply_stress_from_laminate_strain(ply: &PlyState, strains: [f64; 3]) -> PlaneStress {
+    let (s, c) = ply.angle_deg.to_radians().sin_cos();
+    let [eps_x, eps_y, gamma_xy] = strains;
+    let eps1 = c * c * eps_x + s * s * eps_y + c * s * gamma_xy;
+    let eps2 = s * s * eps_x + c * c * eps_y - c * s * gamma_xy;
+    let gamma12 = -2.0 * c * s * eps_x + 2.0 * c * s * eps_y + (c * c - s * s) * gamma_xy;
+    let [q11, q22, q12, q66] = ply.q_virgin;
+    PlaneStress::new(
+        q11 * eps1 + q12 * eps2,
+        q12 * eps1 + q22 * eps2,
+        q66 * gamma12,
+    )
+}
+
+/// Solves the 3×3 system `A x = b` by Gaussian elimination with partial
+/// pivoting.  Returns `None` when `A` is singular relative to its largest
+/// entry, or when `A` or `b` has a non-finite entry.
+fn solve_3x3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
+    if a.iter().flatten().chain(b.iter()).any(|v| !v.is_finite()) {
+        return None;
+    }
+    let scale = a.iter().flatten().fold(0.0_f64, |acc, v| acc.max(v.abs()));
+    if scale <= 0.0 {
+        return None;
+    }
+    let pivot_tolerance = 1.0e-14 * scale;
+    let mut m = [[0.0_f64; 4]; 3];
+    for (row, (a_row, rhs)) in m.iter_mut().zip(a.iter().zip(b.iter())) {
+        row[..3].copy_from_slice(a_row);
+        row[3] = *rhs;
+    }
+    for col in 0..3 {
+        let mut pivot_row = col;
+        for r in (col + 1)..3 {
+            if m[r][col].abs() > m[pivot_row][col].abs() {
+                pivot_row = r;
+            }
+        }
+        if m[pivot_row][col].abs() <= pivot_tolerance {
+            return None;
+        }
+        m.swap(col, pivot_row);
+        let pivot_values = m[col];
+        for row in m.iter_mut().skip(col + 1) {
+            let factor = row[col] / pivot_values[col];
+            for (value, pivot_value) in row.iter_mut().zip(pivot_values.iter()).skip(col) {
+                *value -= factor * pivot_value;
+            }
+        }
+    }
+    let mut x = [0.0_f64; 3];
+    for i in (0..3).rev() {
+        let mut acc = m[i][3];
+        for j in (i + 1)..3 {
+            acc -= m[i][j] * x[j];
+        }
+        x[i] = acc / m[i][i];
+    }
+    Some(x)
 }
 
 // ---------------------------------------------------------------------------
@@ -991,9 +1285,10 @@ pub fn reserve_factor(criterion_value: f64) -> Option<f64> {
 
 /// Returns the Tsai-Hill failure envelope points for σ₁ sweeping from −F₁c to F₁t.
 ///
-/// Each entry is (σ₁, σ₂) on the failure locus at τ₁₂ = 0.
+/// Each entry is (σ₁, σ₂) on the tensile (σ₂ ≥ 0) branch of the failure locus
+/// at τ₁₂ = 0, so that F₂ = F₂ᵗ applies and `failure_index_sq` equals 1 at
+/// every returned point.
 pub fn tsai_hill_envelope(strength: &PlyStrength, n_points: usize) -> Vec<(f64, f64)> {
-    let crit = TsaiHillCriterion::new(strength.clone());
     let mut pts = Vec::with_capacity(n_points);
     for i in 0..n_points {
         let sigma1 =
@@ -1011,462 +1306,11 @@ pub fn tsai_hill_envelope(strength: &PlyStrength, n_points: usize) -> Vec<(f64, 
         let disc = b * b - 4.0 * a * c_coeff;
         if disc >= 0.0 {
             let s2 = (-b + disc.sqrt()) / (2.0 * a);
-            let _ = crit.failure_index_sq(PlaneStress::new(sigma1, s2, 0.0)); // verify
             pts.push((sigma1, s2));
         }
     }
     pts
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // --- PlaneStress ---
-
-    #[test]
-    fn test_plane_stress_zero() {
-        let s = PlaneStress::zero();
-        assert_eq!(s.sigma1, 0.0);
-    }
-
-    #[test]
-    fn test_plane_stress_scaled() {
-        let s = PlaneStress::new(100.0, 50.0, 20.0).scaled(2.0);
-        assert!((s.sigma1 - 200.0).abs() < 1e-10);
-        assert!((s.tau12 - 40.0).abs() < 1e-10);
-    }
-
-    // --- PlyStrength ---
-
-    #[test]
-    fn test_carbon_epoxy_strengths_positive() {
-        let st = PlyStrength::carbon_epoxy_t300();
-        assert!(st.f1t > 0.0 && st.f1c > 0.0 && st.f2t > 0.0 && st.f12 > 0.0);
-    }
-
-    #[test]
-    fn test_glass_epoxy_f1t_less_than_carbon() {
-        let ce = PlyStrength::carbon_epoxy_t300();
-        let ge = PlyStrength::glass_epoxy();
-        assert!(ge.f1t < ce.f1t);
-    }
-
-    // --- MaxStressCriterion ---
-
-    #[test]
-    fn test_max_stress_no_failure_under_threshold() {
-        let crit = MaxStressCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let s = PlaneStress::new(100.0e6, 10.0e6, 5.0e6); // well below strength
-        assert!(!crit.has_failed(s));
-    }
-
-    #[test]
-    fn test_max_stress_failure_at_f1t() {
-        let crit = MaxStressCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let s = PlaneStress::new(1500.0e6, 0.0, 0.0);
-        assert!(crit.has_failed(s));
-    }
-
-    #[test]
-    fn test_max_stress_fi_longitudinal_tension() {
-        let crit = MaxStressCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let s = PlaneStress::new(750.0e6, 0.0, 0.0);
-        assert!((crit.fi_longitudinal(s) - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_max_stress_fi_longitudinal_compression() {
-        let crit = MaxStressCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let s = PlaneStress::new(-900.0e6, 0.0, 0.0);
-        assert!((crit.fi_longitudinal(s) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_max_stress_fi_transverse_zero() {
-        let crit = MaxStressCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let s = PlaneStress::new(100.0e6, 0.0, 0.0);
-        assert!((crit.fi_transverse(s)).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_max_stress_load_factor_gt_one_safe() {
-        let crit = MaxStressCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let s = PlaneStress::new(100.0e6, 10.0e6, 5.0e6);
-        assert!(crit.load_factor(s) > 1.0);
-    }
-
-    #[test]
-    fn test_max_stress_load_factor_le_one_failed() {
-        let crit = MaxStressCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let s = PlaneStress::new(1500.0e6, 0.0, 0.0);
-        assert!(crit.load_factor(s) <= 1.0);
-    }
-
-    // --- TsaiHillCriterion ---
-
-    #[test]
-    fn test_tsai_hill_no_failure_low_stress() {
-        let crit = TsaiHillCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let s = PlaneStress::new(100.0e6, 10.0e6, 5.0e6);
-        assert!(!crit.has_failed(s));
-    }
-
-    #[test]
-    fn test_tsai_hill_failure_at_strength() {
-        let crit = TsaiHillCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let s = PlaneStress::new(1500.0e6, 0.0, 0.0);
-        assert!(crit.has_failed(s));
-    }
-
-    #[test]
-    fn test_tsai_hill_safety_margin_gt_one_safe() {
-        let crit = TsaiHillCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let s = PlaneStress::new(100.0e6, 5.0e6, 5.0e6);
-        assert!(crit.safety_margin(s) > 1.0);
-    }
-
-    #[test]
-    fn test_tsai_hill_load_factor_positive() {
-        let crit = TsaiHillCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let s = PlaneStress::new(300.0e6, 20.0e6, 10.0e6);
-        assert!(crit.load_factor(s) > 0.0);
-    }
-
-    #[test]
-    fn test_tsai_hill_biaxial_strength_positive() {
-        let crit = TsaiHillCriterion::new(PlyStrength::carbon_epoxy_t300());
-        let sigma1 = crit.biaxial_strength(0.0);
-        assert!(sigma1 > 0.0);
-    }
-
-    #[test]
-    fn test_tsai_hill_failure_index_at_uniaxial_f1t() {
-        let st = PlyStrength::carbon_epoxy_t300();
-        let crit = TsaiHillCriterion::new(st.clone());
-        let s = PlaneStress::new(st.f1t, 0.0, 0.0);
-        let fi = crit.failure_index_sq(s);
-        assert!((fi - 1.0).abs() < 1e-6, "FI at F1t should be 1: {fi}");
-    }
-
-    // --- TsaiWuCriterion ---
-
-    #[test]
-    fn test_tsai_wu_stable_interaction_coeff() {
-        let crit = TsaiWuCriterion::new(PlyStrength::carbon_epoxy_t300(), -0.5);
-        assert!(crit.is_stable());
-    }
-
-    #[test]
-    fn test_tsai_wu_no_failure_low_stress() {
-        let crit = TsaiWuCriterion::new(PlyStrength::carbon_epoxy_t300(), -0.5);
-        let s = PlaneStress::new(100.0e6, 5.0e6, 5.0e6);
-        assert!(!crit.has_failed(s));
-    }
-
-    #[test]
-    fn test_tsai_wu_failure_at_high_load() {
-        let crit = TsaiWuCriterion::new(PlyStrength::carbon_epoxy_t300(), -0.5);
-        let s = PlaneStress::new(1600.0e6, 60.0e6, 80.0e6);
-        assert!(crit.has_failed(s));
-    }
-
-    #[test]
-    fn test_tsai_wu_load_factor_positive() {
-        let crit = TsaiWuCriterion::new(PlyStrength::carbon_epoxy_t300(), -0.5);
-        let s = PlaneStress::new(300.0e6, 20.0e6, 10.0e6);
-        assert!(crit.load_factor(s) > 0.0);
-    }
-
-    #[test]
-    fn test_tsai_wu_linear_terms_sign() {
-        let crit = TsaiWuCriterion::new(PlyStrength::carbon_epoxy_t300(), -0.5);
-        let [f1, _f2] = crit.linear_terms();
-        // f1 = 1/F1t - 1/F1c. Since F1t > F1c typically, sign depends on values.
-        assert!(f1.is_finite());
-    }
-
-    #[test]
-    fn test_tsai_wu_quadratic_terms_f11_positive() {
-        let crit = TsaiWuCriterion::new(PlyStrength::carbon_epoxy_t300(), -0.5);
-        let [f11, f22, f66, _f12] = crit.quadratic_terms();
-        assert!(f11 > 0.0 && f22 > 0.0 && f66 > 0.0);
-    }
-
-    // --- PuckCriterion ---
-
-    #[test]
-    fn test_puck_ff_none_at_low_stress() {
-        let puck = PuckCriterion::carbon_epoxy_default();
-        let s = PlaneStress::new(100.0e6, 10.0e6, 5.0e6);
-        assert_eq!(puck.ff_mode(s), PuckFfMode::None);
-    }
-
-    #[test]
-    fn test_puck_ff_tension_at_f1t() {
-        let puck = PuckCriterion::carbon_epoxy_default();
-        let s = PlaneStress::new(1600.0e6, 0.0, 0.0);
-        assert_eq!(puck.ff_mode(s), PuckFfMode::Tension);
-    }
-
-    #[test]
-    fn test_puck_ff_compression_at_minus_f1c() {
-        let puck = PuckCriterion::carbon_epoxy_default();
-        let s = PlaneStress::new(-1000.0e6, 0.0, 0.0);
-        assert_eq!(puck.ff_mode(s), PuckFfMode::Compression);
-    }
-
-    #[test]
-    fn test_puck_iff_mode_a_tension_transverse() {
-        let puck = PuckCriterion::carbon_epoxy_default();
-        // High transverse tension
-        let s = PlaneStress::new(0.0, 60.0e6, 0.0);
-        assert!(puck.iff_exposure_mode_a(s) > 1.0);
-    }
-
-    #[test]
-    fn test_puck_iff_mode_bc_compression() {
-        let puck = PuckCriterion::carbon_epoxy_default();
-        let s = PlaneStress::new(0.0, -250.0e6, 80.0e6);
-        // High compressive transverse + shear — should trigger mode BC
-        let exp = puck.iff_exposure_mode_bc(s);
-        assert!(exp >= 0.0);
-    }
-
-    #[test]
-    fn test_puck_fracture_angle_zero_for_tension() {
-        let puck = PuckCriterion::carbon_epoxy_default();
-        let s = PlaneStress::new(0.0, 30.0e6, 0.0);
-        assert!((puck.fracture_plane_angle(s)).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_puck_fracture_angle_positive_for_compression() {
-        let puck = PuckCriterion::carbon_epoxy_default();
-        let s = PlaneStress::new(0.0, -100.0e6, 0.0);
-        let angle = puck.fracture_plane_angle(s);
-        assert!(angle >= 0.0);
-    }
-
-    #[test]
-    fn test_puck_no_failure_at_zero_stress() {
-        let puck = PuckCriterion::carbon_epoxy_default();
-        let s = PlaneStress::zero();
-        assert!(!puck.has_failed(s));
-    }
-
-    // --- ProgressiveDamage ---
-
-    #[test]
-    fn test_ply_state_construction() {
-        let ply = PlyState::new(0.0, 0.125e-3, 130.0e9, 10.0e9, 0.28, 5.0e9);
-        assert!(ply.q11() > ply.q22());
-        assert!(!ply.ff_failed);
-    }
-
-    #[test]
-    fn test_ply_state_q11_q22_ordering() {
-        let ply = PlyState::new(0.0, 0.125e-3, 130.0e9, 10.0e9, 0.28, 5.0e9);
-        assert!(
-            ply.q11() > ply.q22(),
-            "Q11 should be > Q22 for UD ply at 0°"
-        );
-    }
-
-    #[test]
-    fn test_ply_degradation_total() {
-        let mut ply = PlyState::new(0.0, 0.125e-3, 130.0e9, 10.0e9, 0.28, 5.0e9);
-        let q11_before = ply.q11();
-        ply.apply_degradation(DegradationRule::Total, true, false);
-        assert!(ply.q11() < q11_before);
-        assert!(ply.ff_failed);
-    }
-
-    #[test]
-    fn test_ply_degradation_none_keeps_stiffness() {
-        let mut ply = PlyState::new(0.0, 0.125e-3, 130.0e9, 10.0e9, 0.28, 5.0e9);
-        let q11_before = ply.q11();
-        ply.apply_degradation(DegradationRule::None, false, true);
-        assert!((ply.q11() - q11_before).abs() < 1e-3);
-    }
-
-    #[test]
-    fn test_progressive_damage_n_intact_all() {
-        let ply1 = PlyState::new(0.0, 0.125e-3, 130.0e9, 10.0e9, 0.28, 5.0e9);
-        let ply2 = PlyState::new(90.0, 0.125e-3, 130.0e9, 10.0e9, 0.28, 5.0e9);
-        let st1 = PlyStrength::carbon_epoxy_t300();
-        let st2 = PlyStrength::carbon_epoxy_t300();
-        let pd = ProgressiveDamage::new(vec![ply1, ply2], vec![st1, st2], DegradationRule::Total);
-        assert_eq!(pd.n_intact(), 2);
-    }
-
-    #[test]
-    fn test_progressive_damage_not_all_failed_initially() {
-        let ply1 = PlyState::new(0.0, 0.125e-3, 130.0e9, 10.0e9, 0.28, 5.0e9);
-        let pd = ProgressiveDamage::new(
-            vec![ply1],
-            vec![PlyStrength::carbon_epoxy_t300()],
-            DegradationRule::Total,
-        );
-        assert!(!pd.all_failed());
-    }
-
-    #[test]
-    fn test_progressive_damage_a_matrix_nonzero() {
-        let ply = PlyState::new(0.0, 0.125e-3, 130.0e9, 10.0e9, 0.28, 5.0e9);
-        let pd = ProgressiveDamage::new(
-            vec![ply],
-            vec![PlyStrength::carbon_epoxy_t300()],
-            DegradationRule::Total,
-        );
-        let a = pd.a_matrix();
-        assert!(a[0] > 0.0);
-    }
-
-    #[test]
-    fn test_progressive_failure_sweep_returns_finite() {
-        let ply = PlyState::new(0.0, 0.125e-3, 130.0e9, 10.0e9, 0.28, 5.0e9);
-        let mut pd = ProgressiveDamage::new(
-            vec![ply],
-            vec![PlyStrength::carbon_epoxy_t300()],
-            DegradationRule::Total,
-        );
-        let lf = pd.progressive_failure_sweep([1.0e7, 0.0, 0.0], 100);
-        assert!(lf.is_finite() || lf == f64::INFINITY);
-    }
-
-    // --- DelamCriterion ---
-
-    #[test]
-    fn test_delam_no_failure_low_stress() {
-        let dc = DelamCriterion::carbon_epoxy_default();
-        let s = InterlaminaStress::new(10.0e6, 20.0e6, 20.0e6);
-        assert!(!dc.stress_delamination(s));
-    }
-
-    #[test]
-    fn test_delam_failure_above_z_t() {
-        let dc = DelamCriterion::carbon_epoxy_default();
-        let s = InterlaminaStress::new(60.0e6, 0.0, 0.0); // σ_z > Z_t=50MPa
-        assert!(dc.stress_delamination(s));
-    }
-
-    #[test]
-    fn test_delam_compression_no_mode1_contribution() {
-        let dc = DelamCriterion::carbon_epoxy_default();
-        let s = InterlaminaStress::new(-100.0e6, 0.0, 0.0); // compressive
-        assert!(!dc.stress_delamination(s));
-    }
-
-    #[test]
-    fn test_delam_linear_err_failure() {
-        let dc = DelamCriterion::carbon_epoxy_default();
-        let err = EnergyReleaseRate::new(200.0, 400.0, 0.0); // at critical values
-        assert!(dc.err_delamination(err));
-    }
-
-    #[test]
-    fn test_delam_linear_err_safe() {
-        let dc = DelamCriterion::carbon_epoxy_default();
-        let err = EnergyReleaseRate::new(50.0, 50.0, 0.0);
-        assert!(!dc.err_delamination(err));
-    }
-
-    #[test]
-    fn test_bk_criterion_at_critical() {
-        let dc = DelamCriterion::carbon_epoxy_default();
-        // Pure mode I at G1c
-        let err = EnergyReleaseRate::new(200.0, 0.0, 0.0);
-        let bk = dc.bk_criterion(err);
-        assert!((bk - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_bk_delamination_above_critical() {
-        let dc = DelamCriterion::carbon_epoxy_default();
-        let err = EnergyReleaseRate::new(300.0, 0.0, 0.0);
-        assert!(dc.bk_delamination(err));
-    }
-
-    #[test]
-    fn test_bk_no_delamination_below_critical() {
-        let dc = DelamCriterion::carbon_epoxy_default();
-        let err = EnergyReleaseRate::new(50.0, 50.0, 0.0);
-        assert!(!dc.bk_delamination(err));
-    }
-
-    #[test]
-    fn test_err_mode_i_ratio() {
-        let err = EnergyReleaseRate::new(100.0, 50.0, 50.0);
-        let r = err.mode_i_ratio();
-        assert!((r - 0.5).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_err_total() {
-        let err = EnergyReleaseRate::new(100.0, 200.0, 50.0);
-        assert!((err.total() - 350.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_stress_intensity_mode1() {
-        let dc = DelamCriterion::carbon_epoxy_default();
-        let k1 = dc.stress_intensity_mode1(1.0e6, 1.0e-3 / PI);
-        assert!((k1 - 1.0e6 / 1000.0_f64.sqrt()).abs() < 1.0);
-    }
-
-    #[test]
-    fn test_g1c_from_k1c() {
-        let g = DelamCriterion::g1c_from_k1c(1000.0, 5.0e9);
-        assert!((g - 1000.0 * 1000.0 / 5.0e9).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_paris_growth_rate_positive() {
-        let dc = DelamCriterion::carbon_epoxy_default();
-        let rate = dc.paris_growth_rate(100.0, 200.0, 1e-10, 3.0);
-        assert!(rate > 0.0);
-    }
-
-    // --- Helper functions ---
-
-    #[test]
-    fn test_transformed_q_identity_at_zero_angle() {
-        let q = [130.0e9_f64, 10.0e9_f64, 3.0e9_f64, 5.0e9_f64];
-        let qbar = transformed_q(&q, 0.0);
-        assert!((qbar[0] - q[0]).abs() < 1.0, "Q11 not preserved at 0°");
-        assert!((qbar[1] - q[1]).abs() < 1.0, "Q22 not preserved at 0°");
-    }
-
-    #[test]
-    fn test_transformed_q_90deg_swaps_11_22() {
-        let q = [130.0e9_f64, 10.0e9_f64, 3.0e9_f64, 5.0e9_f64];
-        let qbar0 = transformed_q(&q, 0.0);
-        let qbar90 = transformed_q(&q, PI / 2.0);
-        assert!(
-            (qbar90[0] - qbar0[1]).abs() < 1.0,
-            "Q̄11(90°) should equal Q̄22(0°)"
-        );
-    }
-
-    #[test]
-    fn test_reserve_factor_positive() {
-        assert!((reserve_factor(0.5).unwrap() - 2.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_reserve_factor_none_at_zero() {
-        assert!(reserve_factor(0.0).is_none());
-    }
-
-    #[test]
-    fn test_tsai_hill_envelope_nonempty() {
-        let st = PlyStrength::carbon_epoxy_t300();
-        let pts = tsai_hill_envelope(&st, 10);
-        assert!(!pts.is_empty());
-    }
-}
+mod tests;

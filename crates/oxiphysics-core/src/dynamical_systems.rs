@@ -1040,9 +1040,16 @@ impl OdeSystem for VanDerPol {
 // Double pendulum (Hamiltonian)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Double pendulum with equal masses `m=1` and lengths `l=1`.
+/// Double pendulum: two point masses `m = 1` on massless rods of length `l = 1`.
 ///
-/// Canonical coordinates: `q = (θ1, θ2)`, `p = (pθ1, pθ2)`.
+/// With `Δ = θ1 − θ2` the Lagrangian is
+/// `L = θ̇1² + θ̇2²/2 + θ̇1 θ̇2 cos Δ + g (2 cos θ1 + cos θ2)`, hence the
+/// canonical momenta `pθ1 = 2 θ̇1 + θ̇2 cos Δ`, `pθ2 = θ̇2 + θ̇1 cos Δ` and the
+/// Hamiltonian
+/// `H = (pθ1² + 2 pθ2² − 2 pθ1 pθ2 cos Δ) / (2 (1 + sin² Δ)) − g (2 cos θ1 + cos θ2)`.
+///
+/// Canonical coordinates: `q = (θ1, θ2)`, `p = (pθ1, pθ2)`; both angles are
+/// measured from the downward vertical.
 #[derive(Debug, Clone)]
 pub struct DoublePendulum {
     /// Gravitational acceleration.
@@ -1094,29 +1101,40 @@ impl DoublePendulum {
         traj
     }
 
-    /// RHS for `[θ1, θ2, pθ1, pθ2]` (equal masses m=1, lengths l=1).
-    fn rhs_arr(&self, s: [f64; 4]) -> [f64; 4] {
-        let (t1, t2, p1, p2) = (s[0], s[1], s[2], s[3]);
-        let dt = t1 - t2;
-        let denom = 16.0 - 9.0 * dt.cos() * dt.cos();
-        let t1dot = (6.0 * p1 - 3.0 * dt.cos() * p2) / denom;
-        let t2dot = (8.0 * p2 - 6.0 * dt.cos() * p1) / denom;
-        let h = t1dot * t2dot * dt.sin();
-        let p1dot = -3.0 * self.g * t1.sin() - h;
-        let p2dot = self.g * t2.sin() + h;
-        [t1dot, t2dot, p1dot, p2dot]
+    /// `(θ̇1, θ̇2, sin Δ)` for the state `[θ1, θ2, pθ1, pθ2]`: the momenta
+    /// multiplied by the inverse of the mass matrix `[[2, cos Δ], [cos Δ, 1]]`,
+    /// whose determinant is `1 + sin² Δ`.
+    fn angular_velocities(s: [f64; 4]) -> (f64, f64, f64) {
+        let (sin_delta, cos_delta) = (s[0] - s[1]).sin_cos();
+        let det = 1.0 + sin_delta * sin_delta;
+        (
+            (s[2] - cos_delta * s[3]) / det,
+            (2.0 * s[3] - cos_delta * s[2]) / det,
+            sin_delta,
+        )
     }
 
-    /// Total energy of the double pendulum.
+    /// Hamilton's equations for `[θ1, θ2, pθ1, pθ2]`:
+    /// `θ̇ = ∂H/∂p`, `ṗθ1 = −θ̇1 θ̇2 sin Δ − 2 g sin θ1`,
+    /// `ṗθ2 = +θ̇1 θ̇2 sin Δ − g sin θ2`.
+    fn rhs_arr(&self, s: [f64; 4]) -> [f64; 4] {
+        let (t1dot, t2dot, sin_delta) = Self::angular_velocities(s);
+        let coupling = t1dot * t2dot * sin_delta;
+        [
+            t1dot,
+            t2dot,
+            -coupling - 2.0 * self.g * s[0].sin(),
+            coupling - self.g * s[1].sin(),
+        ]
+    }
+
+    /// Total energy `H = T + V` of the double pendulum, with the kinetic
+    /// energy `T = (pθ1 θ̇1 + pθ2 θ̇2) / 2` and `V = −g (2 cos θ1 + cos θ2)`.
     pub fn energy(&self, s: [f64; 4]) -> f64 {
-        let (t1, t2, p1, p2) = (s[0], s[1], s[2], s[3]);
-        let dt = t1 - t2;
-        let denom = 16.0 - 9.0 * dt.cos() * dt.cos();
-        let t1dot = (6.0 * p1 - 3.0 * dt.cos() * p2) / denom;
-        let t2dot = (8.0 * p2 - 6.0 * dt.cos() * p1) / denom;
-        let ke = 0.5 * t1dot * t1dot + 0.5 * t2dot * t2dot + t1dot * t2dot * dt.cos();
-        let pe = -self.g * (2.0 * t1.cos() + t2.cos());
-        ke + pe
+        let (t1dot, t2dot, _) = Self::angular_velocities(s);
+        let kinetic = 0.5 * (s[2] * t1dot + s[3] * t2dot);
+        let potential = -self.g * (2.0 * s[0].cos() + s[1].cos());
+        kinetic + potential
     }
 }
 
@@ -1871,22 +1889,6 @@ mod tests {
         assert!(mle > -1.0, "MLE = {}", mle);
     }
 
-    // ── 31. Double pendulum energy conservation (short integration) ───────────
-    #[test]
-    fn test_double_pendulum_energy() {
-        let dp = DoublePendulum::new(9.81);
-        let s0 = [0.1, 0.05, 0.0, 0.0];
-        let e0 = dp.energy(s0);
-        // Use small step and short run to limit RK4 drift
-        let traj = dp.integrate(s0, 0.001, 100);
-        let e_end = dp.energy(*traj.last().unwrap());
-        assert!(
-            (e_end - e0).abs() < 0.02,
-            "energy drift = {}",
-            (e_end - e0).abs()
-        );
-    }
-
     // ── 32. Duffing oscillator RHS dimensionality ─────────────────────────────
     #[test]
     fn test_duffing_dim() {
@@ -1990,3 +1992,7 @@ mod tests {
         let _ = result;
     }
 }
+
+#[cfg(test)]
+#[path = "dynamical_systems_double_pendulum_tests.rs"]
+mod double_pendulum_tests;

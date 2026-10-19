@@ -236,11 +236,15 @@ impl FemSoftBody {
 /// A tetrahedral element that stays stable under inversion via signed SVD.
 ///
 /// Uses the rotation-variant (signed) 3x3 SVD with reflection convention to
-/// diagonalise the deformation gradient `F = U diag(sigma) V^T`, clamps the
-/// singular values away from zero, evaluates the (Neo-Hookean) first
-/// Piola-Kirchhoff stress in the principal frame, and rotates it back. This
-/// lets a fully inverted tet (`det F < 0`) produce finite restoring forces
-/// and recover to its rest shape with no NaN at `J <= 0`.
+/// diagonalise the deformation gradient `F = U diag(sigma) V^T` with
+/// `det U = det V = +1`, so an inverted element carries `sigma[2] < 0`. The
+/// *signed* singular values are clamped from below at `sigma_clamp` (Irving et
+/// al. 2004), the (Neo-Hookean) first Piola-Kirchhoff stress is evaluated in the
+/// principal frame, and rotated back. An inverted axis is thereby replaced by a
+/// small positive stretch with a strongly compressive principal stress that
+/// pushes it back through zero: a fully inverted tet (`det F < 0`) produces
+/// finite restoring forces, un-inverts, and recovers its rest shape with no NaN
+/// at `J <= 0`.
 #[derive(Debug, Clone)]
 pub struct CorotationalInvertibleElement {
     /// Node indices `[i0, i1, i2, i3]`.
@@ -253,7 +257,9 @@ pub struct CorotationalInvertibleElement {
     pub mu: f64,
     /// Second Lame parameter lambda.
     pub lambda: f64,
-    /// Lower clamp applied to singular-value magnitudes (prevents NaN at J=0).
+    /// Lower clamp applied to the *signed* singular values. It prevents NaN at
+    /// `J = 0` and turns an inverted axis (`sigma < sigma_clamp`) into a strongly
+    /// compressed one whose stress restores the element.
     pub sigma_clamp: f64,
 }
 
@@ -300,33 +306,31 @@ impl CorotationalInvertibleElement {
         let (u, sigma, vt) = signed_svd3(f);
 
         // Irving et al. (2004), "Invertible Finite Elements For Robust
-        // Simulation of Large Deformation", reflection handling. The signed SVD
-        // gives `det(U) = det(V) = +1`, so a reflected (inverted) element is
-        // encoded by `sigma[2] < 0`. Evaluating the principal Neo-Hookean stress
-        // on the *signed* singular values makes the reflected rest state
-        // `sigma = (1,1,-1)` a spurious zero-force equilibrium
-        // (`mu(sigma - 1/sigma) = mu(-1 + 1) = 0`, `ln|J| = 0`), so a relaxing
-        // tet settles at the mirrored shape (`det F = -1`).
+        // Simulation of Large Deformation". The signed SVD gives
+        // `det(U) = det(V) = +1`, so a reflected (inverted) element is encoded
+        // by `sigma[2] < 0`. The constitutive stress is evaluated on the
+        // SIGNED singular values clamped from below at `sigma_clamp`: an
+        // inverted (or crushed) axis is replaced by the small positive value
+        // `sigma_clamp`, where the principal Neo-Hookean stress
+        // `mu (sigma - 1/sigma) + lambda ln(J) / sigma` is strongly compressive
+        // (`P_hat << 0`). With `H = -V P Dm^{-T}` that stress pushes the axis
+        // back through zero, so the element un-inverts for any depth of
+        // inversion.
         //
-        // The remedy is to evaluate the constitutive stress on the POSITIVE
-        // (magnitude) singular values, clamped away from zero. A
-        // compressed/inverted axis (`|sigma| < 1`) then yields a genuinely
-        // compressive principal stress `mu(|sigma| - 1/|sigma|) < 0` that pushes
-        // the axis to expand back toward `|sigma| = 1`. The reflection
-        // orientation already lives in the signed `U`/`V^T` from the SVD, so the
-        // world-frame reconstruction `P = U diag(P_hat) V^T` directs this
-        // restoring stress to drive the inverted node back through the rest
-        // plane and un-invert the element -- no extra sign flip is required (and
-        // flipping the most-inverted axis would reverse the force back toward
-        // the reflected rest, deepening the inversion).
+        // Taking `|sigma|` instead is wrong: the fully mirrored rest shape
+        // `sigma = (1, 1, -1)` maps to `(1, 1, 1)` where `P_hat = 0`, so a
+        // mirrored tet would feel no force at all, and for `sigma_3 < -1` the
+        // stress `P_hat_3 = g(|sigma_3|)` is tensile, which drives `sigma_3`
+        // further negative (deeper inversion). Only the `|sigma_3| < 1` basin
+        // would recover.
         let sc = [
-            sigma[0].abs().max(self.sigma_clamp),
-            sigma[1].abs().max(self.sigma_clamp),
-            sigma[2].abs().max(self.sigma_clamp),
+            sigma[0].max(self.sigma_clamp),
+            sigma[1].max(self.sigma_clamp),
+            sigma[2].max(self.sigma_clamp),
         ];
 
         // Neo-Hookean first Piola stress in the principal (diagonal) frame,
-        // evaluated on the positive clamped sigmas (Jp = product > 0):
+        // evaluated on the clamped, strictly positive sigmas (Jp = product > 0):
         //   P_hat_i = mu (sigma_i - 1/sigma_i) + lambda ln(Jp) / sigma_i
         let jp = sc[0] * sc[1] * sc[2];
         let ln_jp = jp.ln();
@@ -417,5 +421,129 @@ mod tests_invertible {
             recovered_step.is_some(),
             "tet never reached positive volume"
         );
+    }
+
+    /// Unit corner tetrahedron used as the rest shape.
+    const REST: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+
+    fn unit_element() -> CorotationalInvertibleElement {
+        CorotationalInvertibleElement::new([0, 1, 2, 3], &REST, 1.0e4, 0.3)
+    }
+
+    /// Damped explicit (symplectic Euler) relaxation of the unit-mass nodes.
+    fn relax(
+        elem: &CorotationalInvertibleElement,
+        start: [[f64; 3]; 4],
+        steps: usize,
+    ) -> [[f64; 3]; 4] {
+        let dt = 1.0e-3;
+        let damping = 0.02;
+        let mut pos = start;
+        let mut vel = [[0.0f64; 3]; 4];
+        for step in 0..steps {
+            let forces = elem.compute_forces(&pos);
+            for k in 0..4 {
+                for d in 0..3 {
+                    assert!(forces[k][d].is_finite(), "force NaN/Inf at step {step}");
+                    vel[k][d] += forces[k][d] * dt;
+                    vel[k][d] *= 1.0 - damping;
+                    pos[k][d] += vel[k][d] * dt;
+                    assert!(pos[k][d].is_finite(), "position NaN/Inf at step {step}");
+                }
+            }
+        }
+        pos
+    }
+
+    fn max_abs(values: &[[f64; 3]; 4]) -> f64 {
+        values
+            .iter()
+            .flatten()
+            .fold(0.0_f64, |acc, v| acc.max(v.abs()))
+    }
+
+    #[test]
+    fn test_mirrored_tet_is_not_a_force_free_state() {
+        // Mirroring node 3 through the base plane gives F = diag(1, 1, -1). With
+        // |sigma| the principal stress of (1, 1, -1) -> (1, 1, 1) vanished, so
+        // this fully inverted tet felt no force at all.
+        let elem = unit_element();
+        let mut pos = REST;
+        pos[3][2] = -1.0;
+        let f = elem.deformation_gradient(&pos);
+        assert!(
+            (det3x3(f) + 1.0).abs() < 1.0e-12,
+            "mirrored tet has det F = -1, got {}",
+            det3x3(f)
+        );
+        let forces = elem.compute_forces(&pos);
+        assert!(
+            max_abs(&forces) > 1.0e3,
+            "a mirrored tet must be pushed hard: |f| = {}",
+            max_abs(&forces)
+        );
+        // Node 3 is pushed back through the base plane (towards +z).
+        assert!(
+            forces[3][2] > 1.0e3,
+            "restoring force on the mirrored node: {:?}",
+            forces[3]
+        );
+        // Internal forces are self-equilibrated.
+        for d in 0..3 {
+            let sum: f64 = forces.iter().map(|f| f[d]).sum();
+            assert!(sum.abs() < 1.0e-9 * max_abs(&forces), "net force {sum}");
+        }
+    }
+
+    #[test]
+    fn test_restoring_force_does_not_depend_on_inversion_depth() {
+        // Below the clamp every inverted state is replaced by the same strongly
+        // compressed principal stretch, so the restoring push on the inverted
+        // node is identical for z = -0.2 ... -0.9 (all have a negative smallest
+        // singular value on the z axis).
+        let elem = unit_element();
+        let reference = {
+            let mut pos = REST;
+            pos[3][2] = -0.2;
+            elem.compute_forces(&pos)
+        };
+        for z in [-0.4, -0.6, -0.9] {
+            let mut pos = REST;
+            pos[3][2] = z;
+            let forces = elem.compute_forces(&pos);
+            for k in 0..4 {
+                for d in 0..3 {
+                    assert!(
+                        (forces[k][d] - reference[k][d]).abs() < 1.0e-6 * max_abs(&reference),
+                        "z = {z}: force of node {k} component {d} differs"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_deeply_inverted_tets_recover_from_the_mirror_state() {
+        // z = -1.0 is the exact mirror image of the rest shape (all singular values
+        // equal); z = -1.5 and z = -3.0 lie beyond the |sigma| < 1 basin in which
+        // the former |sigma| clamp happened to work.
+        let elem = unit_element();
+        for z in [-1.0, -1.5, -3.0] {
+            let mut pos = REST;
+            pos[3][2] = z;
+            assert!(det3x3(elem.deformation_gradient(&pos)) < 0.0);
+            let end = relax(&elem, pos, 2000);
+            let f = elem.deformation_gradient(&end);
+            assert!(
+                det3x3(f) > 0.0,
+                "z = {z}: the inverted tet failed to recover, det F = {}",
+                det3x3(f)
+            );
+        }
     }
 }

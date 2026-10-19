@@ -21,6 +21,7 @@
 //! buffer table stays constant while a simulation runs and the pipelines compiled
 //! by the first step are reused by every later one.
 
+use crate::compute::timestamp::{MAX_WORKGROUPS_PER_DIMENSION, dispatch_count_with_limit};
 use crate::compute::wgpu_backend::real::WgpuBackendReal;
 use crate::compute::wgpu_backend::{WgpuBufferHandle, WgpuInitError};
 use crate::kernels_wgsl::{
@@ -36,8 +37,6 @@ const RADIX_BINS: usize = 256;
 const RADIX_DIGIT_BITS: u32 = 8;
 /// Particles handled by one workgroup of the `sph_cell_list` kernel.
 const CELL_LIST_WORKGROUP: usize = 64;
-/// Largest workgroup count per dispatch dimension that every wgpu backend accepts.
-const MAX_WORKGROUPS: usize = 65_535;
 
 fn ro() -> wgpu::BufferBindingType {
     wgpu::BufferBindingType::Storage { read_only: true }
@@ -50,6 +49,17 @@ fn rw() -> wgpu::BufferBindingType {
 /// Byte size of `words` 32-bit words.
 fn words_to_bytes(words: usize) -> u64 {
     (words as u64) * 4
+}
+
+/// Dispatch shape that covers `items` threads with workgroups of `group_size`
+/// threads when one dispatch dimension holds at most `limit` workgroups.
+///
+/// A larger dispatch is folded into y; every kernel dispatched with the shape
+/// linearises its invocation and workgroup indices with `num_workgroups` (see
+/// [`dispatch_count_with_limit`]).  The error is returned only when even the
+/// folded grid cannot cover `items`.
+fn dispatch_shape(items: usize, group_size: usize, limit: u32) -> Result<[u32; 3], WgpuInitError> {
+    Ok(dispatch_count_with_limit(items, group_size as u32, limit)?)
 }
 
 /// Number of `u32` words a scan input/output buffer must hold to scan `len`
@@ -82,8 +92,9 @@ struct ScanLevel {
     block_sums: WgpuBufferHandle,
     /// `{ n, 0, 0, 0 }` parameter words, shared by the scan and add kernels.
     params: WgpuBufferHandle,
-    /// Number of 256-wide blocks (= workgroups) of this level.
-    blocks: usize,
+    /// Dispatch shape of this level's kernels: one workgroup per 256-wide block,
+    /// folded into y when the blocks do not fit one dimension.
+    workgroups: [u32; 3],
 }
 
 /// Exclusive prefix sum of a GPU-resident `u32` buffer of any length.
@@ -92,23 +103,32 @@ struct ScanLevel {
 /// handled hierarchically: the block totals of a level are themselves scanned by
 /// the next level until a single block remains, and the scanned totals are then
 /// added back down the hierarchy. All level buffers are allocated once by
-/// [`ResidentScan::new`]; [`ResidentScan::run`] only issues dispatches.
+/// [`ResidentScan::with_limit`]; [`ResidentScan::run`] only issues dispatches.
 pub(super) struct ResidentScan {
     levels: Vec<ScanLevel>,
 }
 
 impl ResidentScan {
     /// Build the level hierarchy for scanning `len` words of `input` into
-    /// `output`.
+    /// `output`, folding every dispatch under a limit of `limit` workgroups per
+    /// dimension ([`MAX_WORKGROUPS_PER_DIMENSION`] is the portable limit).
     ///
     /// Both buffers must hold at least [`scan_capacity_words`]`(len)` words
     /// (`input` is read in whole blocks, so its tail must be zero or irrelevant);
-    /// otherwise `InvalidHandle` is returned. `len == 0` yields a no-op scan.
-    pub(super) fn new(
+    /// otherwise `InvalidHandle` is returned. `len == 0` yields a no-op scan.  A
+    /// low `limit` makes small inputs exercise the folded dispatch paths.
+    ///
+    /// # Errors
+    ///
+    /// [`WgpuInitError::InvalidHandle`] for a buffer that is too small and
+    /// [`WgpuInitError::Validation`] if `len` needs more workgroups than a
+    /// `limit` x `limit` grid holds.
+    pub(super) fn with_limit(
         backend: &mut WgpuBackendReal,
         input: WgpuBufferHandle,
         output: WgpuBufferHandle,
         len: usize,
+        limit: u32,
     ) -> Result<Self, WgpuInitError> {
         if len == 0 {
             return Ok(Self { levels: Vec::new() });
@@ -120,9 +140,6 @@ impl ResidentScan {
                 _ => return Err(WgpuInitError::InvalidHandle(handle.0)),
             }
         }
-        if len.div_ceil(BLOCK) > MAX_WORKGROUPS {
-            return Err(WgpuInitError::FeatureDisabled);
-        }
 
         let mut levels = Vec::new();
         let mut level_len = len;
@@ -130,6 +147,9 @@ impl ResidentScan {
         let mut level_output = output;
         loop {
             let blocks = level_len.div_ceil(BLOCK);
+            // The widest level is the first: a grid that covers it covers the rest,
+            // and the check happens before this level allocates anything.
+            let workgroups = dispatch_shape(level_len, BLOCK, limit)?;
             // The block totals double as the next level's input, which the scan
             // kernel reads in whole blocks.
             let block_sums =
@@ -144,7 +164,7 @@ impl ResidentScan {
                 output: level_output,
                 block_sums,
                 params,
-                blocks,
+                workgroups,
             });
             if blocks == 1 {
                 break;
@@ -155,6 +175,17 @@ impl ResidentScan {
                 backend.create_buffer_storage(words_to_bytes(scan_capacity_words(blocks)));
         }
         Ok(Self { levels })
+    }
+
+    /// [`with_limit`](Self::with_limit) under the portable workgroup limit.
+    #[cfg(test)]
+    pub(super) fn new(
+        backend: &mut WgpuBackendReal,
+        input: WgpuBufferHandle,
+        output: WgpuBufferHandle,
+        len: usize,
+    ) -> Result<Self, WgpuInitError> {
+        Self::with_limit(backend, input, output, len, MAX_WORKGROUPS_PER_DIMENSION)
     }
 
     /// Number of hierarchy levels (1 for up to 256 elements, 2 for up to 65536,
@@ -177,7 +208,7 @@ impl ResidentScan {
                     (level.block_sums, rw()),
                     (level.params, ro()),
                 ],
-                [level.blocks as u32, 1, 1],
+                level.workgroups,
             )?;
         }
         for pair in self.levels.windows(2).rev() {
@@ -190,7 +221,7 @@ impl ResidentScan {
                         (upper.output, ro()),
                         (lower.params, ro()),
                     ],
-                    [lower.blocks as u32, 1, 1],
+                    lower.workgroups,
                 )?;
             }
         }
@@ -210,7 +241,9 @@ impl ResidentScan {
 /// [`sorted_payload`](Self::sorted_payload). The scan of the per-tile digit
 /// counts stays on the GPU ([`ResidentScan`]); there is no host readback.
 pub(super) struct ResidentRadixPairs {
-    num_tiles: usize,
+    /// Dispatch shape of the histogram and scatter kernels: one workgroup per
+    /// 256-key tile, folded into y when the tiles do not fit one dimension.
+    workgroups: [u32; 3],
     keys: [WgpuBufferHandle; 2],
     payload: [WgpuBufferHandle; 2],
     /// Digit-major per-tile counts: `tile_hist[digit * num_tiles + tile]`.
@@ -224,19 +257,20 @@ pub(super) struct ResidentRadixPairs {
 
 impl ResidentRadixPairs {
     /// Allocate everything needed to sort `n >= 1` pairs whose keys are below
-    /// `key_limit` (this decides the number of passes).
-    pub(super) fn new(
+    /// `key_limit` (this decides the number of passes), folding every dispatch
+    /// under a limit of `limit` workgroups per dimension
+    /// ([`MAX_WORKGROUPS_PER_DIMENSION`] is the portable limit).
+    pub(super) fn with_limit(
         backend: &mut WgpuBackendReal,
         n: usize,
         key_limit: usize,
+        limit: u32,
     ) -> Result<Self, WgpuInitError> {
         if n == 0 {
             return Err(WgpuInitError::FeatureDisabled);
         }
+        let workgroups = dispatch_shape(n, BLOCK, limit)?;
         let num_tiles = n.div_ceil(BLOCK);
-        if num_tiles > MAX_WORKGROUPS {
-            return Err(WgpuInitError::FeatureDisabled);
-        }
         let padded = num_tiles * BLOCK;
         let hist_len = RADIX_BINS * num_tiles;
 
@@ -250,7 +284,7 @@ impl ResidentRadixPairs {
         ];
         let tile_hist = backend.create_buffer_storage(words_to_bytes(hist_len));
         let base = backend.create_buffer_storage(words_to_bytes(hist_len));
-        let scan = ResidentScan::new(backend, tile_hist, base, hist_len)?;
+        let scan = ResidentScan::with_limit(backend, tile_hist, base, hist_len, limit)?;
 
         let passes = radix_passes_for(key_limit);
         let mut pass_params = Vec::with_capacity(passes as usize);
@@ -262,7 +296,7 @@ impl ResidentRadixPairs {
         }
 
         Ok(Self {
-            num_tiles,
+            workgroups,
             keys,
             payload,
             tile_hist,
@@ -270,6 +304,16 @@ impl ResidentRadixPairs {
             pass_params,
             scan,
         })
+    }
+
+    /// [`with_limit`](Self::with_limit) under the portable workgroup limit.
+    #[cfg(test)]
+    pub(super) fn new(
+        backend: &mut WgpuBackendReal,
+        n: usize,
+        key_limit: usize,
+    ) -> Result<Self, WgpuInitError> {
+        Self::with_limit(backend, n, key_limit, MAX_WORKGROUPS_PER_DIMENSION)
     }
 
     /// Buffer the caller fills with the unsorted keys.
@@ -299,7 +343,7 @@ impl ResidentRadixPairs {
 
     /// Sort the pairs currently in the input buffers.
     pub(super) fn run(&self, backend: &WgpuBackendReal) -> Result<(), WgpuInitError> {
-        let workgroups = [self.num_tiles as u32, 1, 1];
+        let workgroups = self.workgroups;
         for (pass, &params) in self.pass_params.iter().enumerate() {
             let src = pass % 2;
             let dst = 1 - src;
@@ -351,6 +395,12 @@ pub(super) struct ResidentCellList {
     n: usize,
     num_cells: usize,
     sort: ResidentRadixPairs,
+    /// Dispatch shape of the hash kernel (one workgroup per
+    /// [`CELL_LIST_WORKGROUP`] particles).
+    hash_workgroups: [u32; 3],
+    /// Dispatch shape of the bucket histogram kernel (one workgroup per scan block
+    /// of particles).
+    bucket_workgroups: [u32; 3],
     /// Per-bucket particle count (capacity padded to whole scan blocks).
     cell_count: WgpuBufferHandle,
     /// Per-bucket start offset: exclusive scan of `cell_count`.
@@ -372,14 +422,28 @@ impl ResidentCellList {
         n: usize,
         num_cells: usize,
     ) -> Result<Self, WgpuInitError> {
-        if n == 0 || num_cells == 0 || n.div_ceil(CELL_LIST_WORKGROUP) > MAX_WORKGROUPS {
+        Self::with_limit(backend, n, num_cells, MAX_WORKGROUPS_PER_DIMENSION)
+    }
+
+    /// Like [`new`](Self::new), but every dispatch is folded under a limit of
+    /// `limit` workgroups per dimension (the portable limit for [`new`](Self::new)).
+    pub(super) fn with_limit(
+        backend: &mut WgpuBackendReal,
+        n: usize,
+        num_cells: usize,
+        limit: u32,
+    ) -> Result<Self, WgpuInitError> {
+        if n == 0 || num_cells == 0 {
             return Err(WgpuInitError::FeatureDisabled);
         }
-        let sort = ResidentRadixPairs::new(backend, n, num_cells)?;
+        let hash_workgroups = dispatch_shape(n, CELL_LIST_WORKGROUP, limit)?;
+        let bucket_workgroups = dispatch_shape(n, BLOCK, limit)?;
+        let sort = ResidentRadixPairs::with_limit(backend, n, num_cells, limit)?;
         let capacity = words_to_bytes(scan_capacity_words(num_cells));
         let cell_count = backend.create_buffer_storage(capacity);
         let cell_start = backend.create_buffer_storage(capacity);
-        let cell_scan = ResidentScan::new(backend, cell_count, cell_start, num_cells)?;
+        let cell_scan =
+            ResidentScan::with_limit(backend, cell_count, cell_start, num_cells, limit)?;
         let cell_params = backend.create_buffer_storage(32);
         let bin_params = backend.create_buffer_storage(16);
         backend.queue_write_buffer_raw(
@@ -390,6 +454,8 @@ impl ResidentCellList {
             n,
             num_cells,
             sort,
+            hash_workgroups,
+            bucket_workgroups,
             cell_count,
             cell_start,
             cell_scan,
@@ -448,7 +514,7 @@ impl ResidentCellList {
                 (self.sort.input_payload(), rw()),
                 (self.cell_params, ro()),
             ],
-            [self.n.div_ceil(CELL_LIST_WORKGROUP) as u32, 1, 1],
+            self.hash_workgroups,
         )?;
         self.index_keys(backend)
     }
@@ -469,7 +535,7 @@ impl ResidentCellList {
                 (self.cell_count, rw()),
                 (self.bin_params, ro()),
             ],
-            [self.n.div_ceil(BLOCK) as u32, 1, 1],
+            self.bucket_workgroups,
         )?;
         self.cell_scan.run(backend)
     }
@@ -758,5 +824,213 @@ mod tests {
         assert!(ResidentRadixPairs::new(&mut backend, 0, 16).is_err());
         assert!(ResidentCellList::new(&mut backend, 0, 16).is_err());
         assert!(ResidentCellList::new(&mut backend, 16, 0).is_err());
+    }
+
+    // ── folded dispatches ─────────────────────────────────────────────────────
+    //
+    // A limit of 3 workgroups per dispatch dimension folds every input of 4 to 9
+    // blocks into a 2-D grid (most of them with spare workgroups behind the
+    // data), so the folded paths run on inputs small enough to compare with the
+    // CPU.  A genuine 65 535-wide fold is covered by the primitives' tests.
+
+    /// Per-dimension workgroup limit that forces folding of small inputs.
+    const TINY_LIMIT: u32 = 3;
+
+    #[test]
+    fn dispatch_shape_folds_when_a_dimension_cannot_hold_the_workgroups() {
+        assert_eq!(dispatch_shape(0, 256, TINY_LIMIT).unwrap(), [0, 1, 1]);
+        assert_eq!(dispatch_shape(768, 256, TINY_LIMIT).unwrap(), [3, 1, 1]);
+        assert_eq!(dispatch_shape(769, 256, TINY_LIMIT).unwrap(), [2, 2, 1]);
+        assert_eq!(dispatch_shape(1100, 256, TINY_LIMIT).unwrap(), [3, 2, 1]);
+        assert_eq!(dispatch_shape(2304, 256, TINY_LIMIT).unwrap(), [3, 3, 1]);
+        assert!(matches!(
+            dispatch_shape(2305, 256, TINY_LIMIT),
+            Err(WgpuInitError::Validation(_))
+        ));
+        // The portable limit needs no folding below 65 535 workgroups.
+        assert_eq!(
+            dispatch_shape(100_000, 256, MAX_WORKGROUPS_PER_DIMENSION).unwrap(),
+            [391, 1, 1]
+        );
+    }
+
+    #[test]
+    fn folded_scan_matches_cpu_when_the_grid_is_wider_than_one_row() {
+        let Some(mut backend) = try_backend() else {
+            return;
+        };
+        let mut rng = 0x00FE_ED5E_u32;
+        for &len in &[257usize, 700, 1000, 1100, 1280, 2000, 2304] {
+            let capacity = scan_capacity_words(len);
+            let input = backend.create_buffer_storage(words_to_bytes(capacity));
+            let output = backend.create_buffer_storage(words_to_bytes(capacity));
+            let data: Vec<u32> = (0..len).map(|_| lcg(&mut rng) >> 16).collect();
+            backend.queue_write_buffer_raw(&input, bytemuck::cast_slice(&data));
+
+            let scan = ResidentScan::with_limit(&mut backend, input, output, len, TINY_LIMIT)
+                .expect("scan build");
+            if len > 768 {
+                assert!(
+                    scan.levels[0].workgroups[1] > 1,
+                    "len {len} must need a folded grid"
+                );
+            }
+            scan.run(&backend).expect("folded scan run");
+
+            let mut gpu = backend.read_buffer_u32(output).expect("scan readback");
+            gpu.truncate(len);
+            assert_eq!(gpu, cpu_exclusive_scan(&data), "scan mismatch at len {len}");
+        }
+    }
+
+    #[test]
+    fn folded_radix_sort_is_stable_and_matches_cpu() {
+        let Some(mut backend) = try_backend() else {
+            return;
+        };
+        let mut rng = 0x0BAD_5EED_u32;
+        for &n in &[700usize, 1000, 1100, 1280, 2000, 2304] {
+            for &key_limit in &[1usize << 12, u32::MAX as usize + 1] {
+                let sorter = ResidentRadixPairs::with_limit(&mut backend, n, key_limit, TINY_LIMIT)
+                    .expect("sorter");
+                if n > 768 {
+                    assert!(sorter.workgroups[1] > 1, "n {n} must need a folded grid");
+                }
+                let keys: Vec<u32> = (0..n)
+                    .map(|_| (u64::from(lcg(&mut rng)) % key_limit as u64) as u32)
+                    .collect();
+                let ids: Vec<u32> = (0..n as u32).collect();
+                backend.queue_write_buffer_raw(&sorter.input_keys(), bytemuck::cast_slice(&keys));
+                backend.queue_write_buffer_raw(&sorter.input_payload(), bytemuck::cast_slice(&ids));
+                sorter.run(&backend).expect("folded sort run");
+
+                let mut gpu_keys = backend
+                    .read_buffer_u32(sorter.sorted_keys())
+                    .expect("sorted key readback");
+                let mut gpu_ids = backend
+                    .read_buffer_u32(sorter.sorted_payload())
+                    .expect("sorted payload readback");
+                gpu_keys.truncate(n);
+                gpu_ids.truncate(n);
+                let (cpu_keys, cpu_ids) = cpu_stable_sort(&keys);
+                assert_eq!(gpu_keys, cpu_keys, "keys differ (n={n}, limit={key_limit})");
+                assert_eq!(
+                    gpu_ids, cpu_ids,
+                    "payload differs (n={n}, limit={key_limit})"
+                );
+            }
+        }
+    }
+
+    /// CPU twin of the `sph_cell_list` hash for particles at cell centres.
+    fn cpu_cell_key(cell: [u32; 3], num_cells: u32) -> u32 {
+        let hx = cell[0].wrapping_mul(73_856_093);
+        let hy = cell[1].wrapping_mul(19_349_663);
+        let hz = cell[2].wrapping_mul(83_492_791);
+        (hx ^ hy ^ hz) % num_cells
+    }
+
+    #[test]
+    fn folded_cell_list_build_matches_the_cpu_layout() {
+        let Some(mut backend) = try_backend() else {
+            return;
+        };
+        let mut rng = 0x5EED_CE11_u32;
+        let cell_size = 0.25_f32;
+        for &(n, num_cells) in &[(300usize, 64usize), (500, 512), (576, 1024)] {
+            let cells = ResidentCellList::with_limit(&mut backend, n, num_cells, TINY_LIMIT)
+                .expect("cell list");
+            assert!(cells.hash_workgroups[1] > 1, "the hash dispatch is folded");
+
+            // Particles sit at cell centres: far from any cell boundary, so the
+            // float arithmetic of the kernel and the integer twin cannot disagree.
+            let mut positions = Vec::with_capacity(n * 3);
+            let mut keys = Vec::with_capacity(n);
+            for _ in 0..n {
+                let cell = [
+                    (lcg(&mut rng) >> 16) % 16,
+                    (lcg(&mut rng) >> 16) % 16,
+                    (lcg(&mut rng) >> 16) % 16,
+                ];
+                for &c in &cell {
+                    positions.push((c as f32 + 0.5) * cell_size);
+                }
+                keys.push(cpu_cell_key(cell, num_cells as u32));
+            }
+            let pos_buf = backend.create_buffer_storage((n * 3 * 4) as u64);
+            backend.queue_write_buffer_f32(&pos_buf, &positions);
+            cells
+                .build(&backend, pos_buf, cell_size, [0.0; 3])
+                .expect("folded build");
+            let host = cells.read_back(&backend).expect("read back");
+
+            let mut expected_count = vec![0u32; num_cells];
+            for &k in &keys {
+                expected_count[k as usize] += 1;
+            }
+            let (_, expected_ids) = cpu_stable_sort(&keys);
+            assert_eq!(host.cell_count, expected_count, "counts (n={n})");
+            assert_eq!(
+                host.cell_start,
+                cpu_exclusive_scan(&expected_count),
+                "starts (n={n})"
+            );
+            assert_eq!(host.sorted_ids, expected_ids, "ids (n={n})");
+        }
+    }
+
+    #[test]
+    fn folded_constructors_refuse_inputs_beyond_the_grid_before_allocating() {
+        let Some(mut backend) = try_backend() else {
+            return;
+        };
+        // 2560 elements are 10 blocks: more than a 3 x 3 grid holds.
+        let capacity = scan_capacity_words(2560);
+        let input = backend.create_buffer_storage(words_to_bytes(capacity));
+        let output = backend.create_buffer_storage(words_to_bytes(capacity));
+        let before = backend.live_buffer_count();
+        assert!(matches!(
+            ResidentScan::with_limit(&mut backend, input, output, 2560, TINY_LIMIT),
+            Err(WgpuInitError::Validation(_))
+        ));
+        assert!(matches!(
+            ResidentRadixPairs::with_limit(&mut backend, 2560, 1 << 16, TINY_LIMIT),
+            Err(WgpuInitError::Validation(_))
+        ));
+        assert!(matches!(
+            ResidentCellList::with_limit(&mut backend, 2560, 64, TINY_LIMIT),
+            Err(WgpuInitError::Validation(_))
+        ));
+        assert_eq!(
+            backend.live_buffer_count(),
+            before,
+            "nothing may be allocated"
+        );
+    }
+
+    /// Inputs of more than 65 535 blocks are scanned and sorted on the GPU, not
+    /// refused: the portable limit folds them into a second row.
+    #[test]
+    fn scan_of_more_than_one_dimension_of_blocks_runs_on_the_gpu() {
+        let Some(mut backend) = try_backend() else {
+            return;
+        };
+        let len = BLOCK * 65_536 + 1;
+        let capacity = scan_capacity_words(len);
+        let input = backend.create_buffer_storage(words_to_bytes(capacity));
+        let output = backend.create_buffer_storage(words_to_bytes(capacity));
+        let data: Vec<u32> = (0..len as u32).map(|i| i % 4).collect();
+        backend.queue_write_buffer_raw(&input, bytemuck::cast_slice(&data));
+        let scan = ResidentScan::new(&mut backend, input, output, len).expect("scan build");
+        // 16 777 217 -> 65 537 -> 257 -> 2 -> 1 blocks.
+        assert_eq!(scan.level_count(), 4);
+        assert_eq!(scan.levels[0].workgroups, [32_769, 2, 1]);
+        scan.run(&backend).expect("scan run");
+        let mut gpu = backend.read_buffer_u32(output).expect("scan readback");
+        gpu.truncate(len);
+        assert!(
+            gpu == cpu_exclusive_scan(&data),
+            "scan of {len} words is wrong"
+        );
     }
 }

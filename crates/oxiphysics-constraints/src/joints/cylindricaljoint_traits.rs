@@ -13,7 +13,8 @@ use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::Vec3;
 use oxiphysics_rigid::RigidBodySet;
 
-use super::functions::{JOINT_BAUMGARTE, apply_angular_impulse, apply_pair_impulse, read_body};
+use super::constraint_math::{solve_angular_rows, solve_point_velocity_in_plane};
+use super::functions::{JOINT_BAUMGARTE, read_body};
 use super::types::CylindricalJoint;
 
 impl Constraint for CylindricalJoint {
@@ -39,49 +40,18 @@ impl Constraint for CylindricalJoint {
         let _ = b;
     }
     fn solve_velocity(&mut self, bodies: &mut RigidBodySet, _dt: f64) {
-        let a = match read_body(bodies, self.body_a) {
-            Some(p) => p,
-            None => return,
-        };
-        let b = match read_body(bodies, self.body_b) {
-            Some(p) => p,
-            None => return,
-        };
-        let va = a.vel + a.ang_vel.cross(&self.r_a);
-        let vb = b.vel + b.ang_vel.cross(&self.r_b);
-        let dv = va - vb;
-        let free_v = dv.dot(&self.world_axis) * self.world_axis;
-        let constrained_v = dv - free_v;
-        let k = a.inv_mass + b.inv_mass;
-        if k > 1e-12 && constrained_v.norm_squared() > 1e-20 {
-            let impulse = -constrained_v / k;
-            apply_pair_impulse(
-                bodies,
-                self.body_a,
-                self.body_b,
-                impulse,
-                &self.r_a,
-                &self.r_b,
-            );
-        }
-        let a2 = match read_body(bodies, self.body_a) {
-            Some(p) => p,
-            None => return,
-        };
-        let b2 = match read_body(bodies, self.body_b) {
-            Some(p) => p,
-            None => return,
-        };
-        let d_omega = a2.ang_vel - b2.ang_vel;
-        let free_omega = d_omega.dot(&self.world_axis) * self.world_axis;
-        let constrained_omega = d_omega - free_omega;
-        if constrained_omega.norm_squared() > 1e-20 {
-            let ang_k = a2.inv_inertia + b2.inv_inertia;
-            if let Some(ang_k_inv) = ang_k.try_inverse() {
-                let ang_impulse = -(ang_k_inv * constrained_omega);
-                apply_angular_impulse(bodies, self.body_a, self.body_b, ang_impulse);
-            }
-        }
+        // Translation and rotation about the cylinder axis stay free; the two
+        // linear and the two angular rows perpendicular to it are locked.
+        solve_point_velocity_in_plane(
+            bodies,
+            self.body_a,
+            self.body_b,
+            &self.r_a,
+            &self.r_b,
+            &self.perp1,
+            &self.perp2,
+        );
+        solve_angular_rows(bodies, self.body_a, self.body_b, &[self.perp1, self.perp2]);
     }
     fn solve_position(&mut self, bodies: &mut RigidBodySet, _dt: f64) {
         let a = match read_body(bodies, self.body_a) {

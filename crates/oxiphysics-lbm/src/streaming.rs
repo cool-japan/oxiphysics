@@ -12,12 +12,14 @@
 //! - Half-way bounce-back (more accurate, second-order)
 //! - Pull-scheme streaming (each cell pulls from neighbors)
 //! - Push-scheme streaming (each cell pushes to neighbors)
-//! - AA pattern (alternating even/odd in-place streaming)
-//! - Swap scheme (neighbor-swap in-place streaming)
+//! - AA pattern (in-place streaming half-steps that alternate between the
+//!   standard and the reversed population layout)
+//! - Swap scheme (neighbor-swap in-place streaming, one step per call)
 //! - Streaming with force correction (Guo forcing)
 //! - Periodic streaming helpers (shift, wrap)
 
 use crate::grid::{LbmGrid2D, LbmGrid3D};
+use crate::lattice::CS2;
 
 // ---------------------------------------------------------------------------
 // Periodic shift helpers
@@ -286,17 +288,35 @@ pub fn stream_push_3d(grid: &mut LbmGrid3D) {
 // AA pattern streaming 2D
 // ---------------------------------------------------------------------------
 
-/// AA-pattern streaming for 2D grids.
+/// In-place streaming half-steps of the AA pattern (Bailey et al., 2009) for
+/// 2D grids, without the fused collision.
 ///
-/// The AA (alternating) pattern avoids an extra buffer by performing
-/// streaming in-place over two half-steps.  On even steps the
-/// distributions propagate in the positive lattice directions and on
-/// odd steps in the negative directions.
+/// Every call is a *complete* streaming step: each population moves one cell
+/// along its own lattice velocity, performed with pairwise swaps of the
+/// populations of opposite directions, so no second copy of the distributions
+/// is needed.  The two parities differ in how the populations are stored:
 ///
-/// After one even + one odd step the result is equivalent to one
-/// standard push streaming step.
+/// * `is_even == true` takes populations in the standard layout (slot `i`
+///   holds the population that travels along `c_i`) and leaves them in the
+///   **reversed layout**: the slot of the opposite direction `ī` holds the
+///   population that now travels along `c_i`.  The result equals
+///   [`stream_2d`] followed by an exchange of the planes `i` and `ī` for every
+///   pair of opposite directions.
+/// * `is_even == false` takes populations in the reversed layout, streams
+///   them once more and thereby restores the standard layout.
 ///
-/// `is_even` indicates which half-step to perform.
+/// Consequently an even call followed by an odd call advances the populations
+/// by **two** lattice steps (it equals `stream_2d` applied twice, not once),
+/// and between the two calls the grid is in the reversed layout.  Quantities
+/// that depend on the sign of the lattice velocity are misread in that layout:
+/// the macroscopic velocity of `compute_macroscopic` flips its sign, and body
+/// forces and direction-dependent boundary conditions act on the wrong
+/// populations.  A force-free BGK collision (such as [`crate::collision::bgk_collide_2d`])
+/// is unaffected, because relaxing towards `feq(rho, -u)` in the slot of `c_i`
+/// is exactly relaxing the population of `c_ī` towards `feq(rho, u)`.
+///
+/// Use [`stream_swap_2d`] for a single in-place streaming step that keeps the
+/// standard layout.
 pub fn stream_aa_2d(grid: &mut LbmGrid2D, is_even: bool) {
     let nx = grid.nx;
     let ny = grid.ny;
@@ -682,12 +702,21 @@ where
 
 /// Half-way bounce-back with a moving wall velocity.
 ///
-/// When a distribution is reflected off a wall with velocity `u_wall`,
-/// an additional momentum correction is applied:
+/// A population that would stream from a fluid node `src` into a solid node
+/// along `e_i` is reflected back to `src` in the opposite direction.  When the
+/// wall moves with velocity `u_wall`, the reflected population carries the
+/// momentum exchanged with the wall (Ladd 1994; Krüger et al., *The Lattice
+/// Boltzmann Method*, eq. 5.26):
 ///
 /// ```text
-/// f[opp][src] = f[i][src] + 2 * w_i * rho * (e_i · u_wall) / cs²
+/// f[opp][src] = f[i][src] - 2 * w_i * rho * (e_i · u_wall) / cs²
 /// ```
+///
+/// Here `e_i` points from the fluid node *into* the wall and `rho` is the
+/// density of the fluid node `src` (the sum of its populations before
+/// streaming).  A wall that moves along `+x` therefore drags the adjacent fluid
+/// along `+x`: for a uniform flow `feq(rho, u_wall)` the reflection reproduces
+/// the equilibrium of the opposite direction exactly.
 ///
 /// This is the standard method for implementing Couette flow walls.
 pub fn stream_half_way_bb_moving_wall_2d<F>(
@@ -701,7 +730,15 @@ pub fn stream_half_way_bb_moving_wall_2d<F>(
     let ny = grid.ny;
     let q = grid.lattice.q();
     let n = nx * ny;
-    let cs2 = 1.0 / 3.0;
+
+    // Density of every node before streaming; each bounced link scales its
+    // momentum correction with the density of the fluid node it starts from.
+    let mut rho = vec![0.0_f64; n];
+    for plane in grid.f.iter().take(q) {
+        for (rho_k, &f_ik) in rho.iter_mut().zip(plane) {
+            *rho_k += f_ik;
+        }
+    }
 
     let mut f_new: Vec<Vec<f64>> = vec![vec![0.0; n]; q];
 
@@ -725,9 +762,8 @@ pub fn stream_half_way_bb_moving_wall_2d<F>(
                 if is_solid(dst_x, dst_y) {
                     // Moving wall bounce-back with momentum correction
                     let w = grid.lattice.weight(i);
-                    let rho_k: f64 = (0..q).map(|d| grid.f[d][src]).sum();
                     let e_dot_uw = cx as f64 * wall_velocity[0] + cy as f64 * wall_velocity[1];
-                    f_new[opp][src] += grid.f[i][src] + 2.0 * w * rho_k * e_dot_uw / cs2;
+                    f_new[opp][src] += grid.f[i][src] - 2.0 * w * rho[src] * e_dot_uw / CS2;
                 } else {
                     let dst = dst_y * nx + dst_x;
                     f_new[i][dst] = grid.f[i][src];
@@ -798,6 +834,9 @@ pub fn max_diff_snapshots(a: &[f64], b: &[f64]) -> f64 {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod aa_and_moving_wall_tests;
 
 #[cfg(test)]
 mod tests {

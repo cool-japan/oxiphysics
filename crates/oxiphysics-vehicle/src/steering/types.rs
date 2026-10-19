@@ -879,10 +879,11 @@ impl FourWheelSteering {
 /// The understeer gradient K (rad/g) describes how the required steering
 /// angle changes with lateral acceleration:
 ///
-///   δ = L/R + K · Ay
+///   δ = L/R + K · (Ay / g)
 ///
 /// where δ is front steer angle, L is wheelbase, R is turn radius, Ay is
-/// lateral acceleration.  K > 0 → understeer; K < 0 → oversteer.
+/// lateral acceleration and g the gravitational acceleration.  K > 0 →
+/// understeer; K < 0 → oversteer.
 #[derive(Debug, Clone)]
 pub struct UndersteerAnalyzer {
     /// Wheelbase (meters).
@@ -907,20 +908,25 @@ impl UndersteerAnalyzer {
             front_load_fraction: front_load_fraction.clamp(0.0, 1.0),
         }
     }
-    /// Compute the understeer gradient K (rad/g = rad·s²/m).
+    /// Compute the understeer gradient K (rad/g).
     ///
     /// Positive → understeer, negative → oversteer, zero → neutral steer.
     ///
     /// Formula (linear bicycle model):
-    ///   K = (m / L²) * (a/Cf - b/Cr)
-    /// where a = front axle to CoM, b = rear axle to CoM.
+    ///   K = (m·g / L) · (b/Cf − a/Cr) = W_front/Cf − W_rear/Cr
+    /// where `a` is the distance from the centre of mass to the front axle and
+    /// `b` the distance from the centre of mass to the rear axle (`a + b = L`).
+    /// The static front axle load is `W_front = m·g·b/L`, i.e. the front load
+    /// fraction is `b/L`, so `b = L · front_load_fraction` and
+    /// `a = L · (1 − front_load_fraction)`; the wheelbase cancels.
+    ///
+    /// Dividing by `g` gives the gradient in rad/(m/s²), which is what
+    /// [`crate::stability::understeer_gradient`] returns.
     pub fn understeer_gradient(&self) -> Real {
         let g = 9.81_f64;
-        let a = self.wheelbase * self.front_load_fraction;
-        let b = self.wheelbase * (1.0 - self.front_load_fraction);
-        (self.mass / (self.wheelbase * self.wheelbase))
-            * (a / self.cf.max(1.0) - b / self.cr.max(1.0))
-            * g
+        let front_axle_load = self.mass * g * self.front_load_fraction;
+        let rear_axle_load = self.mass * g * (1.0 - self.front_load_fraction);
+        front_axle_load / self.cf.max(1.0) - rear_axle_load / self.cr.max(1.0)
     }
     /// Predicted steering angle for a given speed and turn radius.
     ///

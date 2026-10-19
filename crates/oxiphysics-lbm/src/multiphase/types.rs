@@ -3,7 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use crate::grid::LbmGrid2D;
-use crate::lattice::CS2;
+use crate::lattice::{CS2, D2Q9_VELOCITIES, D2Q9_WEIGHTS};
 
 /// Pseudo-potential function type for the Shan-Chen model.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -270,30 +270,64 @@ impl BubbleState {
             mu_liquid,
         }
     }
+    /// Gas pressure inside the bubble at an arbitrary radius `radius`
+    /// (isothermal gas, polytropic exponent 1).
+    fn gas_pressure_at(&self, radius: f64) -> f64 {
+        let p0 = self.p_inf + 2.0 * self.sigma / self.r_eq;
+        p0 * (self.r_eq / radius.max(1e-30)).powi(3)
+    }
     /// Gas pressure inside bubble using isothermal assumption.
     ///
     /// `P_gas = P_inf + 2*sigma/R_eq` at equilibrium, then `P_gas * R_eq^3 = P_gas0 * R^3`.
     pub fn gas_pressure(&self) -> f64 {
-        let p0 = self.p_inf + 2.0 * self.sigma / self.r_eq;
-        p0 * (self.r_eq / self.radius.max(1e-30)).powi(3)
+        self.gas_pressure_at(self.radius)
     }
-    /// Rayleigh-Plesset RHS: d²R/dt² (simplified, neglecting viscosity).
+    /// Rayleigh-Plesset wall acceleration for an arbitrary state `(radius, radius_rate)`.
     ///
-    /// `R * R_tt + (3/2) * R_t^2 = (P_gas - P_inf - 2*sigma/R) / rho`
-    pub fn acceleration(&self) -> f64 {
-        let p_gas = self.gas_pressure();
-        let p_wall = p_gas
+    /// Solves the Rayleigh-Plesset equation for `R_tt`:
+    /// `rho * (R * R_tt + (3/2) * R_t^2) = p_gas(R) - p_inf - 2*sigma/R - 4*mu*R_t/R`
+    /// i.e. `R_tt = ((p_gas - p_inf - 2*sigma/R - 4*mu*R_t/R) / rho - (3/2) * R_t^2) / R`.
+    fn acceleration_at(&self, radius: f64, radius_rate: f64) -> f64 {
+        let r = radius.max(1e-30);
+        let p_wall = self.gas_pressure_at(r)
             - self.p_inf
-            - 2.0 * self.sigma / self.radius.max(1e-30)
-            - 4.0 * self.mu_liquid * self.radius_rate / self.radius.max(1e-30);
-        let r_tt = (p_wall - 1.5 * self.radius_rate * self.radius_rate) / self.radius.max(1e-30);
-        r_tt / self.rho_liquid
+            - 2.0 * self.sigma / r
+            - 4.0 * self.mu_liquid * radius_rate / r;
+        (p_wall / self.rho_liquid.max(1e-30) - 1.5 * radius_rate * radius_rate) / r
     }
-    /// Advance by one Euler step `dt`.
+    /// Rayleigh-Plesset wall acceleration `d²R/dt²` of the current state.
+    ///
+    /// The full Rayleigh-Plesset equation including surface tension and the
+    /// Newtonian viscous stress of the liquid is used:
+    ///
+    /// `rho * (R * R_tt + (3/2) * R_t^2) = P_gas - P_inf - 2*sigma/R - 4*mu*R_t/R`
+    ///
+    /// which is solved for `R_tt`:
+    /// `R_tt = ((P_gas - P_inf - 2*sigma/R - 4*mu*R_t/R) / rho - (3/2) * R_t^2) / R`.
+    /// The inertia term `(3/2) * R_t^2` is *not* divided by the density.
+    pub fn acceleration(&self) -> f64 {
+        self.acceleration_at(self.radius, self.radius_rate)
+    }
+    /// Advance the state `(R, R_t)` by one time step `dt` with the classical
+    /// fourth-order Runge-Kutta scheme.
+    ///
+    /// The step is fourth-order accurate and, for an inviscid bubble
+    /// (`mu_liquid = 0`), conserves the Rayleigh-Plesset energy
+    /// `2*pi*rho*R^3*R_t^2 - 4*pi*P_gas0*R_eq^3*ln(R) + 4*pi/3*P_inf*R^3 + 4*pi*sigma*R^2`
+    /// up to its `O(dt^4)` truncation error.
     pub fn step(&mut self, dt: f64) {
-        let a = self.acceleration();
-        self.radius_rate += a * dt;
-        self.radius = (self.radius + self.radius_rate * dt).max(1e-30);
+        let r0 = self.radius;
+        let v0 = self.radius_rate;
+        let k1_r = v0;
+        let k1_v = self.acceleration_at(r0, v0);
+        let k2_r = v0 + 0.5 * dt * k1_v;
+        let k2_v = self.acceleration_at(r0 + 0.5 * dt * k1_r, k2_r);
+        let k3_r = v0 + 0.5 * dt * k2_v;
+        let k3_v = self.acceleration_at(r0 + 0.5 * dt * k2_r, k3_r);
+        let k4_r = v0 + dt * k3_v;
+        let k4_v = self.acceleration_at(r0 + dt * k3_r, k4_r);
+        self.radius = (r0 + dt / 6.0 * (k1_r + 2.0 * k2_r + 2.0 * k3_r + k4_r)).max(1e-30);
+        self.radius_rate = v0 + dt / 6.0 * (k1_v + 2.0 * k2_v + 2.0 * k3_v + k4_v);
     }
     /// Collapse time estimation (Rayleigh formula for pressure-driven collapse).
     ///
@@ -309,8 +343,10 @@ impl BubbleState {
 /// Parameters for a binary Shan-Chen multi-component simulation.
 ///
 /// Component A (index 0) and component B (index 1) interact via a
-/// cross-coupling constant `g_ab`.  Like-component coupling constants
-/// `g_aa` and `g_bb` are used for self-interactions (density ratio tuning).
+/// cross-coupling constant `g_cc` (the A-B coupling).  Like-component coupling
+/// constants `g_aa` (A-A) and `g_bb` (B-B) are used for self-interactions
+/// (density ratio tuning).  The force on component `s` is
+/// `F_s(x) = -psi_s(x) * sum_s' g_ss' * sum_i w_i psi_s'(x + c_i) c_i`.
 #[derive(Debug, Clone)]
 pub struct MultiComponentSC {
     /// Like-component coupling for fluid A (g_aa; typically 0 or small).
@@ -336,11 +372,31 @@ impl MultiComponentSC {
     pub fn psi(&self, rho: f64) -> f64 {
         self.rho_0 * (1.0 - (-rho / self.rho_0).exp())
     }
-    /// Compute the inter-component interaction force on component A at (x, y).
+    /// Weighted neighbour sum `S(x) = sum_i w_i * psi(x + c_i) * c_i` of a
+    /// pseudo-potential field on a periodic `nx x ny` D2Q9 grid.
     ///
-    /// `F_A = -psi_A(x,y) * g_cc * sum_i w_i * psi_B(x+c_i) * c_i`
+    /// Returns `(S_x, S_y)`.
+    fn neighbour_sum(psi: &[f64], x: usize, y: usize, nx: usize, ny: usize) -> (f64, f64) {
+        let mut sum_x = 0.0_f64;
+        let mut sum_y = 0.0_f64;
+        for i in 1..9 {
+            let c = D2Q9_VELOCITIES[i];
+            let xi = ((x as i64 + c[0] as i64).rem_euclid(nx as i64)) as usize;
+            let yi = ((y as i64 + c[1] as i64).rem_euclid(ny as i64)) as usize;
+            let w = D2Q9_WEIGHTS[i];
+            let psi_nb = psi[yi * nx + xi];
+            sum_x += w * psi_nb * c[0] as f64;
+            sum_y += w * psi_nb * c[1] as f64;
+        }
+        (sum_x, sum_y)
+    }
+    /// Compute the total Shan-Chen interaction force on component A at (x, y).
     ///
-    /// Also includes the like-component self-interaction via `g_aa`.
+    /// `F_A(x) = -psi_A(x) * [ g_aa * sum_i w_i psi_A(x+c_i) c_i + g_cc * sum_i w_i psi_B(x+c_i) c_i ]`
+    ///
+    /// The like-component (A-A) term is weighted by the pseudo-potential of
+    /// component A at the node, and the cross (A-B) term by the same factor,
+    /// so that the force on A never depends on `psi_B(x)` itself.
     /// Returns `(Fx_A, Fy_A)`.
     pub fn interaction_force(
         &self,
@@ -351,58 +407,55 @@ impl MultiComponentSC {
         nx: usize,
         ny: usize,
     ) -> (f64, f64) {
-        let w9 = [
-            4.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 36.0,
-            1.0 / 36.0,
-            1.0 / 36.0,
-            1.0 / 36.0,
-        ];
-        let c9: [(i64, i64); 9] = [
-            (0, 0),
-            (1, 0),
-            (0, 1),
-            (-1, 0),
-            (0, -1),
-            (1, 1),
-            (-1, 1),
-            (-1, -1),
-            (1, -1),
-        ];
-        let idx = |xi: usize, yi: usize| yi * nx + xi;
-        let psi_a_here = psi_a[idx(x, y)];
-        let psi_b_here = psi_b[idx(x, y)];
-        let mut fx = 0.0_f64;
-        let mut fy = 0.0_f64;
-        for i in 1..9 {
-            let (cx, cy) = c9[i];
-            let xi = ((x as i64 + cx).rem_euclid(nx as i64)) as usize;
-            let yi = ((y as i64 + cy).rem_euclid(ny as i64)) as usize;
-            let w = w9[i];
-            let psi_b_nb = psi_b[idx(xi, yi)];
-            fx += w * psi_b_nb * cx as f64;
-            fy += w * psi_b_nb * cy as f64;
-        }
-        let mut cross_fx = -self.g_cc * psi_a_here * fx;
-        let mut cross_fy = -self.g_cc * psi_a_here * fy;
-        let mut self_sum_x = 0.0_f64;
-        let mut self_sum_y = 0.0_f64;
-        for i in 1..9 {
-            let (cx, cy) = c9[i];
-            let xi = ((x as i64 + cx).rem_euclid(nx as i64)) as usize;
-            let yi = ((y as i64 + cy).rem_euclid(ny as i64)) as usize;
-            let w = w9[i];
-            let psi_a_nb = psi_a[idx(xi, yi)];
-            self_sum_x += w * psi_a_nb * cx as f64;
-            self_sum_y += w * psi_a_nb * cy as f64;
-        }
-        cross_fx += -self.g_aa * psi_b_here * self_sum_x;
-        cross_fy += -self.g_aa * psi_b_here * self_sum_y;
-        (cross_fx, cross_fy)
+        let psi_a_here = psi_a[y * nx + x];
+        let (sa_x, sa_y) = Self::neighbour_sum(psi_a, x, y, nx, ny);
+        let (sb_x, sb_y) = Self::neighbour_sum(psi_b, x, y, nx, ny);
+        (
+            -psi_a_here * (self.g_aa * sa_x + self.g_cc * sb_x),
+            -psi_a_here * (self.g_aa * sa_y + self.g_cc * sb_y),
+        )
+    }
+    /// Compute the total Shan-Chen interaction force on component B at (x, y).
+    ///
+    /// `F_B(x) = -psi_B(x) * [ g_bb * sum_i w_i psi_B(x+c_i) c_i + g_cc * sum_i w_i psi_A(x+c_i) c_i ]`
+    ///
+    /// This is the mirror image of [`MultiComponentSC::interaction_force`]: it
+    /// uses the like-component coupling `g_bb` and the same cross coupling
+    /// `g_cc`.  Returns `(Fx_B, Fy_B)`.
+    pub fn interaction_force_b(
+        &self,
+        psi_a: &[f64],
+        psi_b: &[f64],
+        x: usize,
+        y: usize,
+        nx: usize,
+        ny: usize,
+    ) -> (f64, f64) {
+        let psi_b_here = psi_b[y * nx + x];
+        let (sa_x, sa_y) = Self::neighbour_sum(psi_a, x, y, nx, ny);
+        let (sb_x, sb_y) = Self::neighbour_sum(psi_b, x, y, nx, ny);
+        (
+            -psi_b_here * (self.g_bb * sb_x + self.g_cc * sa_x),
+            -psi_b_here * (self.g_bb * sb_y + self.g_cc * sa_y),
+        )
+    }
+    /// Compute the interaction forces on both components at (x, y).
+    ///
+    /// Returns `((Fx_A, Fy_A), (Fx_B, Fy_B))`.  On a periodic grid the sum of
+    /// both forces over all nodes vanishes (momentum conservation).
+    pub fn interaction_forces(
+        &self,
+        psi_a: &[f64],
+        psi_b: &[f64],
+        x: usize,
+        y: usize,
+        nx: usize,
+        ny: usize,
+    ) -> ((f64, f64), (f64, f64)) {
+        (
+            self.interaction_force(psi_a, psi_b, x, y, nx, ny),
+            self.interaction_force_b(psi_a, psi_b, x, y, nx, ny),
+        )
     }
     /// Estimate the equilibrium density ratio `rho_A / rho_B` at saturation.
     ///

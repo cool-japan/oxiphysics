@@ -52,8 +52,8 @@ pub fn legendre_poly_deriv(n: usize, x: f64) -> f64 {
     let pn1 = legendre_poly(n - 1, x);
     let nf = n as f64;
     if (x * x - 1.0).abs() < 1e-14 {
-        // Boundary value
-        let sign = if x > 0.0 || n.is_multiple_of(2) {
+        // Boundary values: P_n'(1) = n(n+1)/2 and P_n'(-1) = (-1)^(n-1) n(n+1)/2.
+        let sign = if x > 0.0 || !n.is_multiple_of(2) {
             1.0
         } else {
             -1.0
@@ -364,9 +364,21 @@ pub fn penalty_parameter(order: usize, h_left: f64, h_right: f64, c_pen: f64) ->
     c_pen * (p + 1.0) * (p + 1.0) / h_min
 }
 
-/// Interior penalty diffusion bilinear form contribution at an interior face.
+/// Contribution of an interior face to the interior-penalty energy form
+/// a_h(u, u) of the diffusion operator, split evenly between the two adjacent
+/// elements.
 ///
-/// Returns (contribution to left element, contribution to right element).
+/// For the jump \[u\] = u_left − u_right, the averaged flux {κ u_x} and the
+/// symmetry parameter ε = [`PenaltyMethod::sigma`] (−1 SIPG, +1 NIPG, 0 IIPG) the
+/// face part of the bilinear form evaluated with the solution as its own test
+/// function is
+///
+/// a_e(u, u) = κ η \[u\]² + (ε − 1) {κ u_x} \[u\].
+///
+/// Returns `(a_e / 2, a_e / 2)`: (contribution to left element, contribution to
+/// right element).  Together with κ ∫ u_x² dx over the elements it gives the
+/// discrete dissipation rate −d/dt (½ ‖u‖²) of
+/// [`dg_advection_diffusion_residual`] for pure diffusion.
 pub fn interior_penalty_face(
     u_left: f64,
     u_right: f64,
@@ -376,19 +388,36 @@ pub fn interior_penalty_face(
     eta: f64,
     method: PenaltyMethod,
 ) -> (f64, f64) {
-    let jump = u_right - u_left;
-    let avg_grad = 0.5 * (grad_u_left + grad_u_right);
-    let sig = method.sigma();
+    let jump = u_left - u_right;
+    let avg_flux = 0.5 * diffusivity * (grad_u_left + grad_u_right);
+    let energy = eta * diffusivity * jump * jump + (method.sigma() - 1.0) * avg_flux * jump;
+    (0.5 * energy, 0.5 * energy)
+}
 
-    // Penalty term
-    let penalty = eta * diffusivity * jump;
-    // Consistency term
-    let consistency = -diffusivity * avg_grad * jump;
-    // Symmetry term
-    let symmetry = sig * consistency;
-
-    let total = penalty + consistency + symmetry;
-    (-total * 0.5, total * 0.5)
+/// Coefficients of the interior-penalty face terms of the residual.
+///
+/// With \[u\] = u_left − u_right, the residual of the left element gets, for each
+/// test function φ with traces φ^- (left) and φ^+ (right),
+///
+/// {κ u_x} \[φ\] + θ {κ φ_x} \[u\] − κ η \[u\] \[φ\],  θ = −ε
+///
+/// (θ = +1 for SIPG, −1 for NIPG, 0 for IIPG).  This returns
+/// `(flux, symmetry)` with `flux = {κ u_x} − κ η \[u\]` (multiplies the test
+/// function jump \[φ\] = φ^- − φ^+) and `symmetry = θ κ \[u\] / 2` (multiplies the
+/// physical derivative of the test function on each side).
+fn interior_penalty_coefficients(
+    u_left: f64,
+    u_right: f64,
+    grad_u_left: f64,
+    grad_u_right: f64,
+    diffusivity: f64,
+    eta: f64,
+    method: PenaltyMethod,
+) -> (f64, f64) {
+    let jump = u_left - u_right;
+    let flux = diffusivity * (0.5 * (grad_u_left + grad_u_right) - eta * jump);
+    let symmetry = -method.sigma() * diffusivity * jump * 0.5;
+    (flux, symmetry)
 }
 
 // ---------------------------------------------------------------------------
@@ -753,11 +782,26 @@ pub fn ssp_rk3_step(
     dt: f64,
     flux_type: NumericalFlux,
 ) {
+    ssp_rk3_with_residual(elements, dt, |e| {
+        dg_advection_residual(e, wave_speed, flux_type)
+    });
+}
+
+/// One third-order SSP Runge-Kutta step (Shu-Osher form) for the semi-discrete
+/// system `d(coeffs)/dt = residual(elements)`.
+///
+/// u^(1) = u^n + dt L(u^n)
+/// u^(2) = 3/4 u^n + 1/4 (u^(1) + dt L(u^(1)))
+/// u^(n+1) = 1/3 u^n + 2/3 (u^(2) + dt L(u^(2)))
+fn ssp_rk3_with_residual<F>(elements: &mut [DgElement], dt: f64, residual: F)
+where
+    F: Fn(&[DgElement]) -> Vec<Vec<f64>>,
+{
     let n = elements.len();
     let u_n: Vec<Vec<f64>> = elements.iter().map(|e| e.coeffs.clone()).collect();
 
     // Stage 1
-    let res1 = dg_advection_residual(elements, wave_speed, flux_type);
+    let res1 = residual(elements);
     for i in 0..n {
         for (m, c) in elements[i].coeffs.iter_mut().enumerate() {
             *c += dt * res1[i][m];
@@ -765,7 +809,7 @@ pub fn ssp_rk3_step(
     }
 
     // Stage 2
-    let res2 = dg_advection_residual(elements, wave_speed, flux_type);
+    let res2 = residual(elements);
     for i in 0..n {
         for (m, c) in elements[i].coeffs.iter_mut().enumerate() {
             *c = 0.75 * u_n[i][m] + 0.25 * (*c + dt * res2[i][m]);
@@ -773,7 +817,7 @@ pub fn ssp_rk3_step(
     }
 
     // Stage 3
-    let res3 = dg_advection_residual(elements, wave_speed, flux_type);
+    let res3 = residual(elements);
     for i in 0..n {
         for (m, c) in elements[i].coeffs.iter_mut().enumerate() {
             *c = (1.0 / 3.0) * u_n[i][m] + (2.0 / 3.0) * (*c + dt * res3[i][m]);
@@ -788,7 +832,23 @@ pub fn ssp_rk3_step(
 /// DG spatial residual for the advection-diffusion equation:
 /// u_t + a*u_x = kappa * u_xx
 ///
-/// Uses the Local DG (LDG) approach for the diffusion term.
+/// The advection part uses the numerical flux `flux_type`.  The diffusion part
+/// is the interior-penalty DG discretisation (SIPG, NIPG or IIPG, selected by
+/// `penalty_method`, with penalty `kappa * eta` and `eta` from
+/// [`penalty_parameter`]).  Written for the test function φ_m of an element with
+/// Jacobian J, the weak form `∫ u_t φ dx = −κ ∫ u_x φ_x dx + Σ_faces …` gives
+///
+/// * the volume term −κ/J² ∫ u_ξ φ_ξ dξ, and
+/// * for each interior face (jump \[w\] = w_left − w_right, average {w}) the terms
+///   {κ u_x} \[φ\] + θ {κ φ_x} \[u\] − κ η \[u\] \[φ\] with θ = +1, −1, 0 for
+///   SIPG, NIPG, IIPG,
+///
+/// added to **both** adjacent elements and divided by the Jacobian of the element
+/// they are added to.  The domain boundaries carry no diffusive flux (natural
+/// homogeneous Neumann condition), so pure diffusion conserves ∫ u dx exactly and,
+/// for SIPG with a sufficiently large penalty constant, decreases ‖u‖₂.
+///
+/// Returns one residual vector (d(coeffs)/dt) per element.
 pub fn dg_advection_diffusion_residual(
     elements: &[DgElement],
     wave_speed: f64,
@@ -797,79 +857,76 @@ pub fn dg_advection_diffusion_residual(
     c_pen: f64,
     flux_type: NumericalFlux,
 ) -> Vec<Vec<f64>> {
-    let n = elements.len();
-
     // Start with advection residual
     let mut residuals = dg_advection_residual(elements, wave_speed, flux_type);
 
-    let basis0 = DgBasis::new(if n > 0 { elements[0].order } else { 0 });
-
-    // Add diffusion terms via interior penalty
-    for i in 0..n {
-        let basis = DgBasis::new(elements[i].order);
-        let nq = elements[i].order + 2;
-        let (qpts, qwts) = gauss_legendre_quadrature(nq);
-        let jac = elements[i].jacobian();
+    // Volume term: −κ/J² ∫ u_ξ φ_ξ dξ (u_x φ_x dx = u_ξ φ_ξ dξ / J).
+    for (elem, res) in elements.iter().zip(residuals.iter_mut()) {
+        let basis = DgBasis::new(elem.order);
+        let (qpts, qwts) = gauss_legendre_quadrature(elem.order + 2);
+        let jac = elem.jacobian();
         let nmodes = basis.num_modes();
-
-        // Volume integral: kappa * integral( du/dxi * dphi/dxi ) / jac^2 * jac
         for (k, &xi) in qpts.iter().enumerate() {
-            let mut du_dxi = 0.0;
-            for (m, &c) in elements[i].coeffs.iter().enumerate().take(nmodes) {
-                du_dxi += c * basis.evaluate_deriv(m, xi);
-            }
-            for (m, res_im) in residuals[i].iter_mut().enumerate().take(nmodes) {
+            let du_dxi: f64 = elem
+                .coeffs
+                .iter()
+                .enumerate()
+                .take(nmodes)
+                .map(|(m, &c)| c * basis.evaluate_deriv(m, xi))
+                .sum();
+            for (m, res_m) in res.iter_mut().enumerate().take(nmodes) {
                 let dphi = basis.evaluate_deriv(m, xi);
-                *res_im += qwts[k] * kappa * du_dxi * dphi / jac;
+                *res_m -= qwts[k] * kappa * du_dxi * dphi / (jac * jac);
             }
         }
+    }
 
-        // Face terms (interior penalty)
-        if i + 1 < n {
-            let u_l = elements[i].eval_right();
-            let u_r = elements[i + 1].eval_left();
+    // Interior faces: consistency, symmetry and penalty terms for both neighbours.
+    for (i, pair) in elements.windows(2).enumerate() {
+        let (left, right) = (&pair[0], &pair[1]);
+        let (basis_l, basis_r) = (DgBasis::new(left.order), DgBasis::new(right.order));
+        let (jac_l, jac_r) = (left.jacobian(), right.jacobian());
+        let nmodes_l = basis_l.num_modes();
+        let nmodes_r = basis_r.num_modes();
 
-            let mut grad_l = 0.0;
-            for (m, &c) in elements[i]
-                .coeffs
-                .iter()
-                .enumerate()
-                .take(basis.num_modes())
-            {
-                grad_l += c * basis.evaluate_deriv(m, 1.0);
-            }
-            grad_l /= elements[i].jacobian();
+        let u_l = left.eval_right();
+        let u_r = right.eval_left();
+        let grad_l: f64 = left
+            .coeffs
+            .iter()
+            .enumerate()
+            .take(nmodes_l)
+            .map(|(m, &c)| c * basis_l.evaluate_deriv(m, 1.0))
+            .sum::<f64>()
+            / jac_l;
+        let grad_r: f64 = right
+            .coeffs
+            .iter()
+            .enumerate()
+            .take(nmodes_r)
+            .map(|(m, &c)| c * basis_r.evaluate_deriv(m, -1.0))
+            .sum::<f64>()
+            / jac_r;
 
-            let basis_r = DgBasis::new(elements[i + 1].order);
-            let mut grad_r = 0.0;
-            for (m, &c) in elements[i + 1]
-                .coeffs
-                .iter()
-                .enumerate()
-                .take(basis_r.num_modes())
-            {
-                grad_r += c * basis_r.evaluate_deriv(m, -1.0);
-            }
-            grad_r /= elements[i + 1].jacobian();
+        let eta = penalty_parameter(
+            left.order.max(right.order),
+            left.width(),
+            right.width(),
+            c_pen,
+        );
+        let (flux, symmetry) =
+            interior_penalty_coefficients(u_l, u_r, grad_l, grad_r, kappa, eta, penalty_method);
 
-            let eta = penalty_parameter(
-                elements[i].order.max(elements[i + 1].order),
-                elements[i].width(),
-                elements[i + 1].width(),
-                c_pen,
-            );
-
-            let (_face_l, _face_r) =
-                interior_penalty_face(u_l, u_r, grad_l, grad_r, kappa, eta, penalty_method);
-
-            let _noop = &basis0;
-
-            // Apply penalty contributions to boundary modes
-            let nmodes_pen = basis.num_modes();
-            for (m, res_im) in residuals[i].iter_mut().enumerate().take(nmodes_pen) {
-                let phi_r = basis.evaluate(m, 1.0);
-                *res_im -= eta * kappa * (u_l - u_r) * phi_r / jac;
-            }
+        let (head, tail) = residuals.split_at_mut(i + 1);
+        for (m, res_m) in head[i].iter_mut().enumerate().take(nmodes_l) {
+            let phi = basis_l.evaluate(m, 1.0);
+            let dphi = basis_l.evaluate_deriv(m, 1.0) / jac_l;
+            *res_m += (flux * phi + symmetry * dphi) / jac_l;
+        }
+        for (m, res_m) in tail[0].iter_mut().enumerate().take(nmodes_r) {
+            let phi = basis_r.evaluate(m, -1.0);
+            let dphi = basis_r.evaluate_deriv(m, -1.0) / jac_r;
+            *res_m += (-flux * phi + symmetry * dphi) / jac_r;
         }
     }
 
@@ -1190,9 +1247,11 @@ pub struct DgAdvDiffConfig {
     pub flux_type: NumericalFlux,
     /// Penalty method for diffusion.
     pub penalty_method: PenaltyMethod,
-    /// Penalty constant.
+    /// Penalty constant `C_pen` of [`penalty_parameter`]; must be large enough for
+    /// SIPG / IIPG to be stable (10 is a safe default in 1-D).
     pub c_pen: f64,
-    /// CFL number.
+    /// CFL number: fraction of the explicit stability limit used for the time step
+    /// (see [`solve_advection_diffusion`]); the SSP-RK3 scheme is stable up to about 2.
     pub cfl: f64,
 }
 
@@ -1209,7 +1268,23 @@ impl Default for DgAdvDiffConfig {
     }
 }
 
-/// Runs the DG advection-diffusion solver.
+/// Runs the DG advection-diffusion solver up to `t_final` and returns the time
+/// actually reached.
+///
+/// Time integration uses the third-order SSP Runge-Kutta scheme.  The step is
+/// `1 / (1/dt_adv + 1/dt_diff)` with
+///
+/// * `dt_adv = cfl · h_min / (|a| (2p + 1))`, and
+/// * `dt_diff = cfl / λ`, where `λ = κ (p + 1)⁴ (1 + 3.5 c_pen) / h_min²` bounds
+///   the spectral radius of the interior-penalty operator (`p` is the largest
+///   polynomial order, `h_min` the smallest element width).
+///
+/// Hence `cfl` is a fraction of the explicit stability limit (stable for
+/// `cfl ≲ 2`).  The domain boundaries carry no diffusive flux.
+///
+/// If the configuration yields no positive time step (for example `cfl <= 0` or
+/// non-finite parameters) or the mesh is empty, nothing is advanced and `0.0` is
+/// returned.
 pub fn solve_advection_diffusion(
     mesh: &mut DgMesh1D,
     config: &DgAdvDiffConfig,
@@ -1224,32 +1299,33 @@ pub fn solve_advection_diffusion(
         .iter()
         .map(|e| e.width())
         .fold(f64::INFINITY, f64::min);
-    let p = mesh.elements[0].order as f64;
+    let p_max = mesh.elements.iter().map(|e| e.order).max().unwrap_or(0) as f64;
 
-    // Time step combines advection and diffusion CFL
-    let dt_adv = config.cfl * dx_min / (config.wave_speed.abs() * (2.0 * p + 1.0));
-    let dt_diff = config.cfl * dx_min * dx_min / (config.kappa * (2.0 * p + 1.0).powi(2));
-    let dt = dt_adv.min(dt_diff);
+    // Time step combines the advection and diffusion limits.
+    let dt_adv = config.cfl * dx_min / (config.wave_speed.abs() * (2.0 * p_max + 1.0));
+    let lambda_diff =
+        config.kappa.abs() * (p_max + 1.0).powi(4) * (1.0 + 3.5 * config.c_pen.max(0.0))
+            / (dx_min * dx_min);
+    let dt_diff = config.cfl / lambda_diff;
+    let dt = 1.0 / (1.0 / dt_adv + 1.0 / dt_diff);
+    // A step that is zero, negative or NaN (cfl <= 0, NaN parameters) can never reach `t_final`.
+    if dt.is_nan() || dt <= 0.0 {
+        return 0.0;
+    }
 
     let mut t = 0.0;
     while t < t_final - 1e-14 {
         let dt_actual = dt.min(t_final - t);
-
-        // Forward Euler step for simplicity
-        let residuals = dg_advection_diffusion_residual(
-            &mesh.elements,
-            config.wave_speed,
-            config.kappa,
-            config.penalty_method,
-            config.c_pen,
-            config.flux_type,
-        );
-        for (i, res_i) in residuals.iter().enumerate().take(n) {
-            for (m, c) in mesh.elements[i].coeffs.iter_mut().enumerate() {
-                *c += dt_actual * res_i[m];
-            }
-        }
-
+        ssp_rk3_with_residual(&mut mesh.elements, dt_actual, |e| {
+            dg_advection_diffusion_residual(
+                e,
+                config.wave_speed,
+                config.kappa,
+                config.penalty_method,
+                config.c_pen,
+                config.flux_type,
+            )
+        });
         t += dt_actual;
     }
     t
@@ -1839,3 +1915,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests_diffusion;

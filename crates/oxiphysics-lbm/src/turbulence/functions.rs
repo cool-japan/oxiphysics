@@ -7,13 +7,52 @@ use std::f64::consts::PI;
 use crate::grid::{LbmGrid2D, equilibrium_2d};
 use crate::lattice::CS2;
 
+/// Relaxation time of the Smagorinsky sub-grid-scale model in lattice units.
+///
+/// With the filter width equal to the lattice spacing, the eddy viscosity is
+/// `nu_t = (C_s)^2 |S|` with `|S| = sqrt(2 S:S)`, and the relaxation time that
+/// carries it is `tau_eff = tau_0 + nu_t / c_s^2`.  The strain rate follows
+/// from the non-equilibrium momentum flux of the populations,
+/// `Pi_neq = -2 rho c_s^2 tau_eff S`, hence
+/// `|S| = ||Pi_neq|| / (sqrt(2) rho c_s^2 tau_eff)` where `||Pi_neq||` is the
+/// Frobenius norm.  Inserting this into the definition of `tau_eff` gives the
+/// quadratic `tau_eff (tau_eff - tau_0) = C_s^2 ||Pi_neq|| / (sqrt(2) rho c_s^4)`
+/// whose positive root is returned:
+///
+/// ```text
+/// tau_eff = 1/2 [ tau_0 + sqrt( tau_0^2 + 4 C_s^2 ||Pi_neq|| / (sqrt(2) rho c_s^4) ) ]
+///         = 1/2 [ tau_0 + sqrt( tau_0^2 + 18 sqrt(2) C_s^2 ||Pi_neq|| / rho ) ]   (c_s^2 = 1/3)
+/// ```
+///
+/// The factor `18 sqrt(2)` already contains `1 / c_s^4`; the stress must not be
+/// divided by `c_s^4` a second time.  A cell without mass (`rho <= 0`) carries no
+/// strain information and keeps the molecular relaxation time.
+///
+/// # Arguments
+/// * `tau0`     – molecular relaxation time `1 / omega`
+/// * `cs_smag`  – Smagorinsky constant `C_s`
+/// * `pi_norm`  – Frobenius norm `sqrt(Pi_ab Pi_ab)` of the non-equilibrium
+///   momentum flux (`sqrt(Pxx^2 + 2 Pxy^2 + Pyy^2)` in two dimensions)
+/// * `rho`      – local density
+pub(crate) fn smagorinsky_tau(tau0: f64, cs_smag: f64, pi_norm: f64, rho: f64) -> f64 {
+    if rho <= 0.0 {
+        return tau0;
+    }
+    let discriminant = tau0 * tau0
+        + 4.0 * cs_smag * cs_smag * pi_norm / (std::f64::consts::SQRT_2 * rho * CS2 * CS2);
+    0.5 * (tau0 + discriminant.sqrt())
+}
 /// Compute the local effective omega at cell (x, y) using the Smagorinsky model.
 ///
-/// The non-equilibrium stress tensor is computed from `f_neq = f - f_eq`.
-/// The strain rate magnitude `|S|` is derived from the second-order moment
-/// of the non-equilibrium part. The effective relaxation time is then:
+/// The non-equilibrium momentum flux `Pi_neq = sum_i (f_i - f_eq_i) c_i c_i` is
+/// evaluated from the populations of the cell, and its Frobenius norm
+/// `||Pi_neq|| = sqrt(Pxx^2 + 2 Pxy^2 + Pyy^2)` fixes the local strain rate
+/// `|S| = ||Pi_neq|| / (sqrt(2) rho c_s^2 tau_eff)`.  The effective relaxation
+/// time solves the Smagorinsky closure `tau_eff = tau + C_s^2 |S| / c_s^2`:
 ///
-/// `tau_eff = 0.5 * (tau + sqrt(tau² + 18 * cs_smag² * |S| / rho))`
+/// ```text
+/// tau_eff = 1/2 [ tau + sqrt( tau^2 + 18 sqrt(2) cs_smag^2 ||Pi_neq|| / rho ) ]
+/// ```
 ///
 /// Returns `omega_eff = 1 / tau_eff`.
 pub fn smagorinsky_omega(
@@ -43,10 +82,7 @@ pub fn smagorinsky_omega(
         pi_yy += fneq * cy * cy;
     }
     let pi_mag = (pi_xx * pi_xx + 2.0 * pi_xy * pi_xy + pi_yy * pi_yy).sqrt();
-    let tau = 1.0 / base_omega;
-    let tau_eff =
-        0.5 * (tau + (tau * tau + 18.0 * cs_smag * cs_smag * pi_mag / (rho * CS2 * CS2)).sqrt());
-    1.0 / tau_eff
+    1.0 / smagorinsky_tau(1.0 / base_omega, cs_smag, pi_mag, rho)
 }
 /// Perform a BGK collision step with Smagorinsky turbulence model on a 2D grid.
 ///

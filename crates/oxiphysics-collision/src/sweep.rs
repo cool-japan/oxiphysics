@@ -10,6 +10,22 @@
 //! - Sphere vs AABB (conservative)
 //! - AABB vs AABB (conservative)
 //! - Ray vs sphere, box, triangle
+//! - Sphere vs triangle mesh and sphere vs capsule (exact, face / edge / vertex)
+//! - Conservative advancement for rotating bodies
+
+mod point_cast;
+mod rotating;
+mod sphere_capsule;
+mod sphere_triangle;
+
+pub use rotating::{
+    RotatingBodyState, conservative_advancement_rotating,
+    conservative_advancement_rotating_with_distance,
+};
+pub use sphere_capsule::swept_sphere_capsule;
+pub use sphere_triangle::{
+    TriangleMeshSweepResult, swept_sphere_triangle, swept_sphere_triangle_mesh,
+};
 
 // ---------------------------------------------------------------------------
 // Math helpers
@@ -887,294 +903,11 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Conservative advancement for rotating bodies
-// ---------------------------------------------------------------------------
-
-/// A rigid body state for conservative advancement.
-#[derive(Debug, Clone)]
-pub struct RotatingBodyState {
-    /// Center of mass position.
-    pub position: [f64; 3],
-    /// Linear velocity.
-    pub linear_vel: [f64; 3],
-    /// Angular speed (magnitude of angular velocity vector), radians/s.
-    pub angular_speed: f64,
-    /// Bounding sphere radius (enclosing the entire body).
-    pub bound_radius: f64,
-}
-
-impl RotatingBodyState {
-    /// Create a new rotating body state.
-    pub fn new(
-        position: [f64; 3],
-        linear_vel: [f64; 3],
-        angular_speed: f64,
-        bound_radius: f64,
-    ) -> Self {
-        Self {
-            position,
-            linear_vel,
-            angular_speed,
-            bound_radius,
-        }
-    }
-
-    /// Upper bound on how far any point on this body can move in time `dt`.
-    ///
-    /// Uses the formula: `|v_linear| * dt + angular_speed * bound_radius * dt`.
-    pub fn motion_bound(&self, dt: f64) -> f64 {
-        let linear_speed = len(self.linear_vel);
-        (linear_speed + self.angular_speed * self.bound_radius) * dt
-    }
-
-    /// Advance position by `dt`.
-    pub fn advance(&self, dt: f64) -> [f64; 3] {
-        add(self.position, scale(self.linear_vel, dt))
-    }
-}
-
-/// Conservative advancement TOI for two rotating bodies.
-///
-/// Iteratively advances time until the bounding spheres touch, using
-/// motion bounds to ensure conservative (never-tunneling) steps.
-///
-/// Returns the TOI in `[0, 1]` or `None` if the bodies never collide.
-pub fn conservative_advancement_rotating(
-    a: &RotatingBodyState,
-    b: &RotatingBodyState,
-    separation: f64,
-    t_start: f64,
-    t_end: f64,
-    tolerance: f64,
-    max_iter: usize,
-) -> Option<f64> {
-    let total_dt = t_end - t_start;
-    if total_dt <= 0.0 {
-        return None;
-    }
-    let sum_r = a.bound_radius + b.bound_radius;
-    let init_dist = len(sub(b.position, a.position)) - sum_r;
-    if init_dist <= 0.0 {
-        return Some(t_start);
-    }
-    if separation < 0.0 {
-        return Some(t_start);
-    }
-
-    let mut t = t_start;
-    let mut remaining_sep = separation.max(init_dist);
-
-    for _ in 0..max_iter {
-        if remaining_sep <= tolerance {
-            return Some(t);
-        }
-        let remaining_dt = t_end - t;
-        if remaining_dt <= 0.0 {
-            break;
-        }
-        let motion_a = a.motion_bound(remaining_dt);
-        let motion_b = b.motion_bound(remaining_dt);
-        let total_motion = motion_a + motion_b;
-        if total_motion < 1e-14 {
-            break;
-        }
-        let dt_step = (remaining_sep / total_motion).min(remaining_dt);
-        t += dt_step;
-        // Advance positions
-        let pos_a_t = a.advance(t - t_start);
-        let pos_b_t = b.advance(t - t_start);
-        let new_dist = len(sub(pos_b_t, pos_a_t)) - sum_r;
-        if new_dist <= tolerance {
-            return Some(t);
-        }
-        remaining_sep = new_dist;
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------
-// Swept sphere query against a list of triangles
-// ---------------------------------------------------------------------------
-
-/// Result of a swept sphere vs triangle mesh query.
-#[derive(Debug, Clone)]
-pub struct TriangleMeshSweepResult {
-    /// Time of impact.
-    pub toi: f64,
-    /// Triangle index that was hit.
-    pub tri_index: usize,
-    /// Contact normal.
-    pub normal: [f64; 3],
-    /// Contact point on the sphere.
-    pub point_a: [f64; 3],
-    /// Contact point on the triangle.
-    pub point_b: [f64; 3],
-}
-
-/// Sweep a sphere against a list of triangles and return the earliest impact.
-///
-/// Each triangle is `[v0, v1, v2]` as `[[f64; 3\]; 3]`.
-pub fn swept_sphere_triangle_mesh(
-    c0: [f64; 3],
-    c1: [f64; 3],
-    radius: f64,
-    triangles: &[[[f64; 3]; 3]],
-) -> Option<TriangleMeshSweepResult> {
-    let mut best: Option<TriangleMeshSweepResult> = None;
-
-    for (i, tri) in triangles.iter().enumerate() {
-        let v0 = tri[0];
-        let v1 = tri[1];
-        let v2 = tri[2];
-
-        // Use the triangle normal to create an offset plane sweep
-        let e1 = sub(v1, v0);
-        let e2 = sub(v2, v0);
-        let raw_normal = cross(e1, e2);
-        if len(raw_normal) < 1e-12 {
-            continue;
-        }
-        let tri_normal_raw = normalize(raw_normal);
-
-        // Try both sides of the triangle (double-sided)
-        // Use the side the sphere is approaching from
-        let approach_normal = if dot(tri_normal_raw, sub(c0, v0)) >= 0.0 {
-            tri_normal_raw
-        } else {
-            scale(tri_normal_raw, -1.0)
-        };
-
-        let plane_d = dot(approach_normal, v0) + radius;
-
-        // Intersect the sphere centre with the offset plane
-        let d0 = dot(approach_normal, c0) - plane_d;
-        let d1 = dot(approach_normal, c1) - plane_d;
-
-        if d0 < 0.0 || (d0 - d1).abs() < 1e-14 {
-            continue;
-        }
-
-        let t = d0 / (d0 - d1);
-        if !(0.0..=1.0).contains(&t) {
-            continue;
-        }
-
-        // Position of sphere centre at impact
-        let dir = sub(c1, c0);
-        let center_t = add(c0, scale(dir, t));
-
-        // Find closest point on triangle to sphere centre projection onto triangle plane
-        let proj = sub(
-            center_t,
-            scale(approach_normal, dot(approach_normal, sub(center_t, v0))),
-        );
-        // Clamp to triangle using edge tests (simplified: use the closest-point algorithm)
-        let closest_on_tri = closest_point_on_tri(v0, v1, v2, proj);
-        let diff = sub(center_t, closest_on_tri);
-        let d = len(diff);
-        if d > radius + 1e-6 {
-            continue;
-        }
-
-        let normal = if d > 1e-10 {
-            normalize(diff)
-        } else {
-            approach_normal
-        };
-
-        let result = TriangleMeshSweepResult {
-            toi: t,
-            tri_index: i,
-            normal,
-            point_a: add(center_t, scale(normal, -radius)),
-            point_b: closest_on_tri,
-        };
-
-        if best.as_ref().is_none_or(|br| t < br.toi) {
-            best = Some(result);
-        }
-    }
-
-    best
-}
-
-/// Closest point on a triangle (inline helper for sweep.rs).
-fn closest_point_on_tri(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3], p: [f64; 3]) -> [f64; 3] {
-    let ab = sub(v1, v0);
-    let ac = sub(v2, v0);
-    let ap = sub(p, v0);
-    let d1 = dot(ab, ap);
-    let d2 = dot(ac, ap);
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return v0;
-    }
-    let bp = sub(p, v1);
-    let d3 = dot(ab, bp);
-    let d4 = dot(ac, bp);
-    if d3 >= 0.0 && d4 <= d3 {
-        return v1;
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let v = d1 / (d1 - d3);
-        return add(v0, scale(ab, v));
-    }
-    let cp = sub(p, v2);
-    let d5 = dot(ab, cp);
-    let d6 = dot(ac, cp);
-    if d6 >= 0.0 && d5 <= d6 {
-        return v2;
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let w = d2 / (d2 - d6);
-        return add(v0, scale(ac, w));
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        return add(v1, scale(sub(v2, v1), w));
-    }
-    let denom = 1.0 / (va + vb + vc);
-    let v = vb * denom;
-    let w = vc * denom;
-    add(add(v0, scale(ab, v)), scale(ac, w))
-}
-
-// ---------------------------------------------------------------------------
-// Sphere-capsule sweep
-// ---------------------------------------------------------------------------
-
-/// Swept sphere vs static capsule time-of-impact.
-///
-/// The sphere sweeps from `c0_s` to `c1_s` with `r_s`. The capsule is static
-/// with axis `(cap0, cap1)` and `r_c`. Reduces to swept-sphere-sphere using
-/// the closest point on the capsule axis.
-pub fn swept_sphere_capsule(
-    c0_s: [f64; 3],
-    c1_s: [f64; 3],
-    r_s: f64,
-    cap0: [f64; 3],
-    cap1: [f64; 3],
-    r_c: f64,
-) -> Option<SweepResult> {
-    // Find the closest point on the capsule axis to the midpoint of the sphere sweep
-    let mid_sphere = scale(add(c0_s, c1_s), 0.5);
-    let axis = sub(cap1, cap0);
-    let axis_len_sq = dot(axis, axis);
-    let t = if axis_len_sq < 1e-20 {
-        0.0
-    } else {
-        (dot(sub(mid_sphere, cap0), axis) / axis_len_sq).clamp(0.0, 1.0)
-    };
-    let cap_closest = add(cap0, scale(axis, t));
-    // Treat the capsule as a static sphere at the closest axis point
-    swept_sphere_sphere(c0_s, c1_s, r_s, cap_closest, cap_closest, r_c)
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1854,8 +1587,14 @@ mod tests {
             "sphere sweeping toward triangle should hit"
         );
         let hit = result.unwrap();
-        assert!(hit.toi >= 0.0 && hit.toi <= 1.0, "toi={}", hit.toi);
+        // The centre falls from y = 3 to y = -1; the sphere touches y = 0 at y = 0.5.
+        assert!((hit.toi - 0.625).abs() < 1e-12, "toi={}", hit.toi);
         assert_eq!(hit.tri_index, 0, "should hit first triangle");
+        assert!(
+            (hit.normal[1] - 1.0).abs() < 1e-12,
+            "normal={:?}",
+            hit.normal
+        );
     }
 
     #[test]
@@ -1876,7 +1615,10 @@ mod tests {
         ];
         // Sphere moves from y=5 to y=-5, radius=0.3
         let result = swept_sphere_triangle_mesh([0.0, 5.0, 0.0], [0.0, -5.0, 0.0], 0.3, &triangles);
-        assert!(result.is_some(), "should hit a triangle");
+        let hit = result.expect("should hit a triangle");
+        assert_eq!(hit.tri_index, 1, "the triangle at y = 1 is reached first");
+        // The centre reaches y = 1.3 after (5 - 1.3) / 10 of the step.
+        assert!((hit.toi - 0.37).abs() < 1e-12, "toi={}", hit.toi);
     }
 
     // ── swept_sphere_capsule ──────────────────────────────────────────────────
@@ -1893,7 +1635,14 @@ mod tests {
             [0.0, 1.0, 0.0],
             0.5,
         );
-        assert!(result.is_some(), "sphere sweeping past capsule should hit");
+        let hit = result.expect("sphere sweeping past capsule should hit");
+        // The centre reaches x = -0.8 (radii 0.3 + 0.5) after 2.2 / 3.5 of the step.
+        assert!((hit.toi - 2.2 / 3.5).abs() < 1e-12, "toi={}", hit.toi);
+        assert!(
+            (hit.normal[0] + 1.0).abs() < 1e-12,
+            "normal={:?}",
+            hit.normal
+        );
     }
 
     #[test]

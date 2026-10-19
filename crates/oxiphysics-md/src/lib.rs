@@ -61,6 +61,7 @@ pub mod path_integral;
 pub mod potential;
 pub mod reactive;
 pub mod trajectory;
+pub mod units;
 pub use metadynamics::*;
 pub mod polarizable;
 pub mod protein;

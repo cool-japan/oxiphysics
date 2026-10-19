@@ -418,10 +418,126 @@ mod tests {
         assert!(surf.point_count() > 0, "expected some fiber points");
     }
     #[test]
-    fn jacobi_set_from_identity_map_has_some_segments() {
-        let jac =
-            JacobiSetViz::from_bivariate_field_2d(|x, y| [x, y], 0.0, 1.0, 5, 0.0, 1.0, 5, 0.0);
+    fn jacobi_set_of_the_identity_map_is_empty() {
+        // f = x, g = y: ∇f ⟂ ∇g everywhere (det = 1), so there is no Jacobi set.
+        let jac = JacobiSetViz::from_bivariate_field_2d(|x, y| [x, y], 0.0, 1.0, 5, 0.0, 1.0, 5);
         assert_eq!(jac.segment_count(), 0);
+    }
+    #[test]
+    fn jacobi_set_of_the_swap_map_is_empty() {
+        // f = y, g = x: det = -1 everywhere.  The old code zeroed the cross
+        // partials, read det = f_x·g_y = 0 and flagged every cell.
+        let jac = JacobiSetViz::from_bivariate_field_2d(|x, y| [y, x], 0.0, 1.0, 6, 0.0, 1.0, 6);
+        assert_eq!(jac.segment_count(), 0);
+    }
+    #[test]
+    fn jacobi_set_of_x_and_squared_radius_lies_on_the_x_axis() {
+        // f = x, g = x² + y²: det = 2y, so the Jacobi set is the line y = 0.
+        // No grid node lies on y = 0 (y runs -0.95, -0.75, ...), so the curve
+        // comes from interpolating the sign change of det.
+        let jac = JacobiSetViz::from_bivariate_field_2d(
+            |x, y| [x, x * x + y * y],
+            -1.0,
+            1.0,
+            11,
+            -0.95,
+            1.05,
+            11,
+        );
+        assert!(jac.segment_count() > 0);
+        let mut length = 0.0;
+        for seg in &jac.segments {
+            assert!(seg.start[1].abs() < 1e-9, "{seg:?}");
+            assert!(seg.end[1].abs() < 1e-9, "{seg:?}");
+            assert_eq!(seg.segment_type, 1);
+            assert_eq!((seg.start[2], seg.end[2]), (0.0, 0.0));
+            length += (seg.end[0] - seg.start[0]).abs();
+        }
+        assert!(
+            (length - 2.0).abs() < 1e-9,
+            "the curve spans x in [-1, 1]: {length}"
+        );
+        assert_eq!(jac.build_lines().len(), jac.segment_count());
+    }
+    #[test]
+    fn jacobi_set_with_two_crossing_branches_covers_both_axes() {
+        // f = x² + y², g = x² + 2y²: det = 8xy - 4xy = 4xy, i.e. both axes.
+        // An even node count keeps every node off the axes.
+        let jac = JacobiSetViz::from_bivariate_field_2d(
+            |x, y| [x * x + y * y, x * x + 2.0 * y * y],
+            -1.0,
+            1.0,
+            10,
+            -1.0,
+            1.0,
+            10,
+        );
+        let mut on_y_axis_far_from_origin = 0;
+        let mut on_x_axis_far_from_origin = 0;
+        for seg in &jac.segments {
+            for p in [seg.start, seg.end] {
+                assert!(
+                    p[0].abs() < 1e-9 || p[1].abs() < 1e-9,
+                    "off both axes: {p:?}"
+                );
+                on_y_axis_far_from_origin += usize::from(p[0].abs() < 1e-9 && p[1].abs() > 0.2);
+                on_x_axis_far_from_origin += usize::from(p[1].abs() < 1e-9 && p[0].abs() > 0.2);
+            }
+        }
+        assert!(
+            on_y_axis_far_from_origin > 10,
+            "{on_y_axis_far_from_origin}"
+        );
+        assert!(
+            on_x_axis_far_from_origin > 10,
+            "{on_x_axis_far_from_origin}"
+        );
+    }
+    #[test]
+    fn jacobi_set_is_independent_of_the_axis_orientation() {
+        let field = |x: f64, y: f64| [x, x * x + y * y];
+        let forward = JacobiSetViz::from_bivariate_field_2d(field, -1.0, 1.0, 11, -0.95, 1.05, 11);
+        let flipped = JacobiSetViz::from_bivariate_field_2d(field, 1.0, -1.0, 11, 1.05, -0.95, 11);
+        assert_eq!(forward.segment_count(), flipped.segment_count());
+        for seg in &flipped.segments {
+            assert!(
+                seg.start[1].abs() < 1e-9 && seg.end[1].abs() < 1e-9,
+                "{seg:?}"
+            );
+        }
+    }
+    #[test]
+    fn jacobi_set_degenerate_grids_and_non_finite_samples_are_harmless() {
+        let field = |x: f64, y: f64| [x, x * x + y * y];
+        let count = |x0: f64, x1: f64, nx: usize, y0: f64, y1: f64, ny: usize| {
+            JacobiSetViz::from_bivariate_field_2d(field, x0, x1, nx, y0, y1, ny).segment_count()
+        };
+        assert_eq!(count(-1.0, 1.0, 0, -0.95, 1.05, 11), 0);
+        assert_eq!(count(-1.0, 1.0, 1, -0.95, 1.05, 11), 0);
+        assert_eq!(count(-1.0, 1.0, 11, -0.95, 1.05, 1), 0);
+        assert_eq!(count(1.0, 1.0, 11, -0.95, 1.05, 11), 0);
+        assert_eq!(count(-1.0, 1.0, 11, 0.3, 0.3, 11), 0);
+        assert_eq!(count(f64::NAN, 1.0, 11, -0.95, 1.05, 11), 0);
+        assert_eq!(count(-1.0, f64::INFINITY, 11, -0.95, 1.05, 11), 0);
+        assert_eq!(count(-1.0, 1.0, usize::MAX, -0.95, 1.05, 2), 0);
+        // A NaN region never leaks into the geometry.
+        let holey = |x: f64, y: f64| {
+            if x > 0.5 {
+                [f64::NAN, f64::NAN]
+            } else {
+                [x, x * x + y * y]
+            }
+        };
+        let jac = JacobiSetViz::from_bivariate_field_2d(holey, -1.0, 1.0, 11, -0.95, 1.05, 11);
+        assert!(jac.segment_count() > 0);
+        for seg in &jac.segments {
+            assert!(
+                seg.start
+                    .iter()
+                    .chain(seg.end.iter())
+                    .all(|c| c.is_finite())
+            );
+        }
     }
     #[test]
     fn jacobi_set_segment_to_line() {

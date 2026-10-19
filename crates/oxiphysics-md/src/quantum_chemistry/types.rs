@@ -4,8 +4,12 @@
 
 use std::f64::consts::PI;
 
-use super::types_2::{EmbeddingType, Mp2Result, NboInteraction};
-use super::types_3::{CisState, LinkAtomQmmm};
+use super::integrals::{
+    kinetic_integral, nuclear_attraction_integral, odd_double_factorial, overlap_integral,
+    primitive_normalisation,
+};
+use super::types_2::{EmbeddingType, NboInteraction};
+use super::types_3::LinkAtomQmmm;
 
 /// QM/MM coupling parameters and energy calculation.
 #[derive(Debug, Clone)]
@@ -98,122 +102,211 @@ impl QmmmCoupling {
         4.0 * epsilon * (sr.powi(12) - sr.powi(6))
     }
 }
-/// A single contracted Gaussian-type orbital (CGTO) basis function.
+/// Cartesian direction of a p-type basis function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CartesianAxis {
+    /// x direction.
+    X,
+    /// y direction.
+    Y,
+    /// z direction.
+    Z,
+}
+impl CartesianAxis {
+    /// The three axes in x, y, z order.
+    pub const ALL: [CartesianAxis; 3] = [CartesianAxis::X, CartesianAxis::Y, CartesianAxis::Z];
+    /// Index of the axis (0 = x, 1 = y, 2 = z).
+    pub fn index(self) -> usize {
+        match self {
+            CartesianAxis::X => 0,
+            CartesianAxis::Y => 1,
+            CartesianAxis::Z => 2,
+        }
+    }
+    /// Cartesian powers `(l, m, n)` of the p function `x`, `y` or `z` along this axis.
+    pub fn p_powers(self) -> [u8; 3] {
+        let mut powers = [0u8; 3];
+        powers[self.index()] = 1;
+        powers
+    }
+}
+/// A single contracted Cartesian Gaussian-type orbital (CGTO) basis function
+/// `φ(r) = Σ_k c_k (x−A_x)^l (y−A_y)^m (z−A_z)^n exp(−α_k |r−A|²)`.
 #[derive(Debug, Clone)]
 pub struct BasisFunction {
-    /// Angular momentum quantum number (0=s, 1=p, 2=d).
+    /// Angular momentum quantum number (0=s, 1=p, 2=d); equals `l + m + n`.
     pub angular_momentum: u8,
+    /// Cartesian powers `(l, m, n)` of the angular factor `x^l y^m z^n`
+    /// (e.g. `[1, 0, 0]` for p_x).
+    pub cartesian: [u8; 3],
     /// Exponents of the primitive Gaussians.
     pub exponents: Vec<f64>,
-    /// Contraction coefficients.
+    /// Contraction coefficients for the *raw* primitives `x^l y^m z^n e^{-αr²}`
+    /// (primitive normalisation and contraction normalisation included).
     pub coefficients: Vec<f64>,
     /// Center of the basis function (atom position) \[Bohr\].
     pub center: [f64; 3],
 }
+/// STO-3G least-squares expansion of a 1s Slater orbital with ζ = 1
+/// (Hehre, Stewart & Pople 1969): primitive exponents.
+const STO3G_1S_EXPONENTS: [f64; 3] = [0.109_817_510_4, 0.405_771_156_2, 2.227_660_584];
+/// STO-3G 1s contraction coefficients (for normalised primitives).
+const STO3G_1S_COEFFICIENTS: [f64; 3] = [0.444_634_542_2, 0.535_328_142_3, 0.154_328_967_3];
+/// STO-3G expansion of the 2s/2p Slater orbitals with ζ = 1: shared primitive exponents.
+const STO3G_2SP_EXPONENTS: [f64; 3] = [0.075_138_585_7, 0.231_031_333, 0.994_202_729];
+/// STO-3G 2s contraction coefficients (for normalised primitives).
+const STO3G_2S_COEFFICIENTS: [f64; 3] = [0.700_115_468_9, 0.399_512_826_1, -0.099_967_229_2];
+/// STO-3G 2p contraction coefficients (for normalised primitives).
+const STO3G_2P_COEFFICIENTS: [f64; 3] = [0.391_957_393_1, 0.607_683_718_6, 0.155_916_275];
+
+/// Turn tabulated contraction coefficients (defined for *normalised* primitives)
+/// into coefficients for the raw primitives `x^l y^m z^n e^{-αr²}` used by the
+/// integral code, and renormalise the whole contraction to unit self-overlap.
+///
+/// Primitive normalisation:
+/// N(α) = (2α/π)^{3/4} (4α)^{(l+m+n)/2} / √((2l−1)!!(2m−1)!!(2n−1)!!).
+fn normalised_contraction(exponents: &[f64], coefficients: &[f64], cartesian: [u8; 3]) -> Vec<f64> {
+    let mut c: Vec<f64> = exponents
+        .iter()
+        .zip(coefficients.iter())
+        .map(|(&a, &ci)| ci * primitive_normalisation(a, cartesian))
+        .collect();
+    // Same-centre self-overlap: Σ c_i c_j (π/γ)^{3/2} Π_k (2l_k−1)!!/(2γ)^{l_k}.
+    let mut self_overlap = 0.0;
+    for (i, &ai) in exponents.iter().enumerate() {
+        for (j, &aj) in exponents.iter().enumerate() {
+            let gamma = ai + aj;
+            let radial = (PI / gamma).powf(1.5);
+            let angular: f64 = cartesian
+                .iter()
+                .map(|&l| odd_double_factorial(l) / (2.0 * gamma).powi(i32::from(l)))
+                .product();
+            self_overlap += c[i] * c[j] * radial * angular;
+        }
+    }
+    if self_overlap > 0.0 {
+        let scale = 1.0 / self_overlap.sqrt();
+        for ci in &mut c {
+            *ci *= scale;
+        }
+    }
+    c
+}
+
 impl BasisFunction {
-    /// Create an s-type STO-3G basis function.
+    /// Build a normalised contracted Cartesian Gaussian centred at `center`
+    /// \[Bohr\] with angular factor `x^l y^m z^n` (`cartesian = [l, m, n]`).
+    ///
+    /// `coefficients` are the tabulated contraction weights of *normalised*
+    /// primitives (the usual basis-set-library convention); the stored
+    /// coefficients include the primitive normalisation and are rescaled so the
+    /// contracted function has unit norm.  Extra entries of the longer slice
+    /// are ignored.
+    pub fn contracted(
+        center: [f64; 3],
+        cartesian: [u8; 3],
+        exponents: &[f64],
+        coefficients: &[f64],
+    ) -> Self {
+        let n = exponents.len().min(coefficients.len());
+        let exponents = exponents[..n].to_vec();
+        let coefficients = normalised_contraction(&exponents, &coefficients[..n], cartesian);
+        Self {
+            angular_momentum: cartesian[0] + cartesian[1] + cartesian[2],
+            cartesian,
+            exponents,
+            coefficients,
+            center,
+        }
+    }
+    /// Create a 1s STO-3G basis function approximating a 1s Slater orbital of
+    /// exponent `zeta` (Bohr⁻¹), e.g. ζ = 1.24 for molecular hydrogen.
+    ///
+    /// The primitive exponents are α_k = α_k(ζ=1)·ζ².  The stored `coefficients`
+    /// already contain the primitive normalisation constants and the overall
+    /// contraction normalisation, so that `overlap_with(self) == 1`.
     pub fn sto3g_s(center: [f64; 3], zeta: f64) -> Self {
         let z2 = zeta * zeta;
-        let exponents = vec![0.1688554 * z2, 0.6239137 * z2, 3.4252509 * z2];
-        let coefficients = vec![0.4446345, 0.5353281, 0.1543290];
-        Self {
-            angular_momentum: 0,
-            exponents,
-            coefficients,
-            center,
-        }
+        let exponents: Vec<f64> = STO3G_1S_EXPONENTS.iter().map(|a| a * z2).collect();
+        Self::contracted(center, [0, 0, 0], &exponents, &STO3G_1S_COEFFICIENTS)
     }
-    /// Create a p-type STO-3G basis function.
-    pub fn sto3g_p(center: [f64; 3], zeta: f64) -> Self {
-        let z2 = zeta * zeta;
-        let exponents = vec![0.1559163 * z2, 0.5115407 * z2, 2.9412494 * z2];
-        let coefficients = vec![0.5556844, 0.4780786, 0.0613512];
-        Self {
-            angular_momentum: 1,
-            exponents,
-            coefficients,
-            center,
-        }
-    }
-    /// Evaluate the overlap integral <φ_i | φ_j> using the Gaussian product theorem.
-    pub fn overlap_with(&self, other: &BasisFunction) -> f64 {
-        let mut s = 0.0;
-        for (i, &ai) in self.exponents.iter().enumerate() {
-            for (j, &aj) in other.exponents.iter().enumerate() {
-                let gamma = ai + aj;
-                let diff: [f64; 3] = [
-                    self.center[0] - other.center[0],
-                    self.center[1] - other.center[1],
-                    self.center[2] - other.center[2],
-                ];
-                let r2 = diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2];
-                let pre = (PI / gamma).powf(1.5) * (-(ai * aj / gamma) * r2).exp();
-                s += self.coefficients[i] * other.coefficients[j] * pre;
-            }
-        }
-        s
-    }
-    /// Exact kinetic energy integral <φ_i | -½∇² | φ_j> for contracted s-type Gaussians.
+    /// Create a 2s STO-3G basis function approximating a 2s Slater orbital of
+    /// exponent `zeta` (Bohr⁻¹).  Shares its primitive exponents with
+    /// [`sto3g_p`](Self::sto3g_p) (the STO-3G "sp" shell).
     ///
-    /// Uses the analytic formula: T_ij = K_ij * [3*α*β/(α+β) - 2*α²*β²/(α+β)² * R²]
-    /// where K_ij = (π/(α+β))^(3/2) * exp(-αβ/(α+β) * R²) is the Gaussian product prefactor.
-    /// This is exact for s-type functions; for p-type an angular correction would be needed.
-    pub fn kinetic_with(&self, other: &BasisFunction) -> f64 {
-        let mut t = 0.0;
-        for (i, &ai) in self.exponents.iter().enumerate() {
-            for (j, &aj) in other.exponents.iter().enumerate() {
-                let gamma = ai + aj;
-                let diff: [f64; 3] = [
-                    self.center[0] - other.center[0],
-                    self.center[1] - other.center[1],
-                    self.center[2] - other.center[2],
-                ];
-                let r2 = diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2];
-                let pre = (PI / gamma).powf(1.5) * (-(ai * aj / gamma) * r2).exp();
-                let factor = ai * aj / gamma * (3.0 - 2.0 * ai * aj / gamma * r2);
-                t += self.coefficients[i] * other.coefficients[j] * pre * factor;
-            }
+    /// Coefficients are normalised as for [`sto3g_s`](Self::sto3g_s).
+    pub fn sto3g_2s(center: [f64; 3], zeta: f64) -> Self {
+        let z2 = zeta * zeta;
+        let exponents: Vec<f64> = STO3G_2SP_EXPONENTS.iter().map(|a| a * z2).collect();
+        Self::contracted(center, [0, 0, 0], &exponents, &STO3G_2S_COEFFICIENTS)
+    }
+    /// Create the `axis` Cartesian component (p_x, p_y or p_z) of a 2p STO-3G
+    /// basis function approximating a 2p Slater orbital of exponent `zeta` (Bohr⁻¹).
+    ///
+    /// The stored `coefficients` include the p-type primitive normalisation
+    /// (2α/π)^{3/4}·2√α and the contraction normalisation, so the component
+    /// (e.g. x·Σ c_k e^{-α_k r²}) has unit norm.
+    pub fn sto3g_p(center: [f64; 3], zeta: f64, axis: CartesianAxis) -> Self {
+        let z2 = zeta * zeta;
+        let exponents: Vec<f64> = STO3G_2SP_EXPONENTS.iter().map(|a| a * z2).collect();
+        Self::contracted(center, axis.p_powers(), &exponents, &STO3G_2P_COEFFICIENTS)
+    }
+    /// Value φ(r) and gradient ∇φ(r) of the basis function at `r` \[Bohr\].
+    pub fn value_and_gradient(&self, r: [f64; 3]) -> (f64, [f64; 3]) {
+        let d = [
+            r[0] - self.center[0],
+            r[1] - self.center[1],
+            r[2] - self.center[2],
+        ];
+        let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        // Radial sums Σ c e^{-αr²} and Σ c α e^{-αr²}.
+        let mut radial = 0.0;
+        let mut radial_alpha = 0.0;
+        for (&a, &c) in self.exponents.iter().zip(self.coefficients.iter()) {
+            let g = c * (-a * r2).exp();
+            radial += g;
+            radial_alpha += a * g;
         }
-        t
+        let pow = |x: f64, n: u8| -> f64 { if n == 0 { 1.0 } else { x.powi(i32::from(n)) } };
+        let ang = [
+            pow(d[0], self.cartesian[0]),
+            pow(d[1], self.cartesian[1]),
+            pow(d[2], self.cartesian[2]),
+        ];
+        let angular = ang[0] * ang[1] * ang[2];
+        let mut grad = [0.0_f64; 3];
+        for k in 0..3 {
+            let l = self.cartesian[k];
+            // ∂/∂x_k [x_k^l] = l x_k^{l−1}
+            let d_ang = if l == 0 {
+                0.0
+            } else {
+                f64::from(l) * pow(d[k], l - 1)
+            };
+            let others: f64 = (0..3).filter(|&m| m != k).map(|m| ang[m]).product();
+            grad[k] = d_ang * others * radial - 2.0 * d[k] * angular * radial_alpha;
+        }
+        (angular * radial, grad)
+    }
+    /// Overlap integral <φ_i | φ_j> (exact, McMurchie–Davidson).
+    pub fn overlap_with(&self, other: &BasisFunction) -> f64 {
+        overlap_integral(self, other)
+    }
+    /// Kinetic-energy integral <φ_i | -½∇² | φ_j> (exact for any angular momentum).
+    pub fn kinetic_with(&self, other: &BasisFunction) -> f64 {
+        kinetic_integral(self, other)
     }
     /// Nuclear attraction integral <φ_i | -Z/|r-C| | φ_j> for a point charge Z at C \[Bohr\].
     ///
-    /// Uses Boys F_0(T) for the fundamental s-type case; contracted over primitives.
-    /// For p-type basis functions, the same monopole (zeroth-order) formula is applied,
-    /// which is a valid approximation for STO-3G (the product Gaussian center P captures
-    /// the leading-order contribution; multipole corrections are small for this basis).
+    /// Exact for any angular momentum (Hermite–Coulomb integrals built on the
+    /// Boys function).
     pub fn nuclear_attraction_with(
         &self,
         other: &BasisFunction,
         z: f64,
         nuclear_pos: [f64; 3],
     ) -> f64 {
-        use oxiphysics_core::numerics::boys_fn;
-        let mut v = 0.0;
-        for (i, &ai) in self.exponents.iter().enumerate() {
-            for (j, &aj) in other.exponents.iter().enumerate() {
-                let p = ai + aj;
-                let px = (ai * self.center[0] + aj * other.center[0]) / p;
-                let py = (ai * self.center[1] + aj * other.center[1]) / p;
-                let pz = (ai * self.center[2] + aj * other.center[2]) / p;
-                let r_ab2 = {
-                    let d = [
-                        self.center[0] - other.center[0],
-                        self.center[1] - other.center[1],
-                        self.center[2] - other.center[2],
-                    ];
-                    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
-                };
-                let k_ab = (-ai * aj / p * r_ab2).exp();
-                let r_pc2 = (px - nuclear_pos[0]).powi(2)
-                    + (py - nuclear_pos[1]).powi(2)
-                    + (pz - nuclear_pos[2]).powi(2);
-                let t = p * r_pc2;
-                let f0 = boys_fn(t, 0)[0];
-                v += self.coefficients[i] * other.coefficients[j] * (-2.0 * PI / p) * k_ab * f0;
-            }
-        }
-        z * v
+        nuclear_attraction_integral(self, other, z, nuclear_pos)
     }
 }
 /// A natural bond orbital (NBO).
@@ -265,180 +358,6 @@ impl NaturalBondOrbital {
             return 0.0;
         }
         s_coeff * s_coeff / total * 100.0
-    }
-}
-/// Electron correlation methods: MP2, CIS, and coupled cluster (CCS).
-#[derive(Debug, Clone)]
-pub struct ElectronCorrelation {
-    /// Number of occupied orbitals.
-    pub n_occ: usize,
-    /// Number of virtual orbitals.
-    pub n_virt: usize,
-    /// Orbital energies \[Hartree\].
-    pub orbital_energies: Vec<f64>,
-    /// Two-electron integrals in MO basis (simplified as diagonal approximation).
-    pub mo_eri: Vec<f64>,
-    /// HF reference energy.
-    pub e_hf: f64,
-}
-impl ElectronCorrelation {
-    /// Create an electron correlation solver.
-    pub fn new(
-        n_occ: usize,
-        n_virt: usize,
-        orbital_energies: Vec<f64>,
-        mo_eri: Vec<f64>,
-        e_hf: f64,
-    ) -> Self {
-        Self {
-            n_occ,
-            n_virt,
-            orbital_energies,
-            mo_eri,
-            e_hf,
-        }
-    }
-    /// Compute MP2 correlation energy.
-    /// E_MP2 = -Σ_{i<j,a<b} |<ij||ab>|² / (εa + εb - εi - εj)
-    pub fn mp2_energy(&self) -> Mp2Result {
-        let n_occ = self.n_occ;
-        let n_virt = self.n_virt;
-        let eps = &self.orbital_energies;
-        let mut e_mp2 = 0.0;
-        let mut e_ss = 0.0;
-        let mut e_os = 0.0;
-        for i in 0..n_occ {
-            for j in 0..n_occ {
-                for a in 0..n_virt {
-                    for b in 0..n_virt {
-                        let ei = if i < eps.len() { eps[i] } else { -0.5 };
-                        let ej = if j < eps.len() { eps[j] } else { -0.5 };
-                        let ea = if n_occ + a < eps.len() {
-                            eps[n_occ + a]
-                        } else {
-                            0.5
-                        };
-                        let eb = if n_occ + b < eps.len() {
-                            eps[n_occ + b]
-                        } else {
-                            0.5
-                        };
-                        let denom = ea + eb - ei - ej;
-                        if denom.abs() < 1e-10 {
-                            continue;
-                        }
-                        let eri_idx = (i * n_virt + a).min(self.mo_eri.len().saturating_sub(1));
-                        let eri_val = if self.mo_eri.is_empty() {
-                            0.01
-                        } else {
-                            self.mo_eri[eri_idx]
-                        };
-                        let iajb = eri_val;
-                        let ibja = if i == j || a == b { 0.0 } else { eri_val * 0.5 };
-                        let t2 = (2.0 * iajb - ibja) * iajb / denom;
-                        e_mp2 += t2;
-                        if i == j {
-                            e_ss += t2 * 0.5;
-                        } else {
-                            e_os += t2 * 0.5;
-                        }
-                    }
-                }
-            }
-        }
-        Mp2Result {
-            e_hf: self.e_hf,
-            e_mp2,
-            e_total: self.e_hf + e_mp2,
-            e_ss,
-            e_os,
-        }
-    }
-    /// Configuration Interaction Singles: compute lowest CIS states.
-    pub fn cis_states(&self, n_states: usize) -> Vec<CisState> {
-        let n_occ = self.n_occ;
-        let n_virt = self.n_virt;
-        let eps = &self.orbital_energies;
-        let mut states = Vec::new();
-        let mut excitations: Vec<(f64, usize, usize)> = Vec::new();
-        for i in 0..n_occ {
-            for a in 0..n_virt {
-                let ei = if i < eps.len() { eps[i] } else { -0.5 };
-                let ea = if n_occ + a < eps.len() {
-                    eps[n_occ + a]
-                } else {
-                    0.5
-                };
-                let de = ea - ei;
-                let k_ia = if !self.mo_eri.is_empty() {
-                    let idx = (i * n_virt + a).min(self.mo_eri.len() - 1);
-                    self.mo_eri[idx]
-                } else {
-                    0.01
-                };
-                excitations.push((de + 2.0 * k_ia, i, a));
-            }
-        }
-        excitations.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
-        for (idx, (de, i, a)) in excitations.iter().take(n_states).enumerate() {
-            let osc = if *de > 0.0 {
-                2.0 / 3.0 * *de * 0.1
-            } else {
-                0.0
-            };
-            let n_amp = n_occ * n_virt;
-            let mut amplitudes = vec![0.0; n_amp];
-            let amp_idx = i * n_virt + a;
-            if amp_idx < n_amp {
-                amplitudes[amp_idx] = 1.0;
-            }
-            states.push(CisState {
-                excitation_energy: *de,
-                oscillator_strength: osc,
-                dominant_occ: *i,
-                dominant_virt: *a,
-                amplitudes,
-            });
-            let _ = idx;
-        }
-        states
-    }
-    /// Coupled Cluster Singles (CCS) energy correction (T1 diagnostic).
-    pub fn ccs_t1_diagnostic(&self, t1_amplitudes: &[f64]) -> f64 {
-        if t1_amplitudes.is_empty() {
-            return 0.0;
-        }
-        let norm_sq: f64 = t1_amplitudes.iter().map(|t| t * t).sum();
-        let n_e = (self.n_occ as f64).max(1.0);
-        (norm_sq / n_e).sqrt()
-    }
-    /// CCS correlation energy from T1 amplitudes.
-    pub fn ccs_energy(&self, t1_amplitudes: &[f64]) -> f64 {
-        let mut e_ccs = 0.0;
-        let n_occ = self.n_occ;
-        let n_virt = self.n_virt;
-        for i in 0..n_occ {
-            for a in 0..n_virt {
-                let ti_a = if i * n_virt + a < t1_amplitudes.len() {
-                    t1_amplitudes[i * n_virt + a]
-                } else {
-                    0.0
-                };
-                let eri_idx = (i * n_virt + a).min(self.mo_eri.len().saturating_sub(1));
-                let eri_val = if self.mo_eri.is_empty() {
-                    0.01
-                } else {
-                    self.mo_eri[eri_idx]
-                };
-                e_ccs += ti_a * eri_val;
-            }
-        }
-        e_ccs
-    }
-    /// Compute SCS-MP2 (spin-component scaled) energy.
-    pub fn scs_mp2_energy(&self, c_os: f64, c_ss: f64) -> f64 {
-        let mp2 = self.mp2_energy();
-        self.e_hf + c_os * mp2.e_os + c_ss * mp2.e_ss
     }
 }
 /// QM/MM boundary treatment.

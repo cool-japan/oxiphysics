@@ -6,10 +6,20 @@
 //! Provides `PyLbmSimulation`: a 2-D D2Q9 LBM solver with BGK collision,
 //! configurable boundaries (no-slip walls, periodic, inlet/outlet),
 //! and full velocity and density field extraction.
+//!
+//! A body acceleration is applied with the Guo forcing scheme (see the
+//! `forcing` submodule): the fluid gains `rho * a` of momentum per step and
+//! every reported velocity is the physical one, `u = sum(e f) / rho + a / 2`.
 
 use oxiphysics::lbm::lattice::D3Q19_OPPOSITES;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
+
+mod forcing;
+#[cfg(test)]
+mod guo_forcing_tests;
+
+use forcing::{forced_velocity, guo_source, stored_velocity};
 
 // ---------------------------------------------------------------------------
 // D2Q9 constants
@@ -72,7 +82,8 @@ pub struct PyLbmConfig {
     /// Kinematic viscosity ν. Controls the BGK relaxation rate.
     #[pyo3(get, set)]
     pub viscosity: f64,
-    /// External body-force acceleration `[fx, fy]` applied to the fluid.
+    /// External body acceleration `[ax, ay]` (force per unit mass, lattice
+    /// units) applied to the fluid; the force density is `rho * a`.
     pub body_force: [f64; 2],
     /// Initial uniform velocity `[ux, uy]` (used to initialise equilibrium).
     pub init_velocity: [f64; 2],
@@ -102,11 +113,16 @@ impl PyLbmConfig {
         Self::new(64, 64, 0.01)
     }
 
-    /// Channel flow (128×32, Poiseuille-like body force).
+    /// Channel flow (128×32, ν = 0.01) driven by a body acceleration along x.
+    ///
+    /// The acceleration is sized for a channel closed by `add_bottom_wall` and
+    /// `add_top_wall` (30 fluid rows): its steady Poiseuille centre speed
+    /// `a H² / (8 ν)` is about 0.045, well inside the low-Mach range of the
+    /// lattice (the lattice sound speed is 0.577).
     #[staticmethod]
     pub fn channel_flow() -> Self {
         let mut cfg = Self::new(128, 32, 0.01);
-        cfg.body_force = [1e-4, 0.0];
+        cfg.body_force = [4e-6, 0.0];
         cfg
     }
 
@@ -115,13 +131,13 @@ impl PyLbmConfig {
         1.0 / (3.0 * self.viscosity + 0.5)
     }
 
-    /// Body force `[fx, fy]` as a list.
+    /// Body acceleration `[ax, ay]` as a list.
     #[getter]
     pub fn body_force(&self) -> Vec<f64> {
         self.body_force.to_vec()
     }
 
-    /// Set body force from a `[fx, fy]` list.
+    /// Set the body acceleration from a `[ax, ay]` list.
     #[setter]
     pub fn set_body_force(&mut self, v: Vec<f64>) {
         if v.len() >= 2 {
@@ -157,7 +173,7 @@ impl Default for PyLbmConfig {
 /// A 2-D D2Q9 Lattice-Boltzmann fluid simulation.
 ///
 /// Supports:
-/// - BGK collision operator (single relaxation time)
+/// - BGK collision operator (single relaxation time) with Guo body forcing
 /// - Periodic streaming
 /// - No-slip bounce-back walls via boundary map
 /// - Velocity and density field extraction
@@ -171,7 +187,7 @@ pub struct PyLbmSimulation {
     height: usize,
     /// BGK relaxation rate.
     omega: f64,
-    /// Body-force `[fx, fy]`.
+    /// Body acceleration `[ax, ay]`.
     body_force: [f64; 2],
     /// Distribution functions `f[cell * 9 + q]`.
     f: Vec<f64>,
@@ -197,9 +213,12 @@ impl PyLbmSimulation {
         let uy0 = config.init_velocity[1];
         let rho0 = config.init_density;
 
+        // The populations hold the momentum rho * (u - a / 2), so that the
+        // reported velocity of a fresh simulation is exactly the initial one.
+        let [ux_f, uy_f] = stored_velocity([ux0, uy0], config.body_force);
         let mut f = vec![0.0f64; n * 9];
         for i in 0..n {
-            let feq = equilibrium(rho0, ux0, uy0);
+            let feq = equilibrium(rho0, ux_f, uy_f);
             for q in 0..9 {
                 f[i * 9 + q] = feq[q];
             }
@@ -301,6 +320,8 @@ impl PyLbmSimulation {
 
     /// Get macroscopic velocity `[ux, uy]` at cell `(x, y)`.
     ///
+    /// This is the physical velocity of the Guo forcing scheme,
+    /// `u = sum(e f) / rho + a / 2` for the body acceleration `a`.
     /// Returns `[0, 0]` for out-of-bounds or wall cells.
     pub fn velocity_at(&self, x: usize, y: usize) -> Vec<f64> {
         if x >= self.width || y >= self.height {
@@ -315,13 +336,13 @@ impl PyLbmSimulation {
         if rho < 1e-15 {
             return vec![0.0, 0.0];
         }
-        let mut ux = 0.0f64;
-        let mut uy = 0.0f64;
+        let mut jx = 0.0f64;
+        let mut jy = 0.0f64;
         for q in 0..9 {
-            ux += EX[q] as f64 * self.f[idx + q];
-            uy += EY[q] as f64 * self.f[idx + q];
+            jx += EX[q] as f64 * self.f[idx + q];
+            jy += EY[q] as f64 * self.f[idx + q];
         }
-        vec![ux / rho, uy / rho]
+        forced_velocity([jx, jy], rho, self.body_force).to_vec()
     }
 
     /// Get macroscopic density at cell `(x, y)`. Returns 0 if out of bounds.
@@ -365,7 +386,11 @@ impl PyLbmSimulation {
     /// Advance the simulation by one LBM time step.
     ///
     /// Steps:
-    /// 1. Collision (BGK) + optional body-force correction.
+    /// 1. BGK collision with the Guo body-force scheme: the equilibrium is
+    ///    taken at the physical velocity `u = sum(e f) / rho + a / 2` and the
+    ///    populations receive the source term
+    ///    `(1 - omega/2) w_q [3 (e_q - u) + 9 (e_q . u) e_q] . (rho a)`, so a
+    ///    body acceleration `a` adds exactly `rho * a` of momentum per step.
     /// 2. Apply lid velocity (if set) as equilibrium on top row.
     /// 3. Streaming with periodic boundaries.
     /// 4. Bounce-back for `NoSlipWall` cells.
@@ -389,34 +414,38 @@ impl PyLbmSimulation {
                     continue;
                 }
                 let rho: f64 = self.f[idx..idx + 9].iter().sum();
-                let mut ux = 0.0f64;
-                let mut uy = 0.0f64;
+                let mut jx = 0.0f64;
+                let mut jy = 0.0f64;
                 for q in 0..9 {
-                    ux += EX[q] as f64 * self.f[idx + q];
-                    uy += EY[q] as f64 * self.f[idx + q];
+                    jx += EX[q] as f64 * self.f[idx + q];
+                    jy += EY[q] as f64 * self.f[idx + q];
                 }
-                let rho_inv = if rho > 1e-15 { 1.0 / rho } else { 0.0 };
-                ux = ux * rho_inv + bfx / (2.0 * omega * rho.max(1e-15));
-                uy = uy * rho_inv + bfy / (2.0 * omega * rho.max(1e-15));
-                let feq = equilibrium(rho, ux, uy);
+                let u = forced_velocity([jx, jy], rho, [bfx, bfy]);
+                let force = [rho * bfx, rho * bfy];
+                let feq = equilibrium(rho, u[0], u[1]);
                 for (q, (&feq_q, f_tmp_q)) in feq
                     .iter()
                     .zip(self.f_tmp[idx..idx + 9].iter_mut())
                     .enumerate()
                 {
-                    *f_tmp_q = self.f[idx + q] * (1.0 - omega) + feq_q * omega;
+                    let e_q = [EX[q] as f64, EY[q] as f64];
+                    *f_tmp_q = self.f[idx + q] * (1.0 - omega)
+                        + feq_q * omega
+                        + guo_source(omega, W[q], e_q, u, force);
                 }
             }
         }
 
         // -- Lid velocity (Zou-He-like: set top row equilibrium) --
         if let Some(lid_vel) = self.lid_velocity {
+            // The populations hold rho * (u - a / 2), see `forcing`.
+            let [lid_x, lid_y] = stored_velocity(lid_vel, self.body_force);
             let y = h - 1;
             for x in 0..w {
                 let cell = y * w + x;
                 let idx = cell * 9;
                 let rho = self.f[idx..idx + 9].iter().sum::<f64>().max(0.01);
-                let feq = equilibrium(rho, lid_vel[0], lid_vel[1]);
+                let feq = equilibrium(rho, lid_x, lid_y);
                 self.f_tmp[idx..(9 + idx)].copy_from_slice(&feq);
             }
         }
@@ -547,8 +576,11 @@ impl PyLbmSimulation {
     }
 
     /// Reset all cells to equilibrium at given density and velocity.
+    ///
+    /// `velocity_at` reads `(ux, uy)` back, also under a body acceleration.
     pub fn reset_to_equilibrium(&mut self, rho: f64, ux: f64, uy: f64) {
-        let feq = equilibrium(rho, ux, uy);
+        let [ux_f, uy_f] = stored_velocity([ux, uy], self.body_force);
+        let feq = equilibrium(rho, ux_f, uy_f);
         let n = self.width * self.height;
         for i in 0..n {
             let start = i * 9;
@@ -864,7 +896,8 @@ pub struct PyLbm3dConfig {
     /// Kinematic viscosity.
     #[pyo3(get, set)]
     pub viscosity: f64,
-    /// External body force `[fx, fy, fz]`.
+    /// External body acceleration `[ax, ay, az]` (force per unit mass,
+    /// lattice units) applied to the fluid; the force density is `rho * a`.
     pub body_force: [f64; 3],
     /// Initial uniform density.
     #[pyo3(get, set)]
@@ -900,13 +933,13 @@ impl PyLbm3dConfig {
         Self::new(8, 8, 8, 0.1)
     }
 
-    /// Body force `[fx, fy, fz]` as a list.
+    /// Body acceleration `[ax, ay, az]` as a list.
     #[getter]
     pub fn body_force(&self) -> Vec<f64> {
         self.body_force.to_vec()
     }
 
-    /// Set body force from a `[fx, fy, fz]` list.
+    /// Set the body acceleration from a `[ax, ay, az]` list.
     #[setter]
     pub fn set_body_force(&mut self, v: Vec<f64>) {
         if v.len() >= 3 {
@@ -931,7 +964,8 @@ impl PyLbm3dConfig {
 
 /// A 3-D D3Q19 Lattice-Boltzmann simulation.
 ///
-/// Supports BGK collision, periodic streaming, and bounce-back walls.
+/// Supports BGK collision with Guo body forcing, periodic streaming, and
+/// bounce-back walls.
 #[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyLbm3dSimulation {
@@ -943,7 +977,7 @@ pub struct PyLbm3dSimulation {
     nz: usize,
     /// BGK relaxation rate.
     omega: f64,
-    /// Body force `[fx, fy, fz]`.
+    /// Body acceleration `[ax, ay, az]`.
     body_force: [f64; 3],
     /// Distribution functions `f[cell * 19 + q]`.
     f: Vec<f64>,
@@ -965,13 +999,13 @@ impl PyLbm3dSimulation {
         let uy0 = config.init_velocity[1];
         let uz0 = config.init_velocity[2];
         let rho0 = config.init_density;
-        let bfx = config.body_force[0];
-        let bfy = config.body_force[1];
-        let bfz = config.body_force[2];
 
+        // The populations hold the momentum rho * (u - a / 2), so that the
+        // reported velocity of a fresh simulation is exactly the initial one.
+        let [ux_f, uy_f, uz_f] = stored_velocity([ux0, uy0, uz0], config.body_force);
         let mut f = vec![0.0f64; n * 19];
         for i in 0..n {
-            let feq = d3q19_equilibrium(rho0, ux0 + bfx, uy0 + bfy, uz0 + bfz);
+            let feq = d3q19_equilibrium(rho0, ux_f, uy_f, uz_f);
             for q in 0..19 {
                 f[i * 19 + q] = feq[q];
             }
@@ -1029,6 +1063,10 @@ impl PyLbm3dSimulation {
     }
 
     /// Macroscopic velocity `[ux, uy, uz]` at cell `(x, y, z)`.
+    ///
+    /// This is the physical velocity of the Guo forcing scheme,
+    /// `u = sum(e f) / rho + a / 2` for the body acceleration `a`.
+    /// Returns zeros for out-of-bounds or wall cells.
     pub fn velocity_at(&self, x: usize, y: usize, z: usize) -> Vec<f64> {
         if x >= self.nx || y >= self.ny || z >= self.nz {
             return vec![0.0, 0.0, 0.0];
@@ -1042,18 +1080,24 @@ impl PyLbm3dSimulation {
         if rho < 1e-15 {
             return vec![0.0, 0.0, 0.0];
         }
-        let mut ux = 0.0f64;
-        let mut uy = 0.0f64;
-        let mut uz = 0.0f64;
+        let mut jx = 0.0f64;
+        let mut jy = 0.0f64;
+        let mut jz = 0.0f64;
         for q in 0..19 {
-            ux += D3Q19_EX[q] as f64 * self.f[idx + q];
-            uy += D3Q19_EY[q] as f64 * self.f[idx + q];
-            uz += D3Q19_EZ[q] as f64 * self.f[idx + q];
+            jx += D3Q19_EX[q] as f64 * self.f[idx + q];
+            jy += D3Q19_EY[q] as f64 * self.f[idx + q];
+            jz += D3Q19_EZ[q] as f64 * self.f[idx + q];
         }
-        vec![ux / rho, uy / rho, uz / rho]
+        forced_velocity([jx, jy, jz], rho, self.body_force).to_vec()
     }
 
-    /// Advance the simulation by one D3Q19 step (BGK + streaming + bounce-back).
+    /// Advance the simulation by one D3Q19 step (BGK collision with the Guo
+    /// body-force scheme, streaming, bounce-back).
+    ///
+    /// The collision takes the equilibrium at the physical velocity
+    /// `u = sum(e f) / rho + a / 2` and adds the source term
+    /// `(1 - omega/2) w_q [3 (e_q - u) + 9 (e_q . u) e_q] . (rho a)`, so a body
+    /// acceleration `a` adds exactly `rho * a` of momentum per step.
     pub fn step(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
@@ -1076,25 +1120,26 @@ impl PyLbm3dSimulation {
                         continue;
                     }
                     let rho: f64 = self.f[idx..idx + 19].iter().sum();
-                    let mut ux = 0.0f64;
-                    let mut uy = 0.0f64;
-                    let mut uz = 0.0f64;
+                    let mut jx = 0.0f64;
+                    let mut jy = 0.0f64;
+                    let mut jz = 0.0f64;
                     for q in 0..19 {
-                        ux += D3Q19_EX[q] as f64 * self.f[idx + q];
-                        uy += D3Q19_EY[q] as f64 * self.f[idx + q];
-                        uz += D3Q19_EZ[q] as f64 * self.f[idx + q];
+                        jx += D3Q19_EX[q] as f64 * self.f[idx + q];
+                        jy += D3Q19_EY[q] as f64 * self.f[idx + q];
+                        jz += D3Q19_EZ[q] as f64 * self.f[idx + q];
                     }
-                    let rho_inv = if rho > 1e-15 { 1.0 / rho } else { 0.0 };
-                    ux = ux * rho_inv + bfx / (2.0 * omega * rho.max(1e-15));
-                    uy = uy * rho_inv + bfy / (2.0 * omega * rho.max(1e-15));
-                    uz = uz * rho_inv + bfz / (2.0 * omega * rho.max(1e-15));
-                    let feq = d3q19_equilibrium(rho, ux, uy, uz);
+                    let u = forced_velocity([jx, jy, jz], rho, [bfx, bfy, bfz]);
+                    let force = [rho * bfx, rho * bfy, rho * bfz];
+                    let feq = d3q19_equilibrium(rho, u[0], u[1], u[2]);
                     for (q, (&feq_q, f_tmp_q)) in feq
                         .iter()
                         .zip(self.f_tmp[idx..idx + 19].iter_mut())
                         .enumerate()
                     {
-                        *f_tmp_q = self.f[idx + q] * (1.0 - omega) + feq_q * omega;
+                        let e_q = [D3Q19_EX[q] as f64, D3Q19_EY[q] as f64, D3Q19_EZ[q] as f64];
+                        *f_tmp_q = self.f[idx + q] * (1.0 - omega)
+                            + feq_q * omega
+                            + guo_source(omega, D3Q19_W[q], e_q, u, force);
                     }
                 }
             }
@@ -1194,12 +1239,14 @@ pub fn apply_moving_wall_3d(sim: &mut PyLbm3dSimulation, z_layer: usize, vel: Ve
     } else {
         [0.0; 3]
     };
+    // `velocity_at` reads the prescribed velocity back under a body force too.
+    let [ux_f, uy_f, uz_f] = stored_velocity(vel_arr, sim.body_force);
     for y in 0..ny {
         for x in 0..nx {
             let cell = z_layer * ny * nx + y * nx + x;
             let idx = cell * 19;
             let rho: f64 = sim.f[idx..idx + 19].iter().sum::<f64>().max(0.01);
-            let feq = d3q19_equilibrium(rho, vel_arr[0], vel_arr[1], vel_arr[2]);
+            let feq = d3q19_equilibrium(rho, ux_f, uy_f, uz_f);
             sim.f[idx..(19 + idx)].copy_from_slice(&feq);
         }
     }
@@ -1221,7 +1268,9 @@ pub fn zou_he_velocity_inlet(sim: &mut PyLbmSimulation, ux_in: f64) {
             + sim.f[idx + 4]
             + 2.0 * (sim.f[idx + 3] + sim.f[idx + 6] + sim.f[idx + 7]))
             / (1.0 - ux_in);
-        let feq = equilibrium(rho, ux_in, 0.0);
+        // The populations hold rho * (u - a / 2), see `forcing`.
+        let [inlet_x, inlet_y] = stored_velocity([ux_in, 0.0], sim.body_force);
+        let feq = equilibrium(rho, inlet_x, inlet_y);
         sim.f[idx..(9 + idx)].copy_from_slice(&feq);
     }
 }
@@ -1499,11 +1548,15 @@ mod d3q19_tests {
     fn test_moving_wall_3d_changes_velocity() {
         let mut sim = small_3d();
         let v_before = sim.velocity_at(4, 4, 7);
+        assert!(v_before.iter().all(|c| c.abs() < 1e-14), "{v_before:?}");
         apply_moving_wall_3d(&mut sim, 7, vec![0.1, 0.0, 0.0]);
+        // The layer now holds the equilibrium of the prescribed velocity, which
+        // `velocity_at` reconstructs exactly; the layer below is untouched.
         let v_after = sim.velocity_at(4, 4, 7);
-        // The equilibrium was forced, so the reconstructed velocity should shift
-        // (not identical because velocity_at recomputes from f)
-        let _ = (v_before, v_after); // just ensure no panic
+        assert!((v_after[0] - 0.1).abs() < 1e-14, "ux = {}", v_after[0]);
+        assert!(v_after[1].abs() < 1e-14 && v_after[2].abs() < 1e-14);
+        let below = sim.velocity_at(4, 4, 6);
+        assert!(below.iter().all(|c| c.abs() < 1e-14), "{below:?}");
     }
 
     #[test]

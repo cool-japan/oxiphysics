@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -84,14 +85,9 @@ impl Checkpoint {
         let step = read_u64(data, &mut cursor)?;
         let sim_time = read_f64(data, &mut cursor)?;
         let checksum = read_u32(data, &mut cursor)?;
-        let state_len = read_u64(data, &mut cursor)? as usize;
-        if cursor + state_len > data.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "state truncated",
-            ));
-        }
-        let state = data[cursor..cursor + state_len].to_vec();
+        let state_len = usize::try_from(read_u64(data, &mut cursor)?)
+            .map_err(|_| corrupt("state length does not fit in memory"))?;
+        let state = take_bytes(data, &mut cursor, state_len, "state truncated")?.to_vec();
         Ok(Self {
             version,
             timestamp,
@@ -188,58 +184,11 @@ impl RestartFile {
         writer.finalize()
     }
     /// Load a restart snapshot from `path`.
+    ///
+    /// The file is read, decompressed (if it is a Zstandard frame) and
+    /// checksum-verified exactly once; see [`CheckpointReader::read_all`].
     pub fn load(path: &Path) -> io::Result<Self> {
-        let reader = CheckpointReader::new(path);
-        let meta = reader.read_metadata()?;
-        let positions = reader.read_positions()?;
-        let velocities = reader.read_velocities()?;
-        let data = fs::read(path)?;
-        let mut scalars: HashMap<String, Vec<f64>> = HashMap::new();
-        let mut cursor = {
-            let mut c = 0usize;
-            let _magic = read_u32(&data, &mut c)?;
-            let _version = read_u32(&data, &mut c)?;
-            let meta_len = read_u32(&data, &mut c)? as usize;
-            c += meta_len;
-            c
-        };
-        while cursor < data.len() {
-            let tag = data[cursor];
-            cursor += 1;
-            match tag {
-                TAG_POSITIONS | TAG_VELOCITIES => {
-                    let count = read_u64(&data, &mut cursor)? as usize;
-                    cursor += count * 24;
-                }
-                TAG_SCALARS => {
-                    let name = read_name(&data, &mut cursor)?;
-                    let count = read_u64(&data, &mut cursor)? as usize;
-                    let mut vals = Vec::with_capacity(count);
-                    for _ in 0..count {
-                        vals.push(read_f64(&data, &mut cursor)?);
-                    }
-                    scalars.insert(name, vals);
-                }
-                TAG_INTEGERS => {
-                    let _name = read_name(&data, &mut cursor)?;
-                    let count = read_u64(&data, &mut cursor)? as usize;
-                    cursor += count * 4;
-                }
-                TAG_FOOTER => break,
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("unknown tag 0x{tag:02X} while loading restart"),
-                    ));
-                }
-            }
-        }
-        Ok(Self {
-            meta,
-            positions,
-            velocities,
-            scalars,
-        })
+        CheckpointReader::new(path).read_all()
     }
 }
 /// Supported checkpoint serialisation formats.
@@ -323,16 +272,10 @@ impl CheckpointHeader {
         let timestamp = read_u64(data, &mut c)?;
         let step = read_u64(data, &mut c)?;
         let name_len = read_u32(data, &mut c)? as usize;
-        if c + name_len > data.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "header crate_name truncated",
-            ));
-        }
-        let crate_name = std::str::from_utf8(&data[c..c + name_len])
+        let name_bytes = take_bytes(data, &mut c, name_len, "header crate_name truncated")?;
+        let crate_name = std::str::from_utf8(name_bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
             .to_owned();
-        c += name_len;
         let checksum = read_u32(data, &mut c)?;
         Ok(Self {
             version: [v0, v1, v2],
@@ -436,7 +379,10 @@ impl SimulationState {
     /// Deserialise from a flat byte buffer.
     pub fn from_bytes(data: &[u8]) -> io::Result<Self> {
         let mut cur = 0usize;
-        let n = read_u64(data, &mut cur)? as usize;
+        let n_stored = read_u64(data, &mut cur)?;
+        // Positions, velocities and forces each hold `n` stored 3-vectors, so
+        // the whole body must be present before anything is reserved.
+        let (n, _) = checked_block_end(data.len(), cur, n_stored, 3 * VEC3_BYTES)?;
         let mut positions = Vec::with_capacity(n);
         let mut velocities = Vec::with_capacity(n);
         let mut forces = Vec::with_capacity(n);
@@ -505,6 +451,10 @@ impl RestartStrategy {
 /// 4. Any number of [`write_scalars`](CheckpointWriter::write_scalars) /
 ///    [`write_integers`](CheckpointWriter::write_integers)
 /// 5. [`finalize`](CheckpointWriter::finalize)
+///
+/// A checkpoint is only readable once `finalize` has appended the checksum
+/// footer: [`CheckpointReader`] rejects files that lack it or whose contents
+/// no longer match it.
 #[derive(Debug, Clone)]
 pub struct CheckpointWriter {
     /// Destination file path.
@@ -744,18 +694,14 @@ impl CheckpointMetadata {
         let mut cursor = 0usize;
         let step = read_u64(data, &mut cursor)?;
         let time = read_f64(data, &mut cursor)?;
-        let n_particles = read_u64(data, &mut cursor)? as usize;
+        let n_particles = usize::try_from(read_u64(data, &mut cursor)?)
+            .map_err(|_| corrupt("particle count does not fit in memory"))?;
         let v0 = read_u32(data, &mut cursor)?;
         let v1 = read_u32(data, &mut cursor)?;
         let v2 = read_u32(data, &mut cursor)?;
         let ts_len = read_u32(data, &mut cursor)? as usize;
-        if cursor + ts_len > data.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "created_at string truncated",
-            ));
-        }
-        let created_at = String::from_utf8(data[cursor..cursor + ts_len].to_vec())
+        let ts_bytes = take_bytes(data, &mut cursor, ts_len, "created_at string truncated")?;
+        let created_at = String::from_utf8(ts_bytes.to_vec())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("UTF-8 error: {e}")))?;
         Ok(Self {
             step,
@@ -1189,6 +1135,13 @@ impl CheckpointCatalog {
     }
 }
 /// Reads simulation snapshots from a binary checkpoint file.
+///
+/// Every read method decompresses the file if it is a Zstandard frame and then
+/// verifies the footer written by [`CheckpointWriter::finalize`]: a checkpoint
+/// that was never finalised, was truncated, or whose bytes no longer match the
+/// stored CRC-32 is rejected with [`io::ErrorKind::InvalidData`] instead of
+/// being loaded as valid state.  Use [`read_all`](CheckpointReader::read_all) to
+/// obtain the whole snapshot from a single read of the file.
 #[derive(Debug, Clone)]
 pub struct CheckpointReader {
     /// Source file path.
@@ -1200,85 +1153,53 @@ impl CheckpointReader {
         Self { path: path.into() }
     }
 
-    /// Read the raw bytes from the file, transparently decompressing Zstandard
-    /// frames if the file starts with the zstd magic bytes.
-    fn read_raw_bytes(&self) -> io::Result<Vec<u8>> {
+    /// Read the file, transparently decompress Zstandard frames, and return
+    /// the checksum-verified bytes that precede the footer.
+    fn read_verified_body(&self) -> io::Result<Vec<u8>> {
         let raw = fs::read(&self.path)?;
-        if raw.starts_with(&ZSTD_MAGIC) {
-            oxiarc_zstd::decompress(&raw).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("zstd decompress: {e}"))
-            })
+        let mut data = if raw.starts_with(&ZSTD_MAGIC) {
+            oxiarc_zstd::decompress(&raw).map_err(|e| corrupt(format!("zstd decompress: {e}")))?
         } else {
-            Ok(raw)
-        }
+            raw
+        };
+        check_magic(&data)?;
+        let body_len = verify_footer(&data)?.len();
+        data.truncate(body_len);
+        Ok(data)
     }
 
     /// Read and return the checkpoint metadata from the file header.
     pub fn read_metadata(&self) -> io::Result<CheckpointMetadata> {
-        let data = self.read_raw_bytes()?;
-        let mut cursor = 0usize;
-        let magic = read_u32(&data, &mut cursor)?;
-        if magic != MAGIC {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "bad magic number",
-            ));
-        }
-        let _version = read_u32(&data, &mut cursor)?;
-        let meta_len = read_u32(&data, &mut cursor)? as usize;
-        if cursor + meta_len > data.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "metadata block truncated",
-            ));
-        }
-        CheckpointMetadata::from_bytes(&data[cursor..cursor + meta_len])
+        let data = self.read_verified_body()?;
+        let (meta, _) = split_header(&data)?;
+        CheckpointMetadata::from_bytes(meta)
     }
     /// Read and return all particle positions stored in the file.
+    ///
+    /// Returns an empty vector when the file holds no positions block.
     pub fn read_positions(&self) -> io::Result<Vec<[f64; 3]>> {
         self.read_vec3_block(TAG_POSITIONS)
     }
     /// Read and return all particle velocities stored in the file.
+    ///
+    /// Returns an empty vector when the file holds no velocities block.
     pub fn read_velocities(&self) -> io::Result<Vec<[f64; 3]>> {
         self.read_vec3_block(TAG_VELOCITIES)
     }
     /// Read and return the named scalar array from the file.
+    ///
+    /// When several arrays share `name`, the first one wins.
     pub fn read_scalars(&self, name: &str) -> io::Result<Vec<f64>> {
-        let data = self.read_raw_bytes()?;
-        let mut cursor = self.skip_header(&data)?;
-        while cursor < data.len() {
-            let tag = data[cursor];
-            cursor += 1;
-            match tag {
-                TAG_SCALARS => {
-                    let stored_name = read_name(&data, &mut cursor)?;
-                    let count = read_u64(&data, &mut cursor)? as usize;
-                    if stored_name == name {
-                        let mut out = Vec::with_capacity(count);
-                        for _ in 0..count {
-                            out.push(read_f64(&data, &mut cursor)?);
-                        }
-                        return Ok(out);
-                    } else {
-                        cursor += count * 8;
-                    }
-                }
-                TAG_POSITIONS | TAG_VELOCITIES => {
-                    let count = read_u64(&data, &mut cursor)? as usize;
-                    cursor += count * 24;
-                }
-                TAG_INTEGERS => {
-                    let _n = read_name(&data, &mut cursor)?;
-                    let count = read_u64(&data, &mut cursor)? as usize;
-                    cursor += count * 4;
-                }
-                TAG_FOOTER => break,
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("unknown tag 0x{tag:02X}"),
-                    ));
-                }
+        let data = self.read_verified_body()?;
+        let (_, mut cursor) = split_header(&data)?;
+        while let Some(block) = next_block(&data, &mut cursor)? {
+            if let Block::Scalars {
+                name: stored,
+                payload,
+            } = block
+                && stored == name
+            {
+                return decode_f64_array(payload);
             }
         }
         Err(io::Error::new(
@@ -1286,49 +1207,83 @@ impl CheckpointReader {
             format!("scalar array '{name}' not found"),
         ))
     }
-    fn skip_header(&self, data: &[u8]) -> io::Result<usize> {
-        let mut cursor = 0usize;
-        let _magic = read_u32(data, &mut cursor)?;
-        let _version = read_u32(data, &mut cursor)?;
-        let meta_len = read_u32(data, &mut cursor)? as usize;
-        cursor += meta_len;
-        Ok(cursor)
+    /// Read and return the named integer array from the file.
+    ///
+    /// When several arrays share `name`, the first one wins.
+    pub fn read_integers(&self, name: &str) -> io::Result<Vec<i32>> {
+        let data = self.read_verified_body()?;
+        let (_, mut cursor) = split_header(&data)?;
+        while let Some(block) = next_block(&data, &mut cursor)? {
+            if let Block::Integers {
+                name: stored,
+                payload,
+            } = block
+                && stored == name
+            {
+                return decode_i32_array(payload);
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("integer array '{name}' not found"),
+        ))
+    }
+    /// Read the complete snapshot — metadata, positions, velocities and every
+    /// named scalar array — with a single read, decompression and checksum
+    /// verification of the file.
+    ///
+    /// Missing positions or velocities blocks yield empty vectors, integer
+    /// arrays are skipped, and when a block kind or scalar name occurs more
+    /// than once the first occurrence wins, exactly as with
+    /// [`read_positions`](CheckpointReader::read_positions),
+    /// [`read_velocities`](CheckpointReader::read_velocities) and
+    /// [`read_scalars`](CheckpointReader::read_scalars).
+    pub fn read_all(&self) -> io::Result<RestartFile> {
+        let data = self.read_verified_body()?;
+        let (meta_bytes, mut cursor) = split_header(&data)?;
+        let meta = CheckpointMetadata::from_bytes(meta_bytes)?;
+        let mut positions: Option<Vec<[f64; 3]>> = None;
+        let mut velocities: Option<Vec<[f64; 3]>> = None;
+        let mut scalars: HashMap<String, Vec<f64>> = HashMap::new();
+        while let Some(block) = next_block(&data, &mut cursor)? {
+            match block {
+                Block::Positions(payload) => {
+                    if positions.is_none() {
+                        positions = Some(decode_vec3(payload)?);
+                    }
+                }
+                Block::Velocities(payload) => {
+                    if velocities.is_none() {
+                        velocities = Some(decode_vec3(payload)?);
+                    }
+                }
+                Block::Scalars { name, payload } => {
+                    if let Entry::Vacant(slot) = scalars.entry(name) {
+                        slot.insert(decode_f64_array(payload)?);
+                    }
+                }
+                Block::Integers { .. } => {}
+            }
+        }
+        Ok(RestartFile {
+            meta,
+            positions: positions.unwrap_or_default(),
+            velocities: velocities.unwrap_or_default(),
+            scalars,
+        })
     }
     fn read_vec3_block(&self, target_tag: u8) -> io::Result<Vec<[f64; 3]>> {
-        let data = self.read_raw_bytes()?;
-        let mut cursor = self.skip_header(&data)?;
-        while cursor < data.len() {
-            let tag = data[cursor];
-            cursor += 1;
-            match tag {
-                t if t == target_tag => {
-                    let count = read_u64(&data, &mut cursor)? as usize;
-                    let mut out = Vec::with_capacity(count);
-                    for _ in 0..count {
-                        let x = read_f64(&data, &mut cursor)?;
-                        let y = read_f64(&data, &mut cursor)?;
-                        let z = read_f64(&data, &mut cursor)?;
-                        out.push([x, y, z]);
-                    }
-                    return Ok(out);
+        let data = self.read_verified_body()?;
+        let (_, mut cursor) = split_header(&data)?;
+        while let Some(block) = next_block(&data, &mut cursor)? {
+            match block {
+                Block::Positions(payload) if target_tag == TAG_POSITIONS => {
+                    return decode_vec3(payload);
                 }
-                TAG_POSITIONS | TAG_VELOCITIES => {
-                    let count = read_u64(&data, &mut cursor)? as usize;
-                    cursor += count * 24;
+                Block::Velocities(payload) if target_tag == TAG_VELOCITIES => {
+                    return decode_vec3(payload);
                 }
-                TAG_SCALARS | TAG_INTEGERS => {
-                    let _n = read_name(&data, &mut cursor)?;
-                    let count = read_u64(&data, &mut cursor)? as usize;
-                    let elem_size = if tag == TAG_SCALARS { 8 } else { 4 };
-                    cursor += count * elem_size;
-                }
-                TAG_FOOTER => break,
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("unknown tag 0x{tag:02X}"),
-                    ));
-                }
+                _ => {}
             }
         }
         Ok(vec![])

@@ -3,6 +3,8 @@
 pub mod functions;
 pub mod functions_2;
 pub mod types;
+#[cfg(test)]
+mod weld_tests;
 
 // Re-export all types
 pub use functions::*;

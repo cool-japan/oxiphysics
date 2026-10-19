@@ -248,7 +248,7 @@ pub fn vertex_valence(mesh: &TriangleMesh) -> Vec<u32> {
 ///
 /// When `tol` is zero, negative or NaN, vertices merge only if their coordinates are
 /// identical (`-0.0` equals `0.0`). Vertices with a non-finite coordinate never merge.
-pub(super) fn weld_vertices(verts: &[[f32; 3]], tol: f32) -> (Vec<[f32; 3]>, Vec<u32>) {
+pub(crate) fn weld_vertices(verts: &[[f32; 3]], tol: f32) -> (Vec<[f32; 3]>, Vec<u32>) {
     let mut unique: Vec<[f32; 3]> = Vec::new();
     let mut remap: Vec<u32> = Vec::with_capacity(verts.len());
     if tol.is_nan() || tol <= 0.0 {

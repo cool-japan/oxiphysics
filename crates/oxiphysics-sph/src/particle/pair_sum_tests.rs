@@ -381,7 +381,7 @@ fn pressure_acceleration_matches_an_independent_all_pairs_sum() {
     }
     let n = ps.len();
     let mut expected = vec![[0.0_f64; 3]; n];
-    for i in 0..n {
+    for (i, expected_i) in expected.iter_mut().enumerate() {
         if ps.is_boundary[i] {
             continue;
         }
@@ -401,19 +401,18 @@ fn pressure_acceleration_matches_an_independent_all_pairs_sum() {
             let dw = cubic_spline_gradient(r, h);
             let sym = ps.pressures[i] / ps.densities[i].powi(2)
                 + ps.pressures[j] / ps.densities[j].powi(2);
-            for (a, dk) in expected[i].iter_mut().zip(d.iter()) {
+            for (a, dk) in expected_i.iter_mut().zip(d.iter()) {
                 *a += -ps.masses[j] * sym * dw * dk / r;
             }
         }
     }
     ps.accumulate_pressure_acceleration(h);
-    for i in 0..n {
-        for k in 0..3 {
+    for (i, expected_i) in expected.iter().enumerate() {
+        for (k, &reference) in expected_i.iter().enumerate() {
             assert!(
-                close(ps.accelerations[i][k], expected[i][k], 1.0e-10, 1.0e-12),
-                "a[{i}][{k}]: {} vs {}",
-                ps.accelerations[i][k],
-                expected[i][k]
+                close(ps.accelerations[i][k], reference, 1.0e-10, 1.0e-12),
+                "a[{i}][{k}]: {} vs {reference}",
+                ps.accelerations[i][k]
             );
         }
     }

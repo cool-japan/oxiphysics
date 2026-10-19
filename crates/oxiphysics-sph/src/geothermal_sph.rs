@@ -1007,39 +1007,80 @@ pub fn sph_artificial_viscosity(
     scale3(grad_w, -mass_j * pi_ij)
 }
 
-/// SPH thermal diffusion (Brookshaw 1985 approximation).
-pub fn sph_thermal_diffusion(
-    pos_i: [f64; 3],
-    pos_j: [f64; 3],
-    mass_j: f64,
-    rho_j: f64,
-    t_i: f64,
-    t_j: f64,
-    kappa_i: f64,
-    kappa_j: f64,
-    cp_i: f64,
-    h: f64,
-) -> f64 {
+/// Fluid-state parameters of a particle pair for the SPH thermal diffusion.
+///
+/// Particle `i` is the one whose temperature rate is computed, `j` its
+/// neighbour. The neighbour mass and the kernel smoothing length are passed
+/// separately to [`sph_thermal_diffusion`].
+#[derive(Debug, Clone, Copy)]
+pub struct ThermalPairParams {
+    /// Position of particle i \[m\]
+    pub pos_i: [f64; 3],
+    /// Position of particle j \[m\]
+    pub pos_j: [f64; 3],
+    /// Density of particle i \[kg/m³\]
+    pub rho_i: f64,
+    /// Density of particle j \[kg/m³\]
+    pub rho_j: f64,
+    /// Temperature of particle i \[K\]
+    pub t_i: f64,
+    /// Temperature of particle j \[K\]
+    pub t_j: f64,
+    /// Thermal conductivity of particle i \[W/(m K)\]
+    pub kappa_i: f64,
+    /// Thermal conductivity of particle j \[W/(m K)\]
+    pub kappa_j: f64,
+    /// Specific heat capacity of particle i \[J/(kg K)\]
+    pub cp_i: f64,
+}
+
+/// SPH thermal diffusion (Cleary & Monaghan 1999, after Brookshaw 1985).
+///
+/// Returns the contribution of neighbour `j` to the heating rate `dTᵢ/dt` (K/s)
+/// of particle `i`:
+///
+/// ```text
+/// ρᵢ cₚᵢ dTᵢ/dt = Σⱼ (mⱼ/ρⱼ) · 4 κᵢ κⱼ/(κᵢ + κⱼ) · (Tᵢ − Tⱼ) · (rᵢⱼ·∇ᵢWᵢⱼ)/(|rᵢⱼ|² + η²)
+/// ```
+///
+/// with `rᵢⱼ = xᵢ − xⱼ`, `η² = 0.01 h²` and the cubic-spline gradient `∇ᵢWᵢⱼ`
+/// ([`cubic_kernel_grad`]); `rᵢⱼ·∇ᵢWᵢⱼ = |rᵢⱼ| dW/dr` is negative inside the
+/// kernel support, so heat flows from the hotter to the colder particle. The
+/// coefficient `4 κᵢ κⱼ/(κᵢ + κⱼ)` is twice the harmonic mean of the
+/// conductivities, which keeps the heat flux continuous across a conductivity
+/// jump, and the pair terms of `i` and `j` are antisymmetric in the energy
+/// `mᵢ cₚᵢ dTᵢ/dt`, which conserves the total thermal energy. For a
+/// uniform fluid the sum is `α ∇²T` with the diffusivity `α = κ/(ρ cₚ)`; the
+/// unit of the result is K s⁻¹ (the left-hand side is a volumetric power, W m⁻³,
+/// and `ρ cₚ` converts it to a temperature rate).
+///
+/// Sum the return value over all neighbours `j` of `i` and multiply by the time
+/// step to advance the temperature of particle `i`.
+pub fn sph_thermal_diffusion(pair: ThermalPairParams, mass_j: f64, h: f64) -> f64 {
+    let ThermalPairParams {
+        pos_i,
+        pos_j,
+        rho_i,
+        rho_j,
+        t_i,
+        t_j,
+        kappa_i,
+        kappa_j,
+        cp_i,
+    } = pair;
     let r_vec = sub3(pos_i, pos_j);
-    let r = norm3(r_vec);
-    if r < 1.0e-12 {
+    let r_sq = dot3(r_vec, r_vec);
+    if r_sq < 1.0e-24 {
         return 0.0;
     }
-    let kappa_ij = 2.0 * kappa_i * kappa_j / (kappa_i + kappa_j);
-    let dw_dr = {
-        let q = r / h;
-        let alpha = 1.0 / (PI * h * h * h);
-        if q < 1.0 {
-            alpha * (-3.0 * q + 2.25 * q * q) / h
-        } else if q < 2.0 {
-            let t = 2.0 - q;
-            alpha * (-0.75 * t * t) / h
-        } else {
-            0.0
-        }
-    };
-    let e_ij = dot3(normalize3(r_vec), r_vec) / (r + 1.0e-12);
-    (mass_j / rho_j) * kappa_ij * (t_i - t_j) * dw_dr * e_ij / (cp_i * r)
+    let kappa_sum = kappa_i + kappa_j;
+    if kappa_sum <= 0.0 || rho_i <= 0.0 || rho_j <= 0.0 || cp_i <= 0.0 {
+        return 0.0;
+    }
+    let kappa_pair = 4.0 * kappa_i * kappa_j / kappa_sum;
+    let r_dot_grad_w = dot3(r_vec, cubic_kernel_grad(r_vec, h));
+    let eta_sq = 0.01 * h * h;
+    (mass_j / (rho_i * rho_j)) * kappa_pair * (t_i - t_j) * r_dot_grad_w / (cp_i * (r_sq + eta_sq))
 }
 
 // ---------------------------------------------------------------------------
@@ -1275,15 +1316,18 @@ impl GeothermalSimulation {
                 let kappa_j = water_thermal_conductivity(temps[j]);
                 let cp_i = water_cp(temps[i]);
                 d_temp += sph_thermal_diffusion(
-                    positions[i],
-                    positions[j],
+                    ThermalPairParams {
+                        pos_i: positions[i],
+                        pos_j: positions[j],
+                        rho_i: densities[i],
+                        rho_j: densities[j],
+                        t_i: temps[i],
+                        t_j: temps[j],
+                        kappa_i,
+                        kappa_j,
+                        cp_i,
+                    },
                     masses[j],
-                    densities[j],
-                    temps[i],
-                    temps[j],
-                    kappa_i,
-                    kappa_j,
-                    cp_i,
                     h,
                 );
             }
@@ -1725,3 +1769,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod thermal_diffusion_tests;

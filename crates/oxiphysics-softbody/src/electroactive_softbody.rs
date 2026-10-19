@@ -743,7 +743,7 @@ impl ElectroacitiveFemNode {
 
 /// A linear tetrahedral element for the electroactive FEM soft body.
 ///
-/// Computes both elastic (neo-Hookean linearized) and Maxwell stress
+/// Computes both elastic (compressible neo-Hookean) and Maxwell stress
 /// contributions to the nodal force vector.
 #[derive(Debug, Clone)]
 pub struct ElectroacitiveTetraElement {
@@ -826,6 +826,11 @@ impl ElectroacitiveTetraElement {
     /// `T`) produces no net force: `Σ_k f_k = 0`.  Along the field lines the stress is a
     /// tension (the electrodes are drawn together) and perpendicular to them a
     /// compression (the film spreads laterally).
+    ///
+    /// Field, volume and gradients are those of the **rest** geometry (the small
+    /// strain form); [`maxwell_nodal_forces_deformed`](Self::maxwell_nodal_forces_deformed)
+    /// evaluates them on the current node positions, which is what
+    /// [`ElectroacitiveFemBody`] uses.
     pub fn maxwell_nodal_forces(&self, nodes: &[ElectroacitiveFemNode]) -> [[f64; 3]; 4] {
         // Electric field E = -B₀⁻¹ ∇φ (within element, constant for linear tet)
         let n0 = &nodes[self.node_indices[0]];
@@ -905,11 +910,19 @@ fn invert_3x3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     ]
 }
 
+mod fem_body;
+
+#[cfg(test)]
+mod fem_body_tests;
+
 /// A minimal coupled electric-mechanical FEM soft body.
 ///
-/// Stores an array of nodes and elements and provides a single-step explicit
-/// time integrator that applies Maxwell forces.
-#[derive(Debug)]
+/// Stores an array of nodes and elements, with the nodal electric potentials as
+/// given inputs, and provides an explicit time integrator
+/// ([`step`](ElectroacitiveFemBody::step)) that accumulates the neo-Hookean elastic
+/// forces and the Maxwell forces of the electric field, adds gravity and damping,
+/// and advances velocities and positions with the time step.
+#[derive(Debug, Clone)]
 pub struct ElectroacitiveFemBody {
     /// Nodes of the mesh.
     pub nodes: Vec<ElectroacitiveFemNode>,
@@ -930,56 +943,6 @@ impl ElectroacitiveFemBody {
             nodes,
             elements,
             damping,
-        }
-    }
-
-    /// Apply Maxwell stress forces from all elements to their nodes.
-    pub fn apply_maxwell_forces(&mut self) {
-        // Gather forces for each node
-        let n = self.nodes.len();
-        let mut forces = vec![[0.0_f64; 3]; n];
-
-        for elem in &self.elements {
-            let f = elem.maxwell_nodal_forces(&self.nodes);
-            for (k, &ni) in elem.node_indices.iter().enumerate() {
-                for d in 0..3 {
-                    forces[ni][d] += f[k][d];
-                }
-            }
-        }
-
-        // Integrate with explicit Euler (caller provides dt separately)
-        // Store accumulated forces as a scratch field on the node velocity
-        // NOTE: caller must call step() to advance positions.
-        // Here we store force / mass as acceleration scratch:
-        for (node, &f) in self.nodes.iter_mut().zip(forces.iter()) {
-            if !node.pinned {
-                let inv_m = 1.0 / node.mass.max(1e-30);
-                for (v, fi) in node.velocity.iter_mut().zip(f.iter()) {
-                    *v += fi * inv_m;
-                }
-            }
-        }
-    }
-
-    /// Advance the body by one explicit Euler step.
-    pub fn step(&mut self, dt: f64, gravity: [f64; 3]) {
-        // Apply gravity
-        for node in &mut self.nodes {
-            if !node.pinned {
-                for (v, g) in node.velocity.iter_mut().zip(gravity.iter()) {
-                    *v += g * dt;
-                    *v *= 1.0 - self.damping * dt;
-                }
-            }
-        }
-        // Update positions
-        for node in &mut self.nodes {
-            if !node.pinned {
-                for d in 0..3 {
-                    node.position[d] += node.velocity[d] * dt;
-                }
-            }
         }
     }
 }
@@ -1511,6 +1474,8 @@ mod tests {
     }
 
     // 30. Electroactive FEM body: free node falls under gravity ───────────────
+    // The body now has its neo-Hookean elasticity (node stiffness ~ 5e4 N/m for unit
+    // masses, so the explicit scheme needs dt << 2 / 235 s): 300 steps of 0.2 ms.
     #[test]
     fn test_fem_body_free_node_falls_under_gravity() {
         let nodes = vec![
@@ -1523,12 +1488,12 @@ mod tests {
         let elem = ElectroacitiveTetraElement::new([0, 1, 2, 3], &positions, 1.0e5, 2.0e5, 4.7);
         let mut body = ElectroacitiveFemBody::new(nodes, vec![elem], 0.0);
         let y0 = body.nodes[1].position[1];
-        for _ in 0..60 {
-            body.step(1.0 / 60.0, [0.0, -9.81, 0.0]);
+        for _ in 0..300 {
+            body.step(2.0e-4, [0.0, -9.81, 0.0]);
         }
         let y1 = body.nodes[1].position[1];
         assert!(
-            y1 < y0,
+            y1.is_finite() && y1 < y0 - 1.0e-3,
             "Free node should fall under gravity: y0={y0}, y1={y1}"
         );
     }
@@ -1738,25 +1703,24 @@ mod tests {
         let mut outer = [[0.0_f64; 3]; 3];
         for (k, g) in grads.iter().enumerate() {
             let x = nodes[elem.node_indices[k]].position;
-            for i in 0..3 {
+            for (i, outer_row) in outer.iter_mut().enumerate() {
                 sum[i] += g[i];
-                for j in 0..3 {
-                    outer[i][j] += x[i] * g[j];
+                for (entry, g_j) in outer_row.iter_mut().zip(g.iter()) {
+                    *entry += x[i] * g_j;
                 }
             }
         }
-        for i in 0..3 {
+        for (i, outer_row) in outer.iter().enumerate() {
             assert!(
                 sum[i].abs() < 1.0e-6,
                 "sum of gradients [{i}] = {:e}",
                 sum[i]
             );
-            for j in 0..3 {
+            for (j, entry) in outer_row.iter().enumerate() {
                 let want = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (outer[i][j] - want).abs() < 1.0e-9,
-                    "sum x_k (x) grad N_k [{i}][{j}] = {} expected {want}",
-                    outer[i][j]
+                    (entry - want).abs() < 1.0e-9,
+                    "sum x_k (x) grad N_k [{i}][{j}] = {entry} expected {want}"
                 );
             }
         }

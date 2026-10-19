@@ -8,10 +8,12 @@
 //! - `ForceDirectedLayout` — Fruchterman-Reingold / Barnes-Hut
 //! - `HierarchicalLayout` — Sugiyama layer assignment & crossing minimization
 //! - `NetworkMetrics` — degree, clustering, betweenness, PageRank
-//! - `CommunityDetection` — modularity, spectral, label propagation
+//! - `CommunityDetection` — modularity, Louvain, spectral, label propagation
 //! - `NetworkAnimation` — time-evolving graph with interpolation
 
 use std::collections::{HashMap, HashSet, VecDeque};
+
+mod community;
 
 // ---------------------------------------------------------------------------
 // NetworkGraph — core data structure
@@ -926,6 +928,19 @@ impl CommunityResult {
 }
 
 /// Community detection algorithms.
+///
+/// The algorithms work on the undirected, weighted graph underlying the
+/// [`NetworkGraph`]:
+///
+/// - An edge counts with its weight for both of its end points, whether or not
+///   it is marked `directed`; parallel edges add up and a self-loop of weight
+///   `w` adds `2w` to the strength of its node.
+/// - Edges whose end points are not nodes of the graph, and edges whose weight
+///   is not a finite positive number, are ignored.
+/// - With `k_i` the strength (weighted degree) of node `i` and `m` the total
+///   edge weight (`2m = sum_i k_i`), the modularity of a partition is
+///   `Q = sum_c [L_c / m - (D_c / 2m)^2]`, where `L_c` is the weight of the
+///   edges inside community `c` and `D_c` the summed strength of its nodes.
 #[derive(Debug, Clone)]
 pub struct CommunityDetection {
     graph: NetworkGraph,
@@ -937,85 +952,26 @@ impl CommunityDetection {
         Self { graph }
     }
 
-    /// Compute modularity Q for a given membership.
+    /// Compute the weighted modularity `Q` of `membership` in `O(n + m)`.
+    ///
+    /// A node that `membership` does not mention forms a community of its own.
+    /// A graph without edge weight has `Q = 0`.  See the type-level
+    /// documentation for how edges are interpreted.
     pub fn modularity(&self, membership: &HashMap<usize, usize>) -> f64 {
-        let m: f64 = self.graph.edges.iter().map(|e| e.weight).sum();
-        if m == 0.0 {
-            return 0.0;
-        }
-        let mut q = 0.0f64;
-        let ids: Vec<usize> = self.graph.nodes.iter().map(|n| n.id).collect();
-        for &u in &ids {
-            for &v in &ids {
-                if membership.get(&u) == membership.get(&v) {
-                    let a_uv = if self.graph.has_edge(u, v) {
-                        self.graph
-                            .adjacency
-                            .get(&u)
-                            .and_then(|ns| ns.iter().find(|(n, _)| *n == v))
-                            .map(|(_, w)| *w)
-                            .unwrap_or(0.0)
-                    } else {
-                        0.0
-                    };
-                    let ku = self.graph.degree(u) as f64;
-                    let kv = self.graph.degree(v) as f64;
-                    q += a_uv - ku * kv / (2.0 * m);
-                }
-            }
-        }
-        q / (2.0 * m)
+        community::modularity(&self.graph, membership)
     }
 
-    /// Greedy modularity optimization (Louvain-style, simplified single-pass).
+    /// Louvain modularity maximisation.
+    ///
+    /// Repeats two phases until modularity stops improving: every node moves
+    /// to the neighbouring community with the largest modularity gain (an
+    /// `O(degree)` update instead of a fresh modularity evaluation), then the
+    /// communities are collapsed into single nodes of a coarser graph.
+    /// Deterministic: nodes are visited in insertion order and ties keep the
+    /// current community.  Communities are numbered `0..` in order of first
+    /// appearance among the nodes.
     pub fn greedy_modularity(&self) -> CommunityResult {
-        let ids: Vec<usize> = self.graph.nodes.iter().map(|n| n.id).collect();
-        // Start: each node is its own community
-        let mut membership: HashMap<usize, usize> = ids.iter().map(|&id| (id, id)).collect();
-        let mut improved = true;
-        let max_passes = ids.len().min(20);
-        let mut passes = 0;
-
-        while improved && passes < max_passes {
-            improved = false;
-            passes += 1;
-            for &node in &ids {
-                let current_comm = membership[&node];
-                let neighbors = self.graph.neighbors(node);
-                if neighbors.is_empty() {
-                    continue;
-                }
-                // Candidate communities from neighbors
-                let candidate_comms: HashSet<usize> =
-                    neighbors.iter().map(|n| membership[n]).collect();
-                let current_q = self.modularity(&membership);
-                let mut best_q = current_q;
-                let mut best_comm = current_comm;
-                for cand_comm in candidate_comms {
-                    if cand_comm == current_comm {
-                        continue;
-                    }
-                    let old = membership
-                        .insert(node, cand_comm)
-                        .expect("previous value must exist");
-                    let new_q = self.modularity(&membership);
-                    if new_q > best_q {
-                        best_q = new_q;
-                        best_comm = cand_comm;
-                        improved = true;
-                    } else {
-                        membership.insert(node, old);
-                    }
-                }
-                membership.insert(node, best_comm);
-            }
-        }
-
-        let q = self.modularity(&membership);
-        CommunityResult {
-            membership,
-            modularity: q,
-        }
+        community::greedy_modularity(&self.graph)
     }
 
     /// Label propagation community detection.
@@ -1077,117 +1033,25 @@ impl CommunityDetection {
         }
     }
 
-    /// Spectral clustering into `k` communities using graph Laplacian.
+    /// Spectral clustering into `k` communities by recursive bisection.
     ///
-    /// Uses the Fiedler vector (2nd smallest eigenvector of L) for k=2,
-    /// or repeated bisection for k>2.
+    /// The Fiedler vector of the weighted graph Laplacian `L = D - A` (the
+    /// eigenvector of its second-smallest eigenvalue) orders the nodes along
+    /// the sparsest cut of the graph.  It is computed by restarted Lanczos
+    /// iteration with the constant vector (eigenvalue `0`) deflated, which
+    /// converges far faster than a power iteration on `c I - L` when the graph
+    /// has several communities.  The nodes are split at the prefix of that
+    /// order with the lowest conductance (the sign change of the Fiedler
+    /// vector is one of the candidates), and single nodes are then moved to
+    /// the other side while that lowers the conductance.  For `k > 2` the
+    /// largest community is bisected again, using the Fiedler vector of the
+    /// subgraph it induces, until `k` communities exist.
+    ///
+    /// `k >= n` yields one community per node and `k == 0` (or an empty
+    /// graph) an empty result.  Directed edges are treated as undirected, and
+    /// a graph without edges is halved by node index.  Deterministic.
     pub fn spectral_clustering(&self, k: usize) -> CommunityResult {
-        let ids: Vec<usize> = self.graph.nodes.iter().map(|n| n.id).collect();
-        let n = ids.len();
-        if n == 0 || k == 0 {
-            return CommunityResult {
-                membership: HashMap::new(),
-                modularity: 0.0,
-            };
-        }
-        if k >= n {
-            let membership: HashMap<usize, usize> =
-                ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-            return CommunityResult {
-                membership,
-                modularity: 0.0,
-            };
-        }
-
-        let id_idx: HashMap<usize, usize> =
-            ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-        // Build normalized Laplacian L = D - A
-        let mut degree = vec![0.0f64; n];
-        let mut adj = vec![vec![0.0f64; n]; n];
-        for edge in &self.graph.edges {
-            if let (Some(&i), Some(&j)) = (id_idx.get(&edge.source), id_idx.get(&edge.target)) {
-                adj[i][j] += edge.weight;
-                degree[i] += edge.weight;
-                if !edge.directed {
-                    adj[j][i] += edge.weight;
-                    degree[j] += edge.weight;
-                }
-            }
-        }
-        // Power iteration for the Fiedler vector (approximate)
-        // For simplicity: use degree-based heuristic for spectral embedding
-        let fiedler = self.approximate_fiedler(&adj, &degree, n);
-
-        // Partition by repeated bisection
-        let membership = self.bisection_partition(&ids, &fiedler, k);
-        let q = self.modularity(&membership);
-        CommunityResult {
-            membership,
-            modularity: q,
-        }
-    }
-
-    fn approximate_fiedler(&self, adj: &[Vec<f64>], degree: &[f64], n: usize) -> Vec<f64> {
-        // Simple power-iteration approximation of 2nd eigenvector of Laplacian
-        let mut v: Vec<f64> = (0..n).map(|i| i as f64 - n as f64 / 2.0).collect();
-        // Orthogonalize with constant vector (remove 1st eigenvector)
-        let norm_v: f64 = (v.iter().map(|x| x * x).sum::<f64>()).sqrt().max(1e-12);
-        for x in &mut v {
-            *x /= norm_v;
-        }
-
-        for _iter in 0..50 {
-            // Apply L = D - A
-            let mut lv: Vec<f64> = vec![0.0; n];
-            for i in 0..n {
-                lv[i] = degree[i] * v[i];
-                for j in 0..n {
-                    lv[i] -= adj[i][j] * v[j];
-                }
-            }
-            // Remove component along [1,1,...,1]/sqrt(n)
-            let mean = lv.iter().sum::<f64>() / n as f64;
-            for x in &mut lv {
-                *x -= mean;
-            }
-            // Normalize
-            let norm: f64 = (lv.iter().map(|x| x * x).sum::<f64>()).sqrt().max(1e-12);
-            for i in 0..n {
-                v[i] = lv[i] / norm;
-            }
-        }
-        v
-    }
-
-    fn bisection_partition(
-        &self,
-        ids: &[usize],
-        fiedler: &[f64],
-        k: usize,
-    ) -> HashMap<usize, usize> {
-        // Use median splits for k communities
-        let mut assignment: Vec<usize> = vec![0; ids.len()];
-        let splits = vec![(0usize, ids.len(), 0usize)]; // (start, end, community)
-        let next_comm = 1usize;
-
-        let mut sorted_idx: Vec<usize> = (0..ids.len()).collect();
-        sorted_idx.sort_by(|&a, &b| {
-            fiedler[a]
-                .partial_cmp(&fiedler[b])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // Assign initial community by position in Fiedler vector
-        for (rank, &idx) in sorted_idx.iter().enumerate() {
-            assignment[idx] = (rank * k / ids.len()).min(k - 1);
-        }
-        let _ = splits;
-        let _ = next_comm;
-
-        ids.iter()
-            .enumerate()
-            .map(|(i, &id)| (id, assignment[i]))
-            .collect()
+        community::spectral_clustering(&self.graph, k)
     }
 }
 
@@ -1727,6 +1591,10 @@ mod tests {
         let cd = CommunityDetection::new(g);
         let result = cd.greedy_modularity();
         assert_eq!(result.membership.len(), 3);
+        // A triangle has no community structure: Louvain keeps it whole, and
+        // one community holding every edge has Q = 1 - (2m / 2m)^2 = 0.
+        assert_eq!(result.num_communities(), 1);
+        assert!(result.modularity.abs() < 1e-12, "Q = {}", result.modularity);
     }
 
     #[test]
@@ -1735,7 +1603,18 @@ mod tests {
         let cd = CommunityDetection::new(g);
         let result = cd.spectral_clustering(2);
         assert_eq!(result.membership.len(), 4);
-        assert!(result.num_communities() <= 2);
+        // The Fiedler vector of a path is antisymmetric, so the sparsest cut
+        // is the middle edge.
+        assert_eq!(result.num_communities(), 2);
+        assert_eq!(result.membership[&0], result.membership[&1]);
+        assert_eq!(result.membership[&2], result.membership[&3]);
+        assert_ne!(result.membership[&1], result.membership[&2]);
+        // m = 3, strengths 1, 2, 2, 1: Q = 2 * (1 / 3 - (3 / 6)^2) = 1 / 6.
+        assert!(
+            (result.modularity - 1.0 / 6.0).abs() < 1e-12,
+            "Q = {}",
+            result.modularity
+        );
     }
 
     #[test]

@@ -2,12 +2,13 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use super::types::{
-    CollapseCandidate, CollapseRecord, HalfEdgeMesh, MeshStats, QemConfig, SymMat4,
-    TopologyValidation,
+    CollapseRecord, HalfEdgeMesh, MeshStats, QemConfig, SymMat4, TopologyValidation,
 };
+
+pub use super::qem::{qem_simplify, qem_simplify_with_seams};
 
 /// Dot product of two 3-vectors.
 #[inline]
@@ -63,12 +64,27 @@ pub(super) fn mid3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 pub(super) fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
     len3(sub3(a, b))
 }
+/// Smallest `|det A| / max|a_ij|^3` for which [`solve_3x3`] trusts a system.
+///
+/// The determinant of a singular matrix is only zero up to rounding errors of
+/// about `1e-16` times the cube of its largest entry, so a threshold relative to
+/// that size is independent of the units of the matrix.
+const SINGULAR_DETERMINANT_RATIO: f64 = 1.0e-10;
+
 /// Solve a 3×3 linear system Ax = b using Cramer's rule.
+///
+/// Returns `None` when the matrix is singular or numerically so: when its
+/// determinant is below [`SINGULAR_DETERMINANT_RATIO`] times the cube of its
+/// largest entry, or when an entry is not finite.
 pub(super) fn solve_3x3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
+    let scale = a.iter().flatten().fold(0.0_f64, |m, x| m.max(x.abs()));
     let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
         + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
-    if det.abs() < 1e-15 {
+    if !scale.is_finite()
+        || !det.is_finite()
+        || det.abs() <= SINGULAR_DETERMINANT_RATIO * scale.powi(3)
+    {
         return None;
     }
     let inv_det = 1.0 / det;
@@ -161,162 +177,6 @@ pub(super) fn compute_vertex_quadrics(
         }
     }
     quadrics
-}
-/// Compute the collapse cost and optimal position for edge (v0, v1).
-pub(super) fn compute_edge_cost(
-    v0: usize,
-    v1: usize,
-    vertices: &[[f64; 3]],
-    quadrics: &[SymMat4],
-) -> CollapseCandidate {
-    let q_sum = quadrics[v0].add(&quadrics[v1]);
-    let optimal_pos = q_sum
-        .optimal_point()
-        .unwrap_or_else(|| mid3(vertices[v0], vertices[v1]));
-    let cost = q_sum.evaluate(optimal_pos).abs();
-    CollapseCandidate {
-        v0,
-        v1,
-        optimal_pos,
-        cost,
-    }
-}
-/// Perform QEM-based mesh simplification.
-///
-/// Returns simplified vertices and triangles.
-pub fn qem_simplify(
-    vertices: &[[f64; 3]],
-    triangles: &[[usize; 3]],
-    config: &QemConfig,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
-    let mut verts = vertices.to_vec();
-    let mut tris = triangles.to_vec();
-    let mut quadrics = compute_vertex_quadrics(&verts, &tris);
-    let mut deleted_tri = vec![false; tris.len()];
-    let mut deleted_vert = vec![false; verts.len()];
-    let mut vertex_map: Vec<usize> = (0..verts.len()).collect();
-    fn find_root(map: &[usize], mut v: usize) -> usize {
-        while map[v] != v {
-            v = map[v];
-        }
-        v
-    }
-    let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
-    let mut heap = BinaryHeap::new();
-    for tri in &tris {
-        for k in 0..3 {
-            let a = tri[k];
-            let b = tri[(k + 1) % 3];
-            let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-            if edge_set.insert((lo, hi)) {
-                let cand = compute_edge_cost(a, b, &verts, &quadrics);
-                heap.push(cand);
-            }
-        }
-    }
-    let boundary_edges: HashSet<(usize, usize)> = if config.preserve_boundary {
-        let mut edge_count: HashMap<(usize, usize), usize> = HashMap::new();
-        for tri in &tris {
-            for k in 0..3 {
-                let a = tri[k];
-                let b = tri[(k + 1) % 3];
-                let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-                *edge_count.entry((lo, hi)).or_insert(0) += 1;
-            }
-        }
-        edge_count
-            .into_iter()
-            .filter(|&(_, c)| c == 1)
-            .map(|(e, _)| e)
-            .collect()
-    } else {
-        HashSet::new()
-    };
-    let mut active_tris = tris.len();
-    while let Some(cand) = heap.pop() {
-        if config.target_triangles > 0 && active_tris <= config.target_triangles {
-            break;
-        }
-        if config.max_error > 0.0 && cand.cost > config.max_error {
-            break;
-        }
-        let v0 = find_root(&vertex_map, cand.v0);
-        let v1 = find_root(&vertex_map, cand.v1);
-        if v0 == v1 || deleted_vert[v0] || deleted_vert[v1] {
-            continue;
-        }
-        if config.preserve_boundary {
-            let (lo, hi) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
-            if boundary_edges.contains(&(lo, hi)) {
-                continue;
-            }
-        }
-        verts[v0] = cand.optimal_pos;
-        quadrics[v0] = quadrics[v0].add(&quadrics[v1]);
-        deleted_vert[v1] = true;
-        vertex_map[v1] = v0;
-        for (ti, tri) in tris.iter_mut().enumerate() {
-            if deleted_tri[ti] {
-                continue;
-            }
-            let mut has_v0 = false;
-            let mut has_v1 = false;
-            for v in tri.iter() {
-                if find_root(&vertex_map, *v) == v0 {
-                    has_v0 = true;
-                }
-                if *v == v1 || find_root(&vertex_map, *v) == v1 {
-                    has_v1 = true;
-                }
-            }
-            for v in tri.iter_mut() {
-                if find_root(&vertex_map, *v) == v1 || *v == v1 {
-                    *v = v0;
-                }
-            }
-            if tri[0] == tri[1] || tri[1] == tri[2] || tri[0] == tri[2] {
-                deleted_tri[ti] = true;
-                active_tris -= 1;
-            }
-            let _ = (has_v0, has_v1);
-        }
-        for (ti, tri) in tris.iter().enumerate() {
-            if deleted_tri[ti] {
-                continue;
-            }
-            for &v in tri {
-                if v == v0 {
-                    for &u in tri {
-                        if u != v0 && !deleted_vert[u] {
-                            let nc = compute_edge_cost(v0, u, &verts, &quadrics);
-                            heap.push(nc);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let mut new_verts = Vec::new();
-    let mut vert_remap = vec![usize::MAX; verts.len()];
-    for (i, v) in verts.iter().enumerate() {
-        if !deleted_vert[i] {
-            vert_remap[i] = new_verts.len();
-            new_verts.push(*v);
-        }
-    }
-    let mut new_tris = Vec::new();
-    for (ti, tri) in tris.iter().enumerate() {
-        if deleted_tri[ti] {
-            continue;
-        }
-        let a = vert_remap[find_root(&vertex_map, tri[0])];
-        let b = vert_remap[find_root(&vertex_map, tri[1])];
-        let c = vert_remap[find_root(&vertex_map, tri[2])];
-        if a != usize::MAX && b != usize::MAX && c != usize::MAX && a != b && b != c && a != c {
-            new_tris.push([a, b, c]);
-        }
-    }
-    (new_verts, new_tris)
 }
 /// Simplify a mesh by clustering vertices into a 3D grid.
 pub fn vertex_clustering(
@@ -556,19 +416,84 @@ pub fn hausdorff_symmetric(
     let d_ba = hausdorff_one_sided(verts_b, tris_b, verts_a, tris_a, n_samples);
     d_ab.max(d_ba)
 }
-/// Check if collapsing an edge would cause excessive normal deviation.
-pub fn check_normal_deviation(
-    _mesh: &HalfEdgeMesh,
-    _v0: usize,
-    _v1: usize,
-    _new_pos: [f64; 3],
-    max_deviation: f64,
+/// Relative size of a triangle (its doubled area against its squared edge
+/// lengths) below which the triangle counts as degenerate.
+const DEGENERATE_AREA_RATIO: f64 = 1.0e-12;
+
+/// Whether a triangle whose corners move from `old` to `new` keeps its normal.
+///
+/// The move is rejected when the new triangle is degenerate (its doubled area is
+/// at most [`DEGENERATE_AREA_RATIO`] times the sum of its squared edge lengths,
+/// so the test does not depend on the units of the mesh), or when the cosine of
+/// the angle between the old and the new normal is below `min_cosine`. A triangle
+/// that was degenerate before has no normal and is only tested for degeneracy
+/// after the move.
+pub(super) fn corner_move_keeps_normal(
+    old: [[f64; 3]; 3],
+    new: [[f64; 3]; 3],
+    min_cosine: f64,
 ) -> bool {
-    if max_deviation <= 0.0 {
+    let edge_01 = sub3(new[1], new[0]);
+    let edge_02 = sub3(new[2], new[0]);
+    let edge_12 = sub3(new[2], new[1]);
+    let new_normal = cross3(edge_01, edge_02);
+    let new_length = len3(new_normal);
+    let squared_edges = dot3(edge_01, edge_01) + dot3(edge_02, edge_02) + dot3(edge_12, edge_12);
+    if !new_length.is_finite() || new_length <= DEGENERATE_AREA_RATIO * squared_edges {
+        return false;
+    }
+    let old_normal = cross3(sub3(old[1], old[0]), sub3(old[2], old[0]));
+    let old_length = len3(old_normal);
+    if old_length.is_nan() || old_length <= 0.0 {
         return true;
     }
-    let _threshold = max_deviation.cos();
-    true
+    dot3(old_normal, new_normal) >= min_cosine * old_length * new_length
+}
+
+/// Check if collapsing an edge would cause excessive normal deviation.
+///
+/// Returns `true` when the collapse of the edge `(v0, v1)`, with the merged vertex
+/// placed at `new_pos`, is acceptable: every live face around `v0` or `v1` that
+/// does not contain both end points (those vanish) must keep a unit normal within
+/// `max_deviation` radians of its normal before the collapse, and must not become
+/// degenerate (its doubled area must stay above `1e-12` times the sum of its
+/// squared edge lengths). A `max_deviation` that is not positive means no
+/// constraint and always gives `true`. Vertex indices that are out of range or
+/// refer to a deleted vertex give `false`.
+pub fn check_normal_deviation(
+    mesh: &HalfEdgeMesh,
+    v0: usize,
+    v1: usize,
+    new_pos: [f64; 3],
+    max_deviation: f64,
+) -> bool {
+    if max_deviation.is_nan() || max_deviation <= 0.0 {
+        return true;
+    }
+    let usable = |v: usize| v < mesh.vertices.len() && !mesh.vertex_deleted[v];
+    if !usable(v0) || !usable(v1) {
+        return false;
+    }
+    let min_cosine = max_deviation.cos();
+    let mut around = mesh.vertex_faces(v0);
+    around.extend(mesh.vertex_faces(v1));
+    around.sort_unstable();
+    around.dedup();
+    around.into_iter().all(|face| {
+        let corners = mesh.face_vertices(face);
+        if corners.contains(&v0) && corners.contains(&v1) {
+            return true;
+        }
+        let before = corners.map(|v| mesh.vertices[v]);
+        let after = corners.map(|v| {
+            if v == v0 || v == v1 {
+                new_pos
+            } else {
+                mesh.vertices[v]
+            }
+        });
+        corner_move_keeps_normal(before, after, min_cosine)
+    })
 }
 /// Validate mesh topology after simplification.
 pub fn validate_topology(vertices: &[[f64; 3]], triangles: &[[usize; 3]]) -> TopologyValidation {

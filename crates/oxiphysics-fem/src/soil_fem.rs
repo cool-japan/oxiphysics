@@ -223,15 +223,24 @@ fn symmetric_eigenvalues_3x3(mut a: [[f64; 3]; 3]) -> [f64; 3] {
 
 /// Mohr-Coulomb yield function evaluation.
 ///
-/// Returns f > 0 if plastic, f <= 0 if elastic.
+/// The stress follows the crate's soil sign convention for [`StressTensor`]:
+/// **tension positive**, so compressive soil stresses are negative.  With the
+/// principal stresses ordered `σ₁ ≥ σ₂ ≥ σ₃` (algebraically, i.e. `σ₁` is the
+/// least compressive) the yield function is
+///
+/// `f = (σ₁ − σ₃)/2 + (σ₁ + σ₃)/2 · sin φ − c · cos φ`
+///
+/// so that confinement (a negative mean stress) *raises* the shear strength.
+/// This is the same sign convention as [`drucker_prager_yield`].
+///
+/// Returns `f > 0` if plastic (outside the yield surface), `f <= 0` if elastic.
 pub fn mohr_coulomb_yield(stress: &StressTensor, params: &MohrCoulombParams) -> f64 {
     let principals = stress.principal_stresses();
     let s1 = principals[0];
     let s3 = principals[2];
     let sin_phi = params.friction_angle.sin();
     let cos_phi = params.friction_angle.cos();
-    // f = (s1 - s3)/2 - (s1 + s3)/2 * sin_phi - c * cos_phi
-    (s1 - s3) / 2.0 - (s1 + s3) / 2.0 * sin_phi - params.cohesion * cos_phi
+    (s1 - s3) / 2.0 + (s1 + s3) / 2.0 * sin_phi - params.cohesion * cos_phi
 }
 
 /// Drucker-Prager yield function.
@@ -1526,6 +1535,130 @@ mod tests {
             // Zero mean stress, so f = tau - c cos(phi) exactly.
             assert!((f_above - 0.5 * strength).abs() < 1e-6 * strength);
         }
+    }
+
+    fn mc_params(cohesion: f64, phi_deg: f64) -> MohrCoulombParams {
+        MohrCoulombParams::new(
+            10e6,
+            0.3,
+            cohesion,
+            phi_deg.to_radians(),
+            phi_deg.to_radians() / 3.0,
+        )
+    }
+
+    #[test]
+    fn test_mohr_coulomb_hydrostatic_compression_never_yields() {
+        // c = 100 kPa, phi = 30 deg.  The previous (wrong) friction sign made
+        // a -200 kPa hydrostatic state yield with f = +13.4 kPa.
+        let params = mc_params(100e3, 30.0);
+        let expected = |p: f64| -p * 0.5 - 100e3 * 30f64.to_radians().cos();
+        for p in [50e3, 200e3, 5e6, 1e9] {
+            let s = StressTensor::from_array([-p, -p, -p, 0.0, 0.0, 0.0]);
+            let f = mohr_coulomb_yield(&s, &params);
+            assert!(f < 0.0, "p = {p}: f = {f}");
+            assert!(
+                (f - expected(p)).abs() < 1e-9 * p.max(1.0),
+                "p = {p}: f = {f}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mohr_coulomb_uniaxial_compression_yields_at_unconfined_strength() {
+        // q_u = 2 c cos(phi) / (1 - sin(phi))
+        let cohesion = 100e3;
+        for phi_deg in [10.0_f64, 30.0, 40.0] {
+            let phi = phi_deg.to_radians();
+            let params = mc_params(cohesion, phi_deg);
+            let q_u = 2.0 * cohesion * phi.cos() / (1.0 - phi.sin());
+            let at = |q: f64| {
+                let s = StressTensor::from_array([0.0, -q, 0.0, 0.0, 0.0, 0.0]);
+                mohr_coulomb_yield(&s, &params)
+            };
+            assert!(
+                at(q_u).abs() < 1e-9 * cohesion,
+                "phi = {phi_deg}: f = {}",
+                at(q_u)
+            );
+            assert!(
+                at(0.9 * q_u) < 0.0,
+                "phi = {phi_deg}: below q_u must be elastic"
+            );
+            assert!(at(1.1 * q_u) > 0.0, "phi = {phi_deg}: above q_u must yield");
+        }
+    }
+
+    #[test]
+    fn test_mohr_coulomb_pure_shear_yields_at_c_cos_phi() {
+        let cohesion = 80e3;
+        let phi = 25f64.to_radians();
+        let params = MohrCoulombParams::new(10e6, 0.3, cohesion, phi, 0.0);
+        let tau_y = cohesion * phi.cos();
+        for slot in 3..6 {
+            let mut v = [0.0; 6];
+            v[slot] = tau_y;
+            let f = mohr_coulomb_yield(&StressTensor::from_array(v), &params);
+            assert!(f.abs() < 1e-9 * cohesion, "slot {slot}: f = {f}");
+        }
+    }
+
+    #[test]
+    fn test_mohr_coulomb_confinement_raises_shear_strength() {
+        // Shear plus lateral confinement p: tau_y = c cos(phi) + p sin(phi).
+        let cohesion = 100e3;
+        let phi = 30f64.to_radians();
+        let params = MohrCoulombParams::new(10e6, 0.3, cohesion, phi, 0.0);
+        for p in [0.0, 100e3, 400e3] {
+            let tau_y = cohesion * phi.cos() + p * phi.sin();
+            let state = |tau: f64| StressTensor::from_array([-p, -p, -p, tau, 0.0, 0.0]);
+            let f_at = mohr_coulomb_yield(&state(tau_y), &params);
+            assert!(f_at.abs() < 1e-9 * (cohesion + p), "p = {p}: f = {f_at}");
+            assert!(mohr_coulomb_yield(&state(0.99 * tau_y), &params) < 0.0);
+            assert!(mohr_coulomb_yield(&state(1.01 * tau_y), &params) > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_mohr_coulomb_cohesionless_soil_follows_rankine_passive_ratio() {
+        // c = 0: yield when sigma_3 / sigma_1 = (1 + sin phi) / (1 - sin phi).
+        let phi = 30f64.to_radians();
+        let params = MohrCoulombParams::new(10e6, 0.3, 0.0, phi, 0.0);
+        let kp = (1.0 + phi.sin()) / (1.0 - phi.sin());
+        assert!((kp - 3.0).abs() < 1e-12);
+        let sigma_h = 100e3;
+        let at_yield = StressTensor::from_array([-sigma_h, -sigma_h, -kp * sigma_h, 0.0, 0.0, 0.0]);
+        assert!(mohr_coulomb_yield(&at_yield, &params).abs() < 1e-9 * sigma_h);
+        let below =
+            StressTensor::from_array([-sigma_h, -sigma_h, -0.9 * kp * sigma_h, 0.0, 0.0, 0.0]);
+        assert!(mohr_coulomb_yield(&below, &params) < 0.0);
+        let above =
+            StressTensor::from_array([-sigma_h, -sigma_h, -1.1 * kp * sigma_h, 0.0, 0.0, 0.0]);
+        assert!(mohr_coulomb_yield(&above, &params) > 0.0);
+    }
+
+    #[test]
+    fn test_mohr_coulomb_cohesionless_soil_cannot_carry_tension() {
+        let params = mc_params(0.0, 30.0);
+        let s = StressTensor::from_array([1e3, 1e3, 1e3, 0.0, 0.0, 0.0]);
+        let f = mohr_coulomb_yield(&s, &params);
+        assert!((f - 1e3 * 0.5).abs() < 1e-9, "f = {f}");
+        assert!(f > 0.0);
+    }
+
+    #[test]
+    fn test_mohr_coulomb_and_drucker_prager_agree_on_sign_convention() {
+        // Both yield functions use tension-positive stress: increasing the
+        // confining pressure must move a state away from yield in both.
+        let params = mc_params(50e3, 30.0);
+        let (alpha, k) = mc_to_dp_outer(params.friction_angle, params.cohesion);
+        let tau = 120e3;
+        let loose = StressTensor::from_array([-10e3, -10e3, -10e3, tau, 0.0, 0.0]);
+        let confined = StressTensor::from_array([-500e3, -500e3, -500e3, tau, 0.0, 0.0]);
+        assert!(mohr_coulomb_yield(&confined, &params) < mohr_coulomb_yield(&loose, &params));
+        assert!(drucker_prager_yield(&confined, alpha, k) < drucker_prager_yield(&loose, alpha, k));
+        assert!(mohr_coulomb_yield(&loose, &params) > 0.0);
+        assert!(mohr_coulomb_yield(&confined, &params) < 0.0);
     }
 
     #[test]

@@ -519,12 +519,15 @@ fn test_iv_estimation_simple() {
     let y: Vec<f64> = d.iter().map(|di| 2.0 * di + 1.0).collect();
 
     let mut iv = InstrumentalVariables::new(1, 1);
-    iv.fit_2sls(&y, &d, &z);
+    iv.fit_2sls(&y, &d, &z).expect("well-posed IV problem");
     assert!(
-        (iv.second_stage - 2.0).abs() < 0.5,
+        (iv.second_stage - 2.0).abs() < 1e-10,
         "IV est = {}",
         iv.second_stage
     );
+    // First stage d = 0.5 + z.
+    assert!((iv.first_stage[0] - 0.5).abs() < 1e-12);
+    assert!((iv.first_stage[1] - 1.0).abs() < 1e-12);
 }
 
 #[test]
@@ -534,12 +537,292 @@ fn test_iv_first_stage_f_stat() {
     let d: Vec<f64> = z.iter().map(|zi| 2.0 * zi[0]).collect();
     let y: Vec<f64> = d.iter().map(|di| di + 1.0).collect();
     let mut iv = InstrumentalVariables::new(1, 1);
-    iv.fit_2sls(&y, &d, &z);
-    let f = iv.first_stage_f_stat(&y, &d, &z);
+    iv.fit_2sls(&y, &d, &z).expect("well-posed IV problem");
+    let f = iv
+        .first_stage_f_stat(&y, &d, &z)
+        .expect("well-posed IV problem");
     assert!(
         f > 10.0,
         "F-stat should be large for strong instrument, got {f}"
     );
+    // d = 2z holds exactly, so the first stage has no residual at all.
+    assert!(f.is_infinite());
+}
+
+/// Deterministic confounded data with two instruments (`n` observations).
+///
+/// `z1` is pure noise, `z2` drives the treatment `d`, and the unobserved
+/// confounder `u` enters both `d` and `y`: `y = 2 d + 1.5 u + e_y - 0.7`.
+fn confounded_iv_dataset(n: usize) -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>) {
+    let mut y = Vec::with_capacity(n);
+    let mut d = Vec::with_capacity(n);
+    let mut z = Vec::with_capacity(n);
+    for k in 0..n {
+        let i = k as f64;
+        let u = (0.37 * i + 0.2).sin() + 0.5 * (1.91 * i + 0.7).cos();
+        let z1 = (2.3 * i + 1.1).sin() + 0.3 * (0.83 * i).cos();
+        let z2 = (0.61 * i + 0.4).cos() + 0.4 * (3.17 * i + 0.9).sin();
+        let e_d = 0.3 * (5.3 * i + 0.2).sin();
+        let e_y = 0.3 * (4.1 * i + 1.7).cos();
+        let treatment = z2 + 0.8 * u + e_d + 0.5;
+        d.push(treatment);
+        y.push(2.0 * treatment + 1.5 * u + e_y - 0.7);
+        z.push(vec![z1, z2]);
+    }
+    (y, d, z)
+}
+
+#[test]
+fn test_iv_two_instruments_noise_first_strong_second() {
+    // The old code used only the first instrument (here pure noise): its estimate
+    // was 3.48 (74% off).  With both instruments in the first stage the effect is
+    // recovered to 0.23%; naive OLS is biased by the confounder to 2.73.
+    let (y, d, z) = confounded_iv_dataset(600);
+    let mut iv = InstrumentalVariables::new(1, 2);
+    iv.fit_2sls(&y, &d, &z).expect("well-posed IV problem");
+    assert!(
+        ((iv.second_stage - 2.0) / 2.0).abs() < 0.05,
+        "2SLS estimate {} is not within 5% of 2",
+        iv.second_stage
+    );
+    // Reference values computed independently with numpy.
+    assert!(
+        (iv.second_stage - 2.004601741879578).abs() < 1e-8,
+        "{}",
+        iv.second_stage
+    );
+    let expected_first_stage = [
+        0.5055705804573991,
+        0.0024204731490199026,
+        1.0007260042514485,
+    ];
+    assert_eq!(iv.first_stage.len(), 3);
+    for (got, want) in iv.first_stage.iter().zip(expected_first_stage) {
+        assert!(
+            (got - want).abs() < 1e-8,
+            "first stage {:?}",
+            iv.first_stage
+        );
+    }
+    // The noise instrument carries (almost) no weight, the strong one carries unit weight.
+    assert!(iv.first_stage[1].abs() < 0.01 && (iv.first_stage[2] - 1.0).abs() < 0.01);
+
+    let ols = ols_slope(&d, &y);
+    assert!((ols - 2.7314951924176913).abs() < 1e-8, "OLS slope {ols}");
+    assert!(
+        ((ols - 2.0) / 2.0).abs() > 0.05,
+        "OLS must miss by more than 5%"
+    );
+
+    // Using the first (noise) instrument alone reproduces the old failure mode.
+    let z_first: Vec<Vec<f64>> = z.iter().map(|row| vec![row[0]]).collect();
+    let mut only_first = InstrumentalVariables::new(1, 1);
+    only_first
+        .fit_2sls(&y, &d, &z_first)
+        .expect("well-posed IV problem");
+    assert!(((only_first.second_stage - 2.0) / 2.0).abs() > 0.5);
+    assert!((only_first.second_stage - 3.4823032987335854).abs() < 1e-6);
+
+    // F-statistic with k = 2 (numpy: 391.8177...); it was hard-coded to k = 1.
+    let f = iv
+        .first_stage_f_stat(&y, &d, &z)
+        .expect("well-posed IV problem");
+    assert!((f - 391.81772686427115).abs() < 1e-6 * f, "F = {f}");
+}
+
+#[test]
+fn test_iv_single_instrument_equals_the_wald_estimator() {
+    let (y, d, z) = confounded_iv_dataset(600);
+    let z2: Vec<Vec<f64>> = z.iter().map(|row| vec![row[1]]).collect();
+    let mut iv = InstrumentalVariables::new(1, 1);
+    iv.fit_2sls(&y, &d, &z2).expect("well-posed IV problem");
+    // Cov(y, z) / Cov(d, z) computed independently.
+    assert!(
+        (iv.second_stage - 2.0045891571489878).abs() < 1e-9,
+        "{}",
+        iv.second_stage
+    );
+    // With one instrument F = t² = r² (n − 2) / (1 − r²).
+    let f = iv
+        .first_stage_f_stat(&y, &d, &z2)
+        .expect("well-posed IV problem");
+    assert!((f - 784.9381736676538).abs() < 1e-9 * f, "F = {f}");
+}
+
+/// Orthogonal design: `z1` and `z2` are mean-zero and orthogonal, and so is the
+/// pattern `e` that drives the confounding.  The exact solution is known:
+/// `d = 10 + 0 z1 + 3 z2 + 0.5 e`, `y = 1 + 2 d + 4 e`.
+fn orthogonal_iv_design() -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>) {
+    let z1 = [1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0];
+    let z2 = [1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0];
+    let e = [1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0];
+    let d: Vec<f64> = (0..8).map(|i| 10.0 + 3.0 * z2[i] + 0.5 * e[i]).collect();
+    let y: Vec<f64> = (0..8).map(|i| 1.0 + 2.0 * d[i] + 4.0 * e[i]).collect();
+    let z: Vec<Vec<f64>> = (0..8).map(|i| vec![z1[i], z2[i]]).collect();
+    (y, d, z)
+}
+
+#[test]
+fn test_iv_orthogonal_design_has_an_exact_solution() {
+    let (y, d, z) = orthogonal_iv_design();
+    let mut iv = InstrumentalVariables::new(1, 2);
+    iv.fit_2sls(&y, &d, &z).expect("well-posed IV problem");
+    assert!(
+        (iv.second_stage - 2.0).abs() < 1e-12,
+        "beta = {}",
+        iv.second_stage
+    );
+    for (got, want) in iv.first_stage.iter().zip([10.0, 0.0, 3.0]) {
+        assert!(
+            (got - want).abs() < 1e-12,
+            "first stage {:?}",
+            iv.first_stage
+        );
+    }
+    // RSS_r = 8 (9 + 0.25) = 74, RSS_u = 8 (0.25) = 2: F = (72 / 2) / (2 / 5) = 90.
+    let f = iv
+        .first_stage_f_stat(&y, &d, &z)
+        .expect("well-posed IV problem");
+    assert!((f - 90.0).abs() < 1e-9, "F = {f}");
+    // The F-statistic depends on the supplied data only, not on a previous fit.
+    let fresh = InstrumentalVariables::new(1, 2);
+    let f_fresh = fresh
+        .first_stage_f_stat(&y, &d, &z)
+        .expect("well-posed IV problem");
+    assert_eq!(f, f_fresh);
+    // Naive OLS is biased by the confounder: 2 + 4 Cov(e, d) / Var(d) = 2 + 16/74.
+    let ols = ols_slope(&d, &y);
+    assert!((ols - (2.0 + 16.0 / 74.0)).abs() < 1e-12, "OLS slope {ols}");
+    assert!((iv.predict(3.0) - 6.0).abs() < 1e-11);
+}
+
+#[test]
+fn test_iv_rejects_inconsistent_dimensions_without_panicking() {
+    let (y, d, z) = orthogonal_iv_design();
+    let mut iv = InstrumentalVariables::new(1, 2);
+    // y and d of different lengths (the old assert_eq! panicked).
+    assert!(matches!(
+        iv.fit_2sls(&y[..7], &d, &z),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // Instrument rows and observations disagree.
+    assert!(matches!(
+        iv.fit_2sls(&y, &d, &z[..7]),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // A ragged instrument row.
+    let mut ragged = z.clone();
+    ragged[3] = vec![1.0];
+    assert!(matches!(
+        iv.fit_2sls(&y, &d, &ragged),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // Declared n_instruments does not match the data.
+    let mut wrong_k = InstrumentalVariables::new(1, 3);
+    assert!(matches!(
+        wrong_k.fit_2sls(&y, &d, &z),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // No instruments (the old code indexed first_stage[1] / row[0] out of bounds).
+    let mut none = InstrumentalVariables::new(1, 0);
+    let empty_rows: Vec<Vec<f64>> = vec![vec![]; 8];
+    assert!(matches!(
+        none.fit_2sls(&y, &d, &empty_rows),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    assert!(matches!(
+        none.first_stage_f_stat(&y, &d, &empty_rows),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // Only a single treatment is supported.
+    let mut two_treatments = InstrumentalVariables::new(2, 2);
+    assert!(matches!(
+        two_treatments.fit_2sls(&y, &d, &z),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // Too few observations: n must exceed n_instruments + 1.
+    assert!(matches!(
+        iv.fit_2sls(&y[..3], &d[..3], &z[..3]),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // Mismatched y in the F-statistic.
+    assert!(matches!(
+        iv.first_stage_f_stat(&y[..5], &d, &z),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // A failed fit leaves the estimator untouched.
+    assert_eq!(iv.first_stage, vec![0.0; 3]);
+    assert_eq!(iv.second_stage, 0.0);
+}
+
+#[test]
+fn test_iv_rejects_non_finite_data() {
+    let (y, d, z) = orthogonal_iv_design();
+    let mut iv = InstrumentalVariables::new(1, 2);
+    let mut bad_y = y.clone();
+    bad_y[2] = f64::NAN;
+    assert!(iv.fit_2sls(&bad_y, &d, &z).is_err());
+    let mut bad_d = d.clone();
+    bad_d[0] = f64::INFINITY;
+    assert!(iv.fit_2sls(&y, &bad_d, &z).is_err());
+    assert!(iv.first_stage_f_stat(&y, &bad_d, &z).is_err());
+    let mut bad_z = z.clone();
+    bad_z[5][1] = f64::NAN;
+    assert!(iv.fit_2sls(&y, &d, &bad_z).is_err());
+    let mut huge = z.clone();
+    huge[0][0] = 1e200;
+    assert!(iv.fit_2sls(&y, &d, &huge).is_err());
+}
+
+#[test]
+fn test_iv_rejects_unidentified_first_stages() {
+    let (y, d, z) = orthogonal_iv_design();
+    let mut iv = InstrumentalVariables::new(1, 2);
+    // A constant instrument is collinear with the intercept.
+    let constant: Vec<Vec<f64>> = z.iter().map(|row| vec![row[0], 4.0]).collect();
+    assert!(matches!(
+        iv.fit_2sls(&y, &d, &constant),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // Perfectly collinear instruments.
+    let doubled: Vec<Vec<f64>> = z.iter().map(|row| vec![row[1], 2.0 * row[1]]).collect();
+    assert!(matches!(
+        iv.fit_2sls(&y, &d, &doubled),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // Collinearity is judged independently of the units of the instruments.
+    let rescaled: Vec<Vec<f64>> = z
+        .iter()
+        .map(|row| vec![row[0] * 1e-7, row[1] * 1e9])
+        .collect();
+    let mut scaled_iv = InstrumentalVariables::new(1, 2);
+    scaled_iv
+        .fit_2sls(&y, &d, &rescaled)
+        .expect("badly scaled but identified");
+    assert!(
+        (scaled_iv.second_stage - 2.0).abs() < 1e-9,
+        "{}",
+        scaled_iv.second_stage
+    );
+    // An all-zero instrument column.
+    let zero: Vec<Vec<f64>> = z.iter().map(|row| vec![0.0, row[1]]).collect();
+    assert!(matches!(
+        iv.fit_2sls(&y, &d, &zero),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // Instruments exactly orthogonal to the treatment: the effect is not identified
+    // (the old code silently returned 0).
+    let e = [1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0];
+    let irrelevant_d: Vec<f64> = e.iter().map(|v| 5.0 + v).collect();
+    let irrelevant_y: Vec<f64> = irrelevant_d.iter().map(|v| 3.0 * v).collect();
+    assert!(matches!(
+        iv.fit_2sls(&irrelevant_y, &irrelevant_d, &z),
+        Err(PhysicsError::InvalidInput { .. })
+    ));
+    // Constant treatment.
+    let flat = vec![7.0; 8];
+    assert!(iv.fit_2sls(&y, &flat, &z).is_err());
+    assert!(iv.first_stage_f_stat(&y, &flat, &z).is_err());
 }
 
 // --- CausalDiscovery tests ---

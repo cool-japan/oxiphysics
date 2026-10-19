@@ -2,6 +2,7 @@
 
 pub mod functions;
 pub mod functions_2;
+mod inverse_subspace;
 pub mod types;
 
 // Re-export all types

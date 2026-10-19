@@ -428,18 +428,42 @@ impl EventDrivenSap {
         self.inner.body_count()
     }
 }
+/// Sweep order of two endpoints: ascending by value (`-0.0` equals `0.0`, as in
+/// the interval test), and a minimum endpoint before a maximum endpoint of the
+/// same value so that intervals which merely touch are active together.
+fn endpoint_order(a: &SapEndpoint, b: &SapEndpoint) -> std::cmp::Ordering {
+    // Adding 0.0 turns -0.0 into +0.0.
+    (a.value + 0.0)
+        .total_cmp(&(b.value + 0.0))
+        .then_with(|| b.is_min.cmp(&a.is_min))
+}
 /// Sweep-and-Prune broadphase that sweeps one axis and filters on the other two.
 ///
 /// The sweep axis is X until [`SweepAndPrune::reorder_axes`] selects a
 /// better one; the endpoint list [`SweepAndPrune::sorted_x`] always holds the
 /// endpoints of the current sweep axis (its name is historical).
+///
+/// Adding or updating an object only appends or rewrites its two endpoints and
+/// marks the list as unsorted; the list is sorted once, lazily, by the next
+/// [`SweepAndPrune::query_overlapping_pairs`] (or by an explicit
+/// [`SweepAndPrune::sort_axis`]). Updating `n` objects before a query therefore
+/// costs one sort instead of `n`.
 pub struct SweepAndPrune {
     /// All registered objects.
     pub objects: Vec<SapObject>,
-    /// Endpoints sorted along the sweep axis (X unless reordered).
+    /// Endpoints along the sweep axis (X unless reordered).
+    ///
+    /// The list is in ascending order after [`SweepAndPrune::sort_axis`],
+    /// [`SweepAndPrune::reorder_axes`] and [`SweepAndPrune::query_overlapping_pairs`];
+    /// between an `add_*`/`update_object` call and the next of those it may be
+    /// out of order. Endpoints with equal values are ordered minimum first, so
+    /// intervals that merely touch are reported as overlapping.
     pub sorted_x: Vec<SapEndpoint>,
     /// Axis index (`0`=X, `1`=Y, `2`=Z) the endpoint list is sorted along.
     sweep_axis: usize,
+    /// `true` when `sorted_x` may be out of order and must be sorted before it
+    /// is swept.
+    dirty: bool,
 }
 impl SweepAndPrune {
     /// Create an empty `SweepAndPrune` instance.
@@ -448,6 +472,7 @@ impl SweepAndPrune {
             objects: Vec::new(),
             sorted_x: Vec::new(),
             sweep_axis: 0,
+            dirty: false,
         }
     }
     /// Axis index (`0`=X, `1`=Y, `2`=Z) along which the endpoints are swept.
@@ -455,6 +480,8 @@ impl SweepAndPrune {
         self.sweep_axis
     }
     /// Add an object with the given AABB.
+    ///
+    /// The endpoint list is not re-sorted here; see the type documentation.
     pub fn add_object(&mut self, id: u64, min: [f64; 3], max: [f64; 3]) {
         self.objects.push(SapObject { id, min, max });
         self.sorted_x.push(SapEndpoint {
@@ -467,7 +494,7 @@ impl SweepAndPrune {
             object_id: id,
             is_min: false,
         });
-        self.sort_axis();
+        self.dirty = true;
     }
     /// Remove the object with the given `id`.
     pub fn remove_object(&mut self, id: u64) {
@@ -475,6 +502,8 @@ impl SweepAndPrune {
         self.sorted_x.retain(|e| e.object_id != id);
     }
     /// Update (replace) the AABB for an existing object.
+    ///
+    /// The endpoint list is not re-sorted here; see the type documentation.
     pub fn update_object(&mut self, id: u64, min: [f64; 3], max: [f64; 3]) {
         if let Some(obj) = self.objects.iter_mut().find(|o| o.id == id) {
             obj.min = min;
@@ -484,15 +513,22 @@ impl SweepAndPrune {
         for ep in self.sorted_x.iter_mut().filter(|e| e.object_id == id) {
             ep.value = if ep.is_min { min[axis] } else { max[axis] };
         }
-        self.sort_axis();
+        self.dirty = true;
     }
     /// Sort the sweep-axis endpoint list by value.
+    ///
+    /// Endpoints with equal values are ordered minimum first, so that two
+    /// intervals sharing only an end point are active at the same time. Sorting
+    /// an already (nearly) sorted list is cheap.
     pub fn sort_axis(&mut self) {
-        self.sorted_x.sort_by(|a, b| {
-            a.value
-                .partial_cmp(&b.value)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        self.sorted_x.sort_by(endpoint_order);
+        self.dirty = false;
+    }
+    /// `true` when `sorted_x` is in the order required by the sweep.
+    fn endpoints_in_order(&self) -> bool {
+        self.sorted_x
+            .windows(2)
+            .all(|pair| endpoint_order(&pair[0], &pair[1]).is_le())
     }
     /// Return all overlapping pairs.
     ///
@@ -502,7 +538,11 @@ impl SweepAndPrune {
     /// other two axes as well.
     /// The returned list is deduplicated and has `(min_id, max_id)` ordering.
     pub fn query_overlapping_pairs(&mut self) -> Vec<(u64, u64)> {
-        self.sort_axis();
+        // The list is public, so a caller may also have edited it directly:
+        // trust the flag only together with a cheap linear order check.
+        if self.dirty || !self.endpoints_in_order() {
+            self.sort_axis();
+        }
         let filter_a = (self.sweep_axis + 1) % 3;
         let filter_b = (self.sweep_axis + 2) % 3;
         let obj_map: HashMap<u64, &SapObject> = self.objects.iter().map(|o| (o.id, o)).collect();
@@ -555,25 +595,17 @@ impl SweepAndPrune {
     }
 }
 impl SweepAndPrune {
-    /// Batch-insert multiple objects at once, sorting the axis list only once.
+    /// Batch-insert multiple objects at once.
     ///
-    /// More efficient than calling `add_object` repeatedly when adding many
-    /// objects at the same time.
+    /// Equivalent to calling [`SweepAndPrune::add_object`] for every entry, but
+    /// reserves the storage up front. As for `add_object`, the endpoint list is
+    /// sorted lazily by the next query (or by [`SweepAndPrune::sort_axis`]).
     pub fn add_object_batch(&mut self, objects: &[(u64, [f64; 3], [f64; 3])]) {
+        self.objects.reserve(objects.len());
+        self.sorted_x.reserve(objects.len() * 2);
         for &(id, min, max) in objects {
-            self.objects.push(SapObject { id, min, max });
-            self.sorted_x.push(SapEndpoint {
-                value: min[self.sweep_axis],
-                object_id: id,
-                is_min: true,
-            });
-            self.sorted_x.push(SapEndpoint {
-                value: max[self.sweep_axis],
-                object_id: id,
-                is_min: false,
-            });
+            self.add_object(id, min, max);
         }
-        self.sort_axis();
     }
     /// Compute the variance of AABB centres along each axis.
     ///

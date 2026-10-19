@@ -198,20 +198,20 @@ Verified: 225 (critical 1, high 85, medium 107, low 32); 20 further raw findings
 - [ ] **F0098** (high, bug, medium/medium) `deformable_collision/functions.rs:815` — ccd_deformable_deformable skips B→A, edge-edge and swept broadphase
 - [ ] **F0099** (high, bug, medium/small) `deformable_collision/functions.rs:898` — generate_constraints targets inconsistent; overshoot for sphere and plane contacts
 - [ ] **F0104** (high, bug, easy/small) `fluid_collision.rs:736` — SPH-rigid coupling: wrong cutoff, attractive sign, acceleration units
-- [ ] **F0106** (high, bug, medium/small) `gjk_enhanced/functions.rs:199` — gjk_enhanced exits on separating-axis test, so distances are wrong
-- [ ] **F0107** (high, bug, medium/medium) `gjk_enhanced/functions.rs:457` — epa_enhanced removes only one face per expansion (non-convex polytope)
+- [x] **F0106** (high, bug, medium/small) `gjk_enhanced/functions.rs:199` — gjk_enhanced exits on separating-axis test, so distances are wrong
+- [x] **F0107** (high, bug, medium/medium) `gjk_enhanced/functions.rs:457` — epa_enhanced removes only one face per expansion (non-convex polytope)
 - [x] **F0108** (high, bug, medium/small) `gjk_enhanced/functions.rs:611` — gjk_time_of_impact checks only t=1 and misses tunnelling
-- [ ] **F0109** (high, bug, medium/small) `gjk_enhanced/types.rs:235` — Warm-start seeds stale simplex; cached contact yields intersecting=false
+- [x] **F0109** (high, bug, medium/small) `gjk_enhanced/types.rs:235` — Warm-start seeds stale simplex; cached contact yields intersecting=false
 - [x] **F0113** (high, fabrication, medium/small) `gjk_epa.rs:289` — gjk_distance discards min_dist and returns wrong distance
 - [x] **F0114** (high, bug, medium/medium) `gjk_epa.rs:317` — gjk_distance returns support-vertex gap, not GJK distance
-- [ ] **F0115** (high, fabrication, medium/medium) `gjk_epa.rs:409` — EPA contact points query support at Minkowski vertices used as directions
-- [ ] **F0116** (high, fabrication, medium/small) `gjk_epa.rs:694` — gjk_distance_with_witnesses walks support vertices instead of running GJK
+- [x] **F0115** (high, fabrication, medium/medium) `gjk_epa.rs:409` — EPA contact points query support at Minkowski vertices used as directions
+- [x] **F0116** (high, fabrication, medium/small) `gjk_epa.rs:694` — gjk_distance_with_witnesses walks support vertices instead of running GJK
 - [x] **F0119** (high, bug, medium/small) `gjk_extended.rs:461` — ExpandingPolytope::expand never finds horizon edges; polytope destroyed
-- [ ] **F0120** (high, fabrication, medium/small) `gjk_extended.rs:565` — EpaExpander fabricates normal +Z, depth 0 and zero contact points
-- [ ] **F0121** (high, bug, medium/medium) `gjk_extended.rs:637` — GjkSolver::query reports distance 0 for any non-enclosing tetrahedron
+- [x] **F0120** (high, fabrication, medium/small) `gjk_extended.rs:565` — EpaExpander fabricates normal +Z, depth 0 and zero contact points
+- [x] **F0121** (high, bug, medium/medium) `gjk_extended.rs:637` — GjkSolver::query reports distance 0 for any non-enclosing tetrahedron
 - [x] **F0122** (high, fabrication, medium/small) `gjk_extended.rs:716` — Gjk2D::distance never updates direction; returns 0 for separated polygons
 - [x] **F0124** (high, fabrication, hard/medium) `gjk_extended.rs:783` — GjkRaycast::cast hit test uses an unrelated +Z support point
-- [ ] **F0125** (high, fabrication, medium/small) `gjk_extended.rs:861` — GjkTimeOfImpact::compute ignores velocity and never returns a TOI
+- [x] **F0125** (high, fabrication, medium/small) `gjk_extended.rs:861` — GjkTimeOfImpact::compute ignores velocity and never returns a TOI
 - [ ] **F0128** (high, fabrication, medium/medium) `joint_collision.rs:874` — JointLimitSolver::solve fakes PGS: no velocity update, impulse scales with iterations
 - [ ] **F0135** (high, bug, medium/small) `mesh_collision.rs:365` — triangle_triangle_intersect reports every coplanar pair as intersecting
 - [x] **F0136** (high, panic, easy/trivial) `mesh_collision.rs:446` — TriMeshBvh::build overflows the stack on an empty triangle list
@@ -220,35 +220,35 @@ Verified: 225 (critical 1, high 85, medium 107, low 32); 20 further raw findings
 - [x] **F0153** (high, fabrication, medium/medium) `narrowphase/dispatch/functions.rs:1348` — dispatch_concave_vs_convex ignores convex shape, fabricates depth and pair ids
 - [ ] **F0158** (high, perf, medium/medium) `narrowphase/dispatch/types.rs:408` — generate_contacts formats Debug per pair, bypasses registered manifold table
 - [ ] **F0160** (high, bug, medium/medium) `narrowphase/epa/functions/functions_impl.rs:107` — EPA/MPR contact normal is A→B, contradicting docs and solver
-- [ ] **F0165** (high, fabrication, medium/medium) `narrowphase/functions.rs:260` — gjk_fallback is 3-axis world SAT with unsigned normal
-- [ ] **F0166** (high, fabrication, medium/medium) `narrowphase/functions.rs:285` — gjk_fallback is a 3-axis world SAT with unsigned normal
-- [ ] **F0167** (high, fabrication, medium/medium) `narrowphase/functions.rs:393` — convex_vs_mesh replaces each triangle with its bounding sphere
-- [ ] **F0174** (high, bug, easy/small) `narrowphase/gjk/functions.rs:549` — gjk_ray_cast reports hits for rays that laterally miss
-- [ ] **F0178** (high, fabrication, medium/small) `narrowphase/gjk/types.rs:527` — Gjk::query returns body origins as witnesses and unconverged distance
-- [ ] **F0180** (high, bug, easy/small) `narrowphase/gjk_cache/functions.rs:596` — gjk_cache::gjk_distance termination inverted; returns first-support distance
-- [ ] **F0181** (high, bug, medium/small) `narrowphase/gjk_cache/types.rs:932` — closest_points_cached reports overlapping shapes as separated; NaN otherwise
-- [ ] **F0183** (high, bug, medium/small) `narrowphase/manifold.rs:272` — build_box_manifold: tangent equals normal axis; every depth equals half extent
-- [ ] **F0190** (high, fabrication, medium/small) `narrowphase/simple.rs:306` — simple::box_box_sat: centre-based points, unnormalized edge depths, A→B normal
-- [ ] **F0195** (high, bug, easy/small) `narrowphase/specialized/functions.rs:14` — sphere_sphere/capsule_capsule normals A→B; solver expects B→A
+- [x] **F0165** (high, fabrication, medium/medium) `narrowphase/functions.rs:260` — gjk_fallback is 3-axis world SAT with unsigned normal
+- [x] **F0166** (high, fabrication, medium/medium) `narrowphase/functions.rs:285` — gjk_fallback is a 3-axis world SAT with unsigned normal
+- [x] **F0167** (high, fabrication, medium/medium) `narrowphase/functions.rs:393` — convex_vs_mesh replaces each triangle with its bounding sphere
+- [x] **F0174** (high, bug, easy/small) `narrowphase/gjk/functions.rs:549` — gjk_ray_cast reports hits for rays that laterally miss
+- [x] **F0178** (high, fabrication, medium/small) `narrowphase/gjk/types.rs:527` — Gjk::query returns body origins as witnesses and unconverged distance
+- [x] **F0180** (high, bug, easy/small) `narrowphase/gjk_cache/functions.rs:596` — gjk_cache::gjk_distance termination inverted; returns first-support distance
+- [x] **F0181** (high, bug, medium/small) `narrowphase/gjk_cache/types.rs:932` — closest_points_cached reports overlapping shapes as separated; NaN otherwise
+- [x] **F0183** (high, bug, medium/small) `narrowphase/manifold.rs:272` — build_box_manifold: tangent equals normal axis; every depth equals half extent
+- [x] **F0190** (high, fabrication, medium/small) `narrowphase/simple.rs:306` — simple::box_box_sat: centre-based points, unnormalized edge depths, A→B normal
+- [x] **F0195** (high, bug, easy/small) `narrowphase/specialized/functions.rs:14` — sphere_sphere/capsule_capsule normals A→B; solver expects B→A
 - [x] **F0196** (high, bug, easy/small) `narrowphase/specialized/functions.rs:70` — sphere_box: centre inside box gives depth = radius; witnesses coincide
-- [ ] **F0197** (high, fabrication, medium/small) `narrowphase/specialized/functions.rs:159` — box_box_sat: unnormalized edge depth, centre-based contact points
+- [x] **F0197** (high, fabrication, medium/small) `narrowphase/specialized/functions.rs:159` — box_box_sat: unnormalized edge depth, centre-based contact points
 - [x] **F0205** (high, bug, easy/trivial) `narrowphase/specialized/functions.rs:736` — torus_plane tests the ring point farthest from the plane
 - [x] **F0207** (high, fabrication, medium/medium) `narrowphase/specialized/functions.rs:1096` — convex_hull_vs_convex_hull fakes EPA with centre normal, ignores rotation
 - [x] **F0208** (high, bug, easy/small) `narrowphase/types.rs:376` — ShapeKind Plane support constant; box/capsule/convex vs plane never collide
 - [x] **F0216** (high, bug, medium/small) `parallel_collision/types.rs:301` — AabbTreeInner::insert orphans every leaf after the second insert
-- [ ] **F0225** (high, fabrication, easy/small) `proximity.rs:732` — MeshMeshDist uses a centroid heuristic, not true triangle distance
+- [x] **F0225** (high, fabrication, easy/small) `proximity.rs:732` — MeshMeshDist uses a centroid heuristic, not true triangle distance
 - [x] **F0228** (high, bug, easy/trivial) `proximity_query.rs:901` — point_in_triangle_barycentric divides by |n| instead of |n|²
 - [x] **F0230** (high, bug, easy/trivial) `query/functions.rs:656` — compute_time_of_impact_spheres returns the exit time when spheres already overlap
-- [ ] **F0232** (high, fabrication, medium/medium) `query/functions.rs:756` — project_point_convex fans vertices around the centroid; wrong for 3-D hulls
+- [x] **F0232** (high, fabrication, medium/medium) `query/functions.rs:756` — project_point_convex fans vertices around the centroid; wrong for 3-D hulls
 - [x] **F0239** (high, fabrication, hard/large) `recast/contour.rs:97` — Recast contours are convex hulls of region cells
 - [x] **F0240** (high, stub, hard/large) `recast/mod.rs:22` — RecastConfig: four dead fields, no validation, overflow on cell_size
 - [x] **F0245** (high, perf, hard/medium) `recast/region.rs:58` — Region build is O(N·W·H), has no watershed, and overflows u16 ids
-- [ ] **F0246** (high, bug, medium/small) `recast/walkable.rs:65` — Ledge filter compares floor top with the neighbour column's lowest span bottom
-- [ ] **F0248** (high, bug, easy/small) `sap/types.rs:604` — SweepAndPrune::reorder_axes breaks the overlap filter; full sort on every add/update
+- [x] **F0246** (high, bug, medium/small) `recast/walkable.rs:65` — Ledge filter compares floor top with the neighbour column's lowest span bottom
+- [x] **F0248** (high, bug, easy/small) `sap/types.rs:604` — SweepAndPrune::reorder_axes breaks the overlap filter; full sort on every add/update
 - [x] **F0253** (high, bug, easy/small) `sap/types.rs:886` — IncrementalSap::reorder_axes overwrites the X endpoint list with another axis
 - [x] **F0254** (high, bug, easy/small) `sat_collision/functions.rs:193` — closest_points_on_segments omits Ericson re-clamp; shape_cast seg_seg_dist too
-- [ ] **F0255** (high, bug, medium/medium) `sat_collision/types.rs:230` — SAT contact points use the wrong support side and fake edges
-- [ ] **F0257** (high, bug, medium/small) `sat_collision/types.rs:985` — ObbCapsuleCollision::test uses the capsule point nearest the OBB centre
+- [x] **F0255** (high, bug, medium/medium) `sat_collision/types.rs:230` — SAT contact points use the wrong support side and fake edges
+- [x] **F0257** (high, bug, medium/small) `sat_collision/types.rs:985` — ObbCapsuleCollision::test uses the capsule point nearest the OBB centre
 - [ ] **F0260** (high, bug, medium/small) `shape_cast.rs:479` — Conservative advancement with |v| step misses oblique contacts
 - [ ] **F0261** (high, fabrication, medium/small) `shape_cast.rs:532` — CapsuleCast::vs_box tests endpoints only and hardcodes normal +Y
 - [ ] **F0262** (high, bug, medium/small) `shape_cast.rs:631` — BoxCast::vs_triangle measures only triangle vertices; tunnels through faces

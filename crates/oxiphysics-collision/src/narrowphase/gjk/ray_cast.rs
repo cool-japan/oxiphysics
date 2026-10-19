@@ -202,6 +202,16 @@ mod tests {
         Transform::from_position(Vec3::new(x, y, z))
     }
 
+    /// A random ray that starts a few units away and is aimed at a point near
+    /// the shape, so that roughly half of the rays hit and half pass by.
+    ///
+    /// Returns the ray origin and its (unnormalised) direction.
+    fn aimed_ray(rng: &mut Lcg, transform: &Transform) -> (Vec3, Vec3) {
+        let origin = rng.vector(4.0);
+        let aim = transform.position + rng.vector(1.4);
+        (origin, aim - origin)
+    }
+
     fn cube_hull() -> ConvexHull {
         let mut vertices = Vec::new();
         for sx in [-0.5, 0.5] {
@@ -325,8 +335,7 @@ mod tests {
             } else {
                 at(0.0, 0.0, 0.0)
             };
-            let origin = rng.vector(4.0);
-            let dir = rng.vector(1.0);
+            let (origin, dir) = aimed_ray(&mut rng, &transform);
             if dir.norm() < 0.1 {
                 continue;
             }
@@ -398,8 +407,7 @@ mod tests {
                 Vec3::new(1.0, 0.7, 0.2),
                 rng.range(0.0, 3.0),
             );
-            let origin = rng.vector(4.0);
-            let dir = rng.vector(1.0);
+            let (origin, dir) = aimed_ray(&mut rng, &transform);
             if dir.norm() < 0.1 {
                 continue;
             }

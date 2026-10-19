@@ -9,28 +9,35 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use crate::particle::SoftParticle;
-use oxiphysics_core::math::{Real, Vec3};
+use oxiphysics_core::math::Real;
 
 use super::functions::SoftConstraint;
 use super::types::ShapeMatchingConstraint;
 
 impl SoftConstraint for ShapeMatchingConstraint {
+    /// Move every unpinned particle by `stiffness` times the vector to its goal
+    /// position `R q_i + com`, where `com` is the current centre of mass and `R`
+    /// the rotation of the polar decomposition of the cross-covariance matrix
+    /// (see [`ShapeMatchingConstraint`]).
+    ///
+    /// All goals are derived from the positions at the start of the call.  The
+    /// constraint does nothing for an empty group, when an index lies outside
+    /// `particles`, or when the centre of mass is not finite (one broken
+    /// particle must not spread to the rest of the group).
     fn project(&mut self, particles: &mut [SoftParticle], _dt_sub: Real) {
-        if self.indices.is_empty() {
+        if self.indices.is_empty() || self.indices.iter().any(|&idx| idx >= particles.len()) {
             return;
         }
         let com = self.current_com(particles);
-        let rot = self.compute_rotation(particles);
-        for (k, &idx) in self.indices.iter().enumerate() {
+        if com.iter().any(|coordinate| !coordinate.is_finite()) {
+            return;
+        }
+        let rotation = self.compute_rotation(particles, &com);
+        for (&idx, q) in self.indices.iter().zip(&self.rest_relative) {
             if particles[idx].inverse_mass == 0.0 {
                 continue;
             }
-            let q = &self.rest_relative[k];
-            let goal = Vec3::new(
-                rot[0] * q.x + rot[1] * q.y + rot[2] * q.z,
-                rot[3] * q.x + rot[4] * q.y + rot[5] * q.z,
-                rot[6] * q.x + rot[7] * q.y + rot[8] * q.z,
-            ) + com;
+            let goal = rotation * q + com;
             particles[idx].position += (goal - particles[idx].position) * self.stiffness;
         }
     }

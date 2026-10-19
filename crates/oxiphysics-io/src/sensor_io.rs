@@ -414,21 +414,30 @@ impl SensorFusion {
         let norm_a = (ax * ax + ay * ay + az * az).sqrt().max(1e-10);
         let (ax, ay, az) = (ax / norm_a, ay / norm_a, az / norm_a);
 
-        // Gradient step
+        // Gradient step.  `f` is the difference between the gravity direction
+        // predicted by the current quaternion, g = q* (0,0,0,1) q, and the
+        // measured (normalised) acceleration; `J` is its 3x4 Jacobian with
+        // respect to (qw, qx, qy, qz):
+        //
+        //   J = [ -2qy   2qz  -2qw   2qx ]
+        //       [  2qx   2qw   2qz   2qy ]
+        //       [   0   -4qx  -4qy    0  ]
+        //
+        // The descent direction is J^T f.
         let f1 = 2.0 * (qx * qz - qw * qy) - ax;
         let f2 = 2.0 * (qw * qx + qy * qz) - ay;
         let f3 = 1.0 - 2.0 * (qx * qx + qy * qy) - az;
-        let j11 = 2.0 * qy;
+        let j11 = -2.0 * qy;
         let j12 = 2.0 * qz;
-        let j13 = 2.0 * qw;
+        let j13 = -2.0 * qw;
         let j14 = 2.0 * qx;
         let j21 = 2.0 * qx;
         let j22 = 2.0 * qw;
         let j23 = 2.0 * qz;
         let j24 = 2.0 * qy;
         let j31 = 0.0;
-        let j32 = 4.0 * qx;
-        let j33 = 4.0 * qy;
+        let j32 = -4.0 * qx;
+        let j33 = -4.0 * qy;
         let j34 = 0.0;
         let step_w = j11 * f1 + j21 * f2 + j31 * f3;
         let step_x = j12 * f1 + j22 * f2 + j32 * f3;
@@ -887,6 +896,112 @@ mod tests {
         sf.update_madgwick(accel, gyro, 0.01);
         let norm = sf.quaternion.iter().map(|v| v * v).sum::<f64>().sqrt();
         assert!((norm - 1.0).abs() < 0.01);
+    }
+
+    /// Gravity direction in the sensor frame predicted by the quaternion
+    /// `q = [w, x, y, z]` (the third column of the rotation matrix, as used by
+    /// the Madgwick objective function).
+    fn predicted_gravity(q: [f64; 4]) -> [f64; 3] {
+        let [w, x, y, z] = q;
+        [
+            2.0 * (x * z - w * y),
+            2.0 * (w * x + y * z),
+            1.0 - 2.0 * (x * x + y * y),
+        ]
+    }
+
+    /// Run `steps` Madgwick updates (beta = 0.1, dt = 0.01 s) with a constant
+    /// accelerometer reading and zero angular rate, starting from `start`.
+    fn converge_madgwick(start: [f64; 4], accel: [f64; 3], steps: usize) -> SensorFusion {
+        let mut sf = SensorFusion::new(0.98, 0.1);
+        sf.quaternion = start;
+        for _ in 0..steps {
+            sf.update_madgwick(accel, [0.0; 3], 0.01);
+        }
+        sf
+    }
+
+    fn assert_gravity_matches(q: [f64; 4], accel: [f64; 3], tol: f64) {
+        let norm = (accel[0] * accel[0] + accel[1] * accel[1] + accel[2] * accel[2]).sqrt();
+        let g = predicted_gravity(q);
+        for k in 0..3 {
+            let expected = accel[k] / norm;
+            assert!(
+                (g[k] - expected).abs() < tol,
+                "gravity[{k}] = {} but the accelerometer says {expected} (q = {q:?})",
+                g[k]
+            );
+        }
+    }
+
+    #[test]
+    fn madgwick_converges_to_pitched_gravity_from_identity() {
+        // Regression: four Jacobian entries had the wrong sign, so a pitch
+        // reading drove the estimate away from the measured gravity direction
+        // (it settled at g = [-0.48, 0, -0.88]).
+        let pitch = 30.0_f64.to_radians();
+        let accel = [-9.81 * pitch.sin(), 0.0, 9.81 * pitch.cos()];
+        let sf = converge_madgwick([1.0, 0.0, 0.0, 0.0], accel, 3000);
+        assert_gravity_matches(sf.quaternion, accel, 1e-2);
+        // The recovered attitude is the 30 degree rotation about y.
+        let half = 0.5 * pitch;
+        assert!(
+            (sf.quaternion[0] - half.cos()).abs() < 1e-2,
+            "{:?}",
+            sf.quaternion
+        );
+        assert!(
+            (sf.quaternion[2] - half.sin()).abs() < 1e-2,
+            "{:?}",
+            sf.quaternion
+        );
+        assert!(sf.quaternion[1].abs() < 1e-2 && sf.quaternion[3].abs() < 1e-2);
+        assert!((sf.pitch() - 30.0).abs() < 1.0, "pitch = {}", sf.pitch());
+    }
+
+    #[test]
+    fn madgwick_converges_to_negative_pitch() {
+        let pitch = (-45.0_f64).to_radians();
+        let accel = [-9.81 * pitch.sin(), 0.0, 9.81 * pitch.cos()];
+        let sf = converge_madgwick([1.0, 0.0, 0.0, 0.0], accel, 3000);
+        assert_gravity_matches(sf.quaternion, accel, 1e-2);
+        assert!((sf.pitch() + 45.0).abs() < 1.0, "pitch = {}", sf.pitch());
+    }
+
+    #[test]
+    fn madgwick_converges_to_rolled_gravity_from_identity() {
+        let roll = 30.0_f64.to_radians();
+        let accel = [0.0, 9.81 * roll.sin(), 9.81 * roll.cos()];
+        let sf = converge_madgwick([1.0, 0.0, 0.0, 0.0], accel, 3000);
+        assert_gravity_matches(sf.quaternion, accel, 1e-2);
+        assert!((sf.roll() - 30.0).abs() < 1.0, "roll = {}", sf.roll());
+    }
+
+    #[test]
+    fn madgwick_converges_to_combined_roll_and_pitch() {
+        let accel = [-3.0, 4.0, 8.0];
+        let sf = converge_madgwick([1.0, 0.0, 0.0, 0.0], accel, 3000);
+        assert_gravity_matches(sf.quaternion, accel, 1e-2);
+    }
+
+    #[test]
+    fn madgwick_recovers_level_from_a_pitched_start() {
+        // Start at 30 degrees of pitch (rotation about y) with a level
+        // accelerometer: the filter has to unwind the pitch, which the buggy
+        // Jacobian could not do.
+        let half = 15.0_f64.to_radians();
+        let start = [half.cos(), 0.0, half.sin(), 0.0];
+        let accel = [0.0, 0.0, 9.81];
+        let sf = converge_madgwick(start, accel, 3000);
+        assert_gravity_matches(sf.quaternion, accel, 1e-2);
+        assert!(sf.pitch().abs() < 1.0, "pitch = {}", sf.pitch());
+    }
+
+    #[test]
+    fn madgwick_keeps_the_quaternion_normalised() {
+        let sf = converge_madgwick([1.0, 0.0, 0.0, 0.0], [-3.0, 4.0, 8.0], 500);
+        let norm = sf.quaternion.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-12, "norm = {norm}");
     }
 
     #[test]

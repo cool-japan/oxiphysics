@@ -340,10 +340,10 @@ fn lbm_boundary_reflects_every_direction_pair() {
     let mut lbm = perturbed_lbm([3, 3, 3], 1.0, false, vec![13]);
     let before = lbm.clone();
     lbm.dispatch_boundary();
-    for c in 0..D3Q19_Q {
+    for (c, &opposite) in D3Q19_OPP.iter().enumerate() {
         assert_eq!(
             lbm.f.read(1, 1, 1, c),
-            before.f.read(1, 1, 1, D3Q19_OPP[c]),
+            before.f.read(1, 1, 1, opposite),
             "direction {c}"
         );
     }
@@ -372,11 +372,8 @@ fn lbm_boundary_reflects_duplicate_solid_indices_once() {
 #[test]
 fn lbm_closed_box_with_obstacle_conserves_mass() {
     let dims = [6, 5, 4];
-    let solid = vec![
-        7 + 6 * (2 + 5 * 1),
-        8 + 6 * (2 + 5 * 1),
-        7 + 6 * (3 + 5 * 1),
-    ];
+    let cell = |x: usize, y: usize, z: usize| x + dims[0] * (y + dims[1] * z);
+    let solid = vec![cell(1, 3, 1), cell(2, 3, 1), cell(1, 4, 1)];
     let mut lbm = perturbed_lbm(dims, 0.75, false, solid);
     let (mass0, _) = lbm_totals(&lbm);
     for _ in 0..100 {
@@ -468,7 +465,38 @@ fn lbm_full_step_keeps_rest_equilibrium() {
     lbm.dispatch_collision();
     lbm.dispatch_streaming();
     lbm.dispatch_boundary();
-    for c in 0..D3Q19_Q {
-        assert!((lbm.f.read(2, 1, 3, c) - D3Q19_WEIGHTS[c]).abs() < 1e-14);
+    for (c, &weight) in D3Q19_WEIGHTS.iter().enumerate() {
+        assert!((lbm.f.read(2, 1, 3, c) - weight).abs() < 1e-14);
+    }
+}
+
+/// The boundary spec holds no wall velocity, inlet velocity or outlet density,
+/// so every `LBMBoundaryKind` reflects the solid-cell populations exactly like
+/// `BounceBack` (as the enum documents); fluid cells are never touched.
+#[test]
+fn lbm_boundary_kinds_all_reflect_like_bounce_back() {
+    let solid = vec![13, 4];
+    let untouched = perturbed_lbm([3, 3, 3], 1.0, false, solid.clone());
+    let mut reference = untouched.clone();
+    reference.dispatch_boundary();
+    assert_ne!(
+        reference.f.front, untouched.f.front,
+        "the reflection must change the solid cells"
+    );
+    for kind in [
+        LBMBoundaryKind::MovingWall,
+        LBMBoundaryKind::ZouHeInlet,
+        LBMBoundaryKind::ZouHeOutlet,
+    ] {
+        let mut lbm = untouched.clone();
+        lbm.boundary.kind = kind.clone();
+        lbm.dispatch_boundary();
+        assert_eq!(lbm.f.front, reference.f.front, "{kind:?}");
+    }
+    // Only the two solid cells (indices 13 and 4) differ from the input.
+    for cell in 0..27_usize {
+        let range = cell * D3Q19_Q..(cell + 1) * D3Q19_Q;
+        let changed = reference.f.front[range.clone()] != untouched.f.front[range];
+        assert_eq!(changed, solid.contains(&cell), "cell {cell}");
     }
 }

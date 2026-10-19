@@ -2,6 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::face::{
+    ZouHeFace, zou_he_pressure_face_d3q19, zou_he_pressure_face_d3q27, zou_he_velocity_face_d3q19,
+    zou_he_velocity_face_d3q27,
+};
+
 /// Zou-He velocity boundary condition: left inlet wall (x = 0).
 ///
 /// Given a cell on the left boundary with prescribed x-velocity `ux_wall`
@@ -75,9 +80,19 @@ pub fn apply_velocity_outlet_d2q9(f: &mut [f64; 9], ux_out: f64) -> f64 {
 }
 /// Zou-He velocity inlet: left wall (x = 0) of a D3Q19 domain.
 ///
-/// The inlet face is normal to +x.  Unknown distributions are those pointing
-/// into the domain in the +x direction: 1, 7, 9, 11, 13.
-/// The remaining 14 distributions are known.
+/// The inlet face is normal to +x.  The unknown distributions are those
+/// pointing into the domain in the +x direction: 1, 7, 9, 11, 13.  The
+/// remaining 14 distributions are known and are left untouched.
+///
+/// The unknowns are rebuilt from their lattice opposites (2, 10, 8, 14, 12)
+/// with the Hecht-Harting (2010) on-site closure for the velocity
+/// `(ux_in, 0, 0)`: the normal population receives `ρ ux_in / 3`, the four
+/// edge populations `ρ ux_in / 6` plus the tangential-momentum corrections
+/// `∓N_y` (7, 9) and `∓N_z` (11, 13), where
+/// `N_y = ½ [f3 + f15 + f17 − (f4 + f16 + f18)]` and
+/// `N_z = ½ [f5 + f15 + f16 − (f6 + f17 + f18)]` include the edge
+/// populations 15-18.  Afterwards `Σ f = ρ`, `Σ f c_x = ρ ux_in` and
+/// `Σ f c_y = Σ f c_z = 0`.
 ///
 /// # Arguments
 /// * `f`     – mutable reference to the 19-element distribution array.
@@ -86,83 +101,42 @@ pub fn apply_velocity_outlet_d2q9(f: &mut [f64; 9], ux_out: f64) -> f64 {
 /// # Returns
 /// The computed density `ρ` at this boundary cell.
 pub fn zou_he_inlet_left_d3q19(f: &mut [f64; 19], ux_in: f64) -> f64 {
-    let sum_known = f[0]
-        + f[2]
-        + f[3]
-        + f[4]
-        + f[5]
-        + f[6]
-        + f[8]
-        + f[10]
-        + f[12]
-        + f[14]
-        + f[15]
-        + f[16]
-        + f[17]
-        + f[18];
-    let sum_zero_x = f[0] + f[3] + f[4] + f[5] + f[6] + f[15] + f[16] + f[17] + f[18];
-    let sum_neg_x = f[2] + f[8] + f[10] + f[12] + f[14];
-    let rho = (sum_zero_x + 2.0 * sum_neg_x) / (1.0 - ux_in);
-    f[1] = f[2] + (2.0 / 3.0) * rho * ux_in;
-    f[7] = f[10] + 0.5 * (f[4] - f[3]) + (1.0 / 12.0) * rho * ux_in;
-    f[9] = f[8] - 0.5 * (f[4] - f[3]) + (1.0 / 12.0) * rho * ux_in;
-    f[11] = f[14] + 0.5 * (f[6] - f[5]) + (1.0 / 12.0) * rho * ux_in;
-    f[13] = f[12] - 0.5 * (f[6] - f[5]) + (1.0 / 12.0) * rho * ux_in;
-    let _ = sum_known;
-    rho
+    zou_he_velocity_face_d3q19(f, ZouHeFace::Left, [ux_in, 0.0, 0.0])
 }
 /// Zou-He pressure outlet: right wall (x = nx-1) of a D3Q19 domain.
 ///
-/// Sets the outlet density `rho_out` (pressure) and reconstructs the
-/// five unknown distributions pointing in the -x direction: `f[2]`,
-/// `f[8]`, `f[10]`, `f[12]`, `f[14]`.
+/// Sets the outlet density `rho_out` (pressure) and reconstructs the five
+/// unknown distributions pointing in the −x direction: `f[2]`, `f[8]`,
+/// `f[10]`, `f[12]`, `f[14]` (from their lattice opposites 1, 9, 7, 13, 11).
+/// The transverse velocity is zero, so afterwards `Σ f = rho_out`,
+/// `Σ f c_x = rho_out ux` and `Σ f c_y = Σ f c_z = 0`.
 ///
 /// # Returns
 /// The computed outlet velocity `ux`.
 pub fn zou_he_outlet_right_d3q19(f: &mut [f64; 19], rho_out: f64) -> f64 {
-    let sum_zero_x = f[0] + f[3] + f[4] + f[5] + f[6] + f[15] + f[16] + f[17] + f[18];
-    let sum_pos_x = f[1] + f[7] + f[9] + f[11] + f[13];
-    let ux = -1.0 + (sum_zero_x + 2.0 * sum_pos_x) / rho_out;
-    f[2] = f[1] - (2.0 / 3.0) * rho_out * ux;
-    f[8] = f[7] + 0.5 * (f[4] - f[3]) - (1.0 / 12.0) * rho_out * ux;
-    f[10] = f[9] - 0.5 * (f[4] - f[3]) - (1.0 / 12.0) * rho_out * ux;
-    f[12] = f[11] + 0.5 * (f[6] - f[5]) - (1.0 / 12.0) * rho_out * ux;
-    f[14] = f[13] - 0.5 * (f[6] - f[5]) - (1.0 / 12.0) * rho_out * ux;
-    ux
+    zou_he_pressure_face_d3q19(f, ZouHeFace::Right, rho_out, [0.0, 0.0])
 }
 /// Zou-He pressure inlet: left wall (x = 0), D3Q19.
 ///
-/// Sets the inlet density `rho_in` and derives the unknowns.
+/// Sets the inlet density `rho_in` and derives the five unknown distributions
+/// 1, 7, 9, 11, 13 as in [`zou_he_inlet_left_d3q19`], with zero transverse
+/// velocity.
 ///
 /// # Returns
 /// Computed inlet velocity `ux`.
 pub fn apply_pressure_inlet_d3q19(f: &mut [f64; 19], rho_in: f64) -> f64 {
-    let sum_zero_x = f[0] + f[3] + f[4] + f[5] + f[6] + f[15] + f[16] + f[17] + f[18];
-    let sum_neg_x = f[2] + f[8] + f[10] + f[12] + f[14];
-    let ux = 1.0 - (sum_zero_x + 2.0 * sum_neg_x) / rho_in;
-    f[1] = f[2] + (2.0 / 3.0) * rho_in * ux;
-    f[7] = f[10] + 0.5 * (f[4] - f[3]) + (1.0 / 12.0) * rho_in * ux;
-    f[9] = f[8] - 0.5 * (f[4] - f[3]) + (1.0 / 12.0) * rho_in * ux;
-    f[11] = f[14] + 0.5 * (f[6] - f[5]) + (1.0 / 12.0) * rho_in * ux;
-    f[13] = f[12] - 0.5 * (f[6] - f[5]) + (1.0 / 12.0) * rho_in * ux;
-    ux
+    zou_he_pressure_face_d3q19(f, ZouHeFace::Left, rho_in, [0.0, 0.0])
 }
 /// Zou-He velocity outlet: right wall (x = nx-1), D3Q19.
 ///
-/// Prescribes `ux_out` and reconstructs the five unknown distributions.
+/// Prescribes `ux_out` (with zero transverse velocity) and reconstructs the
+/// five unknown distributions 2, 8, 10, 12, 14 from their lattice opposites
+/// 1, 9, 7, 13, 11 with the Hecht-Harting closure.
 ///
 /// # Returns
 /// Computed outlet density `rho`.
 pub fn apply_velocity_outlet_d3q19(f: &mut [f64; 19], ux_out: f64) -> f64 {
-    let sum_zero_x = f[0] + f[3] + f[4] + f[5] + f[6] + f[15] + f[16] + f[17] + f[18];
-    let sum_pos_x = f[1] + f[7] + f[9] + f[11] + f[13];
-    let rho = (sum_zero_x + 2.0 * sum_pos_x) / (1.0 + ux_out);
-    f[2] = f[1] - (2.0 / 3.0) * rho * ux_out;
-    f[8] = f[7] + 0.5 * (f[4] - f[3]) - (1.0 / 12.0) * rho * ux_out;
-    f[10] = f[9] - 0.5 * (f[4] - f[3]) - (1.0 / 12.0) * rho * ux_out;
-    f[12] = f[11] + 0.5 * (f[6] - f[5]) - (1.0 / 12.0) * rho * ux_out;
-    f[14] = f[13] - 0.5 * (f[6] - f[5]) - (1.0 / 12.0) * rho * ux_out;
-    rho
+    zou_he_velocity_face_d3q19(f, ZouHeFace::Right, [ux_out, 0.0, 0.0])
 }
 /// Zou-He velocity boundary condition: top wall (y = ny-1), D2Q9.
 ///
@@ -279,98 +253,70 @@ pub fn zou_he_corner_top_right_d2q9(f: &mut [f64; 9], rho_wall: f64) {
 /// Zou-He velocity BC: top face (y = ny-1) of a D3Q19 domain.
 ///
 /// Unknown distributions pointing into the domain (-y direction):
-/// `f[4]`, `f[9]`, `f[10]`, `f[16]`, `f[18]`.
+/// `f[4]`, `f[9]`, `f[10]`, `f[16]`, `f[18]`, rebuilt from their lattice
+/// opposites 3, 8, 7, 17, 15 with the Hecht-Harting closure for the velocity
+/// `(0, uy_wall, 0)`.  Afterwards `Σ f = ρ`, `Σ f c_y = ρ uy_wall` and
+/// `Σ f c_x = Σ f c_z = 0`.
 ///
 /// # Returns
 /// The computed density `ρ` at this boundary cell.
 pub fn zou_he_top_face_d3q19(f: &mut [f64; 19], uy_wall: f64) -> f64 {
-    let sum_zero_y = f[0] + f[1] + f[2] + f[5] + f[6] + f[11] + f[12] + f[13] + f[14];
-    let sum_pos_y = f[3] + f[7] + f[8] + f[15] + f[17];
-    let rho = (sum_zero_y + 2.0 * sum_pos_y) / (1.0 + uy_wall);
-    f[4] = f[3] - (2.0 / 3.0) * rho * uy_wall;
-    f[9] = f[7] + 0.5 * (f[1] - f[2]) - (1.0 / 12.0) * rho * uy_wall;
-    f[10] = f[8] - 0.5 * (f[1] - f[2]) - (1.0 / 12.0) * rho * uy_wall;
-    f[16] = f[15] + 0.5 * (f[5] - f[6]) - (1.0 / 12.0) * rho * uy_wall;
-    f[18] = f[17] - 0.5 * (f[5] - f[6]) - (1.0 / 12.0) * rho * uy_wall;
-    rho
+    zou_he_velocity_face_d3q19(f, ZouHeFace::Top, [0.0, uy_wall, 0.0])
 }
 /// Zou-He velocity BC: bottom face (y = 0) of a D3Q19 domain.
 ///
 /// Unknown distributions pointing into the domain (+y direction):
-/// `f[3]`, `f[7]`, `f[8]`, `f[15]`, `f[17]`.
+/// `f[3]`, `f[7]`, `f[8]`, `f[15]`, `f[17]`, rebuilt from their lattice
+/// opposites 4, 10, 9, 18, 16 with the Hecht-Harting closure for the velocity
+/// `(0, uy_wall, 0)`.  Afterwards `Σ f = ρ`, `Σ f c_y = ρ uy_wall` and
+/// `Σ f c_x = Σ f c_z = 0`.
 ///
 /// # Returns
 /// The computed density `ρ` at this boundary cell.
 pub fn zou_he_bottom_face_d3q19(f: &mut [f64; 19], uy_wall: f64) -> f64 {
-    let sum_zero_y = f[0] + f[1] + f[2] + f[5] + f[6] + f[11] + f[12] + f[13] + f[14];
-    let sum_neg_y = f[4] + f[9] + f[10] + f[16] + f[18];
-    let rho = (sum_zero_y + 2.0 * sum_neg_y) / (1.0 - uy_wall);
-    f[3] = f[4] + (2.0 / 3.0) * rho * uy_wall;
-    f[7] = f[10] + 0.5 * (f[2] - f[1]) + (1.0 / 12.0) * rho * uy_wall;
-    f[8] = f[9] - 0.5 * (f[2] - f[1]) + (1.0 / 12.0) * rho * uy_wall;
-    f[15] = f[18] + 0.5 * (f[6] - f[5]) + (1.0 / 12.0) * rho * uy_wall;
-    f[17] = f[16] - 0.5 * (f[6] - f[5]) + (1.0 / 12.0) * rho * uy_wall;
-    rho
+    zou_he_velocity_face_d3q19(f, ZouHeFace::Bottom, [0.0, uy_wall, 0.0])
 }
 /// Zou-He velocity BC: front face (z = nz-1) of a D3Q19 domain.
 ///
 /// Unknown distributions pointing into the domain (-z direction):
-/// `f[6]`, `f[13]`, `f[14]`, `f[17]`, `f[18]`.
+/// `f[6]`, `f[13]`, `f[14]`, `f[17]`, `f[18]`, rebuilt from their lattice
+/// opposites 5, 12, 11, 16, 15 with the Hecht-Harting closure for the velocity
+/// `(0, 0, uz_wall)`.  Afterwards `Σ f = ρ`, `Σ f c_z = ρ uz_wall` and
+/// `Σ f c_x = Σ f c_y = 0`.
 ///
 /// # Returns
 /// The computed density `ρ` at this boundary cell.
 pub fn zou_he_front_face_d3q19(f: &mut [f64; 19], uz_wall: f64) -> f64 {
-    let sum_zero_z = f[0] + f[1] + f[2] + f[3] + f[4] + f[7] + f[8] + f[9] + f[10];
-    let sum_pos_z = f[5] + f[11] + f[12] + f[15] + f[16];
-    let rho = (sum_zero_z + 2.0 * sum_pos_z) / (1.0 + uz_wall);
-    f[6] = f[5] - (2.0 / 3.0) * rho * uz_wall;
-    f[13] = f[11] + 0.5 * (f[1] - f[2]) - (1.0 / 12.0) * rho * uz_wall;
-    f[14] = f[12] - 0.5 * (f[1] - f[2]) - (1.0 / 12.0) * rho * uz_wall;
-    f[17] = f[15] + 0.5 * (f[3] - f[4]) - (1.0 / 12.0) * rho * uz_wall;
-    f[18] = f[16] - 0.5 * (f[3] - f[4]) - (1.0 / 12.0) * rho * uz_wall;
-    rho
+    zou_he_velocity_face_d3q19(f, ZouHeFace::Front, [0.0, 0.0, uz_wall])
 }
 /// Zou-He velocity BC: back face (z = 0) of a D3Q19 domain.
 ///
 /// Unknown distributions pointing into the domain (+z direction):
-/// `f[5]`, `f[11]`, `f[12]`, `f[15]`, `f[16]`.
+/// `f[5]`, `f[11]`, `f[12]`, `f[15]`, `f[16]`, rebuilt from their lattice
+/// opposites 6, 14, 13, 18, 17 with the Hecht-Harting closure for the velocity
+/// `(0, 0, uz_wall)`.  Afterwards `Σ f = ρ`, `Σ f c_z = ρ uz_wall` and
+/// `Σ f c_x = Σ f c_y = 0`.
 ///
 /// # Returns
 /// The computed density `ρ` at this boundary cell.
 pub fn zou_he_back_face_d3q19(f: &mut [f64; 19], uz_wall: f64) -> f64 {
-    let sum_zero_z = f[0] + f[1] + f[2] + f[3] + f[4] + f[7] + f[8] + f[9] + f[10];
-    let sum_neg_z = f[6] + f[13] + f[14] + f[17] + f[18];
-    let rho = (sum_zero_z + 2.0 * sum_neg_z) / (1.0 - uz_wall);
-    f[5] = f[6] + (2.0 / 3.0) * rho * uz_wall;
-    f[11] = f[14] + 0.5 * (f[2] - f[1]) + (1.0 / 12.0) * rho * uz_wall;
-    f[12] = f[13] - 0.5 * (f[2] - f[1]) + (1.0 / 12.0) * rho * uz_wall;
-    f[15] = f[18] + 0.5 * (f[4] - f[3]) + (1.0 / 12.0) * rho * uz_wall;
-    f[16] = f[17] - 0.5 * (f[4] - f[3]) + (1.0 / 12.0) * rho * uz_wall;
-    rho
+    zou_he_velocity_face_d3q19(f, ZouHeFace::Back, [0.0, 0.0, uz_wall])
 }
 /// Zou-He pressure BC: top face (y = ny-1), D3Q19. Returns computed `uy`.
+///
+/// Reconstructs the unknown distributions 4, 9, 10, 16, 18 for the density
+/// `rho_wall` and zero tangential velocity, so that afterwards
+/// `Σ f = rho_wall`, `Σ f c_y = rho_wall uy` and `Σ f c_x = Σ f c_z = 0`.
 pub fn zou_he_pressure_top_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
-    let sum_zero_y = f[0] + f[1] + f[2] + f[5] + f[6] + f[11] + f[12] + f[13] + f[14];
-    let sum_pos_y = f[3] + f[7] + f[8] + f[15] + f[17];
-    let uy = -1.0 + (sum_zero_y + 2.0 * sum_pos_y) / rho_wall;
-    f[4] = f[3] - (2.0 / 3.0) * rho_wall * uy;
-    f[9] = f[7] + 0.5 * (f[1] - f[2]) - (1.0 / 12.0) * rho_wall * uy;
-    f[10] = f[8] - 0.5 * (f[1] - f[2]) - (1.0 / 12.0) * rho_wall * uy;
-    f[16] = f[15] + 0.5 * (f[5] - f[6]) - (1.0 / 12.0) * rho_wall * uy;
-    f[18] = f[17] - 0.5 * (f[5] - f[6]) - (1.0 / 12.0) * rho_wall * uy;
-    uy
+    zou_he_pressure_face_d3q19(f, ZouHeFace::Top, rho_wall, [0.0, 0.0])
 }
 /// Zou-He pressure BC: bottom face (y = 0), D3Q19. Returns computed `uy`.
+///
+/// Reconstructs the unknown distributions 3, 7, 8, 15, 17 for the density
+/// `rho_wall` and zero tangential velocity, so that afterwards
+/// `Σ f = rho_wall`, `Σ f c_y = rho_wall uy` and `Σ f c_x = Σ f c_z = 0`.
 pub fn zou_he_pressure_bottom_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
-    let sum_zero_y = f[0] + f[1] + f[2] + f[5] + f[6] + f[11] + f[12] + f[13] + f[14];
-    let sum_neg_y = f[4] + f[9] + f[10] + f[16] + f[18];
-    let uy = 1.0 - (sum_zero_y + 2.0 * sum_neg_y) / rho_wall;
-    f[3] = f[4] + (2.0 / 3.0) * rho_wall * uy;
-    f[7] = f[10] + 0.5 * (f[2] - f[1]) + (1.0 / 12.0) * rho_wall * uy;
-    f[8] = f[9] - 0.5 * (f[2] - f[1]) + (1.0 / 12.0) * rho_wall * uy;
-    f[15] = f[18] + 0.5 * (f[6] - f[5]) + (1.0 / 12.0) * rho_wall * uy;
-    f[17] = f[16] - 0.5 * (f[6] - f[5]) + (1.0 / 12.0) * rho_wall * uy;
-    uy
+    zou_he_pressure_face_d3q19(f, ZouHeFace::Bottom, rho_wall, [0.0, 0.0])
 }
 /// Zou-He general inlet: left wall (x=0) with prescribed `ux_in` and `uy_in`.
 ///
@@ -506,28 +452,20 @@ pub fn zou_he_shear_inlet_left_d2q9(
     zou_he_inlet_left(f, ux_in)
 }
 /// Zou-He pressure BC: front face (z = nz-1), D3Q19. Returns computed `uz`.
+///
+/// Reconstructs the unknown distributions 6, 13, 14, 17, 18 for the density
+/// `rho_wall` and zero tangential velocity, so that afterwards
+/// `Σ f = rho_wall`, `Σ f c_z = rho_wall uz` and `Σ f c_x = Σ f c_y = 0`.
 pub fn zou_he_pressure_front_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
-    let sum_zero_z = f[0] + f[1] + f[2] + f[3] + f[4] + f[7] + f[8] + f[9] + f[10];
-    let sum_pos_z = f[5] + f[11] + f[12] + f[15] + f[16];
-    let uz = -1.0 + (sum_zero_z + 2.0 * sum_pos_z) / rho_wall;
-    f[6] = f[5] - (2.0 / 3.0) * rho_wall * uz;
-    f[13] = f[11] + 0.5 * (f[1] - f[2]) - (1.0 / 12.0) * rho_wall * uz;
-    f[14] = f[12] - 0.5 * (f[1] - f[2]) - (1.0 / 12.0) * rho_wall * uz;
-    f[17] = f[15] + 0.5 * (f[3] - f[4]) - (1.0 / 12.0) * rho_wall * uz;
-    f[18] = f[16] - 0.5 * (f[3] - f[4]) - (1.0 / 12.0) * rho_wall * uz;
-    uz
+    zou_he_pressure_face_d3q19(f, ZouHeFace::Front, rho_wall, [0.0, 0.0])
 }
 /// Zou-He pressure BC: back face (z = 0), D3Q19. Returns computed `uz`.
+///
+/// Reconstructs the unknown distributions 5, 11, 12, 15, 16 for the density
+/// `rho_wall` and zero tangential velocity, so that afterwards
+/// `Σ f = rho_wall`, `Σ f c_z = rho_wall uz` and `Σ f c_x = Σ f c_y = 0`.
 pub fn zou_he_pressure_back_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
-    let sum_zero_z = f[0] + f[1] + f[2] + f[3] + f[4] + f[7] + f[8] + f[9] + f[10];
-    let sum_neg_z = f[6] + f[13] + f[14] + f[17] + f[18];
-    let uz = 1.0 - (sum_zero_z + 2.0 * sum_neg_z) / rho_wall;
-    f[5] = f[6] + (2.0 / 3.0) * rho_wall * uz;
-    f[11] = f[14] + 0.5 * (f[2] - f[1]) + (1.0 / 12.0) * rho_wall * uz;
-    f[12] = f[13] - 0.5 * (f[2] - f[1]) + (1.0 / 12.0) * rho_wall * uz;
-    f[15] = f[18] + 0.5 * (f[4] - f[3]) + (1.0 / 12.0) * rho_wall * uz;
-    f[16] = f[17] - 0.5 * (f[4] - f[3]) + (1.0 / 12.0) * rho_wall * uz;
-    uz
+    zou_he_pressure_face_d3q19(f, ZouHeFace::Back, rho_wall, [0.0, 0.0])
 }
 /// Zou-He velocity BC: front face (z = nz-1) with prescribed `uz_wall`.
 ///
@@ -545,18 +483,15 @@ pub fn zou_he_velocity_back_d3q19(f: &mut [f64; 19], uz_wall: f64) -> f64 {
 }
 /// Zou-He pressure outlet: left face (x = 0), D3Q19.
 ///
-/// Sets the outlet density `rho_out` and reconstructs unknown distributions
-/// pointing in the +x direction. Returns the computed velocity `ux`.
+/// Sets the density `rho_out` at the x = 0 face and reconstructs the five
+/// unknown distributions pointing into the domain in the +x direction:
+/// `f[1]`, `f[7]`, `f[9]`, `f[11]`, `f[13]`.  The known -x distributions
+/// (2, 8, 10, 12, 14) are only read, never overwritten.  The transverse
+/// velocity is zero.  This is the same condition as
+/// [`apply_pressure_inlet_d3q19`] and [`zou_he_pressure_left_d3q19`]; the
+/// returned velocity `ux` is negative when fluid leaves through this face.
 pub fn zou_he_pressure_outlet_left_d3q19(f: &mut [f64; 19], rho_out: f64) -> f64 {
-    let sum_zero_x = f[0] + f[3] + f[4] + f[5] + f[6] + f[15] + f[16] + f[17] + f[18];
-    let sum_pos_x = f[1] + f[7] + f[9] + f[11] + f[13];
-    let ux = -1.0 + (sum_zero_x + 2.0 * sum_pos_x) / rho_out;
-    f[2] = f[1] - (2.0 / 3.0) * rho_out * ux;
-    f[8] = f[7] + 0.5 * (f[4] - f[3]) - (1.0 / 12.0) * rho_out * ux;
-    f[10] = f[9] - 0.5 * (f[4] - f[3]) - (1.0 / 12.0) * rho_out * ux;
-    f[12] = f[11] + 0.5 * (f[6] - f[5]) - (1.0 / 12.0) * rho_out * ux;
-    f[14] = f[13] - 0.5 * (f[6] - f[5]) - (1.0 / 12.0) * rho_out * ux;
-    ux
+    zou_he_pressure_face_d3q19(f, ZouHeFace::Left, rho_out, [0.0, 0.0])
 }
 /// Compute the D2Q9 Maxwell-Boltzmann equilibrium distribution.
 ///
@@ -603,8 +538,11 @@ pub fn d3q19_equilibrium(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 19] {
 }
 /// Zou-He pressure boundary condition for the left face (x = 0) of D3Q19.
 ///
-/// Prescribes density (pressure) at the left inlet; velocity is computed from
-/// the non-equilibrium bounce-back method (Zou & He 1997).
+/// Prescribes density (pressure) at the left inlet; the velocity is computed
+/// from mass conservation over the known distributions (Zou & He 1997) and the
+/// unknown distributions 1, 7, 9, 11, 13 are rebuilt with the Hecht-Harting
+/// closure for zero transverse velocity.  Afterwards `Σ f = rho_in`,
+/// `Σ f c_x = rho_in ux` and `Σ f c_y = Σ f c_z = 0`.
 ///
 /// # Arguments
 /// * `f`       – mutable reference to the 19-element D3Q19 distribution
@@ -613,58 +551,19 @@ pub fn d3q19_equilibrium(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 19] {
 /// # Returns
 /// The computed inlet velocity `ux`.
 pub fn zou_he_pressure_left_d3q19(f: &mut [f64; 19], rho_in: f64) -> f64 {
-    let sum_known = f[0]
-        + f[2]
-        + f[3]
-        + f[4]
-        + f[5]
-        + f[6]
-        + f[8]
-        + f[10]
-        + f[12]
-        + f[14]
-        + f[15]
-        + f[16]
-        + f[17]
-        + f[18];
-    let ux = 1.0 - (sum_known + 2.0 * (f[2] + f[8] + f[10] + f[12] + f[14])) / rho_in;
-    let rho_ux = rho_in * ux;
-    f[1] = f[2] + (2.0 / 3.0) * rho_ux;
-    f[7] = f[8] - 0.5 * (f[3] - f[4]) + (1.0 / 6.0) * rho_ux;
-    f[9] = f[10] + 0.5 * (f[3] - f[4]) + (1.0 / 6.0) * rho_ux;
-    f[11] = f[12] - 0.5 * (f[5] - f[6]) + (1.0 / 6.0) * rho_ux;
-    f[13] = f[14] + 0.5 * (f[5] - f[6]) + (1.0 / 6.0) * rho_ux;
-    ux
+    zou_he_pressure_face_d3q19(f, ZouHeFace::Left, rho_in, [0.0, 0.0])
 }
 /// Zou-He pressure boundary condition for the right face (x = Nx-1) of D3Q19.
 ///
-/// Prescribes outlet density; velocity is derived from the non-equilibrium method.
+/// Prescribes outlet density; the velocity is derived from mass conservation
+/// and the unknown distributions 2, 8, 10, 12, 14 are rebuilt with the
+/// Hecht-Harting closure for zero transverse velocity.  Afterwards
+/// `Σ f = rho_out`, `Σ f c_x = rho_out ux` and `Σ f c_y = Σ f c_z = 0`.
 ///
 /// # Returns
 /// The computed outlet velocity `ux`.
 pub fn zou_he_pressure_right_d3q19(f: &mut [f64; 19], rho_out: f64) -> f64 {
-    let sum_known = f[0]
-        + f[1]
-        + f[3]
-        + f[4]
-        + f[5]
-        + f[6]
-        + f[7]
-        + f[9]
-        + f[11]
-        + f[13]
-        + f[15]
-        + f[16]
-        + f[17]
-        + f[18];
-    let ux = -1.0 + (sum_known + 2.0 * (f[1] + f[7] + f[9] + f[11] + f[13])) / rho_out;
-    let rho_ux = rho_out * ux;
-    f[2] = f[1] - (2.0 / 3.0) * rho_ux;
-    f[8] = f[7] + 0.5 * (f[3] - f[4]) - (1.0 / 6.0) * rho_ux;
-    f[10] = f[9] - 0.5 * (f[3] - f[4]) - (1.0 / 6.0) * rho_ux;
-    f[12] = f[11] + 0.5 * (f[5] - f[6]) - (1.0 / 6.0) * rho_ux;
-    f[14] = f[13] - 0.5 * (f[5] - f[6]) - (1.0 / 6.0) * rho_ux;
-    ux
+    zou_he_pressure_face_d3q19(f, ZouHeFace::Right, rho_out, [0.0, 0.0])
 }
 /// D3Q27 weights for reference in boundary conditions.
 pub(super) const D3Q27_W: [f64; 27] = [
@@ -744,69 +643,33 @@ pub fn d3q27_equilibrium(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 27] {
 /// Zou-He velocity inlet for D3Q27 left face (x = 0).
 ///
 /// Prescribes the full velocity (ux, uy, uz) at the left boundary.
-/// The unknown distributions pointing into the domain (+x, +x+y, +x-y,
-/// +x+z, +x-z, +x+y+z, +x+y-z, +x-y+z, +x-y-z) are reconstructed
-/// using the non-equilibrium bounce-back method.
+/// The nine unknown distributions pointing into the domain (+x, +x±y, +x±z,
+/// +x±y±z: indices 1, 7, 9, 11, 13, 19, 21, 23, 25) are reconstructed from
+/// their lattice opposites (2, 10, 8, 14, 12, 26, 24, 22, 20) with the
+/// non-equilibrium bounce-back method plus a weight-proportional extension of
+/// the Hecht-Harting (D3Q19) tangential-momentum correction to the corner
+/// populations, so that afterwards `Σ f = ρ` and the momentum `Σ f c` equals
+/// `ρ (ux, uy, uz)` in all three components, whatever the known populations
+/// were.
 ///
 /// # Returns
 /// The computed boundary density ρ.
 pub fn zou_he_velocity_inlet_d3q27(f: &mut [f64; 27], ux: f64, uy: f64, uz: f64) -> f64 {
-    let sum_known = f[0]
-        + f[2]
-        + f[4]
-        + f[6]
-        + f[8]
-        + f[10]
-        + f[12]
-        + f[14]
-        + f[16]
-        + f[18]
-        + f[20]
-        + f[22]
-        + f[24]
-        + f[26];
-    let sum_left = 2.0 * (f[2] + f[8] + f[10] + f[12] + f[14] + f[20] + f[22] + f[24] + f[26]);
-    let rho = (sum_known + sum_left) / (1.0 - ux);
-    let feq = d3q27_equilibrium(rho, ux, uy, uz);
-    let feq_opp = d3q27_equilibrium(rho, -ux, -uy, -uz);
-    let unknowns = [1usize, 7, 9, 11, 13, 19, 21, 23, 25];
-    let opposites = [2usize, 8, 10, 12, 14, 20, 22, 24, 26];
-    for (&u_idx, &o_idx) in unknowns.iter().zip(opposites.iter()) {
-        f[u_idx] = feq[u_idx] - feq_opp[o_idx] + f[o_idx];
-    }
-    rho
+    zou_he_velocity_face_d3q27(f, ZouHeFace::Left, [ux, uy, uz])
 }
 /// Zou-He pressure outlet for D3Q27 right face (x = Nx-1).
 ///
-/// Prescribes outlet density ρ_out; velocity is computed from continuity.
+/// Prescribes outlet density ρ_out; the velocity is computed from continuity
+/// and the nine unknown distributions pointing in the -x direction
+/// (2, 8, 10, 12, 14, 20, 22, 24, 26) are rebuilt from their lattice opposites
+/// (1, 9, 7, 13, 11, 25, 23, 21, 19) with zero transverse velocity, so that
+/// afterwards `Σ f = rho_out`, `Σ f c_x = rho_out ux` and
+/// `Σ f c_y = Σ f c_z = 0`.
 ///
 /// # Returns
 /// The computed outlet velocity ux.
 pub fn zou_he_pressure_outlet_d3q27(f: &mut [f64; 27], rho_out: f64) -> f64 {
-    let sum_known = f[0]
-        + f[1]
-        + f[3]
-        + f[5]
-        + f[7]
-        + f[9]
-        + f[11]
-        + f[13]
-        + f[15]
-        + f[17]
-        + f[19]
-        + f[21]
-        + f[23]
-        + f[25];
-    let sum_right = 2.0 * (f[1] + f[7] + f[9] + f[11] + f[13] + f[19] + f[21] + f[23] + f[25]);
-    let ux = -1.0 + (sum_known + sum_right) / rho_out;
-    let feq = d3q27_equilibrium(rho_out, ux, 0.0, 0.0);
-    let feq_neg = d3q27_equilibrium(rho_out, -ux, 0.0, 0.0);
-    let unknowns = [2usize, 8, 10, 12, 14, 20, 22, 24, 26];
-    let opposites = [1usize, 7, 9, 11, 13, 19, 21, 23, 25];
-    for (&u_idx, &o_idx) in unknowns.iter().zip(opposites.iter()) {
-        f[u_idx] = feq[u_idx] - feq_neg[o_idx] + f[o_idx];
-    }
-    ux
+    zou_he_pressure_face_d3q27(f, ZouHeFace::Right, rho_out, [0.0, 0.0])
 }
 /// Convective outlet boundary condition for D2Q9 right face.
 ///

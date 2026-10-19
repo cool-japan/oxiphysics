@@ -151,9 +151,16 @@ pub fn gpu_pressure_tait(grid: &mut GpuSphGrid) {
 
 /// Pressure-gradient and viscosity force kernel (mock via loop).
 ///
-/// Computes forces on each particle from pressure gradients and artificial
-/// viscosity with coefficient `nu`. Results are accumulated into
-/// `grid.forces`.
+/// Computes forces on each particle from the symmetric Monaghan pressure term
+/// `-mⱼ (Pᵢ/ρᵢ² + Pⱼ/ρⱼ²) ∇W` plus Monaghan artificial viscosity with
+/// coefficient `nu`. Results are accumulated into `grid.forces`.
+///
+/// The viscous term follows `kernels_wgsl/sph_force.wgsl`: it acts only on
+/// approaching pairs (`vᵢⱼ · rᵢⱼ < 0`), where it is
+/// `ν mⱼ (vᵢⱼ · rᵢⱼ) / (ρⱼ (|rᵢⱼ|² + 0.01 hᵢ²)) ∇W`.  Because `∇W` points
+/// towards the neighbour (`dW/dr < 0`) and the coefficient is negative for an
+/// approaching pair, the term pushes the pair apart and dissipates the
+/// approach velocity; separating pairs feel no viscous force.
 pub fn gpu_force_kernel(grid: &mut GpuSphGrid, nu: f64) {
     let n = grid.particle_count();
     // zero forces first
@@ -194,9 +201,13 @@ pub fn gpu_force_kernel(grid: &mut GpuSphGrid, nu: f64) {
             let dvx = vxi - grid.velocities[j * 3];
             let dvy = vyi - grid.velocities[j * 3 + 1];
             let dvz = vzi - grid.velocities[j * 3 + 2];
-            let r2 = dx * dx + dy * dy + dz * dz + 1e-15;
+            let r2 = dx * dx + dy * dy + dz * dz;
             let vdotr = dvx * dx + dvy * dy + dvz * dz;
-            let visc = -nu * mj * vdotr / (rhoj * r2);
+            let visc = if vdotr < 0.0 {
+                nu * mj * vdotr / (rhoj * (r2 + 0.01 * hi * hi))
+            } else {
+                0.0
+            };
 
             grid.forces[i * 3] += (coeff + visc) * grad[0];
             grid.forces[i * 3 + 1] += (coeff + visc) * grad[1];
@@ -514,5 +525,107 @@ mod tests {
         let g = GpuSphGrid::new(1);
         let s = format!("{g:?}");
         assert!(s.contains("GpuSphGrid"));
+    }
+
+    // ── Monaghan artificial viscosity ────────────────────────────────────
+
+    /// Two unit-mass particles on the x axis at `x = 0` and `x = 0.5` with
+    /// `h = 1`, unit densities and zero pressure, so only the viscous term
+    /// acts.  The velocities are along x.
+    fn viscous_pair(v0: f64, v1: f64) -> GpuSphGrid {
+        let mut g = GpuSphGrid::new(2);
+        g.positions = vec![0.0, 0.0, 0.0, 0.5, 0.0, 0.0];
+        g.velocities = vec![v0, 0.0, 0.0, v1, 0.0, 0.0];
+        g.masses = vec![1.0, 1.0];
+        g.smoothing_lengths = vec![1.0, 1.0];
+        g.densities = vec![1.0, 1.0];
+        g.pressures = vec![0.0, 0.0];
+        g
+    }
+
+    /// Regression: the CPU viscous term used the opposite sign of the WGSL
+    /// kernel, so approaching particles attracted each other.  Particles that
+    /// approach along x must be pushed apart.
+    #[test]
+    fn test_viscosity_repels_approaching_pair() {
+        let mut g = viscous_pair(1.0, -1.0);
+        gpu_force_kernel(&mut g, 0.1);
+        assert!(
+            g.forces[0] < 0.0,
+            "particle 0 must be pushed away from particle 1, got {}",
+            g.forces[0]
+        );
+        assert!(
+            g.forces[3] > 0.0,
+            "particle 1 must be pushed away from particle 0, got {}",
+            g.forces[3]
+        );
+        // Equal masses and densities: the pair force is equal and opposite.
+        assert!((g.forces[0] + g.forces[3]).abs() <= 1e-12 * g.forces[3].abs());
+        // No transverse force for a pair separated along x.
+        for k in [1, 2, 4, 5] {
+            assert_eq!(g.forces[k], 0.0, "component {k}");
+        }
+        // The viscous force opposes the approach: (f_i - f_j) · v_ij < 0.
+        let relative_force = g.forces[0] - g.forces[3];
+        let relative_velocity = g.velocities[0] - g.velocities[3];
+        assert!(relative_force * relative_velocity < 0.0);
+    }
+
+    /// Monaghan's viscosity is active only for approaching pairs: the same
+    /// pair moving apart feels no viscous force at all.
+    #[test]
+    fn test_viscosity_inactive_for_separating_pair() {
+        let mut g = viscous_pair(-1.0, 1.0);
+        gpu_force_kernel(&mut g, 0.1);
+        for (k, &f) in g.forces.iter().enumerate() {
+            assert_eq!(f, 0.0, "separating pair must feel no force, component {k}");
+        }
+    }
+
+    /// The force equals `ν mⱼ vdotr / (ρⱼ (r² + 0.01 h²)) ∇W` from
+    /// `kernels_wgsl/sph_force.wgsl`, with `∇W` of the cubic spline.
+    #[test]
+    fn test_viscosity_matches_wgsl_formula() {
+        let nu = 0.1;
+        let mut g = viscous_pair(1.0, -1.0);
+        gpu_force_kernel(&mut g, nu);
+
+        // Particle 0: r_ij = (-0.5, 0, 0), v_ij = (2, 0, 0) → v·r = -1.
+        let (h, r, vdotr) = (1.0_f64, 0.5_f64, -1.0_f64);
+        // Cubic spline: dW/dr = σ (−3q + 2.25 q²) / h with σ = 1/(π h³), q = r/h.
+        let q = r / h;
+        let dw_dr = (-3.0 * q + 2.25 * q * q) / (std::f64::consts::PI * h.powi(4));
+        let visc = nu * vdotr / (r * r + 0.01 * h * h);
+        // ∇W_i = dW/dr · r̂_ij with r̂_ij = (-1, 0, 0).
+        let expected_fx0 = visc * (-dw_dr);
+        assert!(
+            (g.forces[0] - expected_fx0).abs() <= 1e-12 * expected_fx0.abs(),
+            "got {}, expected {expected_fx0}",
+            g.forces[0]
+        );
+        assert!((g.forces[3] + expected_fx0).abs() <= 1e-12 * expected_fx0.abs());
+    }
+
+    /// The viscous force scales linearly with `nu` and adds to the pressure
+    /// term without changing it.
+    #[test]
+    fn test_viscosity_is_additive_to_pressure_term() {
+        let mut inviscid = viscous_pair(1.0, -1.0);
+        inviscid.pressures = vec![50.0, 50.0];
+        gpu_force_kernel(&mut inviscid, 0.0);
+        let mut weak = viscous_pair(1.0, -1.0);
+        weak.pressures = vec![50.0, 50.0];
+        gpu_force_kernel(&mut weak, 0.1);
+        let mut strong = viscous_pair(1.0, -1.0);
+        strong.pressures = vec![50.0, 50.0];
+        gpu_force_kernel(&mut strong, 0.2);
+
+        // Positive pressure repels: the inviscid force already pushes apart.
+        assert!(inviscid.forces[0] < 0.0 && inviscid.forces[3] > 0.0);
+        let weak_extra = weak.forces[0] - inviscid.forces[0];
+        let strong_extra = strong.forces[0] - inviscid.forces[0];
+        assert!(weak_extra < 0.0, "viscosity adds repulsion on approach");
+        assert!((strong_extra - 2.0 * weak_extra).abs() <= 1e-12 * strong_extra.abs());
     }
 }

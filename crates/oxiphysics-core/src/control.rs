@@ -6,6 +6,11 @@
 
 use std::f64::consts::PI;
 
+use crate::error::PhysicsError;
+
+mod poly_roots;
+use poly_roots::polynomial_roots;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper math utilities
 // ─────────────────────────────────────────────────────────────────────────────
@@ -384,90 +389,32 @@ impl TransferFunction {
         }
     }
 
-    /// Compute poles (roots of denominator) using companion matrix eigenvalues
-    /// (only real poles for now via Durand-Kerner).
-    pub fn poles(&self) -> Vec<f64> {
-        poly_roots_real(&self.den)
+    /// Poles of the transfer function: the roots of the denominator, as
+    /// `(re, im)` pairs sorted by real part and then imaginary part.
+    ///
+    /// Complex poles come as exactly conjugate pairs and trailing zero
+    /// coefficients give poles at the origin (the integrator of a PID
+    /// controller).  Degrees one and two use closed forms; higher degrees use the
+    /// eigenvalues of the companion matrix, refined by Newton iterations, and
+    /// every pole is verified against its scaled backward error before it is
+    /// returned.
+    ///
+    /// # Errors
+    ///
+    /// [`PhysicsError::InvalidInput`] if the denominator is empty, identically
+    /// zero or holds a non-finite coefficient;
+    /// [`PhysicsError::NumericalDivergence`] if a pole cannot be computed or
+    /// verified.
+    pub fn poles(&self) -> Result<Vec<(f64, f64)>, PhysicsError> {
+        polynomial_roots(&self.den)
     }
 
-    /// Compute zeros (roots of numerator).
-    pub fn zeros(&self) -> Vec<f64> {
-        poly_roots_real(&self.num)
+    /// Zeros of the transfer function: the roots of the numerator, in the same
+    /// format and with the same guarantees and errors as [`poles`](Self::poles).
+    /// A nonzero constant numerator has no zeros.
+    pub fn zeros(&self) -> Result<Vec<(f64, f64)>, PhysicsError> {
+        polynomial_roots(&self.num)
     }
-}
-
-/// Find real roots of a polynomial with descending-power coefficients using
-/// numerical deflation (simple Newton-Raphson approximation).
-fn poly_roots_real(coeffs: &[f64]) -> Vec<f64> {
-    let n = coeffs.len();
-    if n <= 1 {
-        return vec![];
-    }
-    // Normalize
-    let leading = coeffs[0];
-    if leading.abs() < 1e-30 {
-        return poly_roots_real(&coeffs[1..]);
-    }
-    let p: Vec<f64> = coeffs.iter().map(|&c| c / leading).collect();
-    let degree = p.len() - 1;
-    if degree == 0 {
-        return vec![];
-    }
-    if degree == 1 {
-        return vec![-p[1]];
-    }
-    if degree == 2 {
-        let disc = p[1] * p[1] - 4.0 * p[2];
-        if disc >= 0.0 {
-            return vec![(-p[1] + disc.sqrt()) / 2.0, (-p[1] - disc.sqrt()) / 2.0];
-        }
-        return vec![];
-    }
-    // For higher degree, use Newton on the polynomial
-    let mut roots = Vec::new();
-    let mut remaining = p.clone();
-    while remaining.len() > 2 {
-        let mut x = 0.1_f64;
-        for _ in 0..200 {
-            let (fx, dfx) = eval_poly_and_deriv(&remaining, x);
-            if dfx.abs() < 1e-30 {
-                x += 0.01;
-                continue;
-            }
-            let dx = fx / dfx;
-            x -= dx;
-            if dx.abs() < 1e-12 {
-                break;
-            }
-        }
-        roots.push(x);
-        // deflate
-        remaining = poly_deflate(&remaining, x);
-    }
-    if remaining.len() == 2 {
-        roots.push(-remaining[1] / remaining[0]);
-    }
-    roots
-}
-
-fn eval_poly_and_deriv(p: &[f64], x: f64) -> (f64, f64) {
-    let mut f = p[0];
-    let mut df = 0.0_f64;
-    for &c in &p[1..] {
-        df = df * x + f;
-        f = f * x + c;
-    }
-    (f, df)
-}
-
-fn poly_deflate(p: &[f64], root: f64) -> Vec<f64> {
-    let n = p.len();
-    let mut q = vec![0.0; n - 1];
-    q[0] = p[0];
-    for i in 1..n - 1 {
-        q[i] = p[i] + q[i - 1] * root;
-    }
-    q
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1592,25 +1539,6 @@ mod tests {
     }
 
     #[test]
-    fn poly_roots_linear() {
-        // x + 2 = 0 → root = -2
-        let roots = poly_roots_real(&[1.0, 2.0]);
-        assert_eq!(roots.len(), 1);
-        assert!((roots[0] + 2.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn poly_roots_quadratic() {
-        // x^2 - 5x + 6 = (x-2)(x-3) → roots 2, 3
-        let roots = poly_roots_real(&[1.0, -5.0, 6.0]);
-        assert_eq!(roots.len(), 2);
-        let mut sorted = roots.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert!((sorted[0] - 2.0).abs() < 1e-6, "root0={}", sorted[0]);
-        assert!((sorted[1] - 3.0).abs() < 1e-6, "root1={}", sorted[1]);
-    }
-
-    #[test]
     fn mpc_compute_output_length() {
         let a = vec![vec![1.0, 0.1], vec![0.0, 1.0]];
         let b = vec![vec![0.0], vec![0.1]];
@@ -1623,9 +1551,76 @@ mod tests {
     fn tf_poles_first_order() {
         // H(s) = 1 / (s + 3) → pole at -3
         let tf = TransferFunction::new(vec![1.0], vec![1.0, 3.0]);
-        let poles = tf.poles();
+        let poles = tf.poles().unwrap();
         assert_eq!(poles.len(), 1);
-        assert!((poles[0] + 3.0).abs() < 1e-6, "pole={}", poles[0]);
+        assert!(
+            (poles[0].0 + 3.0).abs() < 1e-12 && poles[0].1 == 0.0,
+            "pole={:?}",
+            poles[0]
+        );
+    }
+
+    fn assert_complex_set(got: &[(f64, f64)], want: &[(f64, f64)], tol: f64) {
+        assert_eq!(got.len(), want.len(), "{got:?} vs {want:?}");
+        for w in want {
+            assert!(
+                got.iter()
+                    .any(|g| (g.0 - w.0).abs() < tol && (g.1 - w.1).abs() < tol),
+                "missing {w:?} in {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tf_poles_third_order_with_a_complex_pair() {
+        // 1 / (s³ + 3s² + 7s + 5) = 1 / ((s + 1)(s² + 2s + 5)): poles -1 and -1 ± 2i.
+        // The old Newton-and-deflate code reported -1 plus two fabricated real poles.
+        let tf = TransferFunction::new(vec![1.0], vec![1.0, 3.0, 7.0, 5.0]);
+        assert_complex_set(
+            &tf.poles().unwrap(),
+            &[(-1.0, 0.0), (-1.0, 2.0), (-1.0, -2.0)],
+            1e-9,
+        );
+    }
+
+    #[test]
+    fn tf_poles_second_order_with_complex_roots() {
+        // s² + 2s + 5: the old code returned no poles at all.
+        let tf = TransferFunction::new(vec![1.0], vec![1.0, 2.0, 5.0]);
+        assert_complex_set(&tf.poles().unwrap(), &[(-1.0, 2.0), (-1.0, -2.0)], 1e-12);
+    }
+
+    #[test]
+    fn tf_zeros_and_poles_of_a_pid_controller() {
+        // C(s) = (kd s² + kp s + ki) / s with kp = 2, ki = 3, kd = 1:
+        // zeros -1 ± i√2 and a pole at the origin (the integrator).
+        let tf = TransferFunction::from_pid(2.0, 3.0, 1.0);
+        let r = 2.0_f64.sqrt();
+        assert_complex_set(&tf.zeros().unwrap(), &[(-1.0, r), (-1.0, -r)], 1e-12);
+        assert_eq!(tf.poles().unwrap(), vec![(0.0, 0.0)]);
+    }
+
+    #[test]
+    fn tf_poles_and_zeros_of_degenerate_polynomials() {
+        // A constant numerator has no zeros.
+        let gain = TransferFunction::new(vec![4.0], vec![1.0, 1.0]);
+        assert!(gain.zeros().unwrap().is_empty());
+        // A zero or empty polynomial has no defined roots; invalid data is an error.
+        let zero_num = TransferFunction::new(vec![0.0], vec![1.0, 1.0]);
+        assert!(matches!(
+            zero_num.zeros(),
+            Err(PhysicsError::InvalidInput { .. })
+        ));
+        let empty_den = TransferFunction::new(vec![1.0], vec![]);
+        assert!(matches!(
+            empty_den.poles(),
+            Err(PhysicsError::InvalidInput { .. })
+        ));
+        let nan_den = TransferFunction::new(vec![1.0], vec![1.0, f64::NAN]);
+        assert!(matches!(
+            nan_den.poles(),
+            Err(PhysicsError::InvalidInput { .. })
+        ));
     }
 
     #[test]

@@ -302,7 +302,12 @@ fn refined_center(points: &[[f64; 3]], idx: &[usize]) -> [f64; 3] {
         return centroid;
     };
     let offset = [sol[0], sol[1], sol[2]];
-    if !(dot3(offset, offset).sqrt() <= extent) {
+    let norm = dot3(offset, offset).sqrt();
+    // Also rejects a NaN offset or extent.
+    if !matches!(
+        norm.partial_cmp(&extent),
+        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+    ) {
         return centroid;
     }
     [
@@ -319,7 +324,7 @@ fn solve4(mut a: [[f64; 4]; 4], mut b: [f64; 4]) -> Option<[f64; 4]> {
         .iter()
         .flat_map(|r| r.iter())
         .fold(0.0_f64, |m, v| m.max(v.abs()));
-    if !(scale > 0.0) {
+    if scale.is_nan() || scale <= 0.0 {
         return None;
     }
     for col in 0..4 {
@@ -331,8 +336,9 @@ fn solve4(mut a: [[f64; 4]; 4], mut b: [f64; 4]) -> Option<[f64; 4]> {
         b.swap(col, pivot);
         for r in (col + 1)..4 {
             let f = a[r][col] / a[col][col];
-            for c in col..4 {
-                a[r][c] -= f * a[col][c];
+            let pivot_row = a[col];
+            for (dst, src) in a[r][col..].iter_mut().zip(&pivot_row[col..]) {
+                *dst -= f * src;
             }
             b[r] -= f * b[col];
         }
@@ -485,18 +491,15 @@ fn smallest_eigenvector(mut a: [[f64; 3]; 3]) -> [f64; 3] {
             let c = 1.0 / (t * t + 1.0).sqrt();
             let s = t * c;
             // A ← Jᵀ A J
-            for k in 0..3 {
-                let akp = a[k][p];
-                let akq = a[k][q];
-                a[k][p] = c * akp - s * akq;
-                a[k][q] = s * akp + c * akq;
+            for row in &mut a {
+                let akp = row[p];
+                let akq = row[q];
+                row[p] = c * akp - s * akq;
+                row[q] = s * akp + c * akq;
             }
-            for k in 0..3 {
-                let apk = a[p][k];
-                let aqk = a[q][k];
-                a[p][k] = c * apk - s * aqk;
-                a[q][k] = s * apk + c * aqk;
-            }
+            let (row_p, row_q) = (a[p], a[q]);
+            a[p] = std::array::from_fn(|k| c * row_p[k] - s * row_q[k]);
+            a[q] = std::array::from_fn(|k| s * row_p[k] + c * row_q[k]);
             for row in &mut v {
                 let vp = row[p];
                 let vq = row[q];

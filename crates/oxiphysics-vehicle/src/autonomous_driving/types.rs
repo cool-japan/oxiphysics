@@ -47,6 +47,12 @@ impl KalmanTracker {
         }
     }
     /// Predict step (constant velocity model).
+    ///
+    /// The state is propagated with the transition matrix
+    /// `F = [[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]]` and the
+    /// covariance with `P <- F P F^T + Q dt`.  The `F P F^T` term is what
+    /// couples position and velocity uncertainty, so that later position
+    /// measurements can correct the velocity estimate.
     pub fn predict(&mut self, dt: f64) {
         let xp = [
             self.x[0] + self.x[2] * dt,
@@ -55,12 +61,28 @@ impl KalmanTracker {
             self.x[3],
         ];
         self.x = xp;
-        for i in 0..16 {
-            self.p[i] += self.q[i] * dt;
+        let f = [
+            1.0, 0.0, dt, 0.0, //
+            0.0, 1.0, 0.0, dt, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        let fp = mat4_mul(&f, &self.p);
+        let mut p_new = mat4_mul(&fp, &mat4_transpose(&f));
+        for (p_i, q_i) in p_new.iter_mut().zip(self.q.iter()) {
+            *p_i += q_i * dt;
         }
+        self.p = p_new;
         self.time_since_update += dt;
     }
     /// Update step given measurement \[x, y\].
+    ///
+    /// Standard Kalman correction with the position-only observation matrix
+    /// `H = [I2 0]`: `S = H P H^T + R`, `K = P H^T S^-1`, `x <- x + K (z - H x)`.
+    /// The covariance is updated in Joseph form,
+    /// `P <- (I - K H) P (I - K H)^T + K R K^T`, over all 16 entries, which
+    /// keeps it symmetric and positive semi-definite.  The measurement is
+    /// ignored when the innovation covariance is singular.
     pub fn update(&mut self, meas: [f64; 2]) {
         let y = [meas[0] - self.x[0], meas[1] - self.x[1]];
         let s00 = self.p[0] + self.r[0];
@@ -68,26 +90,45 @@ impl KalmanTracker {
         let s10 = self.p[4] + self.r[2];
         let s11 = self.p[5] + self.r[3];
         let det = s00 * s11 - s01 * s10;
-        if det.abs() < 1e-12 {
+        if !det.is_finite() || det.abs() < 1e-12 {
             return;
         }
         let s_inv = [s11 / det, -s01 / det, -s10 / det, s00 / det];
-        let ph0 = [self.p[0], self.p[4], self.p[8], self.p[12]];
-        let ph1 = [self.p[1], self.p[5], self.p[9], self.p[13]];
+        // K = P H^T S^-1; P H^T is the first two columns of P.
         let mut k = [[0.0f64; 2]; 4];
-        for (i, (k_i, (ph0_i, ph1_i))) in k.iter_mut().zip(ph0.iter().zip(ph1.iter())).enumerate() {
-            let _ = i;
-            k_i[0] = ph0_i * s_inv[0] + ph1_i * s_inv[2];
-            k_i[1] = ph0_i * s_inv[1] + ph1_i * s_inv[3];
+        for (k_i, p_row) in k.iter_mut().zip(self.p.chunks_exact(4)) {
+            k_i[0] = p_row[0] * s_inv[0] + p_row[1] * s_inv[2];
+            k_i[1] = p_row[0] * s_inv[1] + p_row[1] * s_inv[3];
         }
-        for (i, (x_i, k_i)) in self.x.iter_mut().zip(k.iter()).enumerate() {
-            let _ = i;
+        for (x_i, k_i) in self.x.iter_mut().zip(k.iter()) {
             *x_i += k_i[0] * y[0] + k_i[1] * y[1];
         }
-        for (i, k_i) in k.iter().enumerate() {
-            self.p[i * 4] -= k_i[0] * self.p[0] + k_i[1] * self.p[4];
-            self.p[i * 4 + 1] -= k_i[0] * self.p[1] + k_i[1] * self.p[5];
+        // A = I - K H (K only touches the first two columns).
+        let mut a = [0.0f64; 16];
+        for (i, (a_row, k_i)) in a.chunks_exact_mut(4).zip(k.iter()).enumerate() {
+            a_row[i] = 1.0;
+            a_row[0] -= k_i[0];
+            a_row[1] -= k_i[1];
         }
+        let ap = mat4_mul(&a, &self.p);
+        let mut p_new = mat4_mul(&ap, &mat4_transpose(&a));
+        // + K R K^T
+        for (i, k_i) in k.iter().enumerate() {
+            for (j, k_j) in k.iter().enumerate() {
+                let mut krk = 0.0;
+                for (m, k_im) in k_i.iter().enumerate() {
+                    for (n, k_jn) in k_j.iter().enumerate() {
+                        krk += k_im * self.r[m * 2 + n] * k_jn;
+                    }
+                }
+                p_new[i * 4 + j] += krk;
+            }
+        }
+        let p_t = mat4_transpose(&p_new);
+        for (p_i, t_i) in p_new.iter_mut().zip(p_t.iter()) {
+            *p_i = 0.5 * (*p_i + t_i);
+        }
+        self.p = p_new;
         self.time_since_update = 0.0;
         self.hit_streak += 1;
     }
@@ -167,41 +208,194 @@ impl DubinsPath {
         }
         pos
     }
-    /// Compute the shortest Dubins path between two configurations.
+    /// Every feasible Dubins word connecting two configurations.
     ///
-    /// Returns None if configurations are identical.
-    pub fn shortest(start: [f64; 3], end: [f64; 3], radius: f64) -> Option<Self> {
+    /// The six candidate words (LSL, RSR, LSR, RSL, RLR, LRL) of Shkel and
+    /// Lumelsky are evaluated in the frame whose x axis points from `start`
+    /// towards `end`, with distances normalised by the turning `radius`.  Words
+    /// that have no solution for the given geometry are omitted.  The
+    /// `lengths` of a returned path are stored the way [`DubinsPath::sample`]
+    /// expects them: for CSC words `[t, p * radius, q]` (arc angles in radians,
+    /// straight length in metres) and for CCC words `[t, p, q]` (all radians).
+    ///
+    /// Returns an empty vector for a non-positive or non-finite `radius`, for
+    /// non-finite configurations, and when the two configurations are identical
+    /// (same position and same heading).
+    pub fn candidates(start: [f64; 3], end: [f64; 3], radius: f64) -> Vec<Self> {
+        let finite = start.iter().chain(end.iter()).all(|v| v.is_finite());
+        if !finite || !radius.is_finite() || radius <= 0.0 {
+            return Vec::new();
+        }
         let dx = end[0] - start[0];
         let dy = end[1] - start[1];
-        let d = (dx.powi(2) + dy.powi(2)).sqrt() / radius;
-        if d < 1e-10 {
-            return None;
+        let d = (dx * dx + dy * dy).sqrt() / radius;
+        let heading_change = wrap_to_pi(end[2] - start[2]);
+        if d < 1e-10 && heading_change.abs() < 1e-10 {
+            return Vec::new();
         }
-        let alpha = (start[2] - dy.atan2(dx)).rem_euclid(std::f64::consts::TAU);
-        let beta = (end[2] - dy.atan2(dx)).rem_euclid(std::f64::consts::TAU);
-        let p_sq =
-            2.0 + d * d - 2.0 * (alpha - beta).cos() + 2.0 * d * (-(alpha).sin() + (-(beta)).sin());
-        let lsl_len = if p_sq >= 0.0 {
-            let t = (-(alpha).cos() + (-beta).cos()).atan2(d + alpha.sin() - beta.sin());
+        let theta = dy.atan2(dx);
+        let alpha = mod_2pi(start[2] - theta);
+        let beta = mod_2pi(end[2] - theta);
+        let mut paths = Vec::with_capacity(DUBINS_WORDS.len());
+        for (word, segments) in DUBINS_WORDS.iter().enumerate() {
+            let Some([t, p, q]) = dubins_word_lengths(word, d, alpha, beta) else {
+                continue;
+            };
+            if !(t.is_finite() && p.is_finite() && q.is_finite()) {
+                continue;
+            }
+            let straight_in_middle = matches!(segments[1], DubinsSegment::Straight);
+            let lengths = if straight_in_middle {
+                [t, p * radius, q]
+            } else {
+                [t, p, q]
+            };
+            paths.push(Self {
+                segments: *segments,
+                lengths,
+                radius,
+                start,
+                end,
+            });
+        }
+        paths
+    }
+    /// Compute the shortest Dubins path between two configurations.
+    ///
+    /// Picks the shortest of the feasible words returned by
+    /// [`DubinsPath::candidates`], so [`DubinsPath::sample`] at
+    /// [`DubinsPath::total_length`] reproduces `end` (position and heading).
+    ///
+    /// Returns `None` if the configurations are identical (same position and
+    /// same heading) or if `radius` is not a positive finite number.  Two
+    /// configurations at the same position with different headings are
+    /// connected by a loop path.
+    pub fn shortest(start: [f64; 3], end: [f64; 3], radius: f64) -> Option<Self> {
+        Self::candidates(start, end, radius)
+            .into_iter()
+            .min_by(|a, b| a.total_length().total_cmp(&b.total_length()))
+    }
+}
+/// The six Dubins words as segment triples, indexed like
+/// [`dubins_word_lengths`]: LSL, RSR, LSR, RSL, RLR, LRL.
+const DUBINS_WORDS: [[DubinsSegment; 3]; 6] = [
+    [
+        DubinsSegment::Left,
+        DubinsSegment::Straight,
+        DubinsSegment::Left,
+    ],
+    [
+        DubinsSegment::Right,
+        DubinsSegment::Straight,
+        DubinsSegment::Right,
+    ],
+    [
+        DubinsSegment::Left,
+        DubinsSegment::Straight,
+        DubinsSegment::Right,
+    ],
+    [
+        DubinsSegment::Right,
+        DubinsSegment::Straight,
+        DubinsSegment::Left,
+    ],
+    [
+        DubinsSegment::Right,
+        DubinsSegment::Left,
+        DubinsSegment::Right,
+    ],
+    [
+        DubinsSegment::Left,
+        DubinsSegment::Right,
+        DubinsSegment::Left,
+    ],
+];
+/// Reduce an angle to `[0, 2 pi)`; a value within `1e-12` below `2 pi` is a
+/// rounding artefact of a zero turn and maps to `0` instead of a full loop.
+fn mod_2pi(angle: f64) -> f64 {
+    let r = angle.rem_euclid(std::f64::consts::TAU);
+    if r >= std::f64::consts::TAU - 1e-12 {
+        0.0
+    } else {
+        r
+    }
+}
+/// Wrap an angle to `[-pi, pi)`.
+fn wrap_to_pi(angle: f64) -> f64 {
+    (angle + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+}
+/// Normalised segment lengths `(t, p, q)` of one Dubins word.
+///
+/// The problem is expressed with the start at the origin heading `alpha` and
+/// the goal at `(d, 0)` heading `beta` (all lengths in units of the turning
+/// radius).  `t` and `q` are turn angles (rad); `p` is the straight length for
+/// the CSC words (`word < 4`) and the angle of the middle arc for the CCC
+/// words.  `word` indexes `DUBINS_WORDS`: LSL, RSR, LSR, RSL, RLR, LRL.  Returns
+/// `None` if the word has no solution for this geometry.
+fn dubins_word_lengths(word: usize, d: f64, alpha: f64, beta: f64) -> Option<[f64; 3]> {
+    let (sa, ca) = alpha.sin_cos();
+    let (sb, cb) = beta.sin_cos();
+    let c_ab = (alpha - beta).cos();
+    match word {
+        0 => {
+            let p_sq = 2.0 + d * d - 2.0 * c_ab + 2.0 * d * (sa - sb);
+            if p_sq < 0.0 {
+                return None;
+            }
+            let tmp = (cb - ca).atan2(d + sa - sb);
+            Some([mod_2pi(tmp - alpha), p_sq.sqrt(), mod_2pi(beta - tmp)])
+        }
+        1 => {
+            let p_sq = 2.0 + d * d - 2.0 * c_ab + 2.0 * d * (sb - sa);
+            if p_sq < 0.0 {
+                return None;
+            }
+            let tmp = (ca - cb).atan2(d - sa + sb);
+            Some([mod_2pi(alpha - tmp), p_sq.sqrt(), mod_2pi(tmp - beta)])
+        }
+        2 => {
+            let p_sq = -2.0 + d * d + 2.0 * c_ab + 2.0 * d * (sa + sb);
+            if p_sq < 0.0 {
+                return None;
+            }
             let p = p_sq.sqrt();
-            let q = (beta - alpha + t - t).rem_euclid(std::f64::consts::TAU);
-            (t.rem_euclid(std::f64::consts::TAU) + p + q) * radius
-        } else {
-            f64::INFINITY
-        };
-        let _ = lsl_len;
-        let total = (dx.powi(2) + dy.powi(2)).sqrt();
-        Some(Self {
-            segments: [
-                DubinsSegment::Left,
-                DubinsSegment::Straight,
-                DubinsSegment::Right,
-            ],
-            lengths: [0.0, total, 0.0],
-            radius,
-            start,
-            end,
-        })
+            let tmp = (-ca - cb).atan2(d + sa + sb) - (-2.0_f64).atan2(p);
+            Some([mod_2pi(tmp - alpha), p, mod_2pi(tmp - beta)])
+        }
+        3 => {
+            let p_sq = -2.0 + d * d + 2.0 * c_ab - 2.0 * d * (sa + sb);
+            if p_sq < 0.0 {
+                return None;
+            }
+            let p = p_sq.sqrt();
+            let tmp = (ca + cb).atan2(d - sa - sb) - 2.0_f64.atan2(p);
+            Some([mod_2pi(alpha - tmp), p, mod_2pi(beta - tmp)])
+        }
+        4 => {
+            let cos_mid = (6.0 - d * d + 2.0 * c_ab + 2.0 * d * (sa - sb)) / 8.0;
+            if cos_mid.abs() > 1.0 {
+                return None;
+            }
+            let phi = (ca - cb).atan2(d - sa + sb);
+            let p = mod_2pi(std::f64::consts::TAU - cos_mid.acos());
+            let t = mod_2pi(alpha - phi + 0.5 * p);
+            // Heading balance of right-left-right: alpha - t + p - q = beta.
+            let q = mod_2pi(alpha - beta - t + p);
+            Some([t, p, q])
+        }
+        5 => {
+            let cos_mid = (6.0 - d * d + 2.0 * c_ab + 2.0 * d * (sb - sa)) / 8.0;
+            if cos_mid.abs() > 1.0 {
+                return None;
+            }
+            let phi = (ca - cb).atan2(d + sa - sb);
+            let p = mod_2pi(std::f64::consts::TAU - cos_mid.acos());
+            let t = mod_2pi(-alpha - phi + 0.5 * p);
+            // Heading balance of left-right-left: alpha + t - p + q = beta.
+            let q = mod_2pi(beta - alpha - t + p);
+            Some([t, p, q])
+        }
+        _ => None,
     }
 }
 /// RRT motion planner.

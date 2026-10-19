@@ -10,6 +10,8 @@
 
 use std::f64::consts::PI;
 
+use crate::marine_dynamics::{CatenaryError, CatenarySolution, solve_static_catenary};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 6-DOF Ship State
 // ─────────────────────────────────────────────────────────────────────────────
@@ -519,6 +521,12 @@ where
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Mooring line parameters for catenary analysis.
+///
+/// The line is an inextensible catenary between an anchor on a horizontal,
+/// frictionless seabed (the origin of the profile) and a fairlead at
+/// `(horizontal_span, vertical_span)`.  Any surplus length lies on the
+/// seabed.  Equilibrium is computed by [`solve_static_catenary`], which also
+/// supports elastic lines.
 #[derive(Debug, Clone)]
 pub struct MooringLine {
     /// Total unstretched line length (m).
@@ -547,93 +555,67 @@ impl MooringLine {
         }
     }
 
-    /// Compute the horizontal tension at the anchor for a catenary mooring.
+    /// Solve the static catenary of this (inextensible) line.
     ///
-    /// Uses the catenary equation iteratively. Returns the horizontal component
-    /// of the tension at the anchor point (N).
-    pub fn catenary_horizontal_tension(&self) -> f64 {
-        let w = self.weight_per_length;
-        let l = self.length;
-        let h = self.horizontal_span;
-        let v = self.vertical_span;
-
-        if w.abs() < 1e-30 || l < 1e-30 {
-            return 0.0;
-        }
-
-        // Newton-Raphson to solve: s = sqrt(L^2 - V^2) where s is the
-        // suspended length, and catenary equation relates H, s, h, v.
-        let s = (l * l - v * v).max(0.0).sqrt();
-        if s < 1e-30 {
-            return 0.0;
-        }
-
-        // Initial guess: taut line approximation
-        let mut th = w * s * s / (2.0 * h);
-
-        for _ in 0..50 {
-            let a = th / w; // catenary parameter
-            // catenary: h = a * sinh(s/a), v = a * (cosh(s/a) - 1)
-            let s_over_a = s / a;
-            if s_over_a > 20.0 {
-                break; // overflow protection
-            }
-            let sinh_val = s_over_a.sinh();
-            let _cosh_val = s_over_a.cosh();
-            let f = a * sinh_val - h;
-            let df = sinh_val - s_over_a * s_over_a.cosh();
-            if df.abs() < 1e-30 {
-                break;
-            }
-            // da/dTh = 1/w
-            let dth = -f / (df / w);
-            th += dth;
-            th = th.max(1e-6); // keep positive
-            if dth.abs() < 1e-10 {
-                break;
-            }
-        }
-        th
+    /// A negative `vertical_span` is treated as `0`.  See
+    /// [`solve_static_catenary`] for the equations and the error cases.
+    pub fn solve(&self) -> Result<CatenarySolution, CatenaryError> {
+        solve_static_catenary(
+            self.length,
+            self.weight_per_length,
+            f64::INFINITY,
+            self.horizontal_span,
+            self.vertical_span.max(0.0),
+        )
     }
 
-    /// Compute the tension at the fairlead (top end) of the mooring line.
+    /// Compute the horizontal tension of the catenary mooring (N).
+    ///
+    /// On a frictionless seabed the horizontal tension is the same at the
+    /// anchor and at the fairlead.  It is zero for a slack line and for invalid
+    /// line parameters, and infinite when the line is too short to span the
+    /// anchor-fairlead distance.
+    pub fn catenary_horizontal_tension(&self) -> f64 {
+        match self.solve() {
+            Ok(solution) => solution.horizontal_tension,
+            Err(CatenaryError::LineTooShort { .. }) => f64::INFINITY,
+            Err(_) => 0.0,
+        }
+    }
+
+    /// Compute the tension at the fairlead (top end) of the mooring line (N).
+    ///
+    /// `sqrt(T_H² + T_V²)` with `T_V = w·L_s`, the weight of the suspended
+    /// part of the line (the part lying on the seabed does not load the
+    /// fairlead).  Zero for invalid parameters, infinite for a line that is too
+    /// short.
     pub fn fairlead_tension(&self) -> f64 {
-        let th = self.catenary_horizontal_tension();
-        let tv = self.weight_per_length * self.length;
-        (th * th + tv * tv).sqrt()
+        match self.solve() {
+            Ok(solution) => solution.fairlead_tension(),
+            Err(CatenaryError::LineTooShort { .. }) => f64::INFINITY,
+            Err(_) => 0.0,
+        }
     }
 
     /// Compute the line shape (profile) as a series of points `(x, z)`.
     ///
-    /// Returns `n_points` evenly spaced along the line arc length.
+    /// Returns `n_points` points evenly spaced along the line arc length,
+    /// from the anchor `(0, 0)` to the fairlead
+    /// `(horizontal_span, vertical_span)`.  If the line has no valid
+    /// equilibrium the points lie on the straight anchor-fairlead segment.
     pub fn catenary_profile(&self, n_points: usize) -> Vec<[f64; 2]> {
         let n = n_points.max(2);
-        let th = self.catenary_horizontal_tension();
-        let w = self.weight_per_length;
-
-        if th.abs() < 1e-30 || w.abs() < 1e-30 {
-            // Degenerate: return straight line
-            return (0..n)
+        match self.solve() {
+            Ok(solution) => (0..n)
+                .map(|i| solution.position_at(self.length * i as f64 / (n - 1) as f64))
+                .collect(),
+            Err(_) => (0..n)
                 .map(|i| {
                     let t = i as f64 / (n - 1) as f64;
                     [t * self.horizontal_span, t * self.vertical_span]
                 })
-                .collect();
+                .collect(),
         }
-
-        let a = th / w;
-        let s_total = (self.length * self.length - self.vertical_span * self.vertical_span)
-            .max(0.0)
-            .sqrt();
-
-        (0..n)
-            .map(|i| {
-                let s = s_total * i as f64 / (n - 1) as f64;
-                let x = a * (s / a).sinh();
-                let z = a * ((s / a).cosh() - 1.0);
-                [x, z]
-            })
-            .collect()
     }
 }
 
@@ -973,34 +955,38 @@ pub fn significant_wave_height(spectrum_m0: f64) -> f64 {
     4.0 * spectrum_m0.max(0.0).sqrt()
 }
 
-/// Compute the JONSWAP spectral density at frequency `omega`.
+/// Compute the JONSWAP spectral density at frequency `omega` (rad/s).
 ///
-/// `S(omega) = (alpha * g^2 / omega^5) * exp(-5/4 * (omega_p/omega)^4) * gamma^delta`
+/// The spectrum is normalised to the significant wave height `hs` (m), so the
+/// zeroth moment satisfies `4·sqrt(m0) = Hs`.  With `T_p = 2π/ω_p` it is the
+/// DNV form of [`crate::marine_dynamics::jonswap_spectrum`]:
 ///
-/// where `delta = exp(-(omega - omega_p)^2 / (2 * sigma^2 * omega_p^2))`.
-pub fn jonswap_spectrum(omega: f64, omega_peak: f64, hs: f64, gamma: f64, g: f64) -> f64 {
-    if omega <= 0.0 {
+/// `S(ω) = A_γ · (5/16) Hs² ω_p⁴ ω⁻⁵ · exp(-5/4 (ω_p/ω)⁴) · γ^r`
+///
+/// where `r = exp(-(ω - ω_p)² / (2 σ² ω_p²))`, `σ = 0.07` for `ω <= ω_p`,
+/// `σ = 0.09` above the peak, and `A_γ = 1 - 0.287 ln γ`.
+///
+/// * `omega_peak` — spectral peak frequency ω_p (rad/s).
+/// * `hs` — significant wave height (m).
+/// * `gamma` — peak enhancement factor (3.3 is typical for the North Sea).
+/// * `_g` — gravitational acceleration, ignored: the Phillips constant
+///   `α g²` is replaced by the normalisation on `hs`.  The parameter is kept
+///   so existing callers continue to compile.
+///
+/// Returns `0.0` for non-positive `omega` or `omega_peak`.
+pub fn jonswap_spectrum(omega: f64, omega_peak: f64, hs: f64, gamma: f64, _g: f64) -> f64 {
+    if omega <= 0.0 || omega_peak <= 0.0 {
         return 0.0;
     }
-    let sigma = if omega <= omega_peak { 0.07 } else { 0.09 };
-    let alpha = 0.0081; // Phillips constant approximation
-
-    let base = alpha * g * g / omega.powi(5);
-    let exp_term = (-1.25 * (omega_peak / omega).powi(4)).exp();
-
-    let delta_exp =
-        -((omega - omega_peak).powi(2)) / (2.0 * sigma * sigma * omega_peak * omega_peak);
-    let gamma_factor = gamma.powf(delta_exp.exp());
-
-    // Scale to match Hs
-    let _hs_factor = hs * hs / 16.0;
-
-    base * exp_term * gamma_factor
+    crate::marine_dynamics::jonswap_spectrum(omega, hs, 2.0 * PI / omega_peak, gamma)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {

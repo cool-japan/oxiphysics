@@ -163,7 +163,7 @@ fn parity_generalized_maxwell() {
 
     // Second step: trait vs concrete.
     let (s_concrete, tan_concrete, hist_concrete) =
-        gm.voigt_stress_update(&EPS, &state1.branch_stress, dt);
+        gm.voigt_stress_update(&EPS, &state1.prev_strain, &state1.branch_stress, dt);
     let r = gm.stress_update(&EPS, &state1, dt);
     assert_stress_parity(&r.stress, &s_concrete);
     assert_tangent_parity(&r.tangent, &tan_concrete);
@@ -173,6 +173,43 @@ fn parity_generalized_maxwell() {
             close(*a, *b);
         }
     }
+}
+
+#[test]
+fn generalized_maxwell_trait_relaxes_under_held_strain() {
+    // Step the strain in a very short first increment, then hold it through the
+    // trait interface: the stress must start at the glassy value and decay
+    // monotonically towards the equilibrium spring stress E_inf * eps.
+    let gm = two_branch_maxwell();
+    let strain = [1.0e-3, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let glassy = gm.glassy_modulus() * strain[0];
+    let equilibrium = gm.spring_inf * strain[0];
+
+    let mut state = ViscoelasticState::default();
+    let first = gm.stress_update(&strain, &state, 1.0e-9);
+    assert!(
+        (first.stress[0] - glassy).abs() / glassy < 1.0e-6,
+        "first increment must respond with the glassy modulus: {} vs {glassy}",
+        first.stress[0]
+    );
+    state = first.state;
+
+    let mut previous = first.stress[0];
+    for _ in 0..200 {
+        let resp = gm.stress_update(&strain, &state, 0.2);
+        assert!(
+            resp.stress[0] <= previous + 1.0e-6,
+            "stress must not grow under a held strain: {} -> {}",
+            previous,
+            resp.stress[0]
+        );
+        previous = resp.stress[0];
+        state = resp.state;
+    }
+    assert!(
+        (previous - equilibrium).abs() / equilibrium < 1.0e-3,
+        "long-time stress must approach E_inf * eps: {previous} vs {equilibrium}"
+    );
 }
 
 #[test]
@@ -230,7 +267,8 @@ fn n_state_vars_counts() {
         J2ReturnMapping::from_young_poisson(200e9, 0.3, 250e6, 2e9).n_state_vars(),
         7
     );
-    assert_eq!(two_branch_maxwell().n_state_vars(), 12);
+    // 2 Maxwell branches x 6 history stresses + the 6 components of the previous strain.
+    assert_eq!(two_branch_maxwell().n_state_vars(), 18);
 }
 
 fn drive_one_step<M: ConstitutiveModel>(

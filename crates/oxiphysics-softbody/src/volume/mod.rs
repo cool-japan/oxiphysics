@@ -2,6 +2,8 @@
 
 pub mod functions;
 pub mod functions_2;
+#[cfg(test)]
+mod gradient_tests;
 pub mod types;
 
 // Re-export all types

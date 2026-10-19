@@ -229,8 +229,8 @@ fn oldroyd_b_3d_simple_shear_has_the_analytic_steady_state_in_every_plane() {
                 a = oldroyd_b_evolve_3d(&a, &l, lambda, 0.01);
             }
             let full = [[a.xx, a.xy, a.xz], [a.xy, a.yy, a.yz], [a.xz, a.yz, a.zz]];
-            for r in 0..3 {
-                for c in 0..3 {
+            for (r, row) in full.iter().enumerate() {
+                for (c, &value) in row.iter().enumerate() {
                     let expected = if r == c {
                         if r == i { 1.0 + 2.0 * w * w } else { 1.0 }
                     } else if (r == i && c == j) || (r == j && c == i) {
@@ -239,9 +239,8 @@ fn oldroyd_b_3d_simple_shear_has_the_analytic_steady_state_in_every_plane() {
                         0.0
                     };
                     assert!(
-                        close(full[r][c], expected, 1e-6),
-                        "shear u_{i}(x_{j}): A[{r}][{c}] = {} expected {expected}",
-                        full[r][c]
+                        close(value, expected, 1e-6),
+                        "shear u_{i}(x_{j}): A[{r}][{c}] = {value} expected {expected}"
                     );
                 }
             }

@@ -157,11 +157,15 @@ fn apply_bounce_back(grid: &mut LbmGrid3D, wall_cells: &[usize]) {
 
 // ---------------------------------------------------------------------------
 // Moving-wall full-way bounce-back with Ladd momentum correction.
-// Correction sign matches `oxiphysics_lbm::streaming::stream_half_way_bb_moving_wall_2d`:
-//    f[opp][k] = f_pre[i][k] + 2 w_i ρ (e_i · u_wall) / cs²
+// Same correction as `oxiphysics_lbm::streaming::stream_half_way_bb_moving_wall_2d`
+// (Ladd 1994; Krüger et al., eq. 5.26), with e_i pointing from the fluid into the wall:
+//    f[opp][k] = f_pre[i][k] - 2 w_i ρ (e_i · u_wall) / cs²
 // Here we operate in place on the lid nodes: after standard streaming moved
-// populations around, swap f[i] ↔ f[opp(i)] at lid cell and add the
-// +2 w ρ e·u / cs² correction to the outgoing (post-swap) population.
+// populations around, swap f[i] ↔ f[opp(i)] at lid cell. The population that
+// arrived at the lid along e_opp (pointing into the wall) is reflected into the
+// slot of direction i, so the correction -2 w ρ (e_opp · u_wall) / cs² is
+// applied to the outgoing (post-swap) population; a lid moving along +x drags
+// the fluid along +x.
 // ---------------------------------------------------------------------------
 
 fn apply_bounce_back_moving(grid: &mut LbmGrid3D, lid_cells: &[usize], u_wall: [f64; 3]) {
@@ -174,14 +178,15 @@ fn apply_bounce_back_moving(grid: &mut LbmGrid3D, lid_cells: &[usize], u_wall: [
         let rho = tmp.iter().sum::<f64>();
         for (i, f_i) in grid.f.iter_mut().enumerate() {
             let opp = D3Q19_OPP[i];
-            // e_opp direction carries the reflected population. The Ladd
-            // correction is applied to the OUTGOING direction (opp), using
-            // e_opp · u_wall.
+            // The population that arrived along e_opp (towards the wall) is
+            // reflected into slot i. The Ladd correction removes
+            // 2 w ρ (e_opp · u_wall) / cs² from it, so the wall hands its
+            // momentum to the fluid instead of taking it away.
             let cx = D3Q19_C[opp][0] as f64;
             let cy = D3Q19_C[opp][1] as f64;
             let cz = D3Q19_C[opp][2] as f64;
             let e_dot_u = cx * u_wall[0] + cy * u_wall[1] + cz * u_wall[2];
-            let corr = 2.0 * D3Q19_W[opp] * rho * e_dot_u / cs2;
+            let corr = -2.0 * D3Q19_W[opp] * rho * e_dot_u / cs2;
             f_i[k] = tmp[opp] + corr;
         }
     }

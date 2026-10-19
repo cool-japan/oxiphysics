@@ -81,7 +81,7 @@ impl ParrinelloRahmanBarostat {
         }
     }
 
-    /// Inertia `W` of the box variables (amu, i.e. kJ mol⁻¹ ps² Å⁻²).
+    /// Inertia `W` of the box variables (kJ mol⁻¹ ps² Å⁻², which is 100 amu).
     ///
     /// ```text
     /// W = 3 τ_p² L_max / (4π² β)
@@ -92,6 +92,12 @@ impl ParrinelloRahmanBarostat {
     /// bulk modulus `1/β`, a volume change `δV / V = 3 δL / L` produces
     /// `δP = −3 δL / (β L)`, hence the angular frequency `ω² = 3 L / (β W)` for a
     /// cubic box and the period `2π/ω = τ_p`.
+    ///
+    /// The box variables are driven by energies (`V · ΔP` in kJ mol⁻¹) and
+    /// move in Å and ps, so `W` carries the energy-based unit
+    /// kJ mol⁻¹ ps² Å⁻² directly and needs no amu conversion; the particles use
+    /// the factor `1 kJ mol⁻¹ = 100 amu Å² ps⁻²` of
+    /// [`ACCEL_PER_FORCE_OVER_MASS`](super::ACCEL_PER_FORCE_OVER_MASS) instead.
     pub fn mass(&self, box_lengths: &[f64; 3]) -> f64 {
         let longest_edge = box_lengths.iter().copied().fold(0.0_f64, f64::max);
         let compressibility = self.compressibility * KJ_MOL_PER_ANG3_TO_BAR;
@@ -102,11 +108,13 @@ impl ParrinelloRahmanBarostat {
     /// instantaneous pressure `p_current` (bar).
     ///
     /// Positive when the system is above the target pressure.  Returns zeros if the
-    /// barostat mass is not positive and finite.
+    /// barostat mass or the box volume is not positive and finite (a degenerate
+    /// box has no well-defined pressure force).
     pub fn box_acceleration(&self, p_current: f64, box_lengths: &[f64; 3]) -> [f64; 3] {
         let volume = box_lengths[0] * box_lengths[1] * box_lengths[2];
         let mass = self.mass(box_lengths);
-        if !(mass.is_finite() && mass > 0.0) {
+        let well_defined = volume.is_finite() && volume > 0.0 && mass.is_finite() && mass > 0.0;
+        if !well_defined {
             return [0.0; 3];
         }
         // Pressure excess in kJ mol⁻¹ Å⁻³; V · ΔP is the energy that drives the box.
@@ -118,30 +126,56 @@ impl ParrinelloRahmanBarostat {
         ]
     }
 
-    /// Advance the box by one time step `dt` (ps) at the instantaneous pressure
-    /// `p_current` (bar).
+    /// Advance the box edges by one time step `dt` (ps) at the instantaneous
+    /// pressure `p_current` (bar), and return the per-axis edge scale factors
+    /// `L_new / L_old`.
     ///
-    /// The box velocities are kicked with the box acceleration, each edge is
-    /// advanced with the new velocity (symplectic Euler), the particle
-    /// coordinates are dilated affinely with the edge, and the peculiar
-    /// velocities are divided by the same factor (`v ∝ 1/L`).
-    pub fn advance(&mut self, sim: &mut MdSim, p_current: f64, dt: f64) {
-        let acceleration = self.box_acceleration(p_current, &sim.config.box_lengths);
+    /// The box velocities are kicked with the box acceleration and each edge is
+    /// advanced with the new velocity (symplectic Euler).  The caller dilates the
+    /// particle coordinates affinely with the returned factors and divides the
+    /// peculiar velocities by them (`v ∝ 1/L`); [`ParrinelloRahmanBarostat::advance`]
+    /// does so for an [`MdSim`].  An edge that is not positive and finite is left
+    /// unchanged (factor 1).
+    pub fn advance_edges(
+        &mut self,
+        box_lengths: &mut [f64; 3],
+        p_current: f64,
+        dt: f64,
+    ) -> [f64; 3] {
+        let acceleration = self.box_acceleration(p_current, box_lengths);
+        let mut scales = [1.0_f64; 3];
         for axis in 0..3 {
             self.box_velocity[axis] += dt * acceleration[axis];
-            let edge = sim.config.box_lengths[axis];
+            let edge = box_lengths[axis];
             if !(edge.is_finite() && edge > 0.0) {
                 continue;
             }
             let new_edge = (edge + dt * self.box_velocity[axis]).max(MIN_EDGE_SCALE * edge);
-            let scale = new_edge / edge;
-            for pos in sim.state.positions.iter_mut() {
-                pos[axis] *= scale;
+            scales[axis] = new_edge / edge;
+            box_lengths[axis] = new_edge;
+        }
+        scales
+    }
+
+    /// Advance the box by one time step `dt` (ps) at the instantaneous pressure
+    /// `p_current` (bar).
+    ///
+    /// The box velocities are kicked with the box acceleration, each edge is
+    /// advanced with the new velocity (symplectic Euler, see
+    /// [`ParrinelloRahmanBarostat::advance_edges`]), the particle coordinates are
+    /// dilated affinely with the edge, and the peculiar velocities are divided by
+    /// the same factor (`v ∝ 1/L`).
+    pub fn advance(&mut self, sim: &mut MdSim, p_current: f64, dt: f64) {
+        let scales = self.advance_edges(&mut sim.config.box_lengths, p_current, dt);
+        for pos in sim.state.positions.iter_mut() {
+            for (x, scale) in pos.iter_mut().zip(scales.iter()) {
+                *x *= scale;
             }
-            for vel in sim.state.velocities.iter_mut() {
-                vel[axis] /= scale;
+        }
+        for vel in sim.state.velocities.iter_mut() {
+            for (v, scale) in vel.iter_mut().zip(scales.iter()) {
+                *v /= scale;
             }
-            sim.config.box_lengths[axis] = new_edge;
         }
     }
 
@@ -451,12 +485,7 @@ impl MdSim {
         // Velocity-Verlet step with the adapted dt.
         self.state.forces = current_forces;
         let n = self.state.n_atoms();
-        for i in 0..n {
-            let inv_m = 1.0 / self.state.masses[i];
-            for a in 0..3 {
-                self.state.velocities[i][a] += 0.5 * dt_used * self.state.forces[i][a] * inv_m;
-            }
-        }
+        self.state.kick_velocities(0.5 * dt_used);
         for i in 0..n {
             for a in 0..3 {
                 self.state.positions[i][a] += dt_used * self.state.velocities[i][a];
@@ -471,12 +500,7 @@ impl MdSim {
             }
         }
         self.state.forces = forces_fn(&self.state.positions, &self.config.box_lengths);
-        for i in 0..n {
-            let inv_m = 1.0 / self.state.masses[i];
-            for a in 0..3 {
-                self.state.velocities[i][a] += 0.5 * dt_used * self.state.forces[i][a] * inv_m;
-            }
-        }
+        self.state.kick_velocities(0.5 * dt_used);
         self.state.step += 1;
         self.state.time += dt_used;
         dt_used

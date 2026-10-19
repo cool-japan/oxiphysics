@@ -423,59 +423,52 @@ pub struct FormResult {
 }
 /// Second Order Reliability Method (SORM) solver.
 ///
-/// Computes the principal curvatures of g = 0 at the FORM design point and
-/// applies the Breitung (1984) asymptotic correction to the FORM failure
-/// probability.
+/// Fits a paraboloid to the limit-state surface `G(u) = 0` at the FORM design
+/// point `u*` in standard-normal space.  Rotating the axes so that the last one
+/// points along `u*` (the direction of `-∇G`), the surface is to second order
+/// `v_n = β + ½ Σ_{i<n} κ_i v_i²`.  The `n - 1` principal curvatures `κ_i` are
+/// the eigenvalues of the Hessian of `G` restricted to the tangent hyperplane
+/// of the surface and divided by `‖∇G‖`.  They enter the asymptotic Breitung
+/// (1984) and Tvedt (1990) failure-probability formulas.
+///
+/// Sign convention: `κ_i > 0` when the failure domain is convex (the surface
+/// bends away from the origin, so `Pf` is smaller than the FORM value) and
+/// `κ_i < 0` when it bends towards the origin.  For example
+/// `G(u) = β − u_n + ½ κ Σ_{i<n} u_i²` has all `n − 1` curvatures equal to `κ`.
 pub struct SormAnalysis;
 impl SormAnalysis {
     /// Run SORM on a limit-state function given an existing FORM result.
     ///
+    /// The `n - 1` principal curvatures are computed in standard-normal space
+    /// (the Hessian of `G(u) = g(μ + σ u)` by central differences, projected on
+    /// the tangent hyperplane at the design point) and returned in ascending
+    /// order.  A single-variable problem has no curvature and gives an empty
+    /// list; a degenerate (zero or non-finite) gradient gives zero curvatures,
+    /// i.e. the FORM result.
+    ///
     /// The Breitung correction is:
     ///   Pf_SORM ≈ Φ(−β) ∏_i (1 + β κ_i)^{−1/2}
+    ///
+    /// The asymptotic formula requires `1 + β κ_i > 0`.  A curvature outside
+    /// that range (a failure surface that bends towards the origin by more
+    /// than `1/β`) is not covered by it; its factor is then left out of the
+    /// product.  [`tvedt_pf`](Self::tvedt_pf) returns `NaN` for such
+    /// curvatures, which makes the situation detectable.
     pub fn solve(g: &LimitState, form: &FormResult) -> SormResult {
         let n = g.n_vars();
         let beta = form.beta;
         let u_star = &form.design_point;
-        let h = 1e-5_f64;
-        let x_star = g.u_to_x(u_star);
-        let gval = g.evaluate(&x_star);
-        let mut hess = vec![0.0_f64; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let (pp, pm, mp, mm) = {
-                    let mut xpp = x_star.clone();
-                    let mut xpm = x_star.clone();
-                    let mut xmp = x_star.clone();
-                    let mut xmm = x_star.clone();
-                    xpp[i] += h * g.std_dev[i];
-                    xpp[j] += h * g.std_dev[j];
-                    xpm[i] += h * g.std_dev[i];
-                    xpm[j] -= h * g.std_dev[j];
-                    xmp[i] -= h * g.std_dev[i];
-                    xmp[j] += h * g.std_dev[j];
-                    xmm[i] -= h * g.std_dev[i];
-                    xmm[j] -= h * g.std_dev[j];
-                    (
-                        g.evaluate(&xpp),
-                        g.evaluate(&xpm),
-                        g.evaluate(&xmp),
-                        g.evaluate(&xmm),
-                    )
-                };
-                hess[i * n + j] = (pp - pm - mp + mm) / (4.0 * h * h * g.std_dev[i] * g.std_dev[j]);
-            }
-        }
-        let _ = gval;
-        let mut grad = vec![0.0_f64; n];
-        for i in 0..n {
-            let mut xp = x_star.clone();
-            let mut xm = x_star.clone();
-            xp[i] += h * g.std_dev[i];
-            xm[i] -= h * g.std_dev[i];
-            grad[i] = (g.evaluate(&xp) - g.evaluate(&xm)) / (2.0 * h * g.std_dev[i]) * g.std_dev[i];
-        }
-        let grad_norm = grad.iter().map(|v| v * v).sum::<f64>().sqrt().max(1e-15);
-        let curvatures: Vec<f64> = (0..n).map(|i| hess[i * n + i] / grad_norm).collect();
+        let eval_u = |u: &[f64]| g.evaluate(&g.u_to_x(u));
+        let grad = Self::gradient_u(&eval_u, u_star);
+        let grad_norm = grad.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let curvatures: Vec<f64> = if n < 2 {
+            Vec::new()
+        } else if grad_norm > 0.0 && grad_norm.is_finite() {
+            let hess = Self::hessian_u(&eval_u, u_star);
+            Self::principal_curvatures(&grad, grad_norm, &hess)
+        } else {
+            vec![0.0; n - 1]
+        };
         let mut correction_factor = 1.0_f64;
         for &ki in &curvatures {
             let denom = 1.0 + beta * ki;
@@ -492,6 +485,128 @@ impl SormAnalysis {
             correction_factor,
         }
     }
+    /// Central-difference gradient `∂G/∂u_i` of the limit state in
+    /// standard-normal space.
+    fn gradient_u<F: Fn(&[f64]) -> f64>(eval_u: &F, u: &[f64]) -> Vec<f64> {
+        const STEP: f64 = 1e-5;
+        let mut probe = u.to_vec();
+        (0..u.len())
+            .map(|i| {
+                probe[i] = u[i] + STEP;
+                let forward = eval_u(&probe);
+                probe[i] = u[i] - STEP;
+                let backward = eval_u(&probe);
+                probe[i] = u[i];
+                (forward - backward) / (2.0 * STEP)
+            })
+            .collect()
+    }
+    /// Central-difference Hessian `∂²G/∂u_i∂u_j` of the limit state in
+    /// standard-normal space (symmetric by construction).
+    fn hessian_u<F: Fn(&[f64]) -> f64>(eval_u: &F, u: &[f64]) -> Vec<Vec<f64>> {
+        // The error of a second difference is ~ε|G|/h² + h²|G⁗|; h = 1e-4
+        // balances the two near 1e-8.
+        const STEP: f64 = 1e-4;
+        let n = u.len();
+        let mut hess = vec![vec![0.0_f64; n]; n];
+        let mut probe = u.to_vec();
+        for i in 0..n {
+            for j in i..n {
+                let mut value_at = |di: f64, dj: f64| -> f64 {
+                    probe.copy_from_slice(u);
+                    probe[i] += di * STEP;
+                    probe[j] += dj * STEP;
+                    eval_u(&probe)
+                };
+                let pp = value_at(1.0, 1.0);
+                let pm = value_at(1.0, -1.0);
+                let mp = value_at(-1.0, 1.0);
+                let mm = value_at(-1.0, -1.0);
+                let second = (pp - pm - mp + mm) / (4.0 * STEP * STEP);
+                hess[i][j] = second;
+                hess[j][i] = second;
+            }
+        }
+        hess
+    }
+    /// Orthonormal basis (`n - 1` vectors of length `n`) of the hyperplane
+    /// orthogonal to the unit vector `unit`, from a Householder reflection that
+    /// maps `unit` onto a coordinate axis.
+    fn orthonormal_complement(unit: &[f64]) -> Vec<Vec<f64>> {
+        let n = unit.len();
+        // Reflect about the largest component for numerical stability.
+        let pivot = (0..n)
+            .max_by(|&a, &b| unit[a].abs().total_cmp(&unit[b].abs()))
+            .unwrap_or(0);
+        let sign = if unit[pivot] >= 0.0 { 1.0 } else { -1.0 };
+        let mut w = unit.to_vec();
+        w[pivot] += sign;
+        // wᵀw = 2 (1 + |unit[pivot]|), so H = I − w wᵀ / (1 + |unit[pivot]|).
+        let denom = 1.0 + unit[pivot].abs();
+        // Column j of the symmetric orthogonal matrix H is orthogonal to `unit`
+        // for every j except the pivot (whose column is parallel to `unit`).
+        (0..n)
+            .filter(|&j| j != pivot)
+            .map(|j| {
+                let mut column: Vec<f64> = w.iter().map(|wi| -wi * w[j] / denom).collect();
+                column[j] += 1.0;
+                column
+            })
+            .collect()
+    }
+    /// Principal curvatures of the limit-state surface at the design point,
+    /// ascending: the eigenvalues of `Tᵀ H T / ‖∇G‖`, where the columns of `T`
+    /// form an orthonormal basis of the tangent hyperplane (`⟂ ∇G`) and `H` is
+    /// the standard-normal-space Hessian of `G`.
+    fn principal_curvatures(grad: &[f64], grad_norm: f64, hess: &[Vec<f64>]) -> Vec<f64> {
+        let n = grad.len();
+        let m = n - 1;
+        // Unit vector α = −∇G/‖∇G‖ pointing from the origin to the design point.
+        let alpha: Vec<f64> = grad.iter().map(|gi| -gi / grad_norm).collect();
+        let tangent = Self::orthonormal_complement(&alpha);
+        let h_tangent: Vec<Vec<f64>> = tangent
+            .iter()
+            .map(|t| {
+                hess.iter()
+                    .map(|row| row.iter().zip(t.iter()).map(|(h, tc)| h * tc).sum())
+                    .collect()
+            })
+            .collect();
+        let mut curvature = vec![vec![0.0_f64; m]; m];
+        for j in 0..m {
+            for k in j..m {
+                let entry: f64 = tangent[j]
+                    .iter()
+                    .zip(h_tangent[k].iter())
+                    .map(|(a, b)| a * b)
+                    .sum::<f64>()
+                    / grad_norm;
+                curvature[j][k] = entry;
+                curvature[k][j] = entry;
+            }
+        }
+        let scale = curvature.iter().flatten().fold(0.0_f64, |acc, v| {
+            if v.is_nan() {
+                f64::NAN
+            } else {
+                acc.max(v.abs())
+            }
+        });
+        if scale.is_nan() || scale.is_infinite() {
+            return vec![f64::NAN; m];
+        }
+        if scale == 0.0 {
+            return vec![0.0; m];
+        }
+        // The Jacobi routine uses absolute tolerances; normalise first so that
+        // small curvatures keep full relative accuracy.
+        let scaled: Vec<Vec<f64>> = curvature
+            .iter()
+            .map(|row| row.iter().map(|v| v / scale).collect())
+            .collect();
+        let (eigenvalues, _) = crate::eigen::jacobi_eigen_dense(&scaled, m);
+        eigenvalues.iter().map(|lambda| lambda * scale).collect()
+    }
     /// Hohenbichler–Rackwitz correction for Pf_FORM.
     pub fn hohenbichler_correction(beta: f64, curvatures: &[f64]) -> f64 {
         let mu = phi_pdf(beta) / phi(-beta).max(1e-300);
@@ -504,20 +619,46 @@ impl SormAnalysis {
         }
         prod
     }
-    /// Tvedt three-term approximation (first two terms shown).
+    /// Tvedt (1990) three-term asymptotic failure probability.
     ///
-    /// Returns the failure probability using Tvedt's approximation:
-    ///   Pf ≈ Φ(−β) ∏(1 + β κ_i)^{−1/2}   (same as Breitung here)
+    /// With `κ_j` the `n − 1` principal curvatures (sign convention of
+    /// [`SormAnalysis`]: positive for a convex failure domain),
+    /// `Pf ≈ A₁ + A₂ + A₃` where
+    ///
+    /// * `A₁ = Φ(−β) ∏ (1 + βκ_j)^{−1/2}` (the Breitung term),
+    /// * `A₂ = [βΦ(−β) − φ(β)] {∏ (1 + βκ_j)^{−1/2} − ∏ (1 + (β+1)κ_j)^{−1/2}}`,
+    /// * `A₃ = (β+1) [βΦ(−β) − φ(β)] {∏ (1 + βκ_j)^{−1/2} −
+    ///   Re ∏ (1 + (β+i)κ_j)^{−1/2}}`, `i² = −1`.
+    ///
+    /// The complex product is evaluated in polar form, with the principal
+    /// branch of the square root (valid because `Re(1 + (β+i)κ_j) > 0`).  The
+    /// formulas require `1 + βκ_j > 0` and `1 + (β+1)κ_j > 0`; outside that
+    /// range of validity of the asymptotic expansion the result is `NaN`.  The
+    /// result is clamped to `[0, 1]`.
     pub fn tvedt_pf(beta: f64, curvatures: &[f64]) -> f64 {
-        let pf_form = phi(-beta);
-        let mut prod = 1.0_f64;
-        for &ki in curvatures {
-            let d = 1.0 + beta * ki;
-            if d > 0.0 {
-                prod /= d.sqrt();
+        let mut prod_beta = 1.0_f64;
+        let mut prod_beta_plus_one = 1.0_f64;
+        let mut modulus_factor = 1.0_f64;
+        let mut half_arg_sum = 0.0_f64;
+        for &kj in curvatures {
+            let d0 = 1.0 + beta * kj;
+            let d1 = 1.0 + (beta + 1.0) * kj;
+            if !(d0 > 0.0 && d1 > 0.0) {
+                return f64::NAN;
             }
+            prod_beta /= d0.sqrt();
+            prod_beta_plus_one /= d1.sqrt();
+            // 1 + (β + i) κ = d0 + i κ
+            modulus_factor /= d0.hypot(kj).sqrt();
+            half_arg_sum += 0.5 * kj.atan2(d0);
         }
-        (pf_form * prod).clamp(0.0, 1.0)
+        let prod_complex_re = modulus_factor * half_arg_sum.cos();
+        let pf_form = phi(-beta);
+        let c = beta * pf_form - phi_pdf(beta);
+        let a1 = pf_form * prod_beta;
+        let a2 = c * (prod_beta - prod_beta_plus_one);
+        let a3 = (beta + 1.0) * c * (prod_beta - prod_complex_re);
+        (a1 + a2 + a3).clamp(0.0, 1.0)
     }
 }
 /// Monte Carlo FEM analysis driver.
@@ -644,11 +785,13 @@ impl MonteCarloFEM {
 pub struct SormResult {
     /// FORM reliability index β (same as from FORM).
     pub beta: f64,
-    /// Principal curvatures κ_i of the limit-state surface at the design point.
+    /// Principal curvatures κ_i (i = 1..n−1, ascending) of the limit-state
+    /// surface at the design point; positive when the failure domain is convex.
     pub curvatures: Vec<f64>,
     /// SORM probability of failure (Breitung approximation).
     pub pf_breitung: f64,
-    /// Hohenbichler–Rackwitz correction factor.
+    /// Breitung correction factor ∏(1 + β κ_i)^{−1/2}, so that
+    /// `pf_breitung = Φ(−β) · correction_factor`.
     pub correction_factor: f64,
 }
 /// Statistics from a Monte Carlo FEM analysis.

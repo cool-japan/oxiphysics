@@ -156,11 +156,46 @@ pub fn weight_function_edge_crack(x: f64, a: f64, m1: f64, m2: f64, m3: f64) -> 
     let denom = (2.0 * PI * (a - x)).sqrt();
     (2.0 / denom) * (1.0 + m1 * eta.sqrt() + m2 * eta + m3 * eta.powf(1.5))
 }
+/// Positive abscissae of the 16-point Gauss-Legendre rule on \[-1, 1\] (ascending).
+const GAUSS_LEGENDRE_16_NODES: [f64; 8] = [
+    0.09501250983763744,
+    0.2816035507792589,
+    0.45801677765722737,
+    0.6178762444026438,
+    0.755404408355003,
+    0.8656312023878318,
+    0.9445750230732326,
+    0.9894009349916499,
+];
+/// Weights of [`GAUSS_LEGENDRE_16_NODES`]; the rule is symmetric, so the node
+/// `-x` carries the same weight as `x`.
+const GAUSS_LEGENDRE_16_WEIGHTS: [f64; 8] = [
+    0.1894506104550685,
+    0.18260341504492358,
+    0.16915651939500254,
+    0.14959598881657674,
+    0.12462897125553388,
+    0.09515851168249279,
+    0.062253523938647894,
+    0.027152459411754096,
+];
 /// Compute SIF using the weight function method with numerical integration.
 ///
 /// K = ∫₀ᵃ σ(x) * m(x, a) dx
 ///
-/// Uses the trapezoidal rule with `n_points` integration points.
+/// The weight function `m` has an inverse-square-root singularity at the crack
+/// tip `x = a`.  The substitution `x = a (1 − u²)` removes it exactly:
+///
+/// K = (4 √a / √(2π)) ∫₀¹ σ(a (1 − u²)) (1 + M1 u + M2 u² + M3 u³) du
+///
+/// The remaining smooth integrand is integrated with a composite 16-point
+/// Gauss-Legendre rule over `n_points` equal panels in `u` (a minimum of one
+/// panel is used).  The rule is exact for polynomial integrands up to degree 31
+/// on every panel, so for a uniform stress `σ` the result is
+/// `σ (4 √a / √(2π)) (1 + M1/2 + M2/3 + M3/4)` for any `n_points`; refining
+/// the panel count only matters for rapidly varying stress profiles.
+///
+/// Returns 0 for a non-positive (or non-finite) crack length.
 pub fn sif_weight_function(
     stress_profile: &dyn Fn(f64) -> f64,
     crack_length: f64,
@@ -169,24 +204,28 @@ pub fn sif_weight_function(
     m3: f64,
     n_points: usize,
 ) -> f64 {
-    if crack_length <= 0.0 || n_points < 2 {
+    if !crack_length.is_finite() || crack_length <= 0.0 {
         return 0.0;
     }
-    let dx = crack_length / (n_points - 1) as f64;
-    let mut k = 0.0;
-    for i in 0..n_points {
-        let x = i as f64 * dx;
-        let x_safe = x.min(crack_length * (1.0 - 1e-10));
-        let sigma = stress_profile(x_safe);
-        let m = weight_function_edge_crack(x_safe, crack_length, m1, m2, m3);
-        let weight = if i == 0 || i == n_points - 1 {
-            0.5
-        } else {
-            1.0
-        };
-        k += weight * sigma * m * dx;
+    let panels = n_points.max(1);
+    let panel_width = 1.0 / panels as f64;
+    let half_width = 0.5 * panel_width;
+    let mut integral = 0.0;
+    for panel in 0..panels {
+        let centre = (panel as f64 + 0.5) * panel_width;
+        for (&node, &weight) in GAUSS_LEGENDRE_16_NODES
+            .iter()
+            .zip(GAUSS_LEGENDRE_16_WEIGHTS.iter())
+        {
+            for sign in [-1.0, 1.0] {
+                let u = centre + sign * half_width * node;
+                let x = crack_length * (1.0 - u * u);
+                let geometry = 1.0 + u * (m1 + u * (m2 + u * m3));
+                integral += half_width * weight * stress_profile(x) * geometry;
+            }
+        }
     }
-    k
+    4.0 * crack_length.sqrt() / (2.0 * PI).sqrt() * integral
 }
 /// Irwin plasticity correction for the crack-tip plastic zone size.
 ///
@@ -388,7 +427,7 @@ pub fn paris_forman_growth_rate(
 }
 /// Mode I SIF for a single-edge-notched beam (SENB) in three-point bending.
 ///
-/// K_I = F * S / (B * W^0.5) * f(a/W)
+/// K_I = F * S / (B * W^1.5) * f(a/W)
 ///
 /// where F is the applied force, S is the support span, B is the thickness,
 /// W is the beam depth (height), a is the crack length, and the geometry
@@ -409,7 +448,7 @@ pub fn sif_three_point_bend(
     let alpha_sqrt = alpha.sqrt();
     let poly = 1.99 - alpha * (1.0 - alpha) * (2.15 - 3.93 * alpha + 2.7 * alpha * alpha);
     let f_alpha = (3.0 * alpha_sqrt * poly) / (2.0 * (1.0 + 2.0 * alpha) * (1.0 - alpha).powf(1.5));
-    (force * span) / (thickness * width.sqrt()) * f_alpha
+    (force * span) / (thickness * width.powf(1.5)) * f_alpha
 }
 /// Critical crack length for a SENB specimen at fracture.
 ///
@@ -782,30 +821,106 @@ pub fn basquin_fatigue_life(delta_sigma_over_2: f64, sigma_f_prime: f64, b: f64)
 pub fn swt_parameter(sigma_max: f64, strain_amplitude: f64) -> f64 {
     sigma_max * strain_amplitude
 }
-/// Mode I SIF for a through crack emanating from a circular hole in a plate.
+/// Geometry factor `F` of two symmetric through cracks emanating from a circular
+/// hole in an infinite plate under remote uniaxial tension (Bowie's solution,
+/// O. L. Bowie, J. Math. Phys. 35 (1956) 60-71, in the closed-form fit given in
+/// Tada, Paris & Irwin, *The Stress Analysis of Cracks Handbook*).
 ///
-/// K_I = σ * √(π*a) * F(λ)
+/// With `λ = a / R` (crack length over hole radius) and `s = λ / (1 + λ) = a / (R + a)`:
 ///
-/// where λ = a/R (crack length to hole radius ratio), and F(λ) ≈ 1 + 0.1215*λ − 0.0598*λ² (approximate).
-pub fn sif_hole_edge_crack(stress: f64, crack_length: f64, hole_radius: f64) -> f64 {
-    let lambda = crack_length / hole_radius;
-    let f = 1.0 + 0.1215 * lambda - 0.0598 * lambda * lambda;
-    stress * (PI * crack_length).sqrt() * f.max(1.0)
+/// F(λ) = 0.5 (3 − s) [1 + 1.243 (1 − s)³]
+///
+/// so that `K_I = σ √(π a) F`.  The limits are `F → 3.364` as `λ → 0` (the hole's
+/// stress concentration `K_t = 3` times the edge-crack factor 1.12), `F(1) = 1.444`
+/// and `F → 1` as `λ → ∞` (the hole and the two cracks form one central crack).
+/// Negative ratios are treated as zero; NaN propagates.
+pub fn hole_crack_geometry_factor(a_over_r: f64) -> f64 {
+    if a_over_r.is_nan() {
+        return f64::NAN;
+    }
+    let lambda = a_over_r.max(0.0);
+    let s = lambda / (1.0 + lambda);
+    0.5 * (3.0 - s) * (1.0 + 1.243 * (1.0 - s).powi(3))
 }
-/// Mode I SIF for a surface semi-elliptical crack in a plate.
+/// Mode I SIF for two symmetric through cracks emanating from a circular hole in
+/// an infinite plate under remote tension `stress`.
+///
+/// K_I = σ * √(π*a) * F(a/R)
+///
+/// where `a` is the length of each crack measured from the hole edge, `R` the hole
+/// radius, and `F` the Bowie geometry factor
+/// ([`hole_crack_geometry_factor`]) that starts at 3.364 for short cracks (the
+/// hole concentrates the stress three-fold) and decays to 1 for long cracks.
+///
+/// This is the two-crack solution.  A single crack at the same `a/R` shares the
+/// short-crack limit `F → 3.364`, but its long-crack factor tends to `1/√2`
+/// (hole plus one crack form a central crack of half-length `(2R + a)/2`) instead
+/// of 1.  No single-crack solution is provided here.
+///
+/// Returns 0 for a non-positive crack length and NaN for a negative or NaN hole
+/// radius.
+pub fn sif_hole_edge_crack(stress: f64, crack_length: f64, hole_radius: f64) -> f64 {
+    if hole_radius.is_nan() || hole_radius < 0.0 {
+        return f64::NAN;
+    }
+    if crack_length <= 0.0 {
+        return 0.0;
+    }
+    let factor = if hole_radius == 0.0 {
+        1.0
+    } else {
+        hole_crack_geometry_factor(crack_length / hole_radius)
+    };
+    stress * (PI * crack_length).sqrt() * factor
+}
+/// Newman-Raju crack shape factor `Q` (the square of the complete elliptic
+/// integral of the second kind, in the closed-form fit of J. C. Newman Jr. and
+/// I. S. Raju, Eng. Fract. Mech. 15 (1981) 185-192) of a semi-elliptical surface
+/// crack with depth `depth` (`a`) and half surface length `half_length` (`c`).
+///
+/// Q = 1 + 1.464 (a/c)^1.65 for a/c ≤ 1 and Q = 1 + 1.464 (c/a)^1.65 for a/c > 1.
+///
+/// `Q(a = c) = 2.464`, tending to 1 for very shallow or very deep narrow cracks.
+pub fn surface_crack_shape_factor(depth: f64, half_length: f64) -> f64 {
+    let ratio = depth / half_length;
+    let aspect = if ratio <= 1.0 { ratio } else { 1.0 / ratio };
+    1.0 + 1.464 * aspect.powf(1.65)
+}
+/// Newman-Raju stress-intensity correction `F_s` at the deepest point of a
+/// semi-elliptical surface crack in a plate that is thick and wide compared to
+/// the crack (`a/t → 0`, `c/b → 0`), under remote tension.
+///
+/// - `a/c ≤ 1`: `F_s = M1 = 1.13 − 0.09 (a/c)`.
+/// - `a/c > 1`: `F_s = M1 f_φ(π/2)` with `M1 = √(c/a) (1 + 0.04 c/a)` and the
+///   angular factor `f_φ(π/2) = √(c/a)` of the deepest point, i.e.
+///   `F_s = (c/a)(1 + 0.04 c/a)`.
+///
+/// Both branches give 1.04 at `a = c`.
+pub fn surface_crack_deepest_point_factor(depth: f64, half_length: f64) -> f64 {
+    let ratio = depth / half_length;
+    if ratio <= 1.0 {
+        1.13 - 0.09 * ratio
+    } else {
+        let inverse = 1.0 / ratio;
+        inverse * (1.0 + 0.04 * inverse)
+    }
+}
+/// Mode I SIF at the deepest point of a surface semi-elliptical crack in a plate.
 ///
 /// K_I = σ * √(π*a/Q) * F_s
 ///
-/// where Q is the shape factor (Q ≈ φ² - 0.212*(σ/σ_ys)², φ = elliptic integral).
-/// Simplified: Q ≈ (1 + 4.593*(a/c)^1.65) for a/c ≤ 1.
+/// with the Newman-Raju shape factor `Q` ([`surface_crack_shape_factor`],
+/// `Q = 1 + 1.464 (a/c)^1.65`) and the deepest-point correction `F_s`
+/// ([`surface_crack_deepest_point_factor`], 1.04 for a semicircular crack).  The
+/// plate is taken as thick and wide compared to the crack; the surface point of
+/// the front is not evaluated.  Returns 0 for a non-positive depth or length.
 pub fn sif_surface_crack(stress: f64, depth: f64, half_length: f64) -> f64 {
-    let ratio = depth / half_length;
-    let phi2 = if ratio <= 1.0 {
-        1.0 + 4.593 * ratio.powf(1.65)
-    } else {
-        1.0 + 4.593 * (1.0 / ratio).powf(1.65)
-    };
-    stress * (PI * depth / phi2).sqrt()
+    if depth <= 0.0 || half_length <= 0.0 {
+        return 0.0;
+    }
+    let shape = surface_crack_shape_factor(depth, half_length);
+    let correction = surface_crack_deepest_point_factor(depth, half_length);
+    stress * (PI * depth / shape).sqrt() * correction
 }
 /// Near-tip stress field (mode I) in polar coordinates.
 ///

@@ -235,7 +235,11 @@ pub struct LinkBody {
     pub mass: f64,
     /// Length of the link \[m\].
     pub length: f64,
-    /// Scalar moment of inertia (2-D) \[kg·m²\].
+    /// Moment of inertia about the joint axis at the proximal end of the link
+    /// \[kg·m²\]; [`ArticulatedChain2D::add_link`] sets `m l² / 3`, the value
+    /// of a uniform rod. The dynamics use the inertia about the centre of mass,
+    /// `inertia − m (l/2)²` (clamped at zero), the centre of mass being at the
+    /// midpoint of the link.
     pub inertia: f64,
     /// Position of the link origin in world space \[x, y\].
     pub position: [f64; 2],
@@ -596,7 +600,29 @@ impl SpatialVec {
         }
     }
 }
-/// Open 2-D kinematic chain of articulated rigid bodies.
+/// Open 2-D kinematic chain (a tree) of articulated rigid bodies.
+///
+/// Every link is a rod attached to its parent link (or to the base) by a
+/// revolute joint about the z axis at its proximal end; `joint_angle` is the
+/// angle relative to the parent. Besides the kinematics defined here the type
+/// provides the rigid-body dynamics `H(q) q'' + C(q, q') + G(q) = τ` of the
+/// chain: [`mass_matrix`], [`gravity_torques`], [`coriolis_forces`],
+/// [`inverse_dynamics`], [`forward_dynamics`], [`apply_torques`] and
+/// [`total_kinetic_energy`].
+///
+/// The centre of mass of a link is at its midpoint and
+/// [`LinkBody::inertia`] is its moment of inertia about the joint; the base is
+/// at the world origin with zero angle, so gravity is given in the world frame.
+/// Links whose `parent` index does not refer to an earlier link are attached to
+/// the base by the dynamics (the kinematics requires valid parents).
+///
+/// [`mass_matrix`]: ArticulatedChain2D::mass_matrix
+/// [`gravity_torques`]: ArticulatedChain2D::gravity_torques
+/// [`coriolis_forces`]: ArticulatedChain2D::coriolis_forces
+/// [`inverse_dynamics`]: ArticulatedChain2D::inverse_dynamics
+/// [`forward_dynamics`]: ArticulatedChain2D::forward_dynamics
+/// [`apply_torques`]: ArticulatedChain2D::apply_torques
+/// [`total_kinetic_energy`]: ArticulatedChain2D::total_kinetic_energy
 #[derive(Debug, Clone)]
 pub struct ArticulatedChain2D {
     /// All links in insertion order.
@@ -608,6 +634,10 @@ impl ArticulatedChain2D {
         Self { links: Vec::new() }
     }
     /// Add a new revolute link to the chain.
+    ///
+    /// `parent` is the index of a previously added link, or `None` to attach the
+    /// link to the base. The link is a uniform rod: its inertia about the joint
+    /// is `mass · length² / 3`.
     ///
     /// Returns the index of the newly added link.
     pub fn add_link(&mut self, mass: f64, length: f64, parent: Option<usize>) -> usize {
@@ -697,62 +727,6 @@ impl ArticulatedChain2D {
             })
             .collect();
         cols
-    }
-    /// Newton-Euler inverse dynamics: given joint accelerations and gravity,
-    /// returns the required joint torques.
-    ///
-    /// Uses a simplified scalar approach for a planar chain.
-    pub fn inverse_dynamics(&self, joint_accelerations: &[f64], gravity: [f64; 2]) -> Vec<f64> {
-        let n = self.links.len();
-        let mut torques = vec![0.0_f64; n];
-        for (i, torque) in torques.iter_mut().enumerate() {
-            let mut tau = 0.0;
-            for (j, &ja_j) in joint_accelerations.iter().enumerate().skip(i).take(n - i) {
-                tau += self.links[j].body.inertia * ja_j;
-                let angle_j = {
-                    let mut a = 0.0;
-                    for k in 0..=j {
-                        a += self.links[k].joint_angle;
-                    }
-                    a
-                };
-                let g_perp = -gravity[0] * angle_j.sin() + gravity[1] * angle_j.cos();
-                let r = {
-                    let mut dist = 0.0;
-                    for k in (i + 1)..j {
-                        dist += self.links[k].body.length;
-                    }
-                    if j > i {
-                        dist += self.links[j].body.length * 0.5;
-                    } else {
-                        dist = self.links[j].body.length * 0.5;
-                    }
-                    dist
-                };
-                tau += self.links[j].body.mass * g_perp * r;
-            }
-            *torque = tau;
-        }
-        torques
-    }
-    /// Integrate joint velocities and angles by `dt` using applied torques.
-    ///
-    /// Uses semi-implicit Euler: ω_new = ω + (τ/I)*dt, θ_new = θ + ω_new*dt.
-    pub fn apply_torques(&mut self, torques: &[f64], dt: f64) {
-        for (i, link) in self.links.iter_mut().enumerate() {
-            if i < torques.len() {
-                let alpha = torques[i] / link.body.inertia.max(1e-12);
-                link.joint_velocity += alpha * dt;
-                link.joint_angle += link.joint_velocity * dt;
-            }
-        }
-    }
-    /// Compute the total rotational kinetic energy of the chain.
-    pub fn total_kinetic_energy(&self) -> f64 {
-        self.links
-            .iter()
-            .map(|l| 0.5 * l.body.inertia * l.joint_velocity * l.joint_velocity)
-            .sum()
     }
     /// Compute the gravitational potential energy of all links.
     ///

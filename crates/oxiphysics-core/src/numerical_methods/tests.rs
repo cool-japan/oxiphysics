@@ -615,3 +615,135 @@ mod eigenvalue_routine_tests {
         assert_eq!((values, last), (vec![3.5], vec![1.0]));
     }
 }
+#[cfg(test)]
+mod rk45_tests {
+    use super::*;
+    use crate::neural_ode::dopri5_step;
+    use std::cell::Cell;
+
+    /// For `dy/dt = 1` every stage derivative is identical, so the embedded and
+    /// the fifth-order solutions coincide and the error estimate must vanish.
+    /// The old six-term estimate returned `h / 40` here.
+    #[test]
+    fn rk45_error_estimate_vanishes_for_a_constant_rhs() {
+        let (y_new, err) = rk45_step(&|_t, _y: &[f64]| vec![1.0], 0.0, &[0.0], 0.5);
+        assert!((y_new[0] - 0.5).abs() < 1e-15, "y_new = {}", y_new[0]);
+        assert!(err[0].abs() < 1e-14, "err = {}", err[0]);
+    }
+
+    /// The embedded estimate is the local error of a fourth-order method, so
+    /// halving `h` must divide it by about `2^5 = 32` (the old estimate only
+    /// halved).
+    #[test]
+    fn rk45_error_estimate_scales_as_the_fifth_power_of_the_step() {
+        let f = |_t: f64, y: &[f64]| vec![y[0]];
+        let (_, coarse) = rk45_step(&f, 0.0, &[1.0], 0.2);
+        let (_, fine) = rk45_step(&f, 0.0, &[1.0], 0.1);
+        let ratio = coarse[0].abs() / fine[0].abs();
+        assert!(
+            (24.0..40.0).contains(&ratio),
+            "halving h should shrink the estimate about 32x, got {ratio}"
+        );
+    }
+
+    /// Independent cross-check of the coefficient set: `dopri5_step` in
+    /// `neural_ode` is a separate Dormand-Prince implementation whose embedded
+    /// solution is `y_high - err`, so `y_high - y_low` is the same error vector.
+    #[test]
+    fn rk45_error_vector_matches_the_independent_dopri5_implementation() {
+        let f = |t: f64, y: &[f64]| vec![y[1] * t.cos() + y[0] * y[0], -y[0] + t];
+        let y0 = [0.7, -0.4];
+        let (y_new, err) = rk45_step(&f, 0.3, &y0, 0.25);
+        let (y_high, y_low, _) = dopri5_step(&f, 0.3, &y0, 0.25, 1e-6, 1e-9);
+        for i in 0..2 {
+            assert!((y_new[i] - y_high[i]).abs() < 1e-14, "y_new[{i}]");
+            let reference = y_high[i] - y_low[i];
+            assert!(
+                (err[i] - reference).abs() < 1e-15 + 1e-10 * reference.abs(),
+                "err[{i}] = {}, reference = {reference}",
+                err[i]
+            );
+        }
+    }
+
+    /// The Dormand-Prince stage nodes are honoured: a fifth-order method
+    /// integrates `dy/dt = t^4` (degree-4 polynomial) exactly, while the
+    /// embedded fourth-order method does not, so the estimate must see it.
+    #[test]
+    fn rk45_step_integrates_a_degree_four_time_polynomial_exactly() {
+        let (t0, h) = (0.3_f64, 0.4_f64);
+        let (y_new, err) = rk45_step(&|t, _y: &[f64]| vec![t.powi(4)], t0, &[0.0], h);
+        let exact = ((t0 + h).powi(5) - t0.powi(5)) / 5.0;
+        assert!((y_new[0] - exact).abs() < 1e-15, "y_new = {}", y_new[0]);
+        assert!(err[0].abs() > 1e-8, "estimate is blind to the t^4 term");
+        assert!(err[0].abs() < 1e-4, "err = {}", err[0]);
+    }
+
+    /// `y' = -y` with `rtol = 1e-8`: the integrator has to reach `t = 1` in a
+    /// handful of steps.  The old O(h) estimate forced the step size down to
+    /// ~1e-5 (tens of thousands of steps) while the tolerance meant nothing.
+    #[test]
+    fn rk45_adaptive_meets_a_tight_tolerance_in_few_steps() {
+        let result = rk45_adaptive(|_t, y| vec![-y[0]], 0.0, vec![1.0], 1.0, 1e-8, 1e-12);
+        let (t_end, y_end) = result.last().expect("trajectory has at least the start");
+        assert!((t_end - 1.0).abs() < 1e-12, "t_end = {t_end}");
+        let accepted = result.len() - 1;
+        assert!(accepted < 60, "accepted steps = {accepted}");
+        assert!(
+            (y_end[0] - (-1.0_f64).exp()).abs() < 1e-7,
+            "y(1) = {}",
+            y_end[0]
+        );
+    }
+
+    /// Tightening the tolerance must tighten the achieved error.
+    #[test]
+    fn rk45_adaptive_error_follows_the_requested_tolerance() {
+        let exact = (-2.0_f64).exp();
+        let error_at = |rtol: f64| {
+            let result = rk45_adaptive(|_t, y| vec![-y[0]], 0.0, vec![1.0], 2.0, rtol, 1e-14);
+            let (_, y_end) = result.last().expect("trajectory has at least the start");
+            (y_end[0] - exact).abs()
+        };
+        let loose = error_at(1e-4);
+        let tight = error_at(1e-9);
+        assert!(loose < 1e-3, "loose error = {loose}");
+        assert!(tight < 1e-8, "tight error = {tight}");
+        assert!(tight < loose / 100.0, "loose = {loose}, tight = {tight}");
+    }
+
+    /// FSAL: the derivative at the end of an accepted step seeds the next one,
+    /// so the run costs `1 + 6 * attempted_steps` evaluations, not `7 *`.
+    #[test]
+    fn rk45_adaptive_reuses_the_fsal_stage() {
+        let calls = Cell::new(0usize);
+        let f = |_t: f64, y: &[f64]| {
+            calls.set(calls.get() + 1);
+            vec![-y[0]]
+        };
+        let result = rk45_adaptive(f, 0.0, vec![1.0], 1.0, 1e-8, 1e-12);
+        let accepted = result.len() - 1;
+        let evaluations = calls.get();
+        assert_eq!((evaluations - 1) % 6, 0, "evaluations = {evaluations}");
+        assert!((evaluations - 1) / 6 >= accepted);
+        assert!(evaluations < 7 * accepted, "evaluations = {evaluations}");
+    }
+
+    /// A system with no components has nothing to control: it must still reach
+    /// `t_end` instead of stalling on a 0/0 error norm.
+    #[test]
+    fn rk45_adaptive_handles_an_empty_state() {
+        let result = rk45_adaptive(|_t, _y| Vec::new(), 0.0, Vec::new(), 1.0, 1e-6, 1e-9);
+        let (t_end, y_end) = result.last().expect("trajectory has at least the start");
+        assert!((t_end - 1.0).abs() < 1e-12);
+        assert!(y_end.is_empty());
+    }
+
+    /// A right-hand side that returns NaN must terminate without a hang and
+    /// without accepting a single step.
+    #[test]
+    fn rk45_adaptive_stops_on_a_non_finite_rhs() {
+        let result = rk45_adaptive(|_t, _y| vec![f64::NAN], 0.0, vec![1.0], 1.0, 1e-6, 1e-9);
+        assert_eq!(result.len(), 1, "no step may be accepted");
+    }
+}

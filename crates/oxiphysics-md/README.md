@@ -40,7 +40,7 @@ sim.add_atoms(atoms);
 sim.run(n_steps)?;
 
 // Thermostat / Barostat
-let nhc = NoseHooverChain::new(target_temp, tau, n_chains)?;
+let nhc = NoseHooverChain::new(chain_length, q_masses, n_dof)?; // rejects empty chains / bad masses
 let barostat = ParrinelloRahmanBarostat::new(target_pressure, tau)?;
 
 // Free energy

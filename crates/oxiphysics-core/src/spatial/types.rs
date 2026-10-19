@@ -290,11 +290,25 @@ impl<T: Clone> FlatRTree<T> {
             .map(|(_, v)| v)
     }
 }
+/// Largest number of points a [`BallTree`] leaf stores.
+const BALL_TREE_LEAF_SIZE: usize = 8;
+/// Relative slack subtracted from the ball-distance bound of a [`BallTreeNode`].
+///
+/// The centre, the radius and the query distance are all rounded, so the plain
+/// bound `|centre - query| - radius` can exceed the true distance to the nearest
+/// stored point by a few ulps of `|centre - query| + radius`.  Pruning on the
+/// slackened bound can therefore never discard a point that the exact distance
+/// test of a query would accept.
+const BALL_BOUND_SLACK: f64 = 16.0 * f64::EPSILON;
 /// A ball tree (metric tree) for nearest-neighbor search in 3D.
 ///
-/// Each node defines a ball (center + radius) that bounds all points in its
-/// subtree. Nodes are organized as a binary tree with median-split along the
-/// principal axis of the bounding ball.
+/// Every node stores a bounding ball: the centroid of all points in its subtree
+/// and the largest distance from that centroid to any of them.  Internal nodes
+/// split their points at the median along the coordinate axis of largest
+/// spread.  The median point (the *pivot*) stays in the internal node, the
+/// points before it go to the left child and the points after it to the right
+/// child; leaves store up to eight points directly.  Queries prune a whole
+/// subtree as soon as its bounding ball cannot hold a better candidate.
 pub struct BallTree {
     pub(super) nodes: Vec<BallTreeNode>,
     pub(super) points: Vec<Vec3>,
@@ -314,15 +328,16 @@ impl BallTree {
         tree
     }
     fn build_node(&mut self, indices: &mut [usize]) -> usize {
-        let centroid = Self::centroid_of(&self.points, indices);
+        let center = Self::centroid_of(&self.points, indices);
         let radius = indices
             .iter()
-            .map(|&i| (self.points[i] - centroid).norm())
+            .map(|&i| (self.points[i] - center).norm())
             .fold(0.0f64, f64::max);
-        if indices.len() <= 8 {
-            let node_idx = self.nodes.len();
+        let node_idx = self.nodes.len();
+        if indices.len() <= BALL_TREE_LEAF_SIZE {
             self.nodes.push(BallTreeNode {
-                pivot: indices[indices.len() / 2],
+                pivot: None,
+                center,
                 radius,
                 left: None,
                 right: None,
@@ -331,16 +346,13 @@ impl BallTree {
             return node_idx;
         }
         let (axis, _) = Self::max_spread_axis(&self.points, indices);
-        indices.sort_unstable_by(|&a, &b| {
-            self.points[a][axis]
-                .partial_cmp(&self.points[b][axis])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
         let mid = indices.len() / 2;
+        let points = &self.points;
+        indices.select_nth_unstable_by(mid, |&a, &b| points[a][axis].total_cmp(&points[b][axis]));
         let pivot = indices[mid];
-        let node_idx = self.nodes.len();
         self.nodes.push(BallTreeNode {
-            pivot,
+            pivot: Some(pivot),
+            center,
             radius,
             left: None,
             right: None,
@@ -395,67 +407,69 @@ impl BallTree {
         }
     }
     fn nn_search(&self, node_idx: usize, query: Vec3, best: &mut (usize, f64)) {
-        if node_idx >= self.nodes.len() {
+        let Some(node) = self.nodes.get(node_idx) else {
+            return;
+        };
+        let bound = node.distance_lower_bound(query);
+        if bound * bound >= best.1 {
             return;
         }
-        let node = &self.nodes[node_idx];
-        let pivot_d2 = (self.points[node.pivot] - query).norm_squared();
-        if pivot_d2 < best.1 {
-            *best = (node.pivot, pivot_d2);
-        }
-        for &i in &node.items {
+        for i in node.pivot.into_iter().chain(node.items.iter().copied()) {
             let d2 = (self.points[i] - query).norm_squared();
             if d2 < best.1 {
                 *best = (i, d2);
             }
         }
-        let ball_center = self.points[node.pivot];
-        let dist_to_ball = ((ball_center - query).norm() - node.radius).max(0.0);
-        if dist_to_ball * dist_to_ball >= best.1 {
-            return;
-        }
-        if let Some(l) = node.left {
-            self.nn_search(l, query, best);
-        }
-        if let Some(r) = node.right {
-            self.nn_search(r, query, best);
+        let bound_of = |idx: usize| {
+            self.nodes
+                .get(idx)
+                .map_or(f64::INFINITY, |child| child.distance_lower_bound(query))
+        };
+        let children = match (node.left, node.right) {
+            (Some(l), Some(r)) if bound_of(r) < bound_of(l) => [Some(r), Some(l)],
+            (l, r) => [l, r],
+        };
+        for child in children.into_iter().flatten() {
+            self.nn_search(child, query, best);
         }
     }
     /// Find all points within `radius` of `query`.
+    ///
+    /// Returns the indices of the points whose distance to `query` is at most
+    /// `radius`, each exactly once and in no particular order.  A negative or
+    /// NaN `radius` matches nothing.
     pub fn range_query(&self, query: Vec3, radius: f64) -> Vec<usize> {
-        if self.nodes.is_empty() {
-            return Vec::new();
-        }
         let mut result = Vec::new();
-        let r2 = radius * radius;
-        self.range_search(0, query, r2, &mut result);
+        if self.nodes.is_empty() || radius.is_nan() || radius < 0.0 {
+            return result;
+        }
+        self.range_search(0, query, radius, radius * radius, &mut result);
         result
     }
-    fn range_search(&self, node_idx: usize, query: Vec3, r2: f64, out: &mut Vec<usize>) {
-        if node_idx >= self.nodes.len() {
+    fn range_search(
+        &self,
+        node_idx: usize,
+        query: Vec3,
+        radius: f64,
+        r2: f64,
+        out: &mut Vec<usize>,
+    ) {
+        let Some(node) = self.nodes.get(node_idx) else {
+            return;
+        };
+        if node.distance_lower_bound(query) > radius {
             return;
         }
-        let node = &self.nodes[node_idx];
-        let ball_center = self.points[node.pivot];
-        let dist_to_center = (ball_center - query).norm();
-        if (dist_to_center - node.radius) * (dist_to_center - node.radius) > r2
-            && dist_to_center > node.radius + r2.sqrt()
-        {
-            return;
-        }
-        if (self.points[node.pivot] - query).norm_squared() <= r2 {
-            out.push(node.pivot);
-        }
-        for &i in &node.items {
+        for i in node.pivot.into_iter().chain(node.items.iter().copied()) {
             if (self.points[i] - query).norm_squared() <= r2 {
                 out.push(i);
             }
         }
         if let Some(l) = node.left {
-            self.range_search(l, query, r2, out);
+            self.range_search(l, query, radius, r2, out);
         }
         if let Some(r) = node.right {
-            self.range_search(r, query, r2, out);
+            self.range_search(r, query, radius, r2, out);
         }
     }
     /// Number of points.
@@ -1119,9 +1133,13 @@ pub(crate) enum OctreeNode<T: Clone> {
     },
 }
 pub(super) struct BallTreeNode {
-    /// Index of the pivot point.
-    pub(super) pivot: usize,
-    /// Radius of the ball bounding all points in this subtree.
+    /// Median point of an internal node, stored here and in neither child
+    /// (`None` for leaves).
+    pub(super) pivot: Option<usize>,
+    /// Centre of the bounding ball: the centroid of every point in the subtree.
+    pub(super) center: Vec3,
+    /// Radius of the bounding ball: the largest distance from `center` to a
+    /// point of the subtree (the pivot and both children included).
     pub(super) radius: f64,
     /// Left child (None = leaf).
     pub(super) left: Option<usize>,
@@ -1129,6 +1147,19 @@ pub(super) struct BallTreeNode {
     pub(super) right: Option<usize>,
     /// Points stored at this leaf node (empty for internal nodes).
     pub(super) items: Vec<usize>,
+}
+impl BallTreeNode {
+    /// Lower bound on the distance from `query` to any point stored in this
+    /// subtree (the pivot, the leaf items and both children).
+    ///
+    /// Every such point lies inside the bounding ball, so its distance is at
+    /// least `|center - query| - radius`; [`BALL_BOUND_SLACK`] keeps the bound
+    /// safe against rounding.
+    fn distance_lower_bound(&self, query: Vec3) -> f64 {
+        let to_center = (self.center - query).norm();
+        let slack = BALL_BOUND_SLACK * (to_center + self.radius);
+        (to_center - self.radius - slack).max(0.0)
+    }
 }
 /// A voxel grid spatial index.
 ///

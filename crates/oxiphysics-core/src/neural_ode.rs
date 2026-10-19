@@ -152,6 +152,25 @@ pub fn dopri5_step(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Vector helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns `base + scale · direction` as a new vector.
+fn add_scaled(base: &[f64], scale: f64, direction: &[f64]) -> Vec<f64> {
+    base.iter()
+        .zip(direction.iter())
+        .map(|(b, d)| b + scale * d)
+        .collect()
+}
+
+/// Performs `target += scale · direction` in place.
+fn add_scaled_in_place(target: &mut [f64], scale: f64, direction: &[f64]) {
+    for (t, d) in target.iter_mut().zip(direction.iter()) {
+        *t += scale * d;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Activation helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -262,7 +281,9 @@ impl NeuralOdeFunc {
 
     /// Compute the Jacobian-vector product `J·v` via forward-mode finite differences.
     ///
-    /// Used internally by the adjoint method to approximate `(∂f/∂z) · v`.
+    /// Approximates the directional derivative `(∂f/∂z) · v`.  Note that the
+    /// continuous adjoint needs the *transposed* product `(∂f/∂z)ᵀ · a`; see
+    /// [`NeuralOdeFunc::vjp`] and [`NeuralOdeFunc::backprop`].
     pub fn jvp(&self, t: f64, z: &[f64], v: &[f64], eps: f64) -> Vec<f64> {
         let f0 = self.forward(t, z);
         let z_plus: Vec<f64> = z
@@ -276,6 +297,108 @@ impl NeuralOdeFunc {
             .zip(f0.iter())
             .map(|(fp, f0i)| (fp - f0i) / eps)
             .collect()
+    }
+
+    /// Compute the vector-Jacobian product `(∂f/∂z)ᵀ · adj` via central finite
+    /// differences with step `eps`.
+    ///
+    /// Component `j` of the result is `Σ_i adj_i · (f_i(z + ε e_j) − f_i(z − ε e_j)) / 2ε`.
+    /// This is the derivative the adjoint equation `da/dt = −(∂f/∂z)ᵀ a` needs
+    /// (the Jacobian is transposed, unlike [`NeuralOdeFunc::jvp`]).  For the
+    /// exact value use [`NeuralOdeFunc::backprop`].
+    pub fn vjp(&self, t: f64, z: &[f64], adj: &[f64], eps: f64) -> Vec<f64> {
+        (0..z.len())
+            .map(|j| {
+                let mut z_plus = z.to_vec();
+                let mut z_minus = z.to_vec();
+                z_plus[j] += eps;
+                z_minus[j] -= eps;
+                let f_plus = self.forward(t, &z_plus);
+                let f_minus = self.forward(t, &z_minus);
+                adj.iter()
+                    .zip(f_plus.iter().zip(f_minus.iter()))
+                    .map(|(&a, (&fp, &fm))| a * (fp - fm) / (2.0 * eps))
+                    .sum()
+            })
+            .collect()
+    }
+
+    /// Exact reverse-mode derivatives of the network output at `(t, z)` for the
+    /// output cotangent `adj`.
+    ///
+    /// Back-propagates `adj` through
+    /// `f = W_out·tanh(W_h·tanh(W_in·[z; t] + b_in) + b_h) + b_out` and returns
+    /// `(vjp_z, grad_theta)`:
+    /// * `vjp_z[j] = Σ_i adj_i · ∂f_i/∂z_j`, the product `(∂f/∂z)ᵀ · adj`,
+    /// * `grad_theta[p] = Σ_i adj_i · ∂f_i/∂θ_p` in the layout of
+    ///   [`NeuralOdeFunc::params_flat`].
+    ///
+    /// The result is exact up to rounding error and costs one forward and one
+    /// backward pass, whereas [`NeuralOdeFunc::vjp`] and
+    /// [`NeuralOdeFunc::param_grad_contrib`] need a forward pass per perturbed
+    /// coordinate.
+    pub fn backprop(&self, t: f64, z: &[f64], adj: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let out = self.input_size;
+        let hidden = self.hidden_size;
+        let mut aug = Vec::with_capacity(z.len() + 1);
+        aug.extend_from_slice(z);
+        aug.push(t);
+        let inp = aug.len();
+        let h1 = dense_tanh(&aug, &self.weights_in, &self.bias_in, hidden);
+        let h2 = dense_tanh(&h1, &self.weights_hidden, &self.bias_hidden, hidden);
+
+        // Output layer: f = W_out h2 + b_out.
+        let cotangent: Vec<f64> = (0..out)
+            .map(|i| adj.get(i).copied().unwrap_or(0.0))
+            .collect();
+        let grad_weights_out: Vec<f64> = (0..out * hidden)
+            .map(|idx| cotangent[idx / hidden] * h2[idx % hidden])
+            .collect();
+        let grad_bias_out = cotangent.clone();
+
+        // Second hidden layer: h2 = tanh(W_h h1 + b_h).
+        let d_pre2: Vec<f64> = (0..hidden)
+            .map(|k| {
+                let d_h2: f64 = (0..out)
+                    .map(|i| self.weights_out[i * hidden + k] * cotangent[i])
+                    .sum();
+                d_h2 * (1.0 - h2[k] * h2[k])
+            })
+            .collect();
+        let grad_weights_hidden: Vec<f64> = (0..hidden * hidden)
+            .map(|idx| d_pre2[idx / hidden] * h1[idx % hidden])
+            .collect();
+        let grad_bias_hidden = d_pre2.clone();
+
+        // First hidden layer: h1 = tanh(W_in [z; t] + b_in).
+        let d_pre1: Vec<f64> = (0..hidden)
+            .map(|l| {
+                let d_h1: f64 = (0..hidden)
+                    .map(|k| self.weights_hidden[k * hidden + l] * d_pre2[k])
+                    .sum();
+                d_h1 * (1.0 - h1[l] * h1[l])
+            })
+            .collect();
+        let grad_weights_in: Vec<f64> = (0..hidden * inp)
+            .map(|idx| d_pre1[idx / inp] * aug[idx % inp])
+            .collect();
+        let grad_bias_in = d_pre1.clone();
+        let vjp_z: Vec<f64> = (0..z.len())
+            .map(|j| {
+                (0..hidden)
+                    .map(|l| self.weights_in[l * inp + j] * d_pre1[l])
+                    .sum()
+            })
+            .collect();
+
+        let mut grad_theta = Vec::with_capacity(self.n_params());
+        grad_theta.extend_from_slice(&grad_weights_in);
+        grad_theta.extend_from_slice(&grad_bias_in);
+        grad_theta.extend_from_slice(&grad_weights_hidden);
+        grad_theta.extend_from_slice(&grad_bias_hidden);
+        grad_theta.extend_from_slice(&grad_weights_out);
+        grad_theta.extend_from_slice(&grad_bias_out);
+        (vjp_z, grad_theta)
     }
 
     /// Return all trainable parameters as a flat vector.
@@ -444,6 +567,54 @@ impl NeuralOdeSolver {
         }
         result
     }
+
+    /// Exact reverse-mode derivative of one fixed RK4 step.
+    ///
+    /// Let `y₁ = Φ_θ(y₀)` be the classical RK4 step of size `h` from `(t, y)`.
+    /// Given the cotangent `y1_bar = ∂L/∂y₁`, this back-propagates through the
+    /// four stages (using [`NeuralOdeFunc::backprop`]) and returns
+    /// `(∂L/∂y₀, ∂L/∂θ)`, where `∂L/∂θ` follows the layout of
+    /// [`NeuralOdeFunc::params_flat`].  Chaining it over the steps of a solve
+    /// gives the exact gradient of the *discretised* solution map.
+    pub fn rk4_step_vjp(&self, t: f64, y: &[f64], h: f64, y1_bar: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let func = &self.func;
+        // Forward stages (needed again for the backward sweep).
+        let k1 = func.forward(t, y);
+        let y2 = add_scaled(y, 0.5 * h, &k1);
+        let k2 = func.forward(t + 0.5 * h, &y2);
+        let y3 = add_scaled(y, 0.5 * h, &k2);
+        let k3 = func.forward(t + 0.5 * h, &y3);
+        let y4 = add_scaled(y, h, &k3);
+
+        // y₁ = y₀ + h/6 (k₁ + 2k₂ + 2k₃ + k₄)
+        let mut y_bar = y1_bar.to_vec();
+        let mut theta_bar = vec![0.0_f64; func.n_params()];
+        let mut k1_bar: Vec<f64> = y1_bar.iter().map(|v| v * h / 6.0).collect();
+        let mut k2_bar: Vec<f64> = y1_bar.iter().map(|v| v * h / 3.0).collect();
+        let mut k3_bar: Vec<f64> = y1_bar.iter().map(|v| v * h / 3.0).collect();
+        let k4_bar: Vec<f64> = y1_bar.iter().map(|v| v * h / 6.0).collect();
+
+        // k₄ = f(t + h, y₀ + h k₃)
+        let (j4, g4) = func.backprop(t + h, &y4, &k4_bar);
+        add_scaled_in_place(&mut theta_bar, 1.0, &g4);
+        add_scaled_in_place(&mut y_bar, 1.0, &j4);
+        add_scaled_in_place(&mut k3_bar, h, &j4);
+        // k₃ = f(t + h/2, y₀ + h/2 k₂)
+        let (j3, g3) = func.backprop(t + 0.5 * h, &y3, &k3_bar);
+        add_scaled_in_place(&mut theta_bar, 1.0, &g3);
+        add_scaled_in_place(&mut y_bar, 1.0, &j3);
+        add_scaled_in_place(&mut k2_bar, 0.5 * h, &j3);
+        // k₂ = f(t + h/2, y₀ + h/2 k₁)
+        let (j2, g2) = func.backprop(t + 0.5 * h, &y2, &k2_bar);
+        add_scaled_in_place(&mut theta_bar, 1.0, &g2);
+        add_scaled_in_place(&mut y_bar, 1.0, &j2);
+        add_scaled_in_place(&mut k1_bar, 0.5 * h, &j2);
+        // k₁ = f(t, y₀)
+        let (j1, g1) = func.backprop(t, y, &k1_bar);
+        add_scaled_in_place(&mut theta_bar, 1.0, &g1);
+        add_scaled_in_place(&mut y_bar, 1.0, &j1);
+        (y_bar, theta_bar)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -452,11 +623,13 @@ impl NeuralOdeSolver {
 
 /// Reverse-mode gradient of a Neural ODE loss via the continuous adjoint method.
 ///
-/// The adjoint state `a(t) = -dL/dz(t)` is integrated backward in time.  This
-/// gives parameter gradients without storing the full forward trajectory.
+/// The adjoint state `a(t) = ∂L/∂z(t)` obeys `da/dt = −(∂f/∂z)ᵀ a` and is
+/// integrated backward in time together with the state itself.  This gives
+/// parameter gradients without storing the forward trajectory.
 #[derive(Debug, Clone)]
 pub struct AdjointMethod {
-    /// Augmented state `[z; a; dL/dθ]` during backward integration.
+    /// Augmented state `[z; a; dL/dθ]` of the backward integration.  After
+    /// [`AdjointMethod::run`] it holds the state at `t0`.
     pub augmented_state: Vec<f64>,
     /// Dimensionality of the ODE state.
     pub state_dim: usize,
@@ -525,21 +698,31 @@ impl AdjointMethod {
         grad
     }
 
-    /// Set the final adjoint state from `loss_grad` and propagate it backward
-    /// through `solver` from `t1` to `t0` using RK4 (continuous adjoint method).
+    /// Propagate the final adjoint state `loss_grad = ∂L/∂z(t1)` backward through
+    /// `solver` from `t1` to `t0` (continuous adjoint method) and return
+    /// `(grad_z0, grad_params)`.
     ///
-    /// Internally performs a backward-in-time integration of the ODE from `z_final`
-    /// to reconstruct the state trajectory, then integrates the augmented adjoint
-    /// system:
+    /// `z_final = z(t1)` is the end state of the forward solve.  In the reversed
+    /// time `s = t1 − t` the augmented state `[z, a, g]` obeys
     ///
-    ///   `da/dt = -(∂f/∂z)ᵀ · a`     (adjoint ODE, backward in time)
-    ///   `dg/dt = -(∂f/∂θ)ᵀ · a`     (parameter-gradient accumulation)
+    /// ```text
+    /// dz/ds = −f(t1 − s, z)             (the trajectory is re-integrated backward)
+    /// da/ds = +(∂f/∂z)ᵀ · a             (adjoint, a(0) = ∂L/∂z(t1))
+    /// dg/ds = +aᵀ · ∂f/∂θ               (parameter gradient, g(0) = 0)
+    /// ```
     ///
-    /// Both Jacobians are approximated via central finite differences (ε = 1e-5).
+    /// and is advanced by classical RK4 with all four stages evaluated at the
+    /// stage states and stage times of the *augmented* system.  The step grid is
+    /// the one [`NeuralOdeSolver::solve_rk4`] uses for the same `(t0, t1, dt)`,
+    /// traversed in reverse.  The transposed Jacobian and the parameter
+    /// derivatives are exact ([`NeuralOdeFunc::backprop`]).
     ///
-    /// Returns `(grad_z0, grad_params)` where `grad_z0` is the gradient with
-    /// respect to the initial state and `grad_params` is the full flat parameter
-    /// gradient in the layout of [`NeuralOdeFunc::params_flat`].
+    /// `grad_z0` is `∂L/∂z(t0)`; `grad_params` is `∂L/∂θ` in the layout of
+    /// [`NeuralOdeFunc::params_flat`].  The result agrees with the gradient of the
+    /// discretised forward solve up to the RK4 truncation error, which vanishes
+    /// as `dt → 0`.  Afterwards [`AdjointMethod::augmented_state`] holds
+    /// `[z(t0); grad_z0; grad_params]`, with `z(t0)` the backward reconstruction
+    /// of the initial state.
     pub fn run(
         &mut self,
         solver: &NeuralOdeSolver,
@@ -549,64 +732,65 @@ impl AdjointMethod {
         t1: f64,
         dt: f64,
     ) -> (Vec<f64>, Vec<f64>) {
-        let n = self.state_dim;
-        let eps = 1e-5;
+        let func = &solver.func;
+        let n_params = func.n_params();
+        let n = self.state_dim.min(z_final.len()).min(loss_grad.len());
+        if n == 0 {
+            return (vec![0.0; self.state_dim], vec![0.0; n_params]);
+        }
         let h_step = dt.abs().max(1e-10);
 
-        // ── Forward trajectory reconstruction ────────────────────────────────
-        // Integrate dz/d(-t) = -f(t,z) backward from z_final to approximate z(t0).
-        let neg_f = |tc: f64, y: &[f64]| -> Vec<f64> {
-            solver.func.forward(tc, y).into_iter().map(|v| -v).collect()
-        };
-        let mut z_bwd = z_final.to_vec();
-        let mut t_cur = t1;
-        let mut times: Vec<f64> = vec![t_cur];
-        let mut states: Vec<Vec<f64>> = vec![z_bwd.clone()];
-        while t_cur > t0 + 1e-12 {
-            let h_bwd = h_step.min(t_cur - t0);
-            z_bwd = rk4_step(&neg_f, t_cur, &z_bwd, h_bwd);
-            t_cur -= h_bwd;
-            times.push(t_cur);
-            states.push(z_bwd.clone());
-        }
-        // Reverse so index 0 corresponds to t0.
-        times.reverse();
-        states.reverse();
-
-        // ── Backward adjoint pass ─────────────────────────────────────────────
-        let n_params = solver.func.n_params();
-        let mut adj = loss_grad.to_vec();
-        let mut grad_params = vec![0.0_f64; n_params];
-        let n_ckpt = times.len();
-
-        for ck in (1..n_ckpt).rev() {
-            let t_hi = times[ck];
-            let t_lo = times[ck - 1];
-            let z_ck = &states[ck];
-            let h_abs = (t_hi - t_lo).abs().max(1e-14);
-
-            // Parameter-gradient contribution at this checkpoint:
-            // dg/dt = -a · ∂f/∂θ  → accumulated: grad += h * (a · ∂f/∂θ)
-            let pg = solver.func.param_grad_contrib(t_hi, z_ck, &adj, eps);
-            for (g, &pg_j) in grad_params.iter_mut().zip(pg.iter()) {
-                *g += h_abs * pg_j;
+        // Step grid of the forward solve (same loop as `NeuralOdeSolver::solve_rk4`).
+        let mut times = vec![t0];
+        let mut t_cur = t0;
+        while t_cur < t1 - 1e-12 {
+            let next = t_cur + h_step.min(t1 - t_cur);
+            if next <= t_cur {
+                break;
             }
-
-            // RK4 backward step for adjoint: da/dt = -(∂f/∂z)ᵀ · a
-            let jvp1 = solver.func.jvp(t_hi, z_ck, &adj, eps);
-            let a2: Vec<f64> = (0..n).map(|i| adj[i] + 0.5 * h_abs * (-jvp1[i])).collect();
-            let jvp2 = solver.func.jvp(t_hi - 0.5 * h_abs, z_ck, &a2, eps);
-            let a3: Vec<f64> = (0..n).map(|i| adj[i] + 0.5 * h_abs * (-jvp2[i])).collect();
-            let jvp3 = solver.func.jvp(t_hi - 0.5 * h_abs, z_ck, &a3, eps);
-            let a4: Vec<f64> = (0..n).map(|i| adj[i] + h_abs * (-jvp3[i])).collect();
-            let jvp4 = solver.func.jvp(t_lo, z_ck, &a4, eps);
-            adj = (0..n)
-                .map(|i| {
-                    adj[i] + (h_abs / 6.0) * (-jvp1[i] - 2.0 * jvp2[i] - 2.0 * jvp3[i] - jvp4[i])
-                })
-                .collect();
+            t_cur = next;
+            times.push(t_cur);
         }
 
+        // Right-hand side of the augmented system in reversed time.
+        let rhs = |t: f64, z: &[f64], a: &[f64]| -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+            let neg_f: Vec<f64> = func.forward(t, z).into_iter().map(|v| -v).collect();
+            let (vjp_z, grad_theta) = func.backprop(t, z, a);
+            (neg_f, vjp_z, grad_theta)
+        };
+
+        let mut z = z_final[..n].to_vec();
+        let mut adj = loss_grad[..n].to_vec();
+        let mut grad_params = vec![0.0_f64; n_params];
+        for window in times.windows(2).rev() {
+            let (t_lo, t_hi) = (window[0], window[1]);
+            let h = t_hi - t_lo;
+            let t_mid = 0.5 * (t_lo + t_hi);
+            let (kz1, ka1, kg1) = rhs(t_hi, &z, &adj);
+            let (kz2, ka2, kg2) = rhs(
+                t_mid,
+                &add_scaled(&z, 0.5 * h, &kz1),
+                &add_scaled(&adj, 0.5 * h, &ka1),
+            );
+            let (kz3, ka3, kg3) = rhs(
+                t_mid,
+                &add_scaled(&z, 0.5 * h, &kz2),
+                &add_scaled(&adj, 0.5 * h, &ka2),
+            );
+            let (kz4, ka4, kg4) = rhs(t_lo, &add_scaled(&z, h, &kz3), &add_scaled(&adj, h, &ka3));
+            for i in 0..n {
+                z[i] += h / 6.0 * (kz1[i] + 2.0 * kz2[i] + 2.0 * kz3[i] + kz4[i]);
+                adj[i] += h / 6.0 * (ka1[i] + 2.0 * ka2[i] + 2.0 * ka3[i] + ka4[i]);
+            }
+            for (j, g) in grad_params.iter_mut().enumerate() {
+                *g += h / 6.0 * (kg1[j] + 2.0 * kg2[j] + 2.0 * kg3[j] + kg4[j]);
+            }
+        }
+
+        let mut augmented = z;
+        augmented.extend_from_slice(&adj);
+        augmented.extend_from_slice(&grad_params);
+        self.augmented_state = augmented;
         (adj, grad_params)
     }
 }
@@ -719,6 +903,16 @@ impl LatentOde {
 // TimeSeriesOde
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Start of one RK4 step recorded by [`TimeSeriesOde::loss_gradient`].
+struct Rk4StepRecord {
+    /// Time at the start of the step.
+    t: f64,
+    /// Step size.
+    h: f64,
+    /// State at the start of the step.
+    state: Vec<f64>,
+}
+
 /// A convenience wrapper that fits a Neural ODE to observed time-series data
 /// using gradient descent on the MSE loss.
 #[derive(Debug, Clone)]
@@ -758,28 +952,115 @@ impl TimeSeriesOde {
 
     /// Run gradient descent to fit the Neural ODE parameters to the observations.
     ///
-    /// Uses finite-difference parameter gradients (one perturbation per weight).
-    /// This is intentionally simple — a production implementation would use
-    /// the adjoint method for efficiency.
+    /// Every iteration records the current MSE in [`TimeSeriesOde::loss_history`]
+    /// and then moves all parameters along the negative loss gradient,
+    /// `θ ← θ − learning_rate · ∇L`, where `∇L` comes from
+    /// [`TimeSeriesOde::loss_gradient`].  The integration step is a tenth of the
+    /// mean spacing of the observation times.  If the gradient becomes
+    /// non-finite (the learning rate is too large and the model diverged) the
+    /// run stops early and the parameters keep their last finite values, so
+    /// `loss_history` may then hold fewer than `n_iter` entries.
     pub fn fit(&mut self) {
-        let dt = if self.times.len() > 1 {
+        let span_dt = if self.times.len() > 1 {
             (self.times[self.times.len() - 1] - self.times[0]) / (self.times.len() as f64 * 10.0)
+        } else {
+            0.01
+        };
+        let dt = if span_dt.is_finite() && span_dt > 0.0 {
+            span_dt
         } else {
             0.01
         };
 
         for _iter in 0..self.n_iter {
-            // Forward pass: compute MSE
             let loss = self.compute_loss(dt);
             self.loss_history.push(loss);
 
-            // Simple gradient step: perturb output bias slightly
-            // (full parameter update omitted for brevity — the pattern is clear)
-            let grad_scale = self.learning_rate * 0.01;
-            for b in &mut self.solver.func.bias_out {
-                *b -= grad_scale * (*b).signum();
+            let gradient = self.loss_gradient(dt);
+            if gradient.iter().any(|g| !g.is_finite()) {
+                break;
+            }
+            let mut params = self.solver.func.params_flat();
+            for (p, g) in params.iter_mut().zip(gradient.iter()) {
+                *p -= self.learning_rate * g;
+            }
+            self.solver.func.set_params_flat(&params);
+        }
+    }
+
+    /// Gradient of [`TimeSeriesOde::compute_loss`] with respect to all trainable
+    /// parameters, in the layout of [`NeuralOdeFunc::params_flat`].
+    ///
+    /// This is the exact derivative of the discretised loss: the RK4 solve of
+    /// `compute_loss(dt)` is replayed once forward (remembering the start state
+    /// of every step) and then differentiated in reverse through every step with
+    /// [`NeuralOdeSolver::rk4_step_vjp`], injecting the residual cotangent
+    /// `2 (z_k − o_k) / count` at each observation time.  The initial state is
+    /// the first observation, which does not depend on the parameters.  Returns
+    /// zeros when there is nothing to fit.
+    pub fn loss_gradient(&self, dt: f64) -> Vec<f64> {
+        let mut grad = vec![0.0_f64; self.solver.func.n_params()];
+        if self.times.is_empty() || self.observations.is_empty() {
+            return grad;
+        }
+        let forward = |t: f64, y: &[f64]| self.solver.func.forward(t, y);
+
+        // Forward pass identical to `solve_rk4_trajectory`, with a record per step.
+        let mut state = self.observations[0].clone();
+        let mut t = self.times[0];
+        let mut steps: Vec<Rk4StepRecord> = Vec::new();
+        // (number of steps taken so far, state) for every observation time.
+        let mut snapshots: Vec<(usize, Vec<f64>)> = vec![(0, state.clone())];
+        for &t_next in self.times.iter().skip(1) {
+            while t < t_next - 1e-12 {
+                let h = dt.min(t_next - t);
+                steps.push(Rk4StepRecord {
+                    t,
+                    h,
+                    state: state.clone(),
+                });
+                state = rk4_step(&forward, t, &state, h);
+                t += h;
+            }
+            snapshots.push((steps.len(), state.clone()));
+        }
+
+        // Number of squared residuals in the MSE (mirrors `compute_loss`).
+        let paired = snapshots.len().min(self.observations.len());
+        let count: usize = snapshots
+            .iter()
+            .zip(self.observations.iter())
+            .map(|((_, pred), obs)| pred.len().min(obs.len()))
+            .sum();
+        if count == 0 {
+            return grad;
+        }
+        let scale = 2.0 / count as f64;
+
+        // Reverse sweep over the observation intervals.
+        let mut cotangent = vec![0.0_f64; snapshots[0].1.len()];
+        for k in (0..paired).rev() {
+            let (step_end, pred) = &snapshots[k];
+            for ((c, p), o) in cotangent
+                .iter_mut()
+                .zip(pred.iter())
+                .zip(self.observations[k].iter())
+            {
+                *c += scale * (p - o);
+            }
+            if k == 0 {
+                break;
+            }
+            let step_start = snapshots[k - 1].0;
+            for record in steps[step_start..*step_end].iter().rev() {
+                let (state_bar, theta_bar) =
+                    self.solver
+                        .rk4_step_vjp(record.t, &record.state, record.h, &cotangent);
+                cotangent = state_bar;
+                add_scaled_in_place(&mut grad, 1.0, &theta_bar);
             }
         }
+        grad
     }
 
     /// Compute MSE between predicted trajectory and observations.
@@ -819,598 +1100,4 @@ impl TimeSeriesOde {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── rk4_step ─────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_rk4_exponential_decay() {
-        // dy/dt = -y, y(0)=1 → y(t) = exp(-t)
-        let f = |_t: f64, y: &[f64]| vec![-y[0]];
-        let y0 = vec![1.0];
-        let y1 = rk4_step(&f, 0.0, &y0, 0.1);
-        let exact = (-0.1_f64).exp();
-        assert!(
-            (y1[0] - exact).abs() < 1e-6,
-            "RK4 decay: got {}, expected {}",
-            y1[0],
-            exact
-        );
-    }
-
-    #[test]
-    fn test_rk4_harmonic_oscillator() {
-        // d²x/dt² = -x → state [x, v], dz/dt = [v, -x]
-        let f = |_t: f64, z: &[f64]| vec![z[1], -z[0]];
-        let z0 = vec![1.0, 0.0]; // x=1, v=0 → x(t)=cos(t)
-        let mut z = z0.clone();
-        let dt = 0.01;
-        let steps = 100; // advance to t=1.0
-        for i in 0..steps {
-            z = rk4_step(&f, i as f64 * dt, &z, dt);
-        }
-        let t = 1.0_f64;
-        let exact_x = t.cos();
-        assert!(
-            (z[0] - exact_x).abs() < 1e-5,
-            "Harmonic oscillator x: got {}",
-            z[0]
-        );
-    }
-
-    #[test]
-    fn test_rk4_constant_ode() {
-        // dy/dt = 2, y(0)=0 → y(1)=2
-        let f = |_t: f64, _y: &[f64]| vec![2.0];
-        let y = rk4_step(&f, 0.0, &[0.0], 1.0);
-        assert!((y[0] - 2.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_rk4_zero_step() {
-        let f = |_t: f64, y: &[f64]| vec![-y[0]];
-        let y0 = vec![3.0];
-        let y1 = rk4_step(&f, 0.0, &y0, 0.0);
-        assert!((y1[0] - 3.0).abs() < 1e-15);
-    }
-
-    #[test]
-    fn test_rk4_linear_ode() {
-        // dy/dt = t, y(0)=0 → y(2)=2
-        let f = |t: f64, _y: &[f64]| vec![t];
-        let mut y = vec![0.0];
-        let dt = 0.01;
-        for i in 0..200 {
-            y = rk4_step(&f, i as f64 * dt, &y, dt);
-        }
-        assert!((y[0] - 2.0).abs() < 1e-6, "Linear ODE: got {}", y[0]);
-    }
-
-    #[test]
-    fn test_rk4_2d_decoupled() {
-        // [dy1/dt, dy2/dt] = [-y1, -2*y2], y(0)=[1, 1]
-        let f = |_t: f64, y: &[f64]| vec![-y[0], -2.0 * y[1]];
-        let mut z = vec![1.0_f64, 1.0_f64];
-        let dt = 0.01;
-        for i in 0..50 {
-            z = rk4_step(&f, i as f64 * dt, &z, dt);
-        }
-        let t = 0.5_f64;
-        assert!((z[0] - (-t).exp()).abs() < 1e-5, "y1: {}", z[0]);
-        assert!((z[1] - (-2.0 * t).exp()).abs() < 1e-5, "y2: {}", z[1]);
-    }
-
-    // ── dopri5_step ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_dopri5_returns_three_values() {
-        let f = |_t: f64, y: &[f64]| vec![-y[0]];
-        let (yh, yl, err) = dopri5_step(&f, 0.0, &[1.0], 0.1, 1e-3, 1e-6);
-        assert_eq!(yh.len(), 1);
-        assert_eq!(yl.len(), 1);
-        assert!(err.is_finite());
-    }
-
-    #[test]
-    fn test_dopri5_exponential_accuracy() {
-        let f = |_t: f64, y: &[f64]| vec![-y[0]];
-        let (yh, _yl, _err) = dopri5_step(&f, 0.0, &[1.0], 0.1, 1e-6, 1e-9);
-        let exact = (-0.1_f64).exp();
-        assert!(
-            (yh[0] - exact).abs() < 1e-8,
-            "DOPRI5 accuracy: {}",
-            (yh[0] - exact).abs()
-        );
-    }
-
-    #[test]
-    fn test_dopri5_zero_step_size() {
-        let f = |_t: f64, y: &[f64]| vec![-y[0]];
-        let (yh, yl, err) = dopri5_step(&f, 0.0, &[1.0], 0.0, 1e-3, 1e-6);
-        assert!((yh[0] - 1.0).abs() < 1e-12);
-        assert!((yl[0] - 1.0).abs() < 1e-12);
-        assert!(err < 1e-10);
-    }
-
-    // ── NeuralOdeFunc ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_neural_ode_func_forward_shape() {
-        let func = NeuralOdeFunc::new(3, 8, 42);
-        let z = vec![1.0, 0.0, -1.0];
-        let dz = func.forward(0.0, &z);
-        assert_eq!(dz.len(), 3);
-    }
-
-    #[test]
-    fn test_neural_ode_func_forward_finite() {
-        let func = NeuralOdeFunc::new(4, 16, 1234);
-        let z = vec![0.5, -0.3, 1.2, -0.1];
-        let dz = func.forward(1.0, &z);
-        for &v in &dz {
-            assert!(
-                v.is_finite(),
-                "NeuralOdeFunc output contains non-finite: {v}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_neural_ode_func_deterministic() {
-        let f1 = NeuralOdeFunc::new(2, 4, 99);
-        let f2 = NeuralOdeFunc::new(2, 4, 99);
-        let z = vec![0.1, 0.2];
-        assert_eq!(f1.forward(0.0, &z), f2.forward(0.0, &z));
-    }
-
-    #[test]
-    fn test_neural_ode_func_different_seeds_differ() {
-        let f1 = NeuralOdeFunc::new(2, 8, 1);
-        let f2 = NeuralOdeFunc::new(2, 8, 2);
-        let z = vec![1.0, 1.0];
-        let d1 = f1.forward(0.0, &z);
-        let d2 = f2.forward(0.0, &z);
-        let diff: f64 = d1.iter().zip(d2.iter()).map(|(a, b)| (a - b).abs()).sum();
-        assert!(
-            diff > 1e-10,
-            "Different seeds should give different outputs"
-        );
-    }
-
-    #[test]
-    fn test_neural_ode_func_jvp_shape() {
-        let func = NeuralOdeFunc::new(3, 6, 7);
-        let z = vec![0.0, 1.0, -1.0];
-        let v = vec![1.0, 0.0, 0.0];
-        let jvp = func.jvp(0.5, &z, &v, 1e-5);
-        assert_eq!(jvp.len(), 3);
-    }
-
-    // ── NeuralOdeSolver ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_solver_rk4_output_shape() {
-        let func = NeuralOdeFunc::new(2, 4, 0);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let z0 = vec![1.0, 0.0];
-        let z1 = solver.solve_rk4(&z0, 0.0, 1.0, 0.1);
-        assert_eq!(z1.len(), 2);
-    }
-
-    #[test]
-    fn test_solver_rk4_zero_integration() {
-        // When t0 == t1 the state should be unchanged
-        let func = NeuralOdeFunc::new(2, 4, 5);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let z0 = vec![1.0, 2.0];
-        let z1 = solver.solve_rk4(&z0, 0.0, 0.0, 0.1);
-        // With no steps the state equals z0
-        for (a, b) in z0.iter().zip(z1.iter()) {
-            assert!((a - b).abs() < 1e-12);
-        }
-    }
-
-    #[test]
-    fn test_solver_rk4_finite_output() {
-        let func = NeuralOdeFunc::new(3, 8, 100);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let z0 = vec![0.1, -0.2, 0.3];
-        let z1 = solver.solve_rk4(&z0, 0.0, 0.5, 0.05);
-        for &v in &z1 {
-            assert!(v.is_finite());
-        }
-    }
-
-    #[test]
-    fn test_solver_trajectory_length() {
-        let func = NeuralOdeFunc::new(2, 4, 3);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let z0 = vec![1.0, 0.0];
-        let ts = vec![0.0, 0.25, 0.5, 0.75, 1.0];
-        let traj = solver.solve_rk4_trajectory(&z0, &ts, 0.05);
-        assert_eq!(traj.len(), ts.len());
-    }
-
-    #[test]
-    fn test_solver_dopri5_output_shape() {
-        let func = NeuralOdeFunc::new(2, 4, 42);
-        let solver = NeuralOdeSolver::new(func, 1e-4, 1e-7);
-        let z0 = vec![1.0, 0.5];
-        let z1 = solver.solve_dopri5(&z0, 0.0, 1.0, 0.1);
-        assert_eq!(z1.len(), 2);
-    }
-
-    #[test]
-    fn test_solver_dopri5_finite_output() {
-        let func = NeuralOdeFunc::new(3, 6, 77);
-        let solver = NeuralOdeSolver::new(func, 1e-4, 1e-7);
-        let z0 = vec![0.0, 0.5, 1.0];
-        let z1 = solver.solve_dopri5(&z0, 0.0, 0.5, 0.1);
-        for &v in &z1 {
-            assert!(v.is_finite(), "DOPRI5 produced non-finite: {v}");
-        }
-    }
-
-    // ── AdjointMethod ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_adjoint_backward_shape() {
-        let func = NeuralOdeFunc::new(4, 8, 33);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let adj = AdjointMethod::new(4);
-        let z0 = vec![0.2, -0.1, 0.4, 0.0];
-        let loss_grad = vec![1.0, -1.0, 0.5, -0.5];
-        let grad = adj.backward(&solver, &z0, &loss_grad, 0.0, 0.1);
-        assert_eq!(grad.len(), 4);
-    }
-
-    /// The one-step adjoint VJP must equal the gradient of the *actual* loss
-    /// `L(z0) = loss_grad · Φ(z0)` (Φ = one RK4 step of the real dynamics) with
-    /// respect to z0 — verified against an independent central finite difference
-    /// of L itself.  This pins down that `backward` is a real adjoint, NOT the
-    /// old `-loss_grad` fabrication.
-    #[test]
-    fn test_adjoint_backward_matches_finite_difference_of_loss() {
-        let func = NeuralOdeFunc::new(3, 6, 101);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let adj = AdjointMethod::new(3);
-        let z0 = vec![0.3, -0.2, 0.5];
-        let loss_grad = vec![0.7, -1.3, 0.4];
-        let t0 = 0.0;
-        let dt = 0.15;
-
-        let grad = adj.backward(&solver, &z0, &loss_grad, t0, dt);
-
-        // Independent reference: L(z0) = loss_grad · Φ(z0); dL/dz0[j] via FD.
-        let loss = |z: &[f64]| -> f64 {
-            let forward = |t: f64, y: &[f64]| solver.func.forward(t, y);
-            let z1 = rk4_step(&forward, t0, z, dt);
-            loss_grad.iter().zip(z1.iter()).map(|(g, z)| g * z).sum()
-        };
-        let fd_eps = 1e-6;
-        for j in 0..3 {
-            let mut zp = z0.clone();
-            let mut zm = z0.clone();
-            zp[j] += fd_eps;
-            zm[j] -= fd_eps;
-            let fd = (loss(&zp) - loss(&zm)) / (2.0 * fd_eps);
-            assert!(
-                (grad[j] - fd).abs() < 1e-4,
-                "adjoint grad[{j}]={} disagrees with FD dL/dz0={fd}",
-                grad[j]
-            );
-        }
-
-        // And it is emphatically NOT the old fabrication (-loss_grad).
-        let negation: Vec<f64> = loss_grad.iter().map(|g| -g).collect();
-        let differs = grad
-            .iter()
-            .zip(negation.iter())
-            .any(|(a, b)| (a - b).abs() > 1e-3);
-        assert!(differs, "backward must not return the negated loss_grad");
-    }
-
-    #[test]
-    fn test_adjoint_run_returns_correct_shapes() {
-        let func = NeuralOdeFunc::new(2, 4, 11);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let mut adj = AdjointMethod::new(2);
-        let z_final = vec![0.5, -0.5];
-        let loss_grad = vec![1.0, 0.0];
-        let (grad_z0, grad_params) = adj.run(&solver, &z_final, &loss_grad, 0.0, 1.0, 0.1);
-        assert_eq!(grad_z0.len(), 2);
-        assert!(!grad_params.is_empty());
-    }
-
-    #[test]
-    fn test_adjoint_run_finite() {
-        let func = NeuralOdeFunc::new(2, 4, 22);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let mut adj = AdjointMethod::new(2);
-        let z_final = vec![1.0, 1.0];
-        let loss_grad = vec![0.1, -0.1];
-        let (g, _) = adj.run(&solver, &z_final, &loss_grad, 0.0, 1.0, 0.1);
-        for &v in &g {
-            assert!(v.is_finite());
-        }
-    }
-
-    // ── LatentOde ─────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_latent_ode_encode_shape() {
-        let model = LatentOde::new(4, 2, 8, 55);
-        let obs = vec![vec![1.0, 0.0, -1.0, 0.5], vec![0.5, 0.1, -0.5, 0.3]];
-        let z = model.encode(&obs);
-        assert_eq!(z.len(), 2);
-    }
-
-    #[test]
-    fn test_latent_ode_encode_empty() {
-        let model = LatentOde::new(3, 2, 4, 1);
-        let z = model.encode(&[]);
-        assert_eq!(z.len(), 2);
-        assert!(z.iter().all(|&v| v == 0.0));
-    }
-
-    #[test]
-    fn test_latent_ode_decode_single_shape() {
-        let model = LatentOde::new(4, 2, 6, 88);
-        let z = vec![0.5, -0.3];
-        let obs = model.decode_single(&z);
-        assert_eq!(obs.len(), 4);
-    }
-
-    #[test]
-    fn test_latent_ode_decode_trajectory_length() {
-        let model = LatentOde::new(3, 2, 4, 33);
-        let z = vec![0.1, 0.2];
-        let ts = vec![0.1, 0.2, 0.5, 1.0];
-        let preds = model.decode(&z, 0.0, &ts, 0.05);
-        // times prepended with t0 → trajectory has len(ts)+1, then decoded: len = ts.len()+1
-        assert_eq!(preds.len(), ts.len() + 1);
-    }
-
-    #[test]
-    fn test_latent_ode_encode_finite() {
-        let model = LatentOde::new(3, 4, 8, 999);
-        let obs: Vec<Vec<f64>> = (0..5).map(|i| vec![i as f64 * 0.1; 3]).collect();
-        let z = model.encode(&obs);
-        assert!(
-            z.iter().all(|v| v.is_finite()),
-            "Encoded latent contains non-finite"
-        );
-    }
-
-    #[test]
-    fn test_latent_ode_round_trip_shape() {
-        let model = LatentOde::new(2, 2, 4, 77);
-        let obs = vec![vec![1.0, 0.0], vec![0.8, 0.1]];
-        let z = model.encode(&obs);
-        let recon = model.decode_single(&z);
-        assert_eq!(recon.len(), 2);
-    }
-
-    // ── TimeSeriesOde ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_time_series_ode_predict_shape() {
-        let func = NeuralOdeFunc::new(2, 4, 13);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let times = vec![0.0, 0.5, 1.0];
-        let obs = vec![vec![1.0, 0.0], vec![0.9, 0.1], vec![0.8, 0.2]];
-        let ts = TimeSeriesOde::new(times, obs, solver, 0.01, 0);
-        let pred = ts.predict(1.5);
-        assert_eq!(pred.len(), 2);
-    }
-
-    #[test]
-    fn test_time_series_ode_loss_nonnegative() {
-        let func = NeuralOdeFunc::new(2, 4, 14);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let times = vec![0.0, 0.5, 1.0];
-        let obs = vec![vec![1.0, 0.0], vec![0.9, 0.1], vec![0.8, 0.2]];
-        let ts = TimeSeriesOde::new(times, obs, solver, 0.01, 0);
-        assert!(ts.compute_loss(0.05) >= 0.0);
-    }
-
-    #[test]
-    fn test_time_series_ode_fit_records_loss() {
-        let func = NeuralOdeFunc::new(1, 4, 15);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let times = vec![0.0, 0.1, 0.2, 0.3];
-        let obs: Vec<Vec<f64>> = (0..4).map(|i| vec![(-(i as f64) * 0.1).exp()]).collect();
-        let mut ts = TimeSeriesOde::new(times, obs, solver, 0.001, 5);
-        ts.fit();
-        assert_eq!(ts.loss_history.len(), 5);
-    }
-
-    #[test]
-    fn test_time_series_ode_predict_finite() {
-        let func = NeuralOdeFunc::new(2, 4, 16);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let times = vec![0.0, 0.5];
-        let obs = vec![vec![1.0, 0.0], vec![0.9, -0.1]];
-        let ts = TimeSeriesOde::new(times, obs, solver, 0.01, 0);
-        let pred = ts.predict(0.3);
-        assert!(pred.iter().all(|v| v.is_finite()));
-    }
-
-    #[test]
-    fn test_time_series_ode_empty() {
-        let func = NeuralOdeFunc::new(2, 4, 17);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let ts = TimeSeriesOde::new(vec![], vec![], solver, 0.01, 0);
-        let pred = ts.predict(1.0);
-        assert!(pred.is_empty());
-        assert_eq!(ts.compute_loss(0.1), 0.0);
-    }
-
-    // ── Integration accuracy tests ────────────────────────────────────────────
-
-    #[test]
-    fn test_rk4_logistic_growth() {
-        // dy/dt = y(1-y), y(0)=0.1 → y(t) = 1/(1 + 9*exp(-t))
-        let f = |_t: f64, y: &[f64]| vec![y[0] * (1.0 - y[0])];
-        let mut y = vec![0.1];
-        let dt = 0.01;
-        let steps = 200;
-        for i in 0..steps {
-            y = rk4_step(&f, i as f64 * dt, &y, dt);
-        }
-        let t = 2.0_f64;
-        let exact = 1.0 / (1.0 + 9.0 * (-t).exp());
-        assert!(
-            (y[0] - exact).abs() < 1e-5,
-            "Logistic growth: got {}, expected {}",
-            y[0],
-            exact
-        );
-    }
-
-    #[test]
-    fn test_rk4_accuracy_order() {
-        // Compare RK4 error at h=0.1 vs h=0.05 on exponential decay
-        // RK4 is 4th-order: error ~ h^4, so halving h reduces error by ~16x
-        let f = |_t: f64, y: &[f64]| vec![-y[0]];
-        let exact = (-1.0_f64).exp();
-
-        let y_h1 = {
-            let mut y = vec![1.0];
-            for i in 0..10 {
-                y = rk4_step(&f, i as f64 * 0.1, &y, 0.1);
-            }
-            y[0]
-        };
-        let y_h2 = {
-            let mut y = vec![1.0];
-            for i in 0..20 {
-                y = rk4_step(&f, i as f64 * 0.05, &y, 0.05);
-            }
-            y[0]
-        };
-        let err1 = (y_h1 - exact).abs();
-        let err2 = (y_h2 - exact).abs();
-        assert!(
-            err2 < err1,
-            "Smaller step should give smaller error: {} vs {}",
-            err2,
-            err1
-        );
-    }
-
-    #[test]
-    fn test_rk4_system_energy_conservation() {
-        // Harmonic oscillator: H = 0.5*(x^2 + v^2) = 0.5 (for x0=1, v0=0)
-        // should be approximately conserved by RK4
-        let f = |_t: f64, z: &[f64]| vec![z[1], -z[0]];
-        let mut z = vec![1.0, 0.0];
-        let dt = 0.001;
-        let steps = 1000;
-        for i in 0..steps {
-            z = rk4_step(&f, i as f64 * dt, &z, dt);
-        }
-        let energy = 0.5 * (z[0].powi(2) + z[1].powi(2));
-        assert!(
-            (energy - 0.5).abs() < 1e-4,
-            "Energy drift: {}",
-            energy - 0.5
-        );
-    }
-
-    #[test]
-    fn test_neural_ode_func_batch_consistency() {
-        // forward(t, z) should give the same result when called twice
-        let func = NeuralOdeFunc::new(3, 8, 42);
-        let z = vec![0.1, -0.2, 0.3];
-        let d1 = func.forward(0.5, &z);
-        let d2 = func.forward(0.5, &z);
-        assert_eq!(d1, d2, "forward must be deterministic");
-    }
-
-    #[test]
-    fn test_time_series_ode_fit_loss_finite() {
-        let func = NeuralOdeFunc::new(1, 4, 18);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let times: Vec<f64> = (0..5).map(|i| i as f64 * 0.2).collect();
-        let obs: Vec<Vec<f64>> = times.iter().map(|&t: &f64| vec![(-t).exp()]).collect();
-        let mut ts = TimeSeriesOde::new(times, obs, solver, 0.001, 3);
-        ts.fit();
-        for &l in &ts.loss_history {
-            assert!(l.is_finite(), "Loss is non-finite: {l}");
-        }
-    }
-
-    #[test]
-    fn test_rk4_step_multidim() {
-        // 5-dimensional decay: dy_i/dt = -i*y_i, y_i(0)=1
-        let f = |_t: f64, y: &[f64]| (0..y.len()).map(|i| -(i as f64 + 1.0) * y[i]).collect();
-        let y0: Vec<f64> = vec![1.0; 5];
-        let mut y = y0.clone();
-        let dt = 0.01;
-        for k in 0..10 {
-            y = rk4_step(&f, k as f64 * dt, &y, dt);
-        }
-        for (i, &yi) in y.iter().enumerate() {
-            let exact = (-(i as f64 + 1.0) * 0.1).exp();
-            assert!(
-                (yi - exact).abs() < 1e-5,
-                "dim {i}: got {yi}, expected {exact}"
-            );
-        }
-    }
-
-    // ── C1: DOPRI5 error-order verification ───────────────────────────────────
-
-    #[test]
-    fn test_dopri5_error_estimate_order() {
-        // For y' = y, y(0) = 1, exact = exp(t).
-        // DOPRI5 is 5th-order: halving h should reduce |y_high - exact| by ~32×.
-        let f = |_t: f64, y: &[f64]| vec![y[0]];
-        let rtol = 1e-12;
-        let atol = 1e-12;
-        let y0 = vec![1.0_f64];
-
-        let (y_big, _, _) = dopri5_step(&f, 0.0, &y0, 0.2, rtol, atol);
-        let (y_small, _, _) = dopri5_step(&f, 0.0, &y0, 0.1, rtol, atol);
-        let err_big = (y_big[0] - 0.2_f64.exp()).abs();
-        let err_small = (y_small[0] - 0.1_f64.exp()).abs();
-        // ratio ≈ (0.2/0.1)^5 = 32; require > 10 to avoid false negatives
-        let ratio = err_big / err_small.max(f64::MIN_POSITIVE);
-        assert!(
-            ratio > 10.0,
-            "Expected ~32× error reduction when halving step; got ratio={ratio:.2}"
-        );
-    }
-
-    #[test]
-    fn test_dopri5_error_norm_small_step() {
-        // error_norm should be < 1 for a well-behaved problem at h=0.01
-        let f = |_t: f64, y: &[f64]| vec![-y[0]];
-        let (_, _, err) = dopri5_step(&f, 0.0, &[1.0], 0.01, 1e-6, 1e-8);
-        assert!(err < 1.0, "error norm should be < 1 for h=0.01: {err}");
-    }
-
-    // ── C2: BPTT gradient parity test ─────────────────────────────────────────
-
-    #[test]
-    fn test_bptt_gradient_nonzero_and_finite() {
-        // Verify that BPTT parameter gradients are non-zero and finite.
-        let func = NeuralOdeFunc::new(2, 4, 99);
-        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
-        let mut adj = AdjointMethod::new(2);
-        let z_final = vec![0.5, -0.3];
-        let loss_grad = vec![1.0, 0.0];
-        let (_, grad_params) = adj.run(&solver, &z_final, &loss_grad, 0.0, 0.5, 0.1);
-        assert_eq!(grad_params.len(), solver.func.n_params());
-        assert!(
-            grad_params.iter().all(|v| v.is_finite()),
-            "some parameter gradients are non-finite"
-        );
-        assert!(
-            grad_params.iter().any(|v| v.abs() > 1e-15),
-            "all parameter gradients are zero"
-        );
-    }
-}
+mod tests;

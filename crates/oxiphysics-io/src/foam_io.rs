@@ -1,12 +1,20 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-//! Simplified OpenFOAM polyMesh format I/O.
+//! OpenFOAM polyMesh and field file I/O (ASCII format).
 //!
-//! Supports reading polyMesh directories and writing basic OpenFOAM cases.
-//! Uses plain `f64` arrays and `Vec` — no external linear-algebra crates.
+//! Parses the text of the `points`, `faces`, `owner` / `neighbour` and
+//! `boundary` files of a polyMesh directory and the `internalField` of
+//! `vol*Field` files (the readers take the file contents, not paths), and
+//! writes basic OpenFOAM cases.  Lists are read up to the parenthesis that
+//! closes them, so text behind a list never becomes part of it.  Uses plain
+//! `f64` arrays and `Vec` — no external linear-algebra crates.
 
 use std::collections::HashMap;
+
+mod internal_field;
+
+use internal_field::{bare_list, internal_field_block, parse_scalar_list, parse_vector_list};
 
 // ---------------------------------------------------------------------------
 // FoamHeader
@@ -267,24 +275,13 @@ fn face_area(indices: &[usize], points: &[FoamPoint]) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Extract the data block that follows the `FoamFile` header.
-/// Returns the content between the first `(` and its matching `)`.
-fn extract_data_block(content: &str) -> Option<&str> {
-    // Skip FoamFile block if present.
-    let search_from = if let Some(pos) = content.find("FoamFile") {
-        // find the closing brace
-        let brace_open = content[pos..].find('{')? + pos;
-        content[brace_open..].find('}')? + brace_open + 1
-    } else {
-        0
-    };
-    let rest = &content[search_from..];
-    let start = rest.find('(')?;
-    let end = rest.rfind(')')?;
-    if end > start {
-        Some(&rest[start..=end])
-    } else {
-        None
-    }
+///
+/// Returns the list from the first `(` to the `)` that matches it, both
+/// included and with the comments removed.  Text behind the list, such as a
+/// trailing comment or a further entry, is not part of it.
+fn extract_data_block(content: &str) -> Option<String> {
+    let (_, body) = bare_list(content).ok()?;
+    Some(format!("({body})"))
 }
 
 /// Parse an OpenFOAM list of `usize` values.
@@ -719,42 +716,69 @@ impl SimpleCaseWriter {
 // OpenFOAM field reading
 // ---------------------------------------------------------------------------
 
-/// Parse an OpenFOAM `volVectorField` internal field (list of 3-vectors).
+/// Parse the internal field of an OpenFOAM `volVectorField` (a list of
+/// 3-vectors).
 ///
-/// Accepts blocks like:
+/// The `internalField` entry of the file is located by its keyword and read up
+/// to the end of its own list, so the `value` entries of the `boundaryField`
+/// patches never become part of the result.  Accepted spellings:
+///
 /// ```text
-/// internalField   nonuniform List`vector`
+/// internalField   uniform (1 0 0);
+/// internalField   nonuniform List<vector>
 /// N
 /// (
 ///   (x y z)
 ///   …
 /// )
+/// ;
+/// internalField   nonuniform List<vector> N{(x y z)};
 /// ```
-pub fn parse_foam_vector_field(content: &str) -> Result<Vec<[f64; 3]>, String> {
-    parse_foam_points(content)
-}
-
-/// Parse an OpenFOAM `volScalarField` internal field from its text representation.
 ///
-/// Handles both `uniform VALUE` and `nonuniform List`scalar` forms.
-pub fn parse_foam_scalar_field_internal(content: &str) -> Result<Vec<f64>, String> {
-    // Check for "uniform VALUE".
-    for line in content.lines() {
-        let line = line.trim();
-        if let Some(after_field) = line.strip_prefix("internalField") {
-            let rest = &after_field.trim_start();
-            if let Some(rest2) = rest.strip_prefix("uniform") {
-                let v: f64 = rest2
-                    .trim()
-                    .trim_end_matches(';')
-                    .parse()
-                    .map_err(|_| format!("Cannot parse uniform scalar: {:?}", rest2))?;
-                return Ok(vec![v]);
-            }
+/// A `uniform` field has no cell count in the file, so it yields a single
+/// vector, just as [`parse_foam_scalar_field_internal`] yields a single
+/// scalar.  Text without an `internalField` entry is read as a bare
+/// `N ( (x y z) … )` list, such as the contents of a `points` file; a list
+/// ends at its own closing parenthesis.
+///
+/// # Errors
+///
+/// Fails if the entry is malformed, if an element is not an `(x y z)` triple,
+/// or if the element count written in front of the list differs from the
+/// number of vectors it holds.
+pub fn parse_foam_vector_field(content: &str) -> Result<Vec<[f64; 3]>, String> {
+    match internal_field_block(content)? {
+        Some(field) => field.into_vectors(),
+        None => {
+            let (declared, body) = bare_list(content)?;
+            parse_vector_list(declared, &body)
         }
     }
-    // Fall back to list parsing.
-    parse_foam_list_f64(content)
+}
+
+/// Parse the internal field of an OpenFOAM `volScalarField` from its text
+/// representation.
+///
+/// Handles `uniform VALUE` (which yields a single value, because the file does
+/// not say how many cells there are), `nonuniform List<scalar> N ( … )` and the
+/// repeated form `nonuniform List<scalar> N{VALUE}`.  Only the top-level
+/// `internalField` entry is read, so the `value` lists of the `boundaryField`
+/// patches are never mixed in.  Text without such an entry is read as a bare
+/// `N ( … )` list.
+///
+/// # Errors
+///
+/// Fails if the entry is malformed, if a value is not a number, or if the
+/// element count written in front of the list differs from the number of
+/// values it holds.
+pub fn parse_foam_scalar_field_internal(content: &str) -> Result<Vec<f64>, String> {
+    match internal_field_block(content)? {
+        Some(field) => field.into_scalars(),
+        None => {
+            let (declared, body) = bare_list(content)?;
+            parse_scalar_list(declared, &body)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,6 +1157,36 @@ mod tests {
         let input = "3\n(\n1\n2\n3\n)";
         let result = parse_foam_list_usize(input).expect("parse failed");
         assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_list_parsers_stop_at_the_parenthesis_that_closes_their_list() {
+        let trailer = "\n// ***** end of file (checked) ***** //\n";
+        let points = format!(
+            "FoamFile {{ class vectorField; object points; }}\n2\n(\n(0 0 0) // origin (first)\n(1 0 0)\n)\n{trailer}"
+        );
+        assert_eq!(
+            parse_foam_points(&points).expect("points"),
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+        );
+        let owner = format!("2\n(\n0\n1\n)\n{trailer}");
+        assert_eq!(parse_foam_list_usize(&owner).expect("owner"), vec![0, 1]);
+        let values = format!("3\n(\n1.5\n2.5\n3.5\n)\n{trailer}");
+        assert_eq!(
+            parse_foam_list_f64(&values).expect("values"),
+            vec![1.5, 2.5, 3.5]
+        );
+        let faces = format!("2\n(\n3(0 1 2)\n4(1 3 2 0)\n)\n{trailer}");
+        let faces = parse_foam_faces(&faces).expect("faces");
+        assert_eq!(faces.len(), 2);
+        assert_eq!(faces[0].node_indices, vec![0, 1, 2]);
+        assert_eq!(faces[1].node_indices, vec![1, 3, 2, 0]);
+    }
+
+    #[test]
+    fn test_list_parsers_reject_an_unclosed_list() {
+        assert!(parse_foam_points("1\n(\n(0 0 0)\n").is_err());
+        assert!(parse_foam_list_usize("no list here").is_err());
     }
 
     #[test]

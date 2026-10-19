@@ -15,6 +15,7 @@
 //! * [`GravityGradientStabilization`] — Gravity gradient torque, stable/unstable equilibria.
 //! * [`SpacecraftFormation`] — Hill-Clohessy-Wiltshire equations, formation keeping.
 
+use crate::planetary_mechanics::hcw_two_impulse;
 use nalgebra::Quaternion;
 use oxiphysics_core::math::{Mat3, Quat, Real, Vec3};
 use std::f64::consts::PI;
@@ -440,7 +441,9 @@ pub struct AttitudeControl {
     pub izz: Real,
     /// Current angular velocity ω in body frame \[rad/s\].
     pub angular_velocity: Vec3,
-    /// Current attitude quaternion (body ← ECI).
+    /// Attitude of the body frame relative to ECI: rotates body-frame vectors
+    /// into ECI (`v_eci = q · v_body`), the convention that makes
+    /// `dq/dt = ½ q ⊗ [0, ω_body]` in [`AttitudeControl::step`].
     pub quaternion: Quat,
     /// External torque applied to the body \[N·m\].
     pub external_torque: Vec3,
@@ -551,18 +554,23 @@ impl AttitudeControl {
 
     /// Proportional-derivative attitude controller.
     ///
-    /// Computes required torque to drive the spacecraft to the target quaternion.
+    /// Computes the body-frame torque `τ = kp·θ·â − kd·ω` that drives the
+    /// spacecraft to the target quaternion.  `(θ, â)` is the shortest-path
+    /// (θ ∈ \[0, π\]) rotation that takes the current attitude onto `target`,
+    /// expressed in body axes (`q_err = q⁻¹ ⊗ target`), so the torque can be
+    /// passed straight to [`AttitudeControl::apply_torque`].  `q` and `-q`
+    /// describe the same attitude and give the same torque.
     ///
     /// # Arguments
     /// * `target` — desired attitude quaternion
     /// * `kp` — proportional gain \[N·m/rad\]
     /// * `kd` — derivative gain \[N·m·s/rad\]
     pub fn pd_controller(&self, target: &Quat, kp: Real, kd: Real) -> Vec3 {
-        let q_error = target * self.quaternion.inverse();
+        let q_error = self.quaternion.inverse() * target;
         let (axis, angle) = q_error
             .axis_angle()
             .map_or((Vec3::zeros(), 0.0), |(ax, ag)| (ax.into_inner(), ag));
-        let torque_p = -kp * angle * axis;
+        let torque_p = kp * angle * axis;
         let torque_d = -kd * self.angular_velocity;
         torque_p + torque_d
     }
@@ -839,7 +847,7 @@ impl GravityGradientStabilization {
 /// The Hill frame is centred on the reference (chief) spacecraft.
 #[derive(Debug, Clone)]
 pub struct HillState {
-    /// Relative position (x along-track, y radial, z cross-track) \[m\].
+    /// Relative position (x radial, y along-track, z cross-track) \[m\].
     pub position: Vec3,
     /// Relative velocity \[m/s\].
     pub velocity: Vec3,
@@ -954,19 +962,36 @@ impl SpacecraftFormation {
         self.deputy_state.position - self.target_state.position
     }
 
-    /// Compute a fuel-optimal impulsive maneuver to correct formation error.
+    /// Two-impulse HCW transfer from the deputy's state to the target state.
     ///
-    /// Uses a simplified two-impulse transfer based on the position error.
-    /// Returns the ΔV vector \[m/s\] required.
-    pub fn fuel_optimal_maneuver(&self, transfer_time: Real) -> Vec3 {
-        let error = self.formation_error();
-        let n = self.mean_motion();
-        let nt = n * transfer_time;
-        let s = nt.sin();
-
-        // Simplified: direct correction scaled by transfer geometry
-        let dv_scale = if s.abs() > 1e-6 { 1.0 / s } else { 1.0 };
-        error * (n * dv_scale)
+    /// Finds the burns that carry the deputy from `deputy_state` to
+    /// `target_state` (position and velocity) in `transfer_time` seconds.  The
+    /// first burn `dv1` is applied now and selects the departure velocity
+    /// `v₀⁺ = Φrv⁻¹ (r_target − Φrr r₀)`; the second burn `dv2` is applied
+    /// after `transfer_time` and turns the arrival velocity into the target
+    /// velocity.  The result uses the same state-transition matrix as
+    /// [`SpacecraftFormation::propagate_exact`], so coasting the deputy after
+    /// `apply_impulse(dv1)` reaches the target position exactly.  For a fixed
+    /// transfer time the solution is unique.
+    ///
+    /// Returns `None` when the transfer is singular or ill-posed
+    /// (`transfer_time <= 0`, non-finite input, or a transfer time at which the
+    /// HCW position map cannot be inverted, such as `n·transfer_time` a
+    /// multiple of π; see [`hcw_two_impulse`]).
+    pub fn two_impulse_transfer(&self, transfer_time: Real) -> Option<(Vec3, Vec3)> {
+        let as_array = |v: &Vec3| [v.x, v.y, v.z];
+        let (dv1, dv2) = hcw_two_impulse(
+            self.mean_motion(),
+            as_array(&self.deputy_state.position),
+            as_array(&self.deputy_state.velocity),
+            as_array(&self.target_state.position),
+            as_array(&self.target_state.velocity),
+            transfer_time,
+        )?;
+        Some((
+            Vec3::new(dv1[0], dv1[1], dv1[2]),
+            Vec3::new(dv2[0], dv2[1], dv2[2]),
+        ))
     }
 
     /// Apply an impulsive ΔV maneuver (instantaneous velocity change).
@@ -975,75 +1000,48 @@ impl SpacecraftFormation {
         self.delta_v_total += delta_v.norm();
     }
 
-    /// Compute the natural drift rate of the deputy in the along-track direction.
+    /// Secular along-track drift rate \[m/s\] of the deputy.
     ///
-    /// For circular reference orbits, ẋ = 0 results in secular drift:
-    /// Δy = -3/2 * n * x0 * t
+    /// The closed-form HCW solution contains the term `-3 (2n·x₀ + ẏ₀) t` in
+    /// the along-track coordinate `y(t)`; all other terms are periodic.  The
+    /// drift rate is therefore `-3 (2n·x₀ + ẏ₀)`, which vanishes exactly on
+    /// bounded relative orbits (see [`SpacecraftFormation::is_bounded_orbit`]).
     pub fn secular_drift_rate(&self) -> Real {
         let n = self.mean_motion();
-        -1.5 * n * self.deputy_state.position.x
+        -3.0 * (2.0 * n * self.deputy_state.position.x + self.deputy_state.velocity.y)
     }
 
-    /// Compute the energy of the relative motion (used for bounded orbit condition).
+    /// Whether the relative motion is bounded.
     ///
-    /// A bounded HCW relative orbit requires that the secular drift term vanishes.
-    /// The general boundedness condition is: `ẋ₀ + 2n·y₀·correction = 0`, or equivalently
-    /// checking that the 3n²·x₀ term in the y-equation is balanced.
-    ///
-    /// For the standard circular parametrisation this is encoded as:
-    /// `ẏ₀ + 2n·x₀ ≈ 0` (Lyapunov drift condition).
+    /// The HCW solution is periodic except for the secular along-track term
+    /// `-3 (2n·x₀ + ẏ₀) t`, so the relative orbit is bounded exactly when
+    /// `ẏ₀ = -2n·x₀`.  The condition is tested to a tolerance of
+    /// `1e-9 · max(1, n·|r₀|, |v₀|)` m/s.  A stationary along-track offset
+    /// (`x₀ = 0`, `v₀ = 0`) is bounded; the cross-track motion is always
+    /// periodic and does not enter the test.
     pub fn is_bounded_orbit(&self) -> bool {
         let n = self.mean_motion();
-        let x0 = self.deputy_state.position.x;
-        let xd0 = self.deputy_state.velocity.x;
-        let yd0 = self.deputy_state.velocity.y;
-        // General bounded condition from HCW: verify secular coefficient is zero.
-        // Secular drift vanishes when: 2*xd0 + n*y0 ... actually the key condition is
-        // the along-track drift: d/dt(secular drift) ~ 6*n*(n*xd0 + 2*yd0 - 3*n^2*x0/n ... )
-        // The simplified check: ẋ₀ = 0 OR the Lyapunov form ẏ₀ = -2n·x₀ must hold simultaneously.
-        // For the general circular orbit parametrisation (phase != 0), use the
-        // scaled invariant: (yd0 + 2*n*x0)^2 + (xd0 - 0)^2 < epsilon * n^2 * scale
-        // Normalise by n to be phase-invariant:
-        let scale = if n > 1e-12 {
-            let rho_estimate = (x0 * x0 + (0.5 * (self.deputy_state.position.y)).powi(2))
-                .sqrt()
-                .max(1.0);
-            rho_estimate * n
-        } else {
-            1.0
-        };
-        // Both conditions: ẋ₀ ≈ ±rho*n*cos(phase) and ẏ₀ ≈ -2*rho*n*sin(phase)
-        // A simpler invariant: check that there is no net secular term by verifying
-        // the constraint from the first integral of HCW:  4*xd0 + 2*yd0/n + ... is bounded.
-        // Use the direct test: ẋ₀ + 2*(yd0 + 2*n*x0) / (2*n) ≈ ẋ₀ + yd0/n + 2*x0
-        let _ = scale;
-        // The most robust check: verify that the initial conditions were generated by
-        // set_circular_orbit (any phase) using the generating equations:
-        // x₀ = -ρ sin φ, y₀ = 2ρ cos φ, ẋ₀ = -ρn cos φ, ẏ₀ = -2ρn sin φ
-        // Invariants: (x₀)^2 + (y₀/2)^2 = ρ^2 and (ẋ₀/n)^2 + (ẏ₀/(2n))^2 = ρ^2
-        // and x₀ · ẋ₀ + (y₀/2) · (ẏ₀/2) / n^2 = ρ^2 (cos² + sin² = 1 cross-terms cancel)
-        let pos_rho_sq = x0 * x0 + (self.deputy_state.position.y / 2.0).powi(2);
-        let vel_rho_sq = (xd0 / n).powi(2) + (yd0 / (2.0 * n)).powi(2);
-        let rho_sq = (pos_rho_sq + vel_rho_sq) * 0.5;
-        if rho_sq < 1e-6 {
-            return true; // trivially at origin
-        }
-        // Check both magnitudes match (position and velocity arcs have same radius)
-        let mismatch = ((pos_rho_sq - vel_rho_sq) / rho_sq).abs();
-        mismatch < 0.01
+        let r0 = &self.deputy_state.position;
+        let v0 = &self.deputy_state.velocity;
+        let drift_velocity = (v0.y + 2.0 * n * r0.x).abs();
+        let scale = (n * r0.norm()).max(v0.norm()).max(1.0);
+        drift_velocity <= 1e-9 * scale
     }
 
-    /// Create a circular relative orbit configuration.
+    /// Place the deputy on a bounded relative orbit around the chief.
     ///
-    /// A circular (bounded) orbit around the chief with radius `rho`.
-    /// Uses the standard HCW parametric solution:
-    /// x(t) = -ρ sin(nt + φ), y(t) = 2ρ cos(nt + φ)
+    /// The orbit is the drift-free HCW trajectory
+    /// `x(t) = ρ sin(nt + φ)` (radial), `y(t) = 2ρ cos(nt + φ)` (along-track),
+    /// `z = 0`: a 2:1 ellipse centred on the chief.  The initial state is
+    /// `x₀ = ρ sin φ`, `ẋ₀ = ρ n cos φ`, `y₀ = 2ρ cos φ`,
+    /// `ẏ₀ = -2ρ n sin φ`, which satisfies `ẏ₀ = -2n·x₀` and has its
+    /// along-track centre `y₀ - 2ẋ₀/n` at the chief.
     pub fn set_circular_orbit(&mut self, rho: Real, phase: Real) {
         let n = self.mean_motion();
-        let x0 = -rho * phase.sin();
+        let x0 = rho * phase.sin();
         let y0 = 2.0 * rho * phase.cos();
         let z0 = 0.0;
-        let xd0 = -rho * n * phase.cos();
+        let xd0 = rho * n * phase.cos();
         let yd0 = -2.0 * rho * n * phase.sin();
         let zd0 = 0.0;
         self.deputy_state = HillState::new(Vec3::new(x0, y0, z0), Vec3::new(xd0, yd0, zd0));
@@ -1051,12 +1049,12 @@ impl SpacecraftFormation {
 
     /// Return the along-track separation \[m\] between deputy and chief.
     pub fn along_track_separation(&self) -> Real {
-        self.deputy_state.position.x
+        self.deputy_state.position.y
     }
 
     /// Return the radial separation \[m\].
     pub fn radial_separation(&self) -> Real {
-        self.deputy_state.position.y
+        self.deputy_state.position.x
     }
 
     /// Return the cross-track separation \[m\].
@@ -1123,6 +1121,9 @@ pub fn euler_to_rotation_matrix(roll: Real, pitch: Real, yaw: Real) -> Mat3 {
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {

@@ -219,9 +219,17 @@ pub fn hartree_fock_energy(orbital_energies: &[f64], occupations: &[f64]) -> f64
 
 /// Compute the Hellmann-Feynman force on nucleus A from the electron density.
 ///
-/// `F_A = Z_A * sum_{grid} rho(r) * (R_A - r) / |R_A - r|^3 * dV`
+/// The electron-nucleus attraction energy is
+/// `E_en = -Z_A * sum_{grid} rho(r) * dV / |R_A - r|`, so the force on the
+/// nucleus is `F_A = -dE_en/dR_A`:
 ///
-/// This is a simplified discrete sum over a 3D real-space grid.
+/// `F_A = -Z_A * sum_{grid} rho(r) * (R_A - r) / |R_A - r|^3 * dV`
+///
+/// The force points from the nucleus towards the electron density (the
+/// electrons attract the nucleus).  The nucleus-nucleus repulsion is not part
+/// of this routine.  The integral is evaluated as a discrete sum over the
+/// supplied real-space grid points; grid points closer than `1e-10` to the
+/// nucleus are skipped.
 ///
 /// # Arguments
 /// - `z_a`: atomic number of nucleus A
@@ -249,9 +257,9 @@ pub fn dft_force(
         }
         let r3 = r2.sqrt() * r2;
         let fac = z_a * rho * dv / r3;
-        force[0] += fac * dx;
-        force[1] += fac * dy;
-        force[2] += fac * dz;
+        force[0] -= fac * dx;
+        force[1] -= fac * dy;
+        force[2] -= fac * dz;
     }
     force
 }
@@ -602,15 +610,77 @@ mod tests {
 
     #[test]
     fn test_dft_force_asymmetric() {
-        // Single density point at +x => force in +x direction on nucleus at origin
+        // Single density point at +x => the nucleus at the origin is pulled
+        // towards it, i.e. the force points in the +x direction.
+        // F_A = -z_a * rho * dv * (R_A - r) / |R_A - r|^3 with
+        // R_A = [0,0,0], r = [2,0,0] => (R_A - r) = [-2,0,0], |R_A - r| = 2
+        // F_x = -1 * 1 * 1 * (-2) / 8 = +0.25
         let density = vec![1.0];
         let grid = vec![[2.0, 0.0, 0.0]];
         let f = dft_force(1.0, &[0.0, 0.0, 0.0], &density, &grid, 1.0);
-        // force_x = z_a * rho * dv * (0 - 2) / |(-2)|^3 = -1/4 (attractive)
-        // Actually: F_A = z_a * rho * dv * (R_A - r) / |R_A - r|^3
-        // R_A = [0,0,0], r = [2,0,0] => (R_A - r) = [-2,0,0], |R_A-r|=2
-        // F_x = 1 * 1 * 1 * (-2) / 8 = -0.25
-        assert!(f[0] < 0.0);
+        assert!(
+            f[0] > 0.0,
+            "electron density must attract the nucleus: {f:?}"
+        );
+        assert!((f[0] - 0.25).abs() < 1e-12, "F_x = {}", f[0]);
+        assert!(f[1].abs() < 1e-15 && f[2].abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_dft_force_density_on_negative_side_pulls_negative() {
+        // Mirror image of the previous test: density at -x pulls towards -x.
+        let f = dft_force(1.0, &[0.0, 0.0, 0.0], &[1.0], &[[-2.0, 0.0, 0.0]], 1.0);
+        assert!((f[0] + 0.25).abs() < 1e-12, "F_x = {}", f[0]);
+    }
+
+    #[test]
+    fn test_dft_force_scales_with_charge_density_and_volume_element() {
+        // Z = 3, rho = 0.5, dV = 0.2, density point at distance 2 along y:
+        // |F_y| = Z rho dV / r^2 = 3 * 0.5 * 0.2 / 4 = 0.075, towards the density.
+        let f = dft_force(3.0, &[1.0, 1.0, 1.0], &[0.5], &[[1.0, 3.0, 1.0]], 0.2);
+        assert!((f[1] - 0.075).abs() < 1e-14, "F_y = {}", f[1]);
+        assert!(f[0].abs() < 1e-15 && f[2].abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_dft_force_equals_minus_gradient_of_electron_nucleus_energy() {
+        // E_en(R) = -Z sum_k rho_k dV / |R - r_k|; the Hellmann-Feynman force
+        // must equal -dE_en/dR (central difference), component by component.
+        let z_a = 2.0;
+        let dv = 0.3;
+        let density = [0.8, 0.2, 0.5, 1.1];
+        let grid = [
+            [1.0, 0.5, -0.3],
+            [-1.2, 0.4, 0.9],
+            [0.3, -1.5, 0.7],
+            [0.9, 1.1, -1.4],
+        ];
+        let nucleus = [0.1, -0.2, 0.15];
+        let energy = |r: &[f64; 3]| -> f64 {
+            density
+                .iter()
+                .zip(&grid)
+                .map(|(rho, g)| {
+                    let d = ((r[0] - g[0]).powi(2) + (r[1] - g[1]).powi(2) + (r[2] - g[2]).powi(2))
+                        .sqrt();
+                    -z_a * rho * dv / d
+                })
+                .sum()
+        };
+        let force = dft_force(z_a, &nucleus, &density, &grid, dv);
+        let h = 1e-6;
+        for axis in 0..3 {
+            let mut plus = nucleus;
+            let mut minus = nucleus;
+            plus[axis] += h;
+            minus[axis] -= h;
+            let numeric = -(energy(&plus) - energy(&minus)) / (2.0 * h);
+            assert!(
+                (force[axis] - numeric).abs() < 1e-8,
+                "axis {axis}: analytic {} vs numeric {numeric}",
+                force[axis]
+            );
+        }
     }
 
     // --- PulayMixer ---

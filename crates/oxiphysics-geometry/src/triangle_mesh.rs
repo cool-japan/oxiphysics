@@ -9,6 +9,8 @@ use oxiphysics_core::Aabb;
 use oxiphysics_core::math::{Mat3, Real, Vec3};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
+mod mass_properties;
+
 /// A triangle mesh defined by vertices and index triples.
 #[derive(Debug, Clone)]
 pub struct TriangleMesh {
@@ -50,28 +52,15 @@ impl TriangleMesh {
         vol.abs()
     }
 
-    /// Center of mass via weighted tetrahedral centroids.
+    /// Center of mass as a plain array; identical to [`Shape::center_of_mass`].
+    ///
+    /// The mass is taken to fill the volume enclosed by the (closed) mesh and
+    /// the centroid is the exact signed-tetrahedron sum.  A mesh without
+    /// enclosed volume is treated as a thin shell and the result is its area
+    /// centroid.  The origin for a mesh without usable triangles.
     pub fn center_of_mass_explicit(&self) -> [f64; 3] {
-        if self.indices.is_empty() {
-            return [0.0, 0.0, 0.0];
-        }
-        let mut weighted = Vec3::zeros();
-        let mut total_vol = 0.0;
-        for tri in &self.indices {
-            let a = self.vertices[tri[0]];
-            let b = self.vertices[tri[1]];
-            let c = self.vertices[tri[2]];
-            let tet_vol = a.dot(&b.cross(&c)) / 6.0;
-            let tet_center = (a + b + c) * 0.25;
-            weighted += tet_center * tet_vol;
-            total_vol += tet_vol;
-        }
-        if total_vol.abs() > 1e-12 {
-            let com = weighted / total_vol;
-            [com.x, com.y, com.z]
-        } else {
-            [0.0, 0.0, 0.0]
-        }
+        let com = self.center_of_mass();
+        [com.x, com.y, com.z]
     }
 
     /// Compute per-face normals (unit vectors).
@@ -818,43 +807,28 @@ impl Shape for TriangleMesh {
         vol.abs()
     }
 
+    /// Center of mass of the solid enclosed by the mesh.
+    ///
+    /// Exact for a closed, consistently oriented mesh (signed-tetrahedron
+    /// sum).  A mesh that encloses no volume is treated as a thin shell and the
+    /// result is its area centroid; see [`Shape::inertia_tensor`].
     fn center_of_mass(&self) -> Vec3 {
-        if self.indices.is_empty() {
-            return Vec3::zeros();
-        }
-        let mut weighted = Vec3::zeros();
-        let mut total_vol = 0.0;
-        for tri in &self.indices {
-            let a = self.vertices[tri[0]];
-            let b = self.vertices[tri[1]];
-            let c = self.vertices[tri[2]];
-            let tet_vol = a.dot(&b.cross(&c)) / 6.0;
-            let tet_center = (a + b + c) * 0.25;
-            weighted += tet_center * tet_vol;
-            total_vol += tet_vol;
-        }
-        if total_vol.abs() > 1e-12 {
-            weighted / total_vol
-        } else {
-            Vec3::zeros()
-        }
+        self.mass_distribution().centroid()
     }
 
+    /// Inertia tensor of the solid enclosed by the mesh, about its center of
+    /// mass (the point returned by [`Shape::center_of_mass`]).
+    ///
+    /// The mass is distributed uniformly over the enclosed volume and the
+    /// second moments are integrated exactly over the signed tetrahedra of the
+    /// triangles, so the tensor includes the products of inertia and follows
+    /// the actual geometry, for either triangle orientation.  The mesh must be
+    /// closed for the enclosed volume to be defined.  A mesh that encloses no
+    /// volume (an open surface or a flat plate) carries its mass on the surface
+    /// instead, uniformly over the triangle area.  The zero matrix for a
+    /// non-positive mass or a mesh without usable triangles.
     fn inertia_tensor(&self, mass: Real) -> Mat3 {
-        let bb = self.bounding_box();
-        let size = bb.max - bb.min;
-        let k = mass / 12.0;
-        Mat3::new(
-            k * (size.y * size.y + size.z * size.z),
-            0.0,
-            0.0,
-            0.0,
-            k * (size.x * size.x + size.z * size.z),
-            0.0,
-            0.0,
-            0.0,
-            k * (size.x * size.x + size.y * size.y),
-        )
+        self.mass_distribution().inertia_tensor(mass)
     }
 
     fn ray_cast(&self, ray_origin: &Vec3, ray_direction: &Vec3, max_toi: Real) -> Option<RayHit> {

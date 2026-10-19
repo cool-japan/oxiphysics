@@ -21,6 +21,84 @@
 /// Magic number written at the beginning of the simplified XTC byte stream.
 const XTC_MAGIC: u32 = 0x5854_4300;
 
+/// Smallest possible XTC frame: step (4) + time (4) + atom count (4) + box (9 × 4).
+const XTC_MIN_FRAME_BYTES: usize = 48;
+
+/// Bytes of one XTC atom position (3 × f32).
+const XTC_ATOM_BYTES: usize = 12;
+
+/// Nanometres to ångström (XTC stores nm, DCD stores Å).
+const NM_TO_ANGSTROM: f32 = 10.0;
+
+/// Femtoseconds per picosecond (XTC times are in ps, the DCD timestep is in fs).
+const FS_PER_PS: f32 = 1000.0;
+
+/// Bounds-checked little-endian reader over a byte slice.
+///
+/// A truncated stream is reported as `Err` instead of panicking, and
+/// [`remaining`](Self::remaining) lets a reader compare a count taken from the
+/// stream with the bytes that can actually follow it *before* it allocates
+/// for that count.
+struct LeCursor<'a> {
+    data: &'a [u8],
+    pos: usize,
+    /// Format name used as the prefix of error messages (`"XTC"`, `"DCD"`).
+    format: &'static str,
+}
+
+impl<'a> LeCursor<'a> {
+    fn new(data: &'a [u8], format: &'static str) -> Self {
+        Self {
+            data,
+            pos: 0,
+            format,
+        }
+    }
+
+    /// Number of bytes not yet consumed.
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+
+    /// Consume the next `len` bytes.
+    fn take(&mut self, len: usize) -> Result<&'a [u8], String> {
+        let end = self
+            .pos
+            .checked_add(len)
+            .filter(|&end| end <= self.data.len());
+        match end.and_then(|end| self.data.get(self.pos..end)) {
+            Some(bytes) => {
+                self.pos += len;
+                Ok(bytes)
+            }
+            None => Err(format!(
+                "{}: unexpected EOF at offset {}",
+                self.format, self.pos
+            )),
+        }
+    }
+
+    /// Consume the next `N` bytes as a fixed-size array.
+    fn take_array<const N: usize>(&mut self) -> Result<[u8; N], String> {
+        let offset = self.pos;
+        let bytes = self.take(N)?;
+        <[u8; N]>::try_from(bytes)
+            .map_err(|_| format!("{}: unexpected EOF at offset {offset}", self.format))
+    }
+
+    fn read_u32(&mut self) -> Result<u32, String> {
+        self.take_array::<4>().map(u32::from_le_bytes)
+    }
+
+    fn read_i32(&mut self) -> Result<i32, String> {
+        self.take_array::<4>().map(i32::from_le_bytes)
+    }
+
+    fn read_f32(&mut self) -> Result<f32, String> {
+        self.take_array::<4>().map(f32::from_le_bytes)
+    }
+}
+
 /// A single frame of XTC trajectory data.
 pub struct XtcFrame {
     /// Simulation step number.
@@ -178,77 +256,52 @@ pub struct SimpleXtcReader;
 
 impl SimpleXtcReader {
     /// Parse a byte slice produced by [`SimpleXtcWriter::to_bytes`].
+    ///
+    /// The frame count and every per-frame atom count are read from the
+    /// stream, which may be corrupt or hostile, so each is checked against the
+    /// bytes that remain *before* anything is allocated for it: a stream that
+    /// declares more frames or atoms than it can possibly hold is rejected with
+    /// an `Err` instead of aborting the process on a multi-gigabyte allocation.
     pub fn from_bytes(data: &[u8]) -> Result<Vec<XtcFrame>, String> {
-        let mut cur = 0usize;
+        let mut cur = LeCursor::new(data, "XTC");
 
-        macro_rules! read_u32 {
-            () => {{
-                if cur + 4 > data.len() {
-                    return Err(format!("XTC: unexpected EOF at offset {cur}"));
-                }
-                let v = u32::from_le_bytes(
-                    data[cur..cur + 4]
-                        .try_into()
-                        .expect("slice length must match"),
-                );
-                cur += 4;
-                v
-            }};
-        }
-        macro_rules! read_i32 {
-            () => {{
-                if cur + 4 > data.len() {
-                    return Err(format!("XTC: unexpected EOF at offset {cur}"));
-                }
-                let v = i32::from_le_bytes(
-                    data[cur..cur + 4]
-                        .try_into()
-                        .expect("slice length must match"),
-                );
-                cur += 4;
-                v
-            }};
-        }
-        macro_rules! read_f32 {
-            () => {{
-                if cur + 4 > data.len() {
-                    return Err(format!("XTC: unexpected EOF at offset {cur}"));
-                }
-                let v = f32::from_le_bytes(
-                    data[cur..cur + 4]
-                        .try_into()
-                        .expect("slice length must match"),
-                );
-                cur += 4;
-                v
-            }};
-        }
-
-        let magic = read_u32!();
+        let magic = cur.read_u32()?;
         if magic != XTC_MAGIC {
             return Err(format!("XTC: bad magic 0x{magic:08X}"));
         }
 
-        let n_frames = read_u32!() as usize;
+        let n_frames = cur.read_u32()? as usize;
+        if n_frames > cur.remaining() / XTC_MIN_FRAME_BYTES {
+            return Err(format!(
+                "XTC: header declares {n_frames} frames of at least {XTC_MIN_FRAME_BYTES} bytes but only {} bytes follow",
+                cur.remaining()
+            ));
+        }
         let mut frames = Vec::with_capacity(n_frames);
 
-        for _ in 0..n_frames {
-            let step = read_i32!();
-            let time = read_f32!();
-            let n_atoms = read_u32!() as usize;
+        for frame_idx in 0..n_frames {
+            let step = cur.read_i32()?;
+            let time = cur.read_f32()?;
+            let n_atoms = cur.read_u32()? as usize;
 
             let mut box_matrix = [[0f32; 3]; 3];
             for row in &mut box_matrix {
                 for v in row.iter_mut() {
-                    *v = read_f32!();
+                    *v = cur.read_f32()?;
                 }
             }
 
+            if n_atoms > cur.remaining() / XTC_ATOM_BYTES {
+                return Err(format!(
+                    "XTC: frame {frame_idx} declares {n_atoms} atoms of {XTC_ATOM_BYTES} bytes but only {} bytes follow",
+                    cur.remaining()
+                ));
+            }
             let mut positions = Vec::with_capacity(n_atoms);
             for _ in 0..n_atoms {
-                let x = read_f32!();
-                let y = read_f32!();
-                let z = read_f32!();
+                let x = cur.read_f32()?;
+                let y = cur.read_f32()?;
+                let z = cur.read_f32()?;
                 positions.push([x, y, z]);
             }
 
@@ -552,65 +605,35 @@ pub struct SimpleDcdReader;
 
 impl SimpleDcdReader {
     /// Parse a byte slice produced by [`SimpleDcdWriter::to_bytes`].
+    ///
+    /// The frame and atom counts come from the header of a stream that may be
+    /// corrupt or hostile. Every frame has a fixed size (three records of a
+    /// 4-byte length, `4 * n_atoms` coordinate bytes and a 4-byte length), so
+    /// the exact size the header declares is checked against the bytes that
+    /// follow it *before* any allocation is sized from the counts.
     pub fn from_bytes(data: &[u8]) -> Result<(DcdHeader, Vec<DcdFrame>), String> {
-        let mut cur = 0usize;
-
-        macro_rules! need {
-            ($n:expr) => {
-                if cur + $n > data.len() {
-                    return Err(format!("DCD: unexpected EOF at offset {cur}"));
-                }
-            };
-        }
-        macro_rules! read_u32 {
-            () => {{
-                need!(4);
-                let v = u32::from_le_bytes(
-                    data[cur..cur + 4]
-                        .try_into()
-                        .expect("slice length must match"),
-                );
-                cur += 4;
-                v
-            }};
-        }
-        macro_rules! read_f32 {
-            () => {{
-                need!(4);
-                let v = f32::from_le_bytes(
-                    data[cur..cur + 4]
-                        .try_into()
-                        .expect("slice length must match"),
-                );
-                cur += 4;
-                v
-            }};
-        }
+        let mut cur = LeCursor::new(data, "DCD");
 
         // ── header block ──────────────────────────────────────────────────
-        let hdr_len = read_u32!() as usize;
+        let hdr_len = cur.read_u32()? as usize;
         if hdr_len < 4 + 4 + 4 + 4 + 80 {
             return Err(format!("DCD: header block too short ({hdr_len})"));
         }
 
-        need!(4);
-        let sig = &data[cur..cur + 4];
-        if sig != b"CORD" {
+        if cur.take(4)? != b"CORD" {
             return Err("DCD: expected 'CORD' signature".to_string());
         }
-        cur += 4;
 
-        let n_frames = read_u32!();
-        let n_atoms = read_u32!();
-        let timestep = read_f32!();
+        let n_frames = cur.read_u32()?;
+        let n_atoms = cur.read_u32()?;
+        let timestep = cur.read_f32()?;
 
-        need!(80);
-        let title_raw = &data[cur..cur + 80];
-        cur += 80;
-        let title = String::from_utf8_lossy(title_raw).trim_end().to_string();
+        let title = String::from_utf8_lossy(cur.take(80)?)
+            .trim_end()
+            .to_string();
 
         // closing record length
-        let hdr_len2 = read_u32!();
+        let hdr_len2 = cur.read_u32()?;
         if hdr_len2 as usize != hdr_len {
             return Err(format!(
                 "DCD: header closing length mismatch ({hdr_len2} vs {hdr_len})"
@@ -626,6 +649,17 @@ impl SimpleDcdReader {
         let n = n_atoms as usize;
 
         // ── frames ────────────────────────────────────────────────────────
+        // A frame is three records of (4-byte length, 4 * n bytes, 4-byte
+        // length), so a stream that is shorter than the declared frames
+        // cannot be valid. u128 arithmetic cannot overflow for u32 counts.
+        let frame_bytes = 3 * (8 + 4 * u128::from(n_atoms));
+        let declared_bytes = u128::from(n_frames) * frame_bytes;
+        let available_bytes = cur.remaining() as u128;
+        if declared_bytes > available_bytes {
+            return Err(format!(
+                "DCD: header declares {n_frames} frames of {n_atoms} atoms ({declared_bytes} bytes) but only {available_bytes} bytes follow"
+            ));
+        }
         let mut frames = Vec::with_capacity(n_frames as usize);
 
         for frame_idx in 0..n_frames {
@@ -636,7 +670,7 @@ impl SimpleDcdReader {
             ];
 
             for (dim, xyz_dim) in xyz.iter_mut().enumerate() {
-                let block_len = read_u32!() as usize;
+                let block_len = cur.read_u32()? as usize;
                 let expected = n * 4;
                 if block_len != expected {
                     return Err(format!(
@@ -644,9 +678,9 @@ impl SimpleDcdReader {
                     ));
                 }
                 for _ in 0..n {
-                    xyz_dim.push(read_f32!());
+                    xyz_dim.push(cur.read_f32()?);
                 }
-                let block_len2 = read_u32!() as usize;
+                let block_len2 = cur.read_u32()? as usize;
                 if block_len2 != block_len {
                     return Err(format!(
                         "DCD: frame {frame_idx} dim {dim}: closing block length mismatch"
@@ -756,41 +790,87 @@ pub fn compute_rmsd(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
 
 /// Convert a simplified XTC byte stream to a DCD byte stream.
 ///
-/// Frame times (in ps) are preserved in the DCD timestep if all frames have
-/// the same inter-frame interval; otherwise the average is used.
-/// Atom count is taken from the first XTC frame.
+/// The two formats use different units, so the conversion rescales:
+///
+/// * positions: nanometres (XTC) → ångström (DCD), multiplied by 10;
+/// * timestep: the average inter-frame interval in picoseconds (XTC) →
+///   femtoseconds ([`DcdHeader::timestep`]), multiplied by 1000.
+///
+/// A DCD stream carries a single timestep, no start offset and no step
+/// numbers, so frame times and step numbers survive an XTC → DCD → XTC round
+/// trip only when the frames are uniformly spaced and start at time 0 (the
+/// step number of frame `i` becomes `i`). For unevenly spaced frames the
+/// average interval is stored.
+///
+/// The atom count is taken from the first XTC frame and a DCD stream has a
+/// constant atom count, so an `Err` is returned if any frame has a different
+/// number of atoms.
 pub fn xtc_to_dcd(xtc_data: &[u8]) -> Result<Vec<u8>, String> {
     let frames = SimpleXtcReader::from_bytes(xtc_data)?;
-    if frames.is_empty() {
+    let Some(meta) = TrajectoryMetadata::from_xtc_frames(&frames) else {
         return Ok(SimpleDcdWriter::new(0, 0.0).to_bytes());
+    };
+    let n_atoms = meta.n_atoms;
+    for (idx, frame) in frames.iter().enumerate() {
+        if frame.n_atoms() != n_atoms {
+            return Err(format!(
+                "XTC frame {idx} has {} atoms but frame 0 has {n_atoms}; DCD requires a constant atom count",
+                frame.n_atoms()
+            ));
+        }
     }
-    let n_atoms = frames[0].n_atoms() as u32;
+    let n_atoms_u32 = u32::try_from(n_atoms)
+        .map_err(|_| format!("XTC atom count {n_atoms} does not fit a DCD header"))?;
 
-    // Compute average timestep
-    let meta = TrajectoryMetadata::from_xtc_frames(&frames).expect("value should be present");
-    let timestep = meta.avg_dt();
-
-    let mut writer = SimpleDcdWriter::with_title(n_atoms, timestep, "Converted from XTC");
+    let timestep_fs = meta.avg_dt() * FS_PER_PS;
+    let mut writer = SimpleDcdWriter::with_title(n_atoms_u32, timestep_fs, "Converted from XTC");
     for frame in &frames {
-        let interleaved = frame.positions.clone();
-        writer.add_frame(&interleaved);
+        let x: Vec<f32> = frame
+            .positions
+            .iter()
+            .map(|p| p[0] * NM_TO_ANGSTROM)
+            .collect();
+        let y: Vec<f32> = frame
+            .positions
+            .iter()
+            .map(|p| p[1] * NM_TO_ANGSTROM)
+            .collect();
+        let z: Vec<f32> = frame
+            .positions
+            .iter()
+            .map(|p| p[2] * NM_TO_ANGSTROM)
+            .collect();
+        writer.add_frame_xyz(x, y, z);
     }
     Ok(writer.to_bytes())
 }
 
 /// Convert a simplified DCD byte stream to an XTC byte stream.
 ///
-/// Positions are converted from Å (DCD) to nm (XTC) by dividing by 10.
+/// The inverse of [`xtc_to_dcd`]:
+///
+/// * positions: ångström (DCD) → nanometres (XTC), divided by 10;
+/// * time: frame `i` gets the step number `i` and the time
+///   `i * timestep`, with the DCD timestep converted from femtoseconds to
+///   picoseconds (divided by 1000).
 pub fn dcd_to_xtc(dcd_data: &[u8]) -> Result<Vec<u8>, String> {
     let (header, frames) = SimpleDcdReader::from_bytes(dcd_data)?;
-    let timestep_ps = header.timestep;
+    let timestep_ps = header.timestep / FS_PER_PS;
     let mut writer = SimpleXtcWriter::new();
     for (idx, frame) in frames.iter().enumerate() {
         let positions_nm: Vec<[f32; 3]> = (0..frame.n_atoms())
-            .map(|i| [frame.x[i] / 10.0, frame.y[i] / 10.0, frame.z[i] / 10.0])
+            .map(|i| {
+                [
+                    frame.x[i] / NM_TO_ANGSTROM,
+                    frame.y[i] / NM_TO_ANGSTROM,
+                    frame.z[i] / NM_TO_ANGSTROM,
+                ]
+            })
             .collect();
+        let step = i32::try_from(idx)
+            .map_err(|_| format!("DCD frame index {idx} does not fit an XTC step number"))?;
         let time_ps = timestep_ps * idx as f32;
-        writer.add_frame(idx as i32, time_ps, positions_nm);
+        writer.add_frame(step, time_ps, positions_nm);
     }
     Ok(writer.to_bytes())
 }
@@ -973,6 +1053,12 @@ pub fn compute_finite_difference_velocities(frames: &[XtcFrame], dt_ps: f32) -> 
 // ─────────────────────────────────────────────
 //  Tests
 // ─────────────────────────────────────────────
+
+// Untrusted frame/atom counts in DCD and XTC headers (F2416).
+#[cfg(test)]
+mod dcd_header_tests;
+#[cfg(test)]
+mod xtc_header_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1431,9 +1517,46 @@ mod tests {
         assert_eq!(header.n_atoms, 1);
         assert_eq!(header.n_frames, 2);
         assert_eq!(frames.len(), 2);
-        // XTC positions are in nm; DCD stores them as-is
-        assert!(approx_eq(frames[0].x[0], 1.0));
-        assert!(approx_eq(frames[1].y[0], 5.0));
+        // XTC positions are in nm; DCD stores ångström, i.e. nm * 10.
+        assert!(approx_eq(frames[0].x[0], 10.0), "x={}", frames[0].x[0]);
+        assert!(approx_eq(frames[0].y[0], 20.0), "y={}", frames[0].y[0]);
+        assert!(approx_eq(frames[0].z[0], 30.0), "z={}", frames[0].z[0]);
+        assert!(approx_eq(frames[1].x[0], 40.0), "x={}", frames[1].x[0]);
+        assert!(approx_eq(frames[1].y[0], 50.0), "y={}", frames[1].y[0]);
+        assert!(approx_eq(frames[1].z[0], 60.0), "z={}", frames[1].z[0]);
+        // The 1 ps frame interval is stored as the DCD timestep in femtoseconds.
+        assert!(
+            approx_eq(header.timestep, 1000.0),
+            "timestep={}",
+            header.timestep
+        );
+    }
+
+    #[test]
+    fn xtc_to_dcd_timestep_is_in_femtoseconds() {
+        let mut writer = SimpleXtcWriter::new();
+        for i in 0..4 {
+            writer.add_frame(i, 0.002 * i as f32, vec![[0.0; 3]]);
+        }
+        let dcd_bytes = xtc_to_dcd(&writer.to_bytes()).unwrap();
+        let (header, _) = SimpleDcdReader::from_bytes(&dcd_bytes).unwrap();
+        // 2 fs steps: the header duration is the trajectory length in fs.
+        assert!(
+            (header.timestep - 2.0).abs() < 1e-4,
+            "dt={}",
+            header.timestep
+        );
+        assert!((header.duration() - 8.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn xtc_to_dcd_rejects_frames_with_different_atom_counts() {
+        let mut writer = SimpleXtcWriter::new();
+        writer.add_frame(0, 0.0, vec![[0.0; 3]; 3]);
+        writer.add_frame(1, 1.0, vec![[0.0; 3]; 2]);
+        let err = xtc_to_dcd(&writer.to_bytes()).unwrap_err();
+        assert!(err.contains("frame 1 has 2 atoms"), "{err}");
+        assert!(err.contains("frame 0 has 3"), "{err}");
     }
 
     #[test]
@@ -1463,31 +1586,62 @@ mod tests {
     }
 
     #[test]
+    fn dcd_to_xtc_timestep_is_converted_from_femtoseconds() {
+        // 2 fs DCD timestep = 0.002 ps between XTC frames.
+        let mut writer = SimpleDcdWriter::new(1, 2.0);
+        for _ in 0..3 {
+            writer.add_frame(&[[0.0; 3]]);
+        }
+        let frames = SimpleXtcReader::from_bytes(&dcd_to_xtc(&writer.to_bytes()).unwrap()).unwrap();
+        assert_eq!(frames.len(), 3);
+        for (idx, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.step, idx as i32);
+            let expected = 0.002 * idx as f32;
+            assert!(
+                (frame.time - expected).abs() < 1e-6,
+                "frame {idx}: time={} expected={expected}",
+                frame.time
+            );
+        }
+    }
+
+    #[test]
     fn xtc_dcd_xtc_roundtrip() {
-        // XTC→DCD: positions are kept as-is (nm values stored in DCD as Å-labelled coords).
-        // DCD→XTC: positions are divided by 10.
-        // So after XTC→DCD→XTC: pos_out = pos_in / 10.
-        // We verify this relationship holds exactly.
-        let positions_nm = vec![[10.0f32, 20.0, 30.0], [40.0, 50.0, 60.0]];
+        // XTC (nm, ps) -> DCD (Å, fs) -> XTC must reproduce positions and times:
+        // x10 then /10 on the positions, x1000 then /1000 on the timestep.
+        let frame0 = vec![[10.0f32, 20.0, 30.0], [40.0, 50.0, 60.0]];
+        let frame1 = vec![[10.5f32, 20.25, 29.0], [41.0, 50.125, 61.5]];
+        let frame2 = vec![[11.0f32, 20.5, 28.0], [42.0, 50.25, 63.0]];
         let mut xtc_writer = SimpleXtcWriter::new();
-        xtc_writer.add_frame(0, 0.0, positions_nm.clone());
+        xtc_writer.add_frame(0, 0.0, frame0.clone());
+        xtc_writer.add_frame(1, 0.5, frame1.clone());
+        xtc_writer.add_frame(2, 1.0, frame2.clone());
         let xtc_bytes = xtc_writer.to_bytes();
 
         let dcd_bytes = xtc_to_dcd(&xtc_bytes).unwrap();
         let xtc2_bytes = dcd_to_xtc(&dcd_bytes).unwrap();
         let frames = SimpleXtcReader::from_bytes(&xtc2_bytes).unwrap();
-        assert_eq!(frames.len(), 1);
-        // After XTC→DCD→XTC, values are divided by 10
-        assert!(
-            approx_eq(frames[0].positions[0][0], 1.0),
-            "expected 1.0, got {}",
-            frames[0].positions[0][0]
-        );
-        assert!(
-            approx_eq(frames[0].positions[1][0], 4.0),
-            "expected 4.0, got {}",
-            frames[0].positions[1][0]
-        );
+
+        assert_eq!(frames.len(), 3);
+        for (idx, original) in [frame0, frame1, frame2].iter().enumerate() {
+            assert_eq!(frames[idx].step, idx as i32);
+            assert!(
+                (frames[idx].time - 0.5 * idx as f32).abs() < 1e-5,
+                "frame {idx}: time {}",
+                frames[idx].time
+            );
+            assert_eq!(frames[idx].positions.len(), original.len());
+            for (got, exp) in frames[idx].positions.iter().zip(original.iter()) {
+                for k in 0..3 {
+                    assert!(
+                        (got[k] - exp[k]).abs() < 1e-5,
+                        "frame {idx}: got {} expected {}",
+                        got[k],
+                        exp[k]
+                    );
+                }
+            }
+        }
     }
 
     // ── Frame time extraction ─────────────────────────────────────────────

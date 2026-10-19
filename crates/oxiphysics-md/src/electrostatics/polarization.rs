@@ -14,8 +14,11 @@ use thiserror::Error;
 /// Drude oscillator model for polarizable force fields.
 ///
 /// Each heavy atom carries a Drude particle (charge -q_D) connected via a
-/// harmonic spring with force constant k_D. The polarizability is:
-///   alpha = q_D^2 / k_D
+/// harmonic spring with force constant k_D. In a field E the Drude particle
+/// settles at the displacement d = q_D E / k_D, so the induced dipole is
+/// mu = q_D d = q_D^2 E / k_D. Expressed as a polarizability volume alpha (Å^3,
+/// with mu = alpha E / K and K = [`COULOMB_K`]) this is
+///   alpha = K q_D^2 / k_D
 ///
 /// References: MacKerell & Roux, J. Comput. Chem. 2003.
 #[derive(Debug, Clone)]
@@ -32,12 +35,16 @@ impl DrudeOscillator {
         Self { k_drude, q_drude }
     }
 
-    /// Polarizability (Å^3): alpha = q_D^2 / k_D.
+    /// Polarizability volume (Å^3): alpha = K q_D^2 / k_D with K = [`COULOMB_K`].
+    ///
+    /// This is the `alpha` of [`InducedDipoleSolver`]: an isolated oscillator in a
+    /// field `E` carries the dipole `alpha E / K`, which equals
+    /// `q_D * optimal_displacement(E)`.
     pub fn polarizability(&self) -> f64 {
         if self.k_drude < 1e-30 {
             return 0.0;
         }
-        self.q_drude * self.q_drude / self.k_drude
+        COULOMB_K * self.q_drude * self.q_drude / self.k_drude
     }
 
     /// Harmonic spring energy for a displacement `d` (Å) between core and Drude.
@@ -369,72 +376,249 @@ fn solve_with_partial_pivoting(
 // Induced dipole iterative solver
 // ---------------------------------------------------------------------------
 
+/// Default Thole damping parameter `a` of the exponentially screened
+/// dipole-dipole interaction (the AMOEBA value).
+pub const DEFAULT_THOLE_DAMPING: f64 = 0.39;
+
+/// Squared separation (Å²) below which two sites count as coincident.
+const COINCIDENT_SITES_R2: f64 = 1.0e-24;
+
+/// Errors reported by [`InducedDipoleSolver`].
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum PolarizationError {
+    /// The position or field arrays differ in length from the polarizability list.
+    #[error(
+        "polarization length mismatch: {polarizabilities} polarizabilities, \
+         {positions} positions, {fields} external fields"
+    )]
+    LengthMismatch {
+        /// Number of atomic polarizabilities.
+        polarizabilities: usize,
+        /// Number of atomic positions.
+        positions: usize,
+        /// Number of external field vectors.
+        fields: usize,
+    },
+    /// A polarizability, coordinate, field, tolerance or Thole parameter is
+    /// non-finite or out of range, or two undamped sites coincide.
+    #[error("invalid polarization input: {0}")]
+    InvalidParameter(String),
+    /// The self-consistent iteration reached `max_iter` sweeps without meeting
+    /// the tolerance, or its residual became non-finite (divergence).
+    #[error(
+        "induced-dipole iteration did not converge after {iters} sweeps \
+         (residual {residual:e} e·Å)"
+    )]
+    NotConverged {
+        /// Number of sweeps performed.
+        iters: usize,
+        /// Largest change of an induced dipole (e·Å) in the last sweep.
+        residual: f64,
+    },
+}
+
+/// Thole exponential screening factors `(λ3, λ5)` for `x = a·u³`:
+/// `λ3 = 1 − e^{−x}` and `λ5 = 1 − (1 + x)·e^{−x}`.
+///
+/// Both are evaluated without cancellation for small `x`.
+fn thole_screening(x: f64) -> (f64, f64) {
+    let lambda3 = -(-x).exp_m1();
+    let lambda5 = if x < 1.0e-2 {
+        // 1 − (1 + x)e^{−x} = x²/2 − x³/3 + x⁴/8 − x⁵/30 + …
+        x * x * (0.5 - x / 3.0 + x * x / 8.0 - x * x * x / 30.0)
+    } else {
+        lambda3 - x * (-x).exp()
+    };
+    (lambda3, lambda5)
+}
+
 /// Iterative solver for induced atomic dipoles under a polarizable force field.
 ///
-/// Solves self-consistently: mu_i = alpha_i * (E_ext_i + sum_{j≠i} T_ij * mu_j)
-/// where T_ij is the dipole-dipole interaction tensor.
+/// Solves the self-consistent induction equations
+///
+/// ```text
+/// μ_i = (α_i / K) · ( E_ext,i + Σ_{j≠i} T_ij μ_j ),     K = COULOMB_K
+/// ```
+///
+/// by Gauss-Seidel sweeps.  The atomic polarizabilities `α_i` are *polarizability
+/// volumes* in Å³ (so that an isolated atom acquires `μ = α E / K`), the fields
+/// `E` are in kJ mol⁻¹ e⁻¹ Å⁻¹ and the dipoles `μ` in e·Å.
+///
+/// `T_ij` is the dipole field tensor of site `j` at site `i`,
+///
+/// ```text
+/// T_ij[a][b] = K · ( 3 λ5 r_a r_b / r⁵ − λ3 δ_ab / r³ ),
+/// λ3 = 1 − e^{−a u³},  λ5 = 1 − (1 + a u³) e^{−a u³},  u = r / (α_i α_j)^{1/6},
+/// ```
+///
+/// with Thole's exponential screening (parameter [`InducedDipoleSolver::thole_a`],
+/// default [`DEFAULT_THOLE_DAMPING`]).  The screening keeps the tensor finite as two
+/// sites approach each other and prevents the polarization catastrophe at short range;
+/// `thole_a = 0` switches it off and leaves the bare point-dipole tensor.
+///
+/// Reference: Thole, Chem. Phys. 59, 341 (1981).
 #[derive(Debug, Clone)]
 pub struct InducedDipoleSolver {
     /// Atomic polarizabilities alpha_i (Å^3).
     pub polarizabilities: Vec<f64>,
-    /// Maximum iterations.
+    /// Maximum number of Gauss-Seidel sweeps.
     pub max_iter: usize,
-    /// Convergence tolerance (e·Å).
+    /// Convergence tolerance on the largest dipole change per sweep (e·Å).
     pub tol: f64,
+    /// Thole damping parameter `a` (dimensionless); `0.0` disables the screening.
+    pub thole_a: f64,
 }
 
 impl InducedDipoleSolver {
-    /// Create a new solver.
+    /// Create a new solver with the default Thole damping
+    /// [`DEFAULT_THOLE_DAMPING`].
     pub fn new(polarizabilities: Vec<f64>, max_iter: usize, tol: f64) -> Self {
         Self {
             polarizabilities,
             max_iter,
             tol,
+            thole_a: DEFAULT_THOLE_DAMPING,
         }
     }
 
-    /// Dipole-dipole interaction tensor T_ij (Å^-3).
+    /// Replace the Thole damping parameter (`0.0` disables the screening).
+    pub fn with_thole_damping(mut self, thole_a: f64) -> Self {
+        self.thole_a = thole_a;
+        self
+    }
+
+    /// Dipole field tensor `T_ij` (kJ mol⁻¹ e⁻¹ Å⁻¹ per e·Å, i.e. K·Å⁻³) of a
+    /// dipole at `r_j` acting at `r_i = r_j + r_vec`.
     ///
-    /// T_ij\[a\]\[b\] = (3 r_a r_b / r^5 - delta_ab / r^3) * COULOMB_K
-    fn dipole_tensor(r_vec: [f64; 3]) -> [[f64; 3]; 3] {
+    /// Returns `None` for coincident sites without Thole damping, where the
+    /// point-dipole tensor is singular.
+    fn dipole_tensor(
+        r_vec: [f64; 3],
+        alpha_i: f64,
+        alpha_j: f64,
+        thole_a: f64,
+    ) -> Option<[[f64; 3]; 3]> {
         let r2 = r_vec[0] * r_vec[0] + r_vec[1] * r_vec[1] + r_vec[2] * r_vec[2];
-        if r2 < 1e-20 {
-            return [[0.0; 3]; 3];
+        let damped = thole_a > 0.0 && alpha_i > 0.0 && alpha_j > 0.0;
+        if r2 < COINCIDENT_SITES_R2 {
+            if !damped {
+                return None;
+            }
+            // r → 0 limit of the screened tensor: the anisotropic part vanishes and
+            // λ3 / r³ → a / √(α_i α_j).
+            let isotropic = -COULOMB_K * thole_a / (alpha_i * alpha_j).sqrt();
+            let mut t = [[0.0_f64; 3]; 3];
+            for (a, row) in t.iter_mut().enumerate() {
+                row[a] = isotropic;
+            }
+            return Some(t);
         }
         let r = r2.sqrt();
         let r3 = r2 * r;
         let r5 = r3 * r2;
+        let (lambda3, lambda5) = if damped {
+            thole_screening(thole_a * r3 / (alpha_i * alpha_j).sqrt())
+        } else {
+            (1.0, 1.0)
+        };
         let mut t = [[0.0_f64; 3]; 3];
-        for a in 0..3 {
-            for b in 0..3 {
+        for (a, row) in t.iter_mut().enumerate() {
+            for (b, entry) in row.iter_mut().enumerate() {
                 let delta = if a == b { 1.0 } else { 0.0 };
-                t[a][b] = COULOMB_K * (3.0 * r_vec[a] * r_vec[b] / r5 - delta / r3);
+                *entry =
+                    COULOMB_K * (3.0 * lambda5 * r_vec[a] * r_vec[b] / r5 - lambda3 * delta / r3);
             }
         }
-        t
+        Some(t)
     }
 
-    /// Solve for induced dipoles given external electric fields.
-    ///
-    /// `e_ext[i]` is the external electric field at atom i (kJ mol^-1 e^-1 Å^-1).
-    /// Returns induced dipoles mu\[i\] (e·Å).
-    pub fn solve(&self, positions: &[[f64; 3]], e_ext: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    /// Check the array lengths and that every input is finite and in range.
+    fn validate(
+        &self,
+        positions: &[[f64; 3]],
+        e_ext: &[[f64; 3]],
+    ) -> Result<(), PolarizationError> {
         let n = self.polarizabilities.len();
-        assert_eq!(positions.len(), n, "positions length mismatch");
-        assert_eq!(e_ext.len(), n, "e_ext length mismatch");
+        if positions.len() != n || e_ext.len() != n {
+            return Err(PolarizationError::LengthMismatch {
+                polarizabilities: n,
+                positions: positions.len(),
+                fields: e_ext.len(),
+            });
+        }
+        if let Some(bad) = self
+            .polarizabilities
+            .iter()
+            .find(|a| !a.is_finite() || **a < 0.0)
+        {
+            return Err(PolarizationError::InvalidParameter(format!(
+                "polarizabilities must be finite and non-negative, got {bad}"
+            )));
+        }
+        if !self.tol.is_finite() || self.tol <= 0.0 {
+            return Err(PolarizationError::InvalidParameter(format!(
+                "tolerance must be finite and positive, got {}",
+                self.tol
+            )));
+        }
+        if !self.thole_a.is_finite() || self.thole_a < 0.0 {
+            return Err(PolarizationError::InvalidParameter(format!(
+                "Thole damping parameter must be finite and non-negative, got {}",
+                self.thole_a
+            )));
+        }
+        if positions
+            .iter()
+            .chain(e_ext.iter())
+            .flatten()
+            .any(|x| !x.is_finite())
+        {
+            return Err(PolarizationError::InvalidParameter(
+                "positions and external fields must be finite".to_string(),
+            ));
+        }
+        Ok(())
+    }
 
+    /// Solve for the induced dipoles given the external electric fields.
+    ///
+    /// `e_ext[i]` is the external electric field at atom `i`
+    /// (kJ mol^-1 e^-1 Å^-1).  Returns the induced dipoles `mu[i]` (e·Å); a site
+    /// with `α_i = 0` carries no dipole and radiates none.
+    ///
+    /// # Errors
+    /// * [`PolarizationError::LengthMismatch`] / [`PolarizationError::InvalidParameter`]
+    ///   for inconsistent or non-finite input (including coincident sites when the
+    ///   Thole damping is off).
+    /// * [`PolarizationError::NotConverged`] if the largest dipole change of a sweep
+    ///   does not fall below `tol` within `max_iter` sweeps, or becomes non-finite.
+    pub fn solve(
+        &self,
+        positions: &[[f64; 3]],
+        e_ext: &[[f64; 3]],
+    ) -> Result<Vec<[f64; 3]>, PolarizationError> {
+        self.validate(positions, e_ext)?;
+        let n = self.polarizabilities.len();
         let mut mu = vec![[0.0_f64; 3]; n];
+        if n == 0 {
+            return Ok(mu);
+        }
 
-        for _iter in 0..self.max_iter {
+        let mut residual = f64::INFINITY;
+        for sweep in 1..=self.max_iter {
             let mut max_change = 0.0_f64;
 
             for i in 0..n {
                 let alpha_i = self.polarizabilities[i];
+                if alpha_i == 0.0 {
+                    continue;
+                }
                 let mut e_total = e_ext[i];
 
-                // Add field from all other induced dipoles
+                // Field at site i from the current induced dipoles of all other sites.
                 for j in 0..n {
-                    if i == j {
+                    let alpha_j = self.polarizabilities[j];
+                    if i == j || alpha_j == 0.0 {
                         continue;
                     }
                     let r_vec = [
@@ -442,38 +626,48 @@ impl InducedDipoleSolver {
                         positions[i][1] - positions[j][1],
                         positions[i][2] - positions[j][2],
                     ];
-                    let r2 = r_vec[0] * r_vec[0] + r_vec[1] * r_vec[1] + r_vec[2] * r_vec[2];
-                    if r2 < 1.0 {
-                        continue;
-                    } // avoid near-singularity
-                    let t = Self::dipole_tensor(r_vec);
-                    for a in 0..3 {
-                        for b in 0..3 {
-                            e_total[a] += t[a][b] * mu[j][b];
+                    let t = Self::dipole_tensor(r_vec, alpha_i, alpha_j, self.thole_a).ok_or_else(
+                        || {
+                            PolarizationError::InvalidParameter(format!(
+                                "polarizable sites {i} and {j} coincide and Thole damping is off"
+                            ))
+                        },
+                    )?;
+                    for (a, e_a) in e_total.iter_mut().enumerate() {
+                        for (b, mu_b) in mu[j].iter().enumerate() {
+                            *e_a += t[a][b] * mu_b;
                         }
                     }
                 }
 
-                let mu_new = [
-                    alpha_i * e_total[0],
-                    alpha_i * e_total[1],
-                    alpha_i * e_total[2],
-                ];
-                let change = ((mu_new[0] - mu[i][0]).powi(2)
-                    + (mu_new[1] - mu[i][1]).powi(2)
-                    + (mu_new[2] - mu[i][2]).powi(2))
-                .sqrt();
-                if change > max_change {
+                // mu = alpha E / K  (alpha in Å^3, E in kJ mol^-1 e^-1 Å^-1).
+                let scale = alpha_i / COULOMB_K;
+                let mu_new = [scale * e_total[0], scale * e_total[1], scale * e_total[2]];
+                // hypot: no spurious overflow of the squares for a diverging iteration.
+                let change = (mu_new[0] - mu[i][0])
+                    .hypot(mu_new[1] - mu[i][1])
+                    .hypot(mu_new[2] - mu[i][2]);
+                if change.is_nan() || change > max_change {
                     max_change = change;
                 }
                 mu[i] = mu_new;
             }
 
-            if max_change < self.tol {
-                break;
+            residual = max_change;
+            if !residual.is_finite() {
+                return Err(PolarizationError::NotConverged {
+                    iters: sweep,
+                    residual,
+                });
+            }
+            if residual < self.tol {
+                return Ok(mu);
             }
         }
-        mu
+        Err(PolarizationError::NotConverged {
+            iters: self.max_iter,
+            residual,
+        })
     }
 
     /// Polarization energy: E_pol = -0.5 * sum_i mu_i . E_ext_i.
@@ -494,11 +688,38 @@ mod tests {
     fn test_drude_polarizability_formula() {
         let d = DrudeOscillator::new(1000.0, 0.1);
         let alpha = d.polarizability();
-        let expected = 0.01 / 1000.0;
+        // alpha = K q^2 / k_D in Å^3 (the bare q^2 / k_D is in e^2 Å^2 mol kJ^-1).
+        let expected = COULOMB_K * 0.01 / 1000.0;
         assert!(
-            (alpha - expected).abs() < 1e-15,
+            (alpha - expected).abs() < 1e-12,
             "alpha = {alpha}, expected {expected}"
         );
+    }
+
+    #[test]
+    fn test_drude_polarizability_is_a_realistic_volume() {
+        // CHARMM/SWM4-NDP Drude oxygen: k_D = 1000 kcal mol^-1 Å^-2, q_D = -1.71636 e,
+        // alpha_O = 0.978 Å^3.
+        let d = DrudeOscillator::new(4184.0, -1.71636);
+        let alpha = d.polarizability();
+        assert!((alpha - 0.978).abs() < 0.005, "alpha = {alpha} Å^3");
+    }
+
+    #[test]
+    fn test_drude_polarizability_matches_the_induced_dipole() {
+        // The dipole of the relaxed oscillator, mu = q_D d, equals alpha E / K.
+        let d = DrudeOscillator::new(4184.0, 1.1);
+        let field = [0.3, -0.2, 0.5];
+        let mu = d.induced_dipole(d.optimal_displacement(field));
+        let alpha = d.polarizability();
+        for axis in 0..3 {
+            let expected = alpha * field[axis] / COULOMB_K;
+            assert!(
+                (mu[axis] - expected).abs() < 1e-15,
+                "axis {axis}: mu = {}, alpha E / K = {expected}",
+                mu[axis]
+            );
+        }
     }
 
     #[test]
@@ -804,36 +1025,372 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_induced_dipole_length() {
-        let alphas = vec![1.5, 1.5];
-        let solver = InducedDipoleSolver::new(alphas, 100, 1e-8);
-        let positions = [[0.0; 3], [5.0, 0.0, 0.0]];
-        let e_ext = [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
-        let mu = solver.solve(&positions, &e_ext);
-        assert_eq!(mu.len(), 2);
+    /// Reference Thole-screened dipole tensor written directly from the formulas
+    /// (independent of the solver's implementation).
+    fn thole_tensor_reference(
+        r_vec: [f64; 3],
+        alpha_i: f64,
+        alpha_j: f64,
+        thole_a: f64,
+    ) -> [[f64; 3]; 3] {
+        let r = (r_vec[0].powi(2) + r_vec[1].powi(2) + r_vec[2].powi(2)).sqrt();
+        let u = r / (alpha_i * alpha_j).powf(1.0 / 6.0);
+        let x = thole_a * u.powi(3);
+        let lambda3 = 1.0 - (-x).exp();
+        let lambda5 = 1.0 - (1.0 + x) * (-x).exp();
+        let mut t = [[0.0; 3]; 3];
+        for a in 0..3 {
+            for b in 0..3 {
+                let delta = if a == b { 1.0 } else { 0.0 };
+                t[a][b] = COULOMB_K
+                    * (3.0 * lambda5 * r_vec[a] * r_vec[b] / r.powi(5)
+                        - lambda3 * delta / r.powi(3));
+            }
+        }
+        t
     }
 
     #[test]
-    fn test_induced_dipole_zero_field_zero_mu() {
-        let alphas = vec![1.5];
-        let solver = InducedDipoleSolver::new(alphas, 50, 1e-8);
-        let positions = [[0.0; 3]];
-        let e_ext = [[0.0; 3]];
-        let mu = solver.solve(&positions, &e_ext);
+    fn test_induced_dipole_two_sites_along_the_field_match_the_closed_form() {
+        // Two alpha = 1.5 Å^3 sites 5 Å apart along E = 1: each dipole feels the field
+        // of the other, mu = alpha E / (K (1 - 2 alpha / r^3)) (the old solver diverged
+        // to ~1e104 on exactly this input because it lacked the 1/K).
+        let (alpha, r) = (1.5, 5.0);
+        let positions = [[0.0; 3], [r, 0.0, 0.0]];
+        let e_ext = [[1.0, 0.0, 0.0]; 2];
+        let expected = alpha / (COULOMB_K * (1.0 - 2.0 * alpha / (r * r * r)));
+        assert!(
+            (expected - 1.1062e-3).abs() < 1e-6,
+            "closed form {expected}"
+        );
+        for thole in [0.0, DEFAULT_THOLE_DAMPING] {
+            let solver =
+                InducedDipoleSolver::new(vec![alpha; 2], 200, 1e-14).with_thole_damping(thole);
+            let mu = solver.solve(&positions, &e_ext).expect("converges");
+            assert_eq!(mu.len(), 2);
+            for dipole in &mu {
+                assert!(
+                    (dipole[0] - expected).abs() <= 1e-12 * expected,
+                    "a = {thole}: mu_x = {}, expected {expected}",
+                    dipole[0]
+                );
+                assert!(dipole[1].abs() < 1e-18 && dipole[2].abs() < 1e-18);
+            }
+        }
+    }
+
+    #[test]
+    fn test_induced_dipole_two_sites_across_the_field_match_the_closed_form() {
+        // Field perpendicular to the axis: T_yy = -K / r^3, so
+        // mu = alpha E / (K (1 + alpha / r^3)).
+        let (alpha, r) = (1.5, 5.0);
+        let positions = [[0.0; 3], [r, 0.0, 0.0]];
+        let e_ext = [[0.0, 1.0, 0.0]; 2];
+        let expected = alpha / (COULOMB_K * (1.0 + alpha / (r * r * r)));
+        let solver = InducedDipoleSolver::new(vec![alpha; 2], 200, 1e-14).with_thole_damping(0.0);
+        let mu = solver.solve(&positions, &e_ext).expect("converges");
+        for dipole in &mu {
+            assert!(
+                (dipole[1] - expected).abs() <= 1e-12 * expected,
+                "mu_y = {}, expected {expected}",
+                dipole[1]
+            );
+            assert!(dipole[0].abs() < 1e-18 && dipole[2].abs() < 1e-18);
+        }
+    }
+
+    #[test]
+    fn test_induced_dipole_isolated_site_is_alpha_e_over_k() {
+        let solver = InducedDipoleSolver::new(vec![2.3], 10, 1e-12);
+        let mu = solver
+            .solve(&[[1.0, 2.0, 3.0]], &[[0.4, -0.2, 0.9]])
+            .expect("converges");
+        for (axis, field) in [0.4, -0.2, 0.9].into_iter().enumerate() {
+            assert!((mu[0][axis] - 2.3 * field / COULOMB_K).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn test_induced_dipole_solution_satisfies_the_induction_equations() {
+        // Four sites with different polarizabilities in a general position: the solution
+        // must be a fixed point mu_i = alpha_i / K (E_i + sum_j T_ij mu_j) of the
+        // reference (independently coded) Thole tensor.
+        let alphas = vec![1.4, 0.9, 2.1, 1.7];
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [2.6, 0.4, -0.3],
+            [0.7, 3.1, 0.8],
+            [-1.9, 1.2, 2.2],
+        ];
+        let e_ext = [
+            [0.8, -0.1, 0.3],
+            [0.2, 0.5, -0.4],
+            [-0.6, 0.3, 0.1],
+            [0.1, 0.1, 0.7],
+        ];
+        let solver = InducedDipoleSolver::new(alphas.clone(), 500, 1e-13);
+        let mu = solver.solve(&positions, &e_ext).expect("converges");
+        for i in 0..4 {
+            let mut field = e_ext[i];
+            for j in 0..4 {
+                if i == j {
+                    continue;
+                }
+                let r_vec = [
+                    positions[i][0] - positions[j][0],
+                    positions[i][1] - positions[j][1],
+                    positions[i][2] - positions[j][2],
+                ];
+                let t = thole_tensor_reference(r_vec, alphas[i], alphas[j], DEFAULT_THOLE_DAMPING);
+                for a in 0..3 {
+                    for b in 0..3 {
+                        field[a] += t[a][b] * mu[j][b];
+                    }
+                }
+            }
+            for axis in 0..3 {
+                let rhs = alphas[i] * field[axis] / COULOMB_K;
+                assert!(
+                    (mu[i][axis] - rhs).abs() < 1e-11 * rhs.abs().max(1e-4),
+                    "site {i} axis {axis}: mu = {}, alpha (E + T mu) / K = {rhs}",
+                    mu[i][axis]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_induced_dipole_close_pairs_are_screened_not_skipped() {
+        // Two alpha = 1.5 sites only 1 Å apart (the old solver silently dropped every pair
+        // with r < 1 Å). The bare tensor would give a catastrophic coupling there, the Thole
+        // screening keeps it finite and the pair clearly feels each other.
+        let (alpha, r) = (1.5, 0.9);
+        let positions = [[0.0; 3], [r, 0.0, 0.0]];
+        let e_ext = [[1.0, 0.0, 0.0]; 2];
+        let solver = InducedDipoleSolver::new(vec![alpha; 2], 500, 1e-14);
+        let mu = solver.solve(&positions, &e_ext).expect("converges");
+        let t = thole_tensor_reference([r, 0.0, 0.0], alpha, alpha, DEFAULT_THOLE_DAMPING);
+        let expected = alpha / COULOMB_K / (1.0 - alpha * t[0][0] / COULOMB_K);
+        for dipole in &mu {
+            assert!(
+                (dipole[0] - expected).abs() < 1e-10 * expected,
+                "mu_x = {}, expected {expected}",
+                dipole[0]
+            );
+        }
+        let isolated = alpha / COULOMB_K;
+        assert!(
+            (mu[0][0] - isolated).abs() > 0.05 * isolated,
+            "a pair at 0.9 Å must be coupled: {} vs isolated {isolated}",
+            mu[0][0]
+        );
+        // The bare point-dipole tensor is singular for coincident sites.
+        let bare = InducedDipoleSolver::new(vec![alpha; 2], 50, 1e-12).with_thole_damping(0.0);
+        let coincident = [[0.5, 0.5, 0.5]; 2];
+        assert!(matches!(
+            bare.solve(&coincident, &e_ext),
+            Err(PolarizationError::InvalidParameter(_))
+        ));
+        // With Thole damping coincident sites are finite and well defined.
+        let damped = InducedDipoleSolver::new(vec![alpha; 2], 500, 1e-14);
+        let mu = damped.solve(&coincident, &e_ext).expect("finite limit");
+        let limit = -COULOMB_K * DEFAULT_THOLE_DAMPING / alpha;
+        let expected_coincident = alpha / COULOMB_K / (1.0 - alpha * limit / COULOMB_K);
+        // The sweep stops once the dipole changes by less than 1e-14 e·Å; the contraction
+        // factor per sweep is the Thole parameter a = 0.39.
+        assert!((mu[0][0] - expected_coincident).abs() < 1e-9 * expected_coincident);
+    }
+
+    #[test]
+    fn test_induced_dipole_reports_the_polarization_catastrophe() {
+        // alpha = 100 Å^3 at r = 3 Å without screening: 2 alpha / r^3 = 7.4 > 1, the
+        // iteration diverges and must say so instead of returning garbage.
+        let positions = [[0.0; 3], [3.0, 0.0, 0.0]];
+        let e_ext = [[1.0, 0.0, 0.0]; 2];
+        let solver = InducedDipoleSolver::new(vec![100.0; 2], 100, 1e-10).with_thole_damping(0.0);
+        match solver.solve(&positions, &e_ext) {
+            Err(PolarizationError::NotConverged { iters, residual }) => {
+                assert_eq!(iters, 100);
+                assert!(residual > 1e100, "residual {residual}");
+            }
+            other => panic!("expected NotConverged, got {other:?}"),
+        }
+        // A long run overflows to infinity and stops as soon as the residual is non-finite.
+        let overflowing =
+            InducedDipoleSolver::new(vec![100.0; 2], 5000, 1e-10).with_thole_damping(0.0);
+        match overflowing.solve(&positions, &e_ext) {
+            Err(PolarizationError::NotConverged { iters, residual }) => {
+                assert!(iters < 5000, "stopped after {iters} sweeps");
+                assert!(!residual.is_finite());
+            }
+            other => panic!("expected NotConverged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_induced_dipole_reports_an_exhausted_iteration_budget() {
+        let positions = [[0.0; 3], [5.0, 0.0, 0.0]];
+        let e_ext = [[1.0, 0.0, 0.0]; 2];
+        let solver = InducedDipoleSolver::new(vec![1.5; 2], 1, 1e-14);
+        match solver.solve(&positions, &e_ext) {
+            Err(PolarizationError::NotConverged { iters, residual }) => {
+                assert_eq!(iters, 1);
+                assert!(residual > 1e-14 && residual.is_finite());
+            }
+            other => panic!("expected NotConverged, got {other:?}"),
+        }
+        let no_sweeps = InducedDipoleSolver::new(vec![1.5; 2], 0, 1e-14);
+        assert!(matches!(
+            no_sweeps.solve(&positions, &e_ext),
+            Err(PolarizationError::NotConverged { iters: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn test_induced_dipole_rejects_inconsistent_or_invalid_input() {
+        let solver = InducedDipoleSolver::new(vec![1.5, 1.5], 50, 1e-10);
+        let positions = [[0.0; 3], [5.0, 0.0, 0.0]];
+        let e_ext = [[1.0, 0.0, 0.0]; 2];
+        assert_eq!(
+            solver.solve(&positions[..1], &e_ext),
+            Err(PolarizationError::LengthMismatch {
+                polarizabilities: 2,
+                positions: 1,
+                fields: 2
+            })
+        );
+        assert!(matches!(
+            solver.solve(&positions, &e_ext[..1]),
+            Err(PolarizationError::LengthMismatch { fields: 1, .. })
+        ));
+        let negative = InducedDipoleSolver::new(vec![1.5, -1.0], 50, 1e-10);
+        assert!(matches!(
+            negative.solve(&positions, &e_ext),
+            Err(PolarizationError::InvalidParameter(_))
+        ));
+        let nan_field = [[f64::NAN, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        assert!(matches!(
+            solver.solve(&positions, &nan_field),
+            Err(PolarizationError::InvalidParameter(_))
+        ));
+        let zero_tol = InducedDipoleSolver::new(vec![1.5, 1.5], 50, 0.0);
+        assert!(matches!(
+            zero_tol.solve(&positions, &e_ext),
+            Err(PolarizationError::InvalidParameter(_))
+        ));
+        let bad_thole =
+            InducedDipoleSolver::new(vec![1.5, 1.5], 50, 1e-10).with_thole_damping(-0.1);
+        assert!(matches!(
+            bad_thole.solve(&positions, &e_ext),
+            Err(PolarizationError::InvalidParameter(_))
+        ));
+    }
+
+    #[test]
+    fn test_induced_dipole_non_polarizable_site_neither_responds_nor_radiates() {
+        let positions = [[0.0; 3], [2.0, 1.0, 0.0], [5.0, 0.0, 0.0]];
+        let e_ext = [[1.0, 0.0, 0.0]; 3];
+        let with_dummy = InducedDipoleSolver::new(vec![1.5, 0.0, 1.5], 200, 1e-14)
+            .solve(&positions, &e_ext)
+            .expect("converges");
+        assert_eq!(with_dummy[1], [0.0; 3]);
+        let pair = InducedDipoleSolver::new(vec![1.5, 1.5], 200, 1e-14)
+            .solve(&[positions[0], positions[2]], &[e_ext[0], e_ext[2]])
+            .expect("converges");
+        for axis in 0..3 {
+            assert!((with_dummy[0][axis] - pair[0][axis]).abs() < 1e-16);
+            assert!((with_dummy[2][axis] - pair[1][axis]).abs() < 1e-16);
+        }
+    }
+
+    #[test]
+    fn test_induced_dipole_empty_system_and_zero_field() {
+        let empty = InducedDipoleSolver::new(Vec::new(), 10, 1e-8);
+        assert_eq!(empty.solve(&[], &[]), Ok(Vec::new()));
+        let solver = InducedDipoleSolver::new(vec![1.5], 50, 1e-8);
+        let mu = solver.solve(&[[0.0; 3]], &[[0.0; 3]]).expect("converges");
         for &v in &mu[0] {
             assert!(v.abs() < 1e-10, "zero field → zero mu: {v}");
         }
     }
 
     #[test]
-    fn test_polarization_energy_negative_for_positive_field() {
-        let alphas = vec![1.5];
-        let solver = InducedDipoleSolver::new(alphas, 50, 1e-8);
-        let positions = [[0.0; 3]];
-        let e_ext = [[2.0, 0.0, 0.0]];
-        let mu = solver.solve(&positions, &e_ext);
+    fn test_polarization_energy_is_half_the_field_dipole_product() {
+        let (alpha, r) = (1.5, 5.0);
+        let positions = [[0.0; 3], [r, 0.0, 0.0]];
+        let e_ext = [[1.0, 0.0, 0.0]; 2];
+        let solver = InducedDipoleSolver::new(vec![alpha; 2], 200, 1e-14).with_thole_damping(0.0);
+        let mu = solver.solve(&positions, &e_ext).expect("converges");
         let e_pol = solver.polarization_energy(&mu, &e_ext);
+        let expected = -alpha / (COULOMB_K * (1.0 - 2.0 * alpha / r.powi(3)));
         assert!(e_pol < 0.0, "polarization energy is negative: {e_pol}");
+        assert!((e_pol - expected).abs() < 1e-12 * expected.abs());
+    }
+
+    #[test]
+    fn test_thole_screened_tensor_matches_the_reference_and_has_a_finite_limit() {
+        let (alpha_i, alpha_j, a) = (1.2, 2.4, DEFAULT_THOLE_DAMPING);
+        for r_vec in [[2.0, 0.5, -0.3], [0.6, 0.2, 0.1], [4.0, -3.0, 2.0]] {
+            let t = InducedDipoleSolver::dipole_tensor(r_vec, alpha_i, alpha_j, a)
+                .expect("damped tensor exists");
+            let reference = thole_tensor_reference(r_vec, alpha_i, alpha_j, a);
+            for row in 0..3 {
+                for col in 0..3 {
+                    assert!(
+                        (t[row][col] - reference[row][col]).abs()
+                            <= 1e-9 * reference[row][col].abs().max(1.0),
+                        "T[{row}][{col}] = {}, reference {}",
+                        t[row][col],
+                        reference[row][col]
+                    );
+                }
+            }
+        }
+        // r -> 0 limit: -K a / sqrt(alpha_i alpha_j) on the diagonal.
+        let limit = -COULOMB_K * a / (alpha_i * alpha_j).sqrt();
+        let at_zero = InducedDipoleSolver::dipole_tensor([0.0; 3], alpha_i, alpha_j, a)
+            .expect("limit exists");
+        let near_zero = InducedDipoleSolver::dipole_tensor([1.0e-5, 0.0, 0.0], alpha_i, alpha_j, a)
+            .expect("finite");
+        for axis in 0..3 {
+            assert!((at_zero[axis][axis] - limit).abs() < 1e-12 * limit.abs());
+            assert!(
+                (near_zero[axis][axis] - limit).abs() < 1e-6 * limit.abs(),
+                "T[{axis}][{axis}] at 1e-5 Å: {} vs limit {limit}",
+                near_zero[axis][axis]
+            );
+        }
+        // Without screening the point-dipole tensor is singular at r = 0.
+        assert!(InducedDipoleSolver::dipole_tensor([0.0; 3], alpha_i, alpha_j, 0.0).is_none());
+    }
+
+    #[test]
+    fn test_thole_screening_series_matches_the_direct_formula() {
+        // For moderate and large x the textbook expressions are accurate in f64.
+        for x in [9.9e-3, 1.0e-2, 0.2, 3.0, 40.0] {
+            let (lambda3, lambda5) = thole_screening(x);
+            let direct3 = 1.0 - (-x).exp();
+            let direct5 = 1.0 - (1.0 + x) * (-x).exp();
+            assert!((lambda3 - direct3).abs() <= 1e-9 * direct3, "lambda3({x})");
+            assert!(
+                (lambda5 - direct5).abs() <= 1e-9 * direct5,
+                "lambda5({x}) = {lambda5}, direct {direct5}"
+            );
+            assert!(lambda5 < lambda3 && lambda3 < 1.0 + 1e-15);
+        }
+        // For tiny x the direct difference loses all digits; compare with the Taylor
+        // series x^2/2 - x^3/3 + x^4/8 - x^5/30 + x^6/144 instead.
+        for x in [1.0e-8, 1.0e-6, 1.0e-4, 1.0e-3] {
+            let (lambda3, lambda5) = thole_screening(x);
+            let taylor3 = x - x * x / 2.0 + x.powi(3) / 6.0 - x.powi(4) / 24.0;
+            let taylor5 = x * x / 2.0 - x.powi(3) / 3.0 + x.powi(4) / 8.0 - x.powi(5) / 30.0
+                + x.powi(6) / 144.0;
+            assert!((lambda3 - taylor3).abs() <= 1e-12 * taylor3, "lambda3({x})");
+            assert!((lambda5 - taylor5).abs() <= 1e-9 * taylor5, "lambda5({x})");
+        }
+        // Continuous across the switch from the series to the direct form.
+        let (_, below) = thole_screening(1.0e-2 - 1e-12);
+        let (_, above) = thole_screening(1.0e-2 + 1e-12);
+        assert!((above - below).abs() < 1e-12);
     }
 }

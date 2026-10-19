@@ -256,24 +256,62 @@ impl CsfModel {
         corrected
     }
 }
+/// Rest density (kg/m³) used by [`PairwiseSurfaceTension::new`] (water).
+const DEFAULT_REST_DENSITY: f64 = 1000.0;
+
 /// Pairwise surface tension model (Akinci et al. 2013).
 ///
 /// Computes inter-particle cohesion and curvature minimization forces
-/// without requiring explicit interface tracking.
+/// without requiring explicit interface tracking.  The force that particle `j`
+/// exerts on particle `i` is
+///
+/// ```text
+/// F_i←j = K_ij ( F^cohesion_i←j + F^curvature_i←j ),   K_ij = 2 ρ₀ / (ρ_i + ρ_j)
+/// F^cohesion_i←j  = −γ m_i m_j C(|x_ij|) x_ij/|x_ij|,   x_ij = x_i − x_j
+/// F^curvature_i←j = −γ m_i (n_i − n_j)
+/// ```
+///
+/// `C` is the cohesion kernel of Akinci et al. (support `h`; attractive over most of
+/// its range and repulsive at very short distance), `ρ₀` the rest density and `n_i`
+/// the surface-normal field (see [`PairwiseSurfaceTension::compute_normals`]).  The
+/// density factor `K_ij` compensates the missing neighbours of under-dense
+/// (free-surface) particles.  The pair forces are antisymmetric for equal particle
+/// masses, so the total force on the particle set vanishes.
 #[derive(Debug, Clone)]
 pub struct PairwiseSurfaceTension {
-    /// Surface tension coefficient γ (N/m).
+    /// Surface tension coefficient γ.
     pub gamma: f64,
-    /// Smoothing length h.
+    /// Smoothing length h: the support radius of the cohesion kernel and of the
+    /// kernel that builds the surface-normal field.  The neighbour lists passed to
+    /// the force routines must contain at least all particles closer than `h`.
     pub smoothing_length: f64,
+    /// Rest density ρ₀ (kg/m³) of the fluid in the density correction
+    /// `K_ij = 2 ρ₀/(ρ_i + ρ_j)` (default 1000, set it with
+    /// [`PairwiseSurfaceTension::with_rest_density`]).
+    pub rest_density: f64,
 }
 impl PairwiseSurfaceTension {
-    /// Create a new pairwise surface tension model.
+    /// Create a new pairwise surface tension model for a fluid of rest density
+    /// 1000 kg/m³ (use [`PairwiseSurfaceTension::with_rest_density`] for another fluid).
     pub fn new(gamma: f64, smoothing_length: f64) -> Self {
         Self {
             gamma,
             smoothing_length,
+            rest_density: DEFAULT_REST_DENSITY,
         }
+    }
+    /// Set the rest density ρ₀ (kg/m³) entering the density correction `K_ij`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rest_density` is not finite and strictly positive.
+    pub fn with_rest_density(mut self, rest_density: f64) -> Self {
+        assert!(
+            rest_density.is_finite() && rest_density > 0.0,
+            "rest density must be finite and positive, got {rest_density}"
+        );
+        self.rest_density = rest_density;
+        self
     }
     /// Compute the cohesion kernel C(r) used by Akinci's model.
     ///
@@ -291,11 +329,71 @@ impl PairwiseSurfaceTension {
             coeff * (2.0 * (h - r).powi(3) * r.powi(3) - h.powi(6) / 64.0)
         }
     }
+    /// Surface-normal field `n_i` of the Akinci model.
+    ///
+    /// ```text
+    /// n_i = −h Σ_j (m_j/ρ_j) ∇_iW_ij,    ∇_iW_ij = (dW/dr)(x_i − x_j)/|x_i − x_j|
+    /// ```
+    ///
+    /// i.e. the colour-field gradient `h Σ_j V_j ∇_iW_ij` (which points into the
+    /// fluid) with the sign reversed, so that `n_i` points **out of the fluid**.  `W`
+    /// is the cubic-spline kernel whose support radius equals the smoothing length
+    /// `h` (a [`CubicSplineKernel`] with smoothing parameter `h/2`, the same support
+    /// as the cohesion kernel).  Multiplying with `h` makes the normal dimensionless:
+    /// its magnitude is of order one on a free surface and vanishes in the bulk of a
+    /// fluid by symmetry.  Particles with a vanishing density get a zero normal.
+    ///
+    /// With this orientation the curvature-minimisation force `−γ m_i (n_i − n_j)`
+    /// pulls particle `i` towards the direction of its neighbours' normals and
+    /// therefore contracts the surface (an inward-pointing normal would give the
+    /// force the opposite sign and make a droplet expand).
+    pub fn compute_normals(
+        &self,
+        positions: &[Vec3],
+        masses: &[f64],
+        densities: &[f64],
+        neighbors: &[Vec<usize>],
+    ) -> Vec<Vec3> {
+        let kernel = CubicSplineKernel;
+        let h = self.smoothing_length;
+        let kernel_h = 0.5 * h;
+        let n = positions.len();
+        let mut normals = vec![Vec3::zeros(); n];
+        for i in 0..n {
+            if densities[i] < 1e-14 {
+                continue;
+            }
+            let mut colour_gradient = Vec3::zeros();
+            for &j in &neighbors[i] {
+                let rhoj = densities[j];
+                if rhoj < 1e-14 {
+                    continue;
+                }
+                let rij = positions[i] - positions[j];
+                let r = rij.norm();
+                if r < 1e-14 {
+                    continue;
+                }
+                let dw_dr = kernel.grad_w(r, kernel_h);
+                colour_gradient += masses[j] / rhoj * dw_dr * (rij / r);
+            }
+            normals[i] = -h * colour_gradient;
+        }
+        normals
+    }
     /// Compute pairwise surface tension forces.
     ///
-    /// For each pair (i, j):
-    /// `f_ij = -gamma * m_i * m_j * C(|r_ij|) * r_hat_ij / |r_ij|`
-    /// plus a curvature-minimization term.
+    /// For each pair (i, j) the force on `i` is
+    ///
+    /// ```text
+    /// F_i←j = K_ij [ −γ m_i m_j C(r_ij) x_ij/r_ij − γ m_i (n_i − n_j) ],
+    ///         K_ij = 2 ρ₀/(ρ_i + ρ_j),   x_ij = x_i − x_j
+    /// ```
+    ///
+    /// (cohesion plus curvature minimisation, Akinci et al. 2013), with the normals
+    /// of [`PairwiseSurfaceTension::compute_normals`].  `neighbors[i]` must hold the
+    /// particles within the smoothing length `h` of particle `i` (the index `i`
+    /// itself is ignored).  Equal masses make the pair forces antisymmetric.
     pub fn compute_forces(
         &self,
         positions: &[Vec3],
@@ -303,6 +401,19 @@ impl PairwiseSurfaceTension {
         densities: &[f64],
         neighbors: &[Vec<usize>],
     ) -> Vec<Vec3> {
+        self.pair_forces(positions, masses, densities, neighbors, true, true)
+    }
+    /// Sum of the selected pair-force terms (see [`PairwiseSurfaceTension::compute_forces`]).
+    pub(crate) fn pair_forces(
+        &self,
+        positions: &[Vec3],
+        masses: &[f64],
+        densities: &[f64],
+        neighbors: &[Vec<usize>],
+        include_cohesion: bool,
+        include_curvature: bool,
+    ) -> Vec<Vec3> {
+        let normals = self.compute_normals(positions, masses, densities, neighbors);
         let n = positions.len();
         let mut forces = vec![Vec3::zeros(); n];
         for i in 0..n {
@@ -317,16 +428,19 @@ impl PairwiseSurfaceTension {
                 }
                 let rij = positions[i] - positions[j];
                 let r = rij.norm();
-                if r < 1e-14 {
+                if r < 1e-14 || r >= self.smoothing_length {
                     continue;
                 }
-                let c = self.cohesion_kernel(r);
-                let rhat = rij / r;
-                let k_ij = 2.0 * densities[i].max(1e-14) / (densities[i] + densities[j]).max(1e-14);
-                let f_cohesion = -self.gamma * masses[i] * masses[j] * c * rhat;
-                let f_curvature =
-                    -self.gamma * masses[i] * (densities[i] - densities[j]) * rhat * 0.001;
-                forces[i] += k_ij * (f_cohesion + f_curvature);
+                let k_ij = 2.0 * self.rest_density / (rhoi + rhoj);
+                let mut pair = Vec3::zeros();
+                if include_cohesion {
+                    pair -=
+                        self.gamma * masses[i] * masses[j] * self.cohesion_kernel(r) * (rij / r);
+                }
+                if include_curvature {
+                    pair -= self.gamma * masses[i] * (normals[i] - normals[j]);
+                }
+                forces[i] += k_ij * pair;
             }
         }
         forces

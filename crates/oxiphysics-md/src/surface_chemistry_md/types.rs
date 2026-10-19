@@ -56,6 +56,8 @@ pub struct Tribochemistry {
     pub wear_volume: f64,
     /// Bonds broken in current simulation.
     pub bonds_broken: u64,
+    /// Random stream of [`Tribochemistry::step`].
+    stream: Option<SeededLcg>,
 }
 impl Tribochemistry {
     /// Create a new `Tribochemistry` simulation.
@@ -84,6 +86,7 @@ impl Tribochemistry {
             sliding_distance: 0.0,
             wear_volume: 0.0,
             bonds_broken: 0,
+            stream: None,
         }
     }
     /// Shear stress at the contact (Pa).
@@ -140,18 +143,19 @@ impl Tribochemistry {
     /// * `contact_area`— contact area (m²)
     /// * `k_wear`      — Archard wear coefficient
     /// * `step`        — simulation step index (for particle bookkeeping)
-    /// * `seed`        — LCG seed
+    /// * `seed`        — seed of the pseudo-random stream; repeated calls with the
+    ///   same seed continue one stream, a different seed starts a new one
     pub fn step(&mut self, dt: f64, contact_area: f64, k_wear: f64, step: usize, seed: u64) {
-        let mut rng = Lcg::new(seed);
         self.sliding_distance += self.sliding_velocity * dt;
         let tau = self.shear_stress(contact_area);
         let rate_break = self.bond_breaking_rate(tau);
         let prob_break = (rate_break * dt).clamp(0.0, 1.0);
+        let vol_rate = self.archard_wear_rate(k_wear);
+        let vol_step = vol_rate * self.sliding_velocity * dt;
+        let rng = stream_for_seed(&mut self.stream, seed);
         if rng.next_f64() < prob_break {
             self.bonds_broken += 1;
         }
-        let vol_rate = self.archard_wear_rate(k_wear);
-        let vol_step = vol_rate * self.sliding_velocity * dt;
         if vol_step > 0.0 && rng.next_f64() < 0.1 {
             let particle_vol = vol_step * rng.range(0.5, 1.5);
             self.wear_particles
@@ -212,6 +216,8 @@ pub struct CatalysisMd {
     pub adsorbate_masses: Vec<f64>,
     /// Cumulative turnover events counted.
     pub total_turnovers: u64,
+    /// Random stream of the stochastic methods.
+    stream: Option<SeededLcg>,
 }
 impl CatalysisMd {
     /// Create a new `CatalysisMd` instance.
@@ -232,6 +238,7 @@ impl CatalysisMd {
             adsorbate_velocities: Vec::new(),
             adsorbate_masses: Vec::new(),
             total_turnovers: 0,
+            stream: None,
         }
     }
     /// Add a reaction step to the network.
@@ -305,9 +312,11 @@ impl CatalysisMd {
     /// * `dt`     — time step (ps)
     /// * `k_surf` — surface spring constant (eV/Å²)
     /// * `gamma`  — friction coefficient (ps⁻¹)
-    /// * `seed`   — LCG seed
+    /// * `seed`   — seed of the pseudo-random stream.  Repeated calls with the same
+    ///   seed continue one stream (a fixed seed does not feed the thermostat the
+    ///   same noise at every step); a different seed starts a new stream.
     pub fn langevin_step(&mut self, dt: f64, k_surf: f64, gamma: f64, seed: u64) {
-        let mut rng = Lcg::new(seed);
+        let rng = stream_for_seed(&mut self.stream, seed);
         // k_B T in amu Å² ps⁻².
         let kt = KB_EV * self.temperature * EV_TO_AMU_ANG2_PS2;
         let friction_decay = (-gamma * dt).exp();
@@ -349,9 +358,10 @@ impl CatalysisMd {
     /// # Arguments
     /// * `n_steps` — number of time steps
     /// * `dt`      — time step (s)
-    /// * `seed`    — LCG seed
+    /// * `seed`    — seed of the pseudo-random stream; repeated calls with the same
+    ///   seed continue one stream, a different seed starts a new one
     pub fn simulate_reactions(&mut self, n_steps: usize, dt: f64, seed: u64) {
-        let mut rng = Lcg::new(seed);
+        let rng = stream_for_seed(&mut self.stream, seed);
         let t = self.temperature;
         let n_sites = self.n_sites;
         for _ in 0..n_steps {
@@ -395,6 +405,7 @@ fn splitmix64(value: u64) -> u64 {
     z ^ (z >> 31)
 }
 /// Simple LCG pseudo-random number generator state.
+#[derive(Debug, Clone)]
 pub(super) struct Lcg(u64);
 impl Lcg {
     /// Seed the generator.
@@ -429,6 +440,34 @@ impl Lcg {
         let u2 = self.next_f64();
         (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
     }
+}
+/// A random stream tagged with the seed that started it.
+#[derive(Debug, Clone)]
+struct SeededLcg {
+    /// Seed the stream was started from.
+    seed: u64,
+    /// Generator of the stream.
+    rng: Lcg,
+}
+/// The random stream of `seed`, kept in `slot` between the calls of a stochastic
+/// method.
+///
+/// A call with the seed of the previous call *continues* its stream, so a loop that
+/// passes a fixed seed on every call draws fresh numbers each time instead of
+/// replaying the same ones (a thermostat fed the same noise at every step does not
+/// thermalise).  A different seed starts a new stream, so a loop that passes the
+/// step index as the seed still gets independent streams.  The numbers drawn are a
+/// deterministic function of the sequence of seeds, which keeps runs reproducible.
+fn stream_for_seed(slot: &mut Option<SeededLcg>, seed: u64) -> &mut Lcg {
+    if slot.as_ref().is_some_and(|stream| stream.seed != seed) {
+        *slot = None;
+    }
+    &mut slot
+        .get_or_insert_with(|| SeededLcg {
+            seed,
+            rng: Lcg::new(seed),
+        })
+        .rng
 }
 /// Precursor state for the precursor-mediated adsorption mechanism.
 #[derive(Debug, Clone)]
@@ -658,6 +697,8 @@ pub struct SurfaceReconstruction {
     pub temperature: f64,
     /// Mean binding energy per site (eV).
     pub mean_binding_energy: f64,
+    /// Random stream of [`SurfaceReconstruction::mc_relax_step`].
+    stream: Option<SeededLcg>,
 }
 impl SurfaceReconstruction {
     /// Create a new `SurfaceReconstruction` model.
@@ -684,6 +725,7 @@ impl SurfaceReconstruction {
             spring_constant,
             temperature,
             mean_binding_energy,
+            stream: None,
         }
     }
     /// Apply surface relaxation: move each atom toward the surface plane.
@@ -745,9 +787,10 @@ impl SurfaceReconstruction {
     ///
     /// # Arguments
     /// * `amplitude` — maximum perturbation amplitude (Å)
-    /// * `seed`      — LCG seed
+    /// * `seed`      — seed of the pseudo-random stream; repeated calls with the
+    ///   same seed continue one stream, a different seed starts a new one
     pub fn mc_relax_step(&mut self, amplitude: f64, seed: u64) -> usize {
-        let mut rng = Lcg::new(seed);
+        let rng = stream_for_seed(&mut self.stream, seed);
         let kbt = KB_EV * self.temperature;
         let k = self.spring_constant;
         let mut accepted = 0usize;
@@ -876,6 +919,8 @@ pub struct SurfaceDiffusion {
     pub diffusion_coefficient: f64,
     /// Lattice constant a (m), used to convert lattice units to physical distance.
     pub lattice_constant: f64,
+    /// Random stream of the stochastic methods.
+    stream: Option<SeededLcg>,
 }
 impl SurfaceDiffusion {
     /// Create a new `SurfaceDiffusion` model.
@@ -896,6 +941,7 @@ impl SurfaceDiffusion {
             precursors: Vec::new(),
             diffusion_coefficient: 0.0,
             lattice_constant,
+            stream: None,
         }
     }
     /// Arrhenius hop rate for a given activation barrier (s⁻¹).
@@ -913,13 +959,14 @@ impl SurfaceDiffusion {
     ///
     /// # Arguments
     /// * `dt`   — time step (s)
-    /// * `seed` — LCG seed
+    /// * `seed` — seed of the pseudo-random stream; repeated calls with the same
+    ///   seed continue one stream, a different seed starts a new one
     pub fn monte_carlo_step(&mut self, dt: f64, seed: u64) -> usize {
         let nb = self.barriers.len();
         if nb == 0 {
             return 0;
         }
-        let mut rng = Lcg::new(seed);
+        let rng = stream_for_seed(&mut self.stream, seed);
         let nu0 = self.nu0;
         let kbt = self.kbt;
         let mut hops = 0usize;
@@ -944,11 +991,13 @@ impl SurfaceDiffusion {
     /// # Arguments
     /// * `e_chem`  — chemisorption activation energy (J)
     /// * `dt`      — time step (s)
-    /// * `seed`    — LCG seed
+    /// * `seed`    — seed of the pseudo-random stream, shared with
+    ///   [`SurfaceDiffusion::monte_carlo_step`]; repeated calls with the same seed
+    ///   continue one stream, a different seed starts a new one
     ///
     /// Returns the number of newly chemisorbed precursors.
     pub fn precursor_step(&mut self, e_chem: f64, dt: f64, seed: u64) -> usize {
-        let mut rng = Lcg::new(seed ^ 0xf00dface);
+        let rng = stream_for_seed(&mut self.stream, seed);
         let kbt = self.kbt;
         let nu0 = self.nu0;
         let nb = self.barriers.len();
@@ -1256,3 +1305,6 @@ impl TriboFilm {
         self.growth_rate * self.shear_stress / (self.removal_rate * self.normal_stress)
     }
 }
+
+#[cfg(test)]
+mod regression_tests;

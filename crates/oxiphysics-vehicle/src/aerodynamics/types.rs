@@ -956,18 +956,25 @@ impl CompressibilityCorrection {
         cd0 / beta + m2 * cl0 * cl0 / (2.0 * beta)
     }
 }
-/// A finite lifting surface modeled by a simplified Vortex-Lattice Method.
+/// A finite, constant-chord lifting surface described by the Prandtl
+/// elliptic lifting-line model.
 ///
-/// The span is divided into `n_panels` equal strips.  Each strip is modelled
-/// as a horseshoe vortex.  The circulation is solved via the Prandtl lifting-
-/// line approximation (closed-form for an elliptical distribution).
+/// The three-dimensional lift-curve slope is the finite-wing correction of the
+/// two-dimensional thin-aerofoil slope,
+/// `CL_alpha = 2 pi / (1 + 2 / (AR * e))`, and the spanwise load follows the
+/// elliptic law `cl(y) = (4 / pi) * CL * sqrt(1 - (2 y / b)^2)`.  The span is
+/// sampled at the centres of `n_panels` equal strips.
+///
+/// This is a closed-form lifting-line model; it does not assemble or solve a
+/// discrete vortex-lattice influence matrix.
 #[derive(Debug, Clone)]
 pub struct AeroSurface {
     /// Span of the surface (m).
     pub span: f64,
     /// Mean aerodynamic chord (m).
     pub chord: f64,
-    /// Number of spanwise panels used in the VLM discretisation.
+    /// Number of equal spanwise strips at whose centres the elliptic load
+    /// distribution is sampled.
     pub n_panels: usize,
     /// Geometric angle of attack (degrees).
     pub alpha_deg: f64,
@@ -993,14 +1000,24 @@ impl AeroSurface {
     pub fn planform_area(&self) -> f64 {
         self.span * self.chord
     }
-    /// Simplified Vortex-Lattice Method: compute the spanwise lift distribution.
+    /// Spanwise section lift-coefficient distribution of the elliptic
+    /// lifting-line model.
     ///
-    /// Uses the Prandtl lifting-line closed-form elliptic solution:
-    /// `Gamma(y) = Gamma0 * sqrt(1 - (2y/b)^2)`
+    /// The method keeps its historical name for API compatibility; it
+    /// evaluates the Prandtl closed-form elliptic solution and not a discrete
+    /// vortex-lattice system.  With `CL = 2 pi alpha / (1 + 2 / (AR * e))`
+    /// the section coefficient at spanwise station `y` is
     ///
-    /// where `Gamma0 = pi * V * cl_ref * chord / (pi + 2 * AR / e)` (approximate).
+    /// `cl(y) = (4 / pi) * CL * sqrt(1 - (2 y / b)^2)`,
+    ///
+    /// so that the span-average of `cl(y)` (equal to the whole-wing lift
+    /// coefficient for a constant chord) is exactly `CL`, because the mean of
+    /// `sqrt(1 - eta^2)` over `eta` in `[-1, 1]` is `pi / 4`.
     ///
     /// Returns a vector of `(y_pos_m, local_cl)` pairs for each panel centre.
+    /// A (numerically) zero freestream speed carries no load and yields
+    /// all-zero coefficients.  The coefficients themselves do not depend on the
+    /// speed, which only enters the zero-flow check.
     ///
     /// # Arguments
     /// * `velocity` – freestream speed (m/s)
@@ -1012,6 +1029,9 @@ impl AeroSurface {
         let alpha_rad = self.alpha_deg.to_radians();
         let cl_alpha_3d = 2.0 * std::f64::consts::PI / (1.0 + 2.0 / (ar * self.oswald));
         let cl_ref = cl_alpha_3d * alpha_rad;
+        // The mean of sqrt(1 - eta^2) over the span is pi / 4, so scaling the
+        // elliptic shape by 4 / pi makes the span-average equal to `cl_ref`.
+        let elliptic_scale = 4.0 / std::f64::consts::PI;
         let n = self.n_panels;
         let b = self.span;
         let dy = b / n as f64;
@@ -1020,15 +1040,19 @@ impl AeroSurface {
             let y = -b * 0.5 + (i as f64 + 0.5) * dy;
             let eta = 2.0 * y / b;
             let local_factor = (1.0 - eta * eta).max(0.0).sqrt();
-            let local_cl = cl_ref * local_factor;
+            let local_cl = cl_ref * elliptic_scale * local_factor;
             distribution.push((y, local_cl));
         }
         distribution
     }
-    /// Total lift coefficient from the VLM distribution.
+    /// Whole-surface lift coefficient `CL = L / (q S)` from the spanwise
+    /// distribution.
     ///
-    /// Integrates the spanwise `cl(y)` distribution over the span using the
-    /// trapezoidal rule and divides by the planform area.
+    /// Integrates the sectional lift `cl(y) * c` over the span with the
+    /// midpoint rule and divides by the planform area `S = b * c`.  For a
+    /// constant chord this is the span-average of `cl(y)`, i.e.
+    /// `(sum cl_i * dy) / b`; it is dimensionless and independent of the chord
+    /// at fixed aspect ratio.
     pub fn total_lift_coefficient(&self, velocity: f64) -> f64 {
         let dist = self.vortex_lattice_method(velocity);
         if dist.is_empty() {
@@ -1037,7 +1061,7 @@ impl AeroSurface {
         let n = dist.len() as f64;
         let dy = self.span / n;
         let sum: f64 = dist.iter().map(|(_, cl)| cl).sum();
-        sum * dy / self.planform_area().max(1e-12)
+        sum * dy / self.span.max(1e-12)
     }
 }
 /// Compact aerodynamic body description using pre-multiplied area-coefficients.

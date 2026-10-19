@@ -190,9 +190,23 @@ impl ModelPredictiveControl {
         }
     }
 
-    /// Set input constraint.
-    pub fn set_input_constraint(&mut self, u_max: f64) {
+    /// Set the input bound: every input component is limited to `[-u_max, u_max]`.
+    ///
+    /// `f64::MAX` or larger (including infinity) means unconstrained.  A negative
+    /// or NaN bound describes an empty feasible set (the old code panicked in
+    /// `f64::clamp(-u_max, u_max)`); it is rejected, the previous bound stays in
+    /// force and `false` is returned.  Returns `true` if the bound was accepted.
+    ///
+    /// The field [`u_max`](Self::u_max) is public: should it be set to an invalid
+    /// value directly, [`compute`](Self::compute) returns an empty vector and
+    /// [`optimal_sequence`](Self::optimal_sequence) returns `None`.
+    #[must_use = "a rejected bound leaves the previous bound in force"]
+    pub fn set_input_constraint(&mut self, u_max: f64) -> bool {
+        if u_max.is_nan() || u_max < 0.0 {
+            return false;
+        }
         self.u_max = u_max;
+        true
     }
 
     /// Compute the first action of the optimal input sequence.
@@ -597,7 +611,7 @@ mod tests {
         let (a, b) = double_integrator();
         let free = ModelPredictiveControl::new(a.clone(), b.clone(), 6, 1.0, 0.1);
         let mut bounded = free.clone();
-        bounded.set_input_constraint(1e3);
+        assert!(bounded.set_input_constraint(1e3));
         let x0 = [0.4, 0.1];
         let u_free = flatten(&free.optimal_sequence(&x0, &[0.0, 0.0]).expect("ok"));
         let u_bounded = flatten(&bounded.optimal_sequence(&x0, &[0.0, 0.0]).expect("ok"));
@@ -615,7 +629,7 @@ mod tests {
         let u_free = mpc.compute(&[x], &[reference]);
         assert!((u_free[0] - free).abs() < 1e-12);
         for bound in [0.2, 0.5, 5.0] {
-            mpc.set_input_constraint(bound);
+            assert!(mpc.set_input_constraint(bound));
             let u = mpc.compute(&[x], &[reference]);
             let expected = free.clamp(-bound, bound);
             assert!(
@@ -632,7 +646,7 @@ mod tests {
         let horizon = 10;
         let mut mpc = ModelPredictiveControl::new(a, b, horizon, 1.0, 0.05);
         let bound = 0.4;
-        mpc.set_input_constraint(bound);
+        assert!(mpc.set_input_constraint(bound));
         let x0 = [2.0, 0.0];
         let references: Vec<Vec<f64>> = vec![vec![0.0, 0.0]; horizon];
         let sequence = mpc
@@ -658,7 +672,7 @@ mod tests {
         let horizon = 6;
         let mut mpc = ModelPredictiveControl::new(a, b, horizon, 1.0, 0.1);
         let bound = 0.8;
-        mpc.set_input_constraint(bound);
+        assert!(mpc.set_input_constraint(bound));
         let x0 = [1.5, -0.5, 1.0];
         let target = [0.2, 0.0, -0.1];
         let references: Vec<Vec<f64>> = vec![target.to_vec(); horizon];
@@ -686,7 +700,7 @@ mod tests {
         let references: Vec<Vec<f64>> = vec![vec![0.0, 0.0]; horizon];
         let free = flatten(&mpc.optimal_sequence(&x0, &[0.0, 0.0]).expect("ok"));
         let bound = 0.4;
-        mpc.set_input_constraint(bound);
+        assert!(mpc.set_input_constraint(bound));
         let bounded = flatten(&mpc.optimal_sequence(&x0, &[0.0, 0.0]).expect("ok"));
         let clamped: Vec<f64> = free.iter().map(|v| v.clamp(-bound, bound)).collect();
         let j_free = simulated_cost(&mpc, &x0, &references, &free);
@@ -703,7 +717,7 @@ mod tests {
     fn zero_bound_forces_zero_input() {
         let (a, b) = double_integrator();
         let mut mpc = ModelPredictiveControl::new(a, b, 4, 1.0, 0.1);
-        mpc.set_input_constraint(0.0);
+        assert!(mpc.set_input_constraint(0.0));
         let sequence = mpc.optimal_sequence(&[1.0, 1.0], &[0.0, 0.0]).expect("ok");
         assert!(flatten(&sequence).iter().all(|&v| v == 0.0));
     }
@@ -763,12 +777,32 @@ mod tests {
         assert!(negative_weight.compute(&x0, &[0.0, 0.0]).is_empty());
         let nan_weight = ModelPredictiveControl::new(a, b, 5, 1.0, f64::NAN);
         assert!(nan_weight.compute(&x0, &[0.0, 0.0]).is_empty());
+        // The public field can still be set to an invalid bound directly.
         let mut negative_bound = ok.clone();
-        negative_bound.set_input_constraint(-1.0);
+        negative_bound.u_max = -1.0;
         assert!(negative_bound.compute(&x0, &[0.0, 0.0]).is_empty());
         let mut nan_bound = ok;
-        nan_bound.set_input_constraint(f64::NAN);
+        nan_bound.u_max = f64::NAN;
         assert!(nan_bound.compute(&x0, &[0.0, 0.0]).is_empty());
+    }
+
+    #[test]
+    fn the_setter_rejects_negative_and_nan_bounds_and_keeps_the_previous_one() {
+        let (a, b) = double_integrator();
+        let mut mpc = ModelPredictiveControl::new(a, b, 5, 1.0, 0.1);
+        let x0 = [1.0, 0.3];
+        assert!(mpc.set_input_constraint(0.4));
+        let bounded = mpc.compute(&x0, &[0.0, 0.0]);
+        assert_eq!(bounded.len(), 1);
+        for rejected in [-1.0, -f64::MIN_POSITIVE, f64::NAN, f64::NEG_INFINITY] {
+            assert!(!mpc.set_input_constraint(rejected), "{rejected}");
+            assert_eq!(mpc.u_max, 0.4, "{rejected}");
+            assert_eq!(mpc.compute(&x0, &[0.0, 0.0]), bounded, "{rejected}");
+        }
+        // Zero, large and infinite bounds are valid.
+        assert!(mpc.set_input_constraint(0.0));
+        assert!(mpc.set_input_constraint(f64::INFINITY));
+        assert!(mpc.set_input_constraint(f64::MAX));
     }
 
     #[test]
@@ -776,7 +810,7 @@ mod tests {
         let (a, b) = double_integrator();
         let free = ModelPredictiveControl::new(a, b, 5, 1.0, 0.1);
         let mut unbounded = free.clone();
-        unbounded.set_input_constraint(f64::INFINITY);
+        assert!(unbounded.set_input_constraint(f64::INFINITY));
         let x0 = [1.0, 0.3];
         assert_eq!(
             free.compute(&x0, &[0.0, 0.0]),

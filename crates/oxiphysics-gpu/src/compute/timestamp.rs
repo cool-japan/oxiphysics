@@ -131,8 +131,9 @@ pub const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
 /// # Errors
 ///
 /// [`Error::DispatchLimitExceeded`] when the folded shape would need more than
-/// 65535 workgroups in y, or when the threads of the shape cannot be addressed
-/// by a 32-bit index (more than `u32::MAX + 1` threads).
+/// 65535 workgroups in y, when the threads of the shape cannot be addressed by
+/// a 32-bit index (more than `u32::MAX + 1` threads), or when `n_items` itself
+/// exceeds `u32::MAX` (the kernels receive the item count as a 32-bit word).
 ///
 /// # Examples
 ///
@@ -167,6 +168,14 @@ pub fn dispatch_count_with_limit(
 ) -> crate::Result<[u32; 3]> {
     if n_items == 0 {
         return Ok([0, 1, 1]);
+    }
+    // The kernels take the item count as a 32-bit word: a longer input cannot be
+    // processed whatever the shape of the dispatch.
+    if u32::try_from(n_items).is_err() {
+        return Err(crate::Error::DispatchLimitExceeded {
+            dispatch_size: n_items,
+            limit: u32::MAX as usize,
+        });
     }
     let threads_per_group = u64::from(workgroup_size.max(1));
     let limit = u64::from(max_per_dimension.max(1));
@@ -277,8 +286,8 @@ mod tests {
             (4_000_000_000, 256),
         ] {
             let [x, y, z] = dispatch_count_for(n, ws).unwrap();
-            assert!(x >= 1 && x <= MAX_WORKGROUPS_PER_DIMENSION, "x for {n}");
-            assert!(y >= 1 && y <= MAX_WORKGROUPS_PER_DIMENSION, "y for {n}");
+            assert!((1..=MAX_WORKGROUPS_PER_DIMENSION).contains(&x), "x for {n}");
+            assert!((1..=MAX_WORKGROUPS_PER_DIMENSION).contains(&y), "y for {n}");
             assert_eq!(z, 1);
             let needed = (n as u64).div_ceil(u64::from(ws));
             let groups = u64::from(x) * u64::from(y);
@@ -336,6 +345,22 @@ mod tests {
         let err = dispatch_count_for(usize::MAX, 1).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("exceeds hardware limit"), "{message}");
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn test_dispatch_count_rejects_item_counts_beyond_a_32_bit_word() {
+        // With a huge custom limit the grid shape alone would be addressable
+        // (2 x 2^31 threads), yet the kernels cannot take 2^32 items as their
+        // 32-bit count parameter.
+        let beyond = usize::try_from(u64::from(u32::MAX) + 1).unwrap_or(usize::MAX);
+        assert!(dispatch_count_with_limit(beyond, 1, u32::MAX).is_err());
+        // The largest countable input is still dispatched.
+        let largest = u32::MAX as usize;
+        assert_eq!(
+            dispatch_count_with_limit(largest, 1, u32::MAX).unwrap(),
+            [u32::MAX, 1, 1]
+        );
     }
 
     #[cfg(feature = "wgpu-backend")]

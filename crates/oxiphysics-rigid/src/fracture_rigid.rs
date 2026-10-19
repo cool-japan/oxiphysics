@@ -42,15 +42,6 @@ fn v3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 #[inline]
-fn v3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-#[inline]
 fn v3_norm(a: [f64; 3]) -> f64 {
     v3_dot(a, a).sqrt()
 }
@@ -68,6 +59,42 @@ fn v3_normalise(a: [f64; 3]) -> [f64; 3] {
 #[inline]
 fn v3_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     v3_add(v3_scale(a, 1.0 - t), v3_scale(b, t))
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic pseudo-random helpers
+// ---------------------------------------------------------------------------
+
+/// Advance a 64-bit linear congruential generator and return a sample that is
+/// uniform on `[0, 1)`.
+///
+/// The multiplier and increment are Knuth's MMIX constants.  The low bits of an
+/// LCG are weak, so only the top 53 bits of the state are used; they fill an
+/// `f64` mantissa exactly, which makes the result cover the whole unit interval
+/// (a 31-bit value divided by `2^32` would never exceed one half).
+fn lcg_unit(state: &mut u64) -> f64 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (*state >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// Derive a generator seed from a point in space.
+///
+/// The bit patterns of the coordinates are folded in one at a time, each time
+/// followed by the SplitMix64 finalizer, so every input bit influences every
+/// output bit.  Hashing the bits (rather than casting the coordinates to
+/// integers) keeps negative and fractional coordinates distinct.
+fn seed_from_point(point: [f64; 3]) -> u64 {
+    let mut hash = 0xdead_beef_cafe_babe_u64;
+    for coordinate in point {
+        // `+ 0.0` maps -0.0 onto +0.0 so equal points hash equally.
+        hash ^= (coordinate + 0.0).to_bits();
+        hash = (hash ^ (hash >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        hash = (hash ^ (hash >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        hash ^= hash >> 31;
+    }
+    hash
 }
 
 // ---------------------------------------------------------------------------
@@ -463,20 +490,30 @@ impl VoronoiSeed {
 /// Impulse-based fracture engine with Voronoi shattering patterns.
 ///
 /// Determines whether an impact impulse is sufficient to fracture a body and,
-/// if so, generates a set of fragments using a simplified Voronoi
-/// decomposition around the impact point.
+/// if so, splits it into fragments seeded around the impact point.  The
+/// fragments conserve the parent's mass and the applied linear momentum, and
+/// carry a prescribed share of the impact energy as relative motion (see
+/// [`fracture_body`](Self::fracture_body)).
 #[derive(Debug, Clone)]
 pub struct ImpactFracture {
     /// Minimum impulse magnitude required to initiate fracture (N·s).
     pub fracture_impulse_threshold: f64,
     /// Number of Voronoi seed points generated per fracture event.
     pub num_seeds: usize,
-    /// Fraction of impact kinetic energy transferred to fragment motion.
+    /// Fraction of the impact kinetic energy `|J|² / (2 M)` (impulse `J` on a
+    /// body of mass `M`) that becomes motion of the fragments relative to the
+    /// parent's centre of mass.
     pub energy_transfer: f64,
     /// Scatter radius around impact point for Voronoi seeds (m).
     pub scatter_radius: f64,
     /// Minimum fragment mass as a fraction of the parent body mass.
+    ///
+    /// The fragments share the parent mass equally, so at most
+    /// `⌊1 / min_fragment_mass_fraction⌋` of them are produced and surplus
+    /// seeds are dropped.  A value of zero (or less) imposes no limit.
     pub min_fragment_mass_fraction: f64,
+    /// Gravitational acceleration acting on the fragments (m/s²).
+    pub gravity: [f64; 3],
 }
 
 impl ImpactFracture {
@@ -493,6 +530,7 @@ impl ImpactFracture {
             energy_transfer,
             scatter_radius,
             min_fragment_mass_fraction: 0.05,
+            gravity: [0.0, -9.81, 0.0],
         }
     }
 
@@ -503,32 +541,26 @@ impl ImpactFracture {
 
     /// Generate Voronoi seeds around the impact point.
     ///
-    /// Uses a deterministic pseudo-random sequence seeded by the impact
-    /// position to avoid external dependencies.
+    /// The first seed is the impact point itself; the others are spread
+    /// uniformly over the ball of radius
+    /// [`scatter_radius`](Self::scatter_radius) around it.  The positions come
+    /// from a deterministic pseudo-random sequence seeded by a hash of the
+    /// impact point, so the same impact point always yields the same seeds.
     pub fn generate_seeds(&self, impact_point: [f64; 3]) -> Vec<VoronoiSeed> {
         let mut seeds = Vec::with_capacity(self.num_seeds);
-        // Deterministic LCG seeded from impact point
-        let seed_u64 = ((impact_point[0] * 1000.0) as u64)
-            .wrapping_add((impact_point[1] * 997.0) as u64)
-            .wrapping_add((impact_point[2] * 991.0) as u64)
-            .wrapping_add(0xdeadbeef_cafebabe);
-        let mut lcg = seed_u64;
-
-        let rand_f64 = |s: &mut u64| -> f64 {
-            *s = s
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            (*s >> 33) as f64 / (u32::MAX as f64)
-        };
+        if self.num_seeds == 0 {
+            return seeds;
+        }
+        let mut lcg = seed_from_point(impact_point);
 
         // Add seed at impact point
         seeds.push(VoronoiSeed::new(impact_point));
 
         for _ in 1..self.num_seeds {
             // Spherical uniform sampling
-            let u = rand_f64(&mut lcg) * 2.0 - 1.0; // [-1, 1]
-            let phi = rand_f64(&mut lcg) * 2.0 * PI;
-            let r = rand_f64(&mut lcg).cbrt() * self.scatter_radius;
+            let u = lcg_unit(&mut lcg) * 2.0 - 1.0; // [-1, 1)
+            let phi = lcg_unit(&mut lcg) * 2.0 * PI;
+            let r = lcg_unit(&mut lcg).cbrt() * self.scatter_radius;
             let sin_theta = (1.0 - u * u).sqrt();
             let pos = [
                 impact_point[0] + r * sin_theta * phi.cos(),
@@ -540,11 +572,42 @@ impl ImpactFracture {
         seeds
     }
 
+    /// Largest number of fragments that
+    /// [`min_fragment_mass_fraction`](Self::min_fragment_mass_fraction) allows.
+    fn fragment_cap(&self) -> usize {
+        let fraction = self.min_fragment_mass_fraction;
+        if fraction.is_finite() && fraction > 0.0 {
+            // The tiny relative margin keeps exact reciprocals such as
+            // 1 / 0.05 = 20 from rounding down to 19.
+            ((1.0 / fraction) * (1.0 + 1.0e-12)).floor().max(1.0) as usize
+        } else {
+            usize::MAX
+        }
+    }
+
     /// Fragment a body of mass `body_mass` at `body_position` given an
     /// `impulse` at `impact_point`.
     ///
-    /// Returns a `FragmentSystem` populated with fragments whose velocities
-    /// are derived from the impulse and seed geometry.
+    /// The body splits into one fragment per Voronoi seed (see
+    /// [`generate_seeds`](Self::generate_seeds)), at most
+    /// `⌊1 / min_fragment_mass_fraction⌋` of them, and every fragment gets the
+    /// same mass `M / n`.  With `J` the impulse, `d_i` the unit direction from
+    /// the impact point to seed `i` (the impulse direction for a seed at the
+    /// impact point itself) and `d̄` the mean of the `d_i`, fragment `i` leaves
+    /// with
+    ///
+    /// `v_i = J / M + s (d_i − d̄)`.
+    ///
+    /// The scatter term has zero mean, so the fragments carry exactly the
+    /// applied momentum, `Σ m_i v_i = J`.  The speed scale `s` is chosen so
+    /// that their kinetic energy relative to the parent's centre of mass,
+    /// `Σ ½ m_i |v_i − J / M|²`, equals `energy_transfer · |J|² / (2 M)`.  A
+    /// body that splits into a single fragment, or into fragments with
+    /// identical scatter directions, has nothing to scatter and moves as a
+    /// whole with `J / M`.  Fragments start without spin.
+    ///
+    /// Returns an empty system when the impulse is below the fracture
+    /// threshold or the mass is not a positive finite number.
     pub fn fracture_body(
         &self,
         body_mass: f64,
@@ -553,53 +616,75 @@ impl ImpactFracture {
         impulse: [f64; 3],
         impact_point: [f64; 3],
     ) -> FragmentSystem {
-        let gravity = [0.0, -9.81, 0.0];
-        let mut system = FragmentSystem::new(body_position[1] - body_half_extents[1], gravity);
+        let mut system = FragmentSystem::new(body_position[1] - body_half_extents[1], self.gravity);
 
-        if !self.should_fracture(impulse) {
+        if !self.should_fracture(impulse) || !(body_mass.is_finite() && body_mass > 0.0) {
             return system;
         }
 
-        let seeds = self.generate_seeds(impact_point);
-        let n = seeds.len().max(1);
-        let frag_mass = (body_mass / n as f64).max(body_mass * self.min_fragment_mass_fraction);
+        let mut seeds = self.generate_seeds(impact_point);
+        seeds.truncate(self.fragment_cap());
+        let n = seeds.len();
+        if n == 0 {
+            return system;
+        }
+        let frag_mass = body_mass / n as f64;
 
         let impulse_dir = v3_normalise(impulse);
         let impulse_mag = v3_norm(impulse);
-        let energy = 0.5 * impulse_mag * impulse_mag / body_mass * self.energy_transfer;
-        let speed_scale = (2.0 * energy / frag_mass).sqrt() / n as f64;
 
-        for seed in &seeds {
-            // Direction from impact to seed
-            let dir = v3_normalise(v3_sub(seed.position, impact_point));
-            let dir = if v3_norm(dir) < 1e-9 {
-                impulse_dir
-            } else {
-                dir
-            };
+        // Unit scatter direction of every fragment and their mean.
+        let directions: Vec<[f64; 3]> = seeds
+            .iter()
+            .map(|seed| {
+                let dir = v3_normalise(v3_sub(seed.position, impact_point));
+                if v3_norm(dir) < 1e-9 {
+                    impulse_dir
+                } else {
+                    dir
+                }
+            })
+            .collect();
+        let mean_dir = v3_scale(
+            directions.iter().fold([0.0; 3], |acc, d| v3_add(acc, *d)),
+            1.0 / n as f64,
+        );
 
-            // Mix impulse direction with scatter direction
-            let vel_dir = v3_normalise(v3_add(v3_scale(impulse_dir, 0.6), v3_scale(dir, 0.4)));
-            let velocity = v3_scale(vel_dir, speed_scale);
+        // Σ m_i |d_i − d̄|²: twice the relative kinetic energy at unit speed scale.
+        let scatter_moment: f64 = directions
+            .iter()
+            .map(|d| {
+                let rel = v3_sub(*d, mean_dir);
+                frag_mass * v3_dot(rel, rel)
+            })
+            .sum();
 
-            // Assign angular velocity perpendicular to velocity
-            let up = if vel_dir[1].abs() < 0.9 {
-                [0.0, 1.0, 0.0]
-            } else {
-                [1.0, 0.0, 0.0]
-            };
-            let omega_dir = v3_normalise(v3_cross(vel_dir, up));
-            let angular_velocity = v3_scale(omega_dir, speed_scale * 2.0);
+        // Kinetic energy that goes into motion relative to the centre of mass.
+        let energy = 0.5 * impulse_mag * impulse_mag / body_mass * self.energy_transfer.max(0.0);
+        let scatter_speed = if scatter_moment > 1e-12 && energy > 0.0 {
+            (2.0 * energy / scatter_moment).sqrt()
+        } else {
+            0.0
+        };
 
-            let frag_extents = v3_scale(body_half_extents, 1.0 / (n as f64).cbrt());
-            let frag = Fragment::new(
+        let bulk_velocity = [
+            impulse[0] / body_mass,
+            impulse[1] / body_mass,
+            impulse[2] / body_mass,
+        ];
+        let frag_extents = v3_scale(body_half_extents, 1.0 / (n as f64).cbrt());
+        for (seed, dir) in seeds.iter().zip(directions.iter()) {
+            let velocity = v3_add(
+                bulk_velocity,
+                v3_scale(v3_sub(*dir, mean_dir), scatter_speed),
+            );
+            system.add_fragment(Fragment::new(
                 seed.position,
                 velocity,
-                angular_velocity,
+                [0.0; 3],
                 frag_mass,
                 frag_extents,
-            );
-            system.add_fragment(frag);
+            ));
         }
 
         system
@@ -1005,31 +1090,36 @@ impl ExplosionModel {
         self.gurney_constant / (ratio + 0.6).sqrt()
     }
 
-    /// Peak overpressure at distance `r` (m) from the explosion centre.
+    /// Peak overpressure (Pa) at distance `r` (m) from the explosion centre.
     ///
-    /// Uses the Sadovsky empirical formula for TNT equivalent scaling.
-    /// `charge_mass` is treated as TNT equivalent.
+    /// Uses Sadovsky's empirical correlation for a TNT-equivalent charge,
+    /// with `charge_mass` (kg) treated as the TNT equivalent.  In terms of the
+    /// scaled distance `z = r / charge_mass^(1/3)` (m/kg^(1/3)),
+    ///
+    /// `Δp = 0.084 / z + 0.27 / z² + 0.7 / z³` MPa,
+    ///
+    /// which is valid for `1 ≤ z ≤ 15`; outside that range the value is an
+    /// extrapolation of the correlation.  The overpressure only depends on `z`
+    /// (Hopkinson–Cranz scaling).
     pub fn peak_overpressure(&self, r: f64) -> f64 {
         if r <= 0.0 || self.charge_mass <= 0.0 {
             return 0.0;
         }
         let z = r / self.charge_mass.cbrt(); // scaled distance
-        // Sadovsky: P = 0.84/z + 2.7/z^2 + 7.1/z^3  (MPa) for z > 1
-        let p_mpa = 0.84 / z + 2.7 / (z * z) + 7.1 / (z * z * z);
+        let p_mpa = 0.084 / z + 0.27 / (z * z) + 0.7 / (z * z * z);
         p_mpa * 1e6 // convert to Pa
     }
 
-    /// Impulse delivered by the blast wave at distance `r` (m).
+    /// Positive-phase specific impulse of the blast wave at distance `r` (m).
     ///
-    /// Returns impulse per unit area (Pa·s).
+    /// Returns the impulse per unit area (Pa·s) from Sadovsky's correlation
+    /// `i⁺ = 200 · W^(2/3) / r`, with `W` the TNT-equivalent charge mass in kg.
+    /// At a fixed distance it therefore scales with `W^(2/3)`.
     pub fn blast_impulse(&self, r: f64) -> f64 {
         if r <= 0.0 || self.charge_mass <= 0.0 {
             return 0.0;
         }
-        let z = r / self.charge_mass.cbrt();
-        // Simplified impulse scaling: i+ = 0.067 * C^(1/3) / z  (kPa·ms/kg^(1/3))
-        let i_scaled = 0.067 / z;
-        i_scaled * 1e3 // kPa·ms → Pa·s (approximate)
+        200.0 * self.charge_mass.powf(2.0 / 3.0) / r
     }
 
     /// Generate a fragment mass/velocity distribution using the Gurney and
@@ -1043,25 +1133,19 @@ impl ExplosionModel {
 
         // Deterministic LCG for reproducibility
         let mut lcg: u64 = 0xabcdef1234567890;
-        let rand_f64 = |s: &mut u64| -> f64 {
-            *s = s
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            (*s >> 33) as f64 / (u32::MAX as f64)
-        };
 
         let mut masses = Vec::with_capacity(self.num_fragments);
         let mut velocities = Vec::with_capacity(self.num_fragments);
 
         for _ in 0..self.num_fragments {
             // Mott distribution: P(m > x) = exp(-(x / mu)^0.5) → exponential approx
-            let u = rand_f64(&mut lcg).max(1e-9);
+            let u = lcg_unit(&mut lcg).max(1e-9);
             let frag_mass = mean_frag_mass * (-u.ln()).max(0.01);
             masses.push(frag_mass);
 
             // Velocity scaled by sqrt(casing/fragment mass ratio)
             let mass_ratio = (total_frag_mass / frag_mass.max(1e-9)).sqrt();
-            let vel = v_gurney * mass_ratio.min(3.0) * (0.8 + 0.4 * rand_f64(&mut lcg));
+            let vel = v_gurney * mass_ratio.min(3.0) * (0.8 + 0.4 * lcg_unit(&mut lcg));
             velocities.push(vel);
         }
 
@@ -1081,20 +1165,14 @@ impl ExplosionModel {
 
         // Deterministic LCG for directions
         let mut lcg: u64 = 0xfeedface_deadbeef;
-        let rand_f64 = |s: &mut u64| -> f64 {
-            *s = s
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            (*s >> 33) as f64 / (u32::MAX as f64)
-        };
 
         for i in 0..self.num_fragments {
             let speed = dist.velocities[i];
             let mass = dist.masses[i];
 
             // Uniform spherical direction
-            let u = rand_f64(&mut lcg) * 2.0 - 1.0;
-            let phi = rand_f64(&mut lcg) * 2.0 * PI;
+            let u = lcg_unit(&mut lcg) * 2.0 - 1.0;
+            let phi = lcg_unit(&mut lcg) * 2.0 * PI;
             let sin_t = (1.0 - u * u).sqrt();
             let dir = [sin_t * phi.cos(), u, sin_t * phi.sin()];
             let velocity = v3_scale(dir, speed);

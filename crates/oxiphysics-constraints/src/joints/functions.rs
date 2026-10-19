@@ -230,13 +230,17 @@ mod tests {
             "Spring should pull B toward A, vx={}",
             b.velocity.x
         );
-        let expected_dv = stiffness * 1.0 * dt;
+        // Implicit-Euler spring: dv = dt*k*C / (1 + dt^2*k*K), K = 1/m_a + 1/m_b = 2,
+        // slightly below the explicit dt*k*C because the stretch shrinks over the step.
+        let explicit_dv = stiffness * 1.0 * dt;
+        let expected_dv = explicit_dv / (1.0 + dt * dt * stiffness * 2.0);
         assert!(
-            (a.velocity.x - expected_dv).abs() < 0.01,
+            (a.velocity.x - expected_dv).abs() < 1e-12,
             "Spring velocity change should match, got {} expected {}",
             a.velocity.x,
             expected_dv
         );
+        assert!(a.velocity.x < explicit_dv);
     }
     #[test]
     fn test_ball_joint_allows_rotation() {
@@ -1248,8 +1252,8 @@ mod new_joint_tests {
         let pb = bodies.get(hb).unwrap().transform.position;
         let dist = (pb - pa).norm();
         assert!(
-            dist < 3.0 + 1e-6,
-            "XPBD joint should reduce distance, dist={dist}"
+            (dist - 2.0).abs() < 1e-9,
+            "a rigid XPBD joint should restore the rest length, dist={dist}"
         );
     }
     #[test]

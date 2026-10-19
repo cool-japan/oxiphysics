@@ -198,7 +198,10 @@ pub struct FluidSimConfig {
     pub pressure_iters: usize,
     /// Vorticity confinement strength.
     pub vorticity_eps: f64,
-    /// Surface tension coefficient.
+    /// Surface tension coefficient `σ` (N/m).  Not read by
+    /// [`FluidSimulation::step`], which evaluates no surface-tension force: it
+    /// does not influence the FLIP simulation.  Pass it to
+    /// [`surface_tension_csf`] to obtain a continuum-surface-force field.
     pub surface_tension: f64,
     /// FLIP/PIC blending ratio.
     pub flip_ratio: f64,
@@ -498,6 +501,29 @@ impl SphKernels {
             return 0.0;
         }
         (45.0 / (PI * h.powi(6))) * (h - r)
+    }
+    /// Cohesion spline `C(r)` of Akinci et al. (2013).
+    ///
+    /// ```text
+    ///            32 / (π h⁹) · (h − r)³ r³                  for h/2 < r ≤ h
+    /// C(r, h) =  32 / (π h⁹) · (2 (h − r)³ r³ − h⁶/64)      for 0 < r ≤ h/2
+    ///            0                                           otherwise
+    /// ```
+    ///
+    /// It is continuous at `r = h/2` and `r = h`, attractive (`C > 0`) from
+    /// about `0.27 h` to `h`, and negative at very short range, which keeps
+    /// the particles from collapsing onto each other.
+    pub fn cohesion(r: f64, h: f64) -> f64 {
+        if r <= 0.0 || r > h {
+            return 0.0;
+        }
+        let norm = 32.0 / (PI * h.powi(9));
+        let shell = (h - r).powi(3) * r.powi(3);
+        if 2.0 * r > h {
+            norm * shell
+        } else {
+            norm * (2.0 * shell - h.powi(6) / 64.0)
+        }
     }
 }
 /// A FLIP/PIC particle.
@@ -951,7 +977,11 @@ pub struct SphConfig {
     pub pressure_k: f64,
     /// Viscosity coefficient.
     pub viscosity: f64,
-    /// Surface tension coefficient.
+    /// Surface-tension coefficient `γ` of the Akinci et al. (2013) model
+    /// (cohesion between neighbours plus curvature minimisation, see
+    /// [`sph_compute_forces`]).  It is a tuning coefficient of that model, not
+    /// a physical surface tension in N/m; values `<= 0` switch the surface
+    /// tension off.
     pub surface_tension: f64,
     /// Gravity.
     pub gravity: [f64; 3],

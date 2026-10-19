@@ -451,3 +451,50 @@ fn test_recast_non_finite_input_is_rejected() {
     let res = RecastBuilder::with_default_config().build(&tris);
     assert!(matches!(res, Err(RecastError::RasterizationFailed(_))));
 }
+
+// ---------------------------------------------------------------------------
+// Ledge filtering of upper storeys
+// ---------------------------------------------------------------------------
+
+/// Total XZ area of the triangles whose three vertices all lie in the height
+/// band `[y_lo, y_hi]`.
+fn area_in_band(pm: &PolyMesh, y_lo: f64, y_hi: f64) -> f64 {
+    poly_mesh_to_triangles(pm)
+        .iter()
+        .filter(|t| [t[1], t[4], t[7]].iter().all(|y| (y_lo..=y_hi).contains(y)))
+        .map(|t| tri_area_up(t).abs())
+        .sum()
+}
+
+#[test]
+fn test_recast_upper_storey_slab_keeps_its_floor() {
+    // A 12 x 12 m ground floor and a 6 x 6 m slab 3 m above it. The slab spans
+    // sit over a ground span in every column, so a ledge filter that compares
+    // the slab's floor with the *lowest* neighbouring span sees a 3 m cliff
+    // everywhere and removes the slab entirely.
+    let mut tris: Vec<[f64; 9]> = rect_tris(0.0, 12.0, 0.0, 12.0, 0.0).to_vec();
+    tris.extend(rect_tris(3.0, 9.0, 3.0, 9.0, 3.0));
+    let cfg = RecastConfig {
+        cell_size: 0.25,
+        cell_height: 0.1,
+        agent_height: 1.8,
+        agent_radius: 0.25,
+        agent_max_climb: 0.4,
+        region_min_size: 2,
+        ..Default::default()
+    };
+    let pm = RecastBuilder::new(cfg)
+        .build(&tris)
+        .expect("two-storey scene builds");
+    let upper = area_in_band(&pm, 2.5, 3.5);
+    let lower = area_in_band(&pm, -0.5, 0.5);
+    // The slab loses its rim (one cell of ledge plus the agent radius): about
+    // (6 - 4 * 0.25)^2 = 25 m^2 remain; the ground loses the same rim at its
+    // border and below the slab it keeps the floor (3 m clearance > 1.8 m).
+    assert!(upper > 18.0, "upper floor area {upper} m^2 is missing");
+    assert!(
+        upper < 36.0,
+        "upper floor area {upper} m^2 exceeds the slab"
+    );
+    assert!(lower > 100.0, "ground floor area {lower} m^2 is missing");
+}

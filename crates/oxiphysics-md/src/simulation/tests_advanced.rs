@@ -3,6 +3,9 @@
 
 //! Advanced tests for NPT, MSD, RDF, and adaptive timestep methods.
 
+use std::f64::consts::PI;
+
+use super::stochastic::SimRng;
 use super::*;
 
 fn simple_sim(n: usize, dt: f64) -> MdSim {
@@ -27,25 +30,81 @@ fn simple_sim(n: usize, dt: f64) -> MdSim {
 // -----------------------------------------------------------------------
 
 #[test]
-fn test_pr_barostat_scale_factors_at_target_pressure_is_one() {
+fn test_pr_barostat_acceleration_at_target_pressure_is_zero() {
     let pr = ParrinelloRahmanBarostat::new(1.0, 0.5, 4.5e-5);
-    let scale = pr.scale_factors(1.0, 0.002);
-    // At target pressure delta = 0, so mu = cbrt(1) = 1
-    assert!((scale[0] - 1.0).abs() < 1e-12, "mu={}", scale[0]);
-    assert!((scale[1] - 1.0).abs() < 1e-12);
-    assert!((scale[2] - 1.0).abs() < 1e-12);
+    // At the target pressure the box feels no force, so it neither accelerates
+    // nor (starting from rest) moves.
+    assert_eq!(pr.box_acceleration(1.0, &[30.0, 30.0, 30.0]), [0.0; 3]);
+    let mut sim = simple_sim(4, 0.002);
+    let mut pr = ParrinelloRahmanBarostat::new(1.0, 0.5, 4.5e-5);
+    pr.advance(&mut sim, 1.0, 0.002);
+    assert_eq!(sim.config.box_lengths, [30.0; 3]);
+    assert_eq!(pr.box_velocity, [0.0; 3]);
 }
 
 #[test]
-fn test_pr_barostat_scale_factors_high_pressure_expands_box() {
+fn test_pr_barostat_high_pressure_expands_box() {
     let pr = ParrinelloRahmanBarostat::new(1.0, 0.5, 4.5e-5);
-    // p_current >> target → mu > 1 (box expands to reduce pressure)
-    let scale = pr.scale_factors(1000.0, 0.002);
+    // p_current >> target: every box edge is pushed outwards.
+    let acceleration = pr.box_acceleration(1000.0, &[30.0, 30.0, 30.0]);
     assert!(
-        scale[0] > 1.0,
-        "high pressure should expand box: mu={}",
-        scale[0]
+        acceleration.iter().all(|&a| a > 0.0),
+        "high pressure should accelerate the box outwards: {acceleration:?}"
     );
+    let mut sim = simple_sim(4, 0.002);
+    let mut pr = ParrinelloRahmanBarostat::new(1.0, 0.5, 4.5e-5);
+    pr.advance(&mut sim, 1000.0, 0.002);
+    assert!(sim.config.box_lengths.iter().all(|&l| l > 30.0));
+    assert!(pr.box_velocity.iter().all(|&v| v > 0.0));
+}
+
+#[test]
+fn test_pr_barostat_mass_follows_the_period_formula() {
+    // W = 3 tau_p² L_max / (4 pi² beta) with beta converted to (kJ mol⁻¹ Å⁻³)⁻¹.
+    let pr = ParrinelloRahmanBarostat::new(1.0, 2.0, 1.0e-4);
+    let beta = 1.0e-4 * KJ_MOL_PER_ANG3_TO_BAR;
+    let expected = 3.0 * 4.0 * 30.0 / (4.0 * PI * PI * beta);
+    let mass = pr.mass(&[10.0, 30.0, 20.0]);
+    assert!(
+        (mass - expected).abs() < 1e-12 * expected,
+        "W = {mass}, expected {expected}"
+    );
+    // A stiffer medium (smaller compressibility) needs a heavier box for the same period.
+    let stiff = ParrinelloRahmanBarostat::new(1.0, 2.0, 1.0e-5);
+    assert!(stiff.mass(&[30.0; 3]) > pr.mass(&[30.0; 3]));
+}
+
+#[test]
+fn test_pr_advance_edges_reports_scale_factors_and_bounds_the_contraction() {
+    let mut pr = ParrinelloRahmanBarostat::new(1.0, 0.5, 4.5e-5);
+    let mut edges = [10.0, 20.0, 30.0];
+    let before = edges;
+    let scales = pr.advance_edges(&mut edges, 5000.0, 0.01);
+    for axis in 0..3 {
+        assert!(scales[axis] > 1.0, "overpressure expands axis {axis}");
+        assert!((edges[axis] - before[axis] * scales[axis]).abs() < 1e-12);
+    }
+    // The acceleration V (P - P0) / (W L_a) is inversely proportional to the edge, so
+    // the shortest edge picks up the largest velocity.
+    assert!(pr.box_velocity[0] > pr.box_velocity[1] && pr.box_velocity[1] > pr.box_velocity[2]);
+
+    // A runaway tension cannot collapse or invert the box: an edge shrinks by at
+    // most one half per step.
+    let mut pr = ParrinelloRahmanBarostat::new(1.0, 0.5, 4.5e-5);
+    let mut edges = [10.0; 3];
+    let scales = pr.advance_edges(&mut edges, -1.0e12, 1.0);
+    assert_eq!(scales, [0.5; 3]);
+    assert_eq!(edges, [5.0; 3]);
+
+    // A degenerate box feels no pressure force and is left alone.
+    let mut pr = ParrinelloRahmanBarostat::new(1.0, 0.5, 4.5e-5);
+    let mut edges = [0.0, f64::NAN, 10.0];
+    let scales = pr.advance_edges(&mut edges, 100.0, 0.01);
+    assert_eq!(scales, [1.0; 3]);
+    assert_eq!(pr.box_velocity, [0.0; 3]);
+    assert_eq!(edges[0], 0.0);
+    assert_eq!(edges[2], 10.0);
+    assert!(edges[1].is_nan());
 }
 
 #[test]
@@ -53,8 +112,9 @@ fn test_pr_barostat_apply_changes_box_lengths() {
     let mut sim = simple_sim(4, 0.002);
     let original_box = sim.config.box_lengths;
     let mut pr = ParrinelloRahmanBarostat::new(1.0, 0.5, 4.5e-5);
-    // With zero virial and many atoms, pressure != target → box rescales.
-    pr.apply(&mut sim, 1e6, 0.002); // large virial forces pressure far from target
+    // A large positive pair virial puts the pressure far above the target, so the
+    // box accelerates and its edges change.
+    pr.apply(&mut sim, 1e6, 0.002);
     let new_box = sim.config.box_lengths;
     // Box lengths should differ from original (at least one)
     let changed = (0..3).any(|a| (new_box[a] - original_box[a]).abs() > 1e-15);
@@ -149,6 +209,97 @@ fn test_rdf_running_via_sim_method() {
     let mut rdf = RdfRunning::new(10.0, 20, 27000.0, 4);
     sim.compute_rdf_running(&mut rdf);
     assert_eq!(rdf.n_frames, 1, "one frame accumulated");
+}
+
+/// Accumulate `frames` frames of `n` uniformly random positions in a cube of edge
+/// `edge` into a fresh [`RdfRunning`] with bins of width 1 Å up to 10 Å.
+fn ideal_gas_rdf(n: usize, edge: f64, frames: usize, seed: u64) -> RdfRunning {
+    let mut rng = SimRng::new(seed);
+    let mut rdf = RdfRunning::new(10.0, 10, edge * edge * edge, n);
+    for _ in 0..frames {
+        let positions: Vec<[f64; 3]> = (0..n)
+            .map(|_| {
+                [
+                    rng.uniform() * edge,
+                    rng.uniform() * edge,
+                    rng.uniform() * edge,
+                ]
+            })
+            .collect();
+        rdf.accumulate(&positions, edge);
+    }
+    rdf
+}
+
+#[test]
+fn test_rdf_running_gofr_of_an_ideal_gas_is_one() {
+    // Uncorrelated positions have g(r) = 1.  The histogram counts unique pairs
+    // i < j, so the reference is N (N - 1) / 2 * v_shell / V pairs per frame; a
+    // reference that is a factor N too large (rho * N pairs) gives g = 1/N = 0.001.
+    let rdf = ideal_gas_rdf(1000, 30.0, 20, 2024);
+    let g = rdf.gofr();
+    let centres = rdf.bin_centers();
+    assert_eq!(g.len(), 10);
+    // Bin 0 (r < 1 Å) holds only ~1500 pairs; the others hold 10^4 and more.
+    for (k, (&value, &r)) in g.iter().zip(centres.iter()).enumerate().skip(1) {
+        assert!(
+            (value - 1.0).abs() < 0.05,
+            "bin {k}: g({r}) = {value}, expected 1 within 5 %"
+        );
+    }
+}
+
+#[test]
+fn test_rdf_running_gofr_does_not_depend_on_the_number_of_atoms() {
+    // Same number density, different N: g(r) of an ideal gas is 1 in both.
+    let small = ideal_gas_rdf(200, 17.8, 400, 7);
+    let large = ideal_gas_rdf(1000, 30.0, 20, 8);
+    for rdf in [&small, &large] {
+        let g = rdf.gofr();
+        // 8 Å shells stay inside the 17.8 Å cube (r <= L / 2 = 8.9 Å).
+        for (k, &value) in g.iter().enumerate().take(8).skip(2) {
+            assert!(
+                (value - 1.0).abs() < 0.06,
+                "N = {}: bin {k}: g = {value}",
+                rdf.n_atoms
+            );
+        }
+    }
+}
+
+#[test]
+fn test_rdf_running_gofr_of_a_single_pair_is_the_inverse_shell_density() {
+    // N = 2 gives exactly one pair per frame; one pair at r = 2.5 Å falls in the
+    // shell [2, 3) Å of volume 4 pi / 3 (27 - 8) Å^3, so g = V / v_shell there.
+    let volume = 1000.0;
+    let mut rdf = RdfRunning::new(5.0, 5, volume, 2);
+    let frame = [[0.0, 0.0, 0.0], [2.5, 0.0, 0.0]];
+    rdf.accumulate(&frame, 100.0);
+    let shell = 4.0 / 3.0 * PI * (27.0 - 8.0);
+    let expected = volume / shell;
+    let g = rdf.gofr();
+    assert!(
+        (g[2] - expected).abs() < 1e-12,
+        "g = {}, expected {expected}",
+        g[2]
+    );
+    for (k, &value) in g.iter().enumerate() {
+        if k != 2 {
+            assert_eq!(value, 0.0, "bin {k}");
+        }
+    }
+    // Averaging identical frames leaves g unchanged.
+    rdf.accumulate(&frame, 100.0);
+    assert!((rdf.gofr()[2] - expected).abs() < 1e-12);
+}
+
+#[test]
+fn test_rdf_running_gofr_is_zero_without_frames_or_pairs() {
+    let empty = RdfRunning::new(5.0, 5, 1000.0, 10);
+    assert!(empty.gofr().iter().all(|&g| g == 0.0));
+    let mut single_atom = RdfRunning::new(5.0, 5, 1000.0, 1);
+    single_atom.accumulate(&[[1.0, 1.0, 1.0]], 100.0);
+    assert!(single_atom.gofr().iter().all(|&g| g == 0.0));
 }
 
 // -----------------------------------------------------------------------
@@ -456,15 +607,21 @@ fn test_harmonic_well_force_restoring() {
 
 #[test]
 fn test_harmonic_well_omega_and_period() {
+    // k in kJ mol⁻¹ Å⁻², m in amu, ω in ps⁻¹: ω = sqrt(100 k / m).
     let hw = HarmonicWell::new(4.0); // k = 4
     let m = 1.0;
-    let omega = hw.omega(m); // sqrt(4) = 2
-    assert!((omega - 2.0).abs() < 1e-12, "omega = {omega}");
-    let period = hw.period(m); // 2π/2 = π
+    let omega = hw.omega(m); // sqrt(400) = 20
+    assert!((omega - 20.0).abs() < 1e-12, "omega = {omega}");
+    let period = hw.period(m); // 2π/20
     assert!(
-        (period - std::f64::consts::PI).abs() < 1e-12,
+        (period - std::f64::consts::PI / 10.0).abs() < 1e-12,
         "T = {period}"
     );
+    // The anchor of the unit system: k = 100 kJ mol⁻¹ Å⁻² and m = 1 amu give
+    // T = 0.2π sqrt(m/k) ps = 0.0628 ps.
+    let stiff = HarmonicWell::new(100.0);
+    assert!((stiff.omega(1.0) - 100.0).abs() < 1e-10);
+    assert!((stiff.period(1.0) - 0.062_831_853_071_795_87).abs() < 1e-12);
 }
 
 #[test]

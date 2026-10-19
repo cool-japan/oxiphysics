@@ -272,23 +272,30 @@ pub const AMIDE_NH_BOND_LENGTH: f64 = 1.0;
 /// sequence should discard bonds donated by proline.)
 pub fn amide_h_positions(ss: &SecondaryStructure) -> Vec<Option<[f64; 3]>> {
     (0..ss.n_pos.len())
-        .map(|j| -> Option<[f64; 3]> {
-            let previous = j.checked_sub(1)?;
-            let c_prev = *ss.c_pos.get(previous)?;
-            let o_prev = *ss.o_pos.get(previous)?;
-            let direction = sub3(c_prev, o_prev);
-            let length = mag3(direction);
-            if length < 1e-12 {
-                return None;
-            }
-            let n_j = ss.n_pos[j];
-            Some([
-                n_j[0] + AMIDE_NH_BOND_LENGTH * direction[0] / length,
-                n_j[1] + AMIDE_NH_BOND_LENGTH * direction[1] / length,
-                n_j[2] + AMIDE_NH_BOND_LENGTH * direction[2] / length,
-            ])
-        })
+        .map(|j| amide_h_position(ss, j))
         .collect()
+}
+/// Reconstruct the backbone amide hydrogen of the single residue `j`.
+///
+/// This is the per-residue form of [`amide_h_positions`]: `None` for the first
+/// residue, for an out-of-range index, and whenever the nitrogen of `j` or the
+/// carbonyl `C`/`O` coordinates of residue `j − 1` are missing or the carbonyl
+/// bond has zero length.
+pub fn amide_h_position(ss: &SecondaryStructure, j: usize) -> Option<[f64; 3]> {
+    let previous = j.checked_sub(1)?;
+    let c_prev = *ss.c_pos.get(previous)?;
+    let o_prev = *ss.o_pos.get(previous)?;
+    let n_j = *ss.n_pos.get(j)?;
+    let direction = sub3(c_prev, o_prev);
+    let length = mag3(direction);
+    if length < 1e-12 {
+        return None;
+    }
+    Some([
+        n_j[0] + AMIDE_NH_BOND_LENGTH * direction[0] / length,
+        n_j[1] + AMIDE_NH_BOND_LENGTH * direction[1] / length,
+        n_j[2] + AMIDE_NH_BOND_LENGTH * direction[2] / length,
+    ])
 }
 /// Detect all Kabsch-Sander hydrogen bonds in a secondary structure object.
 ///
@@ -882,13 +889,217 @@ mod tests {
         let n = [0.0, 2.0, 0.0];
         let h = [0.0, 1.0, 0.0];
         let e = kabsch_sander_hbond(o, c, n, h);
-        assert!(e.is_finite());
+        // 0.084 * 332 * (1/2 + 1/sqrt(1.25) - 1/1 - 1/sqrt(4.25)) kcal/mol
+        assert!((e + 2.527_881_519_421).abs() < 1e-9, "E = {e}");
+        assert!(
+            e < -0.5,
+            "an H-bond must satisfy E < -0.5 kcal/mol, got {e}"
+        );
+    }
+    #[test]
+    fn test_kabsch_sander_energy_vanishes_when_hydrogen_sits_on_nitrogen() {
+        // With H = N the four distances pair up (r_CH = r_CN, r_OH = r_ON) and
+        // the energy cancels identically: this is why the hydrogen has to be
+        // rebuilt before the energy is evaluated.
+        let o = [0.3, -0.2, 0.1];
+        let c = [1.4, 0.5, -0.3];
+        let n = [-0.4, 2.7, 1.1];
+        let e = kabsch_sander_hbond(o, c, n, n);
+        assert!(e.abs() < 1e-12, "E = {e}");
     }
     #[test]
     fn test_find_ks_hbonds_empty_ss() {
         let ss = SecondaryStructure::new(vec![], vec![], vec![], vec![]);
         let bonds = find_kabsch_sander_hbonds(&ss, -0.5);
         assert!(bonds.is_empty());
+    }
+    /// Place atom D from three placed atoms A, B, C (NeRF construction) with the
+    /// bond length |CD|, the angle B-C-D and the IUPAC torsion A-B-C-D in degrees.
+    fn nerf_place(
+        a: [f64; 3],
+        b: [f64; 3],
+        c: [f64; 3],
+        length: f64,
+        angle_deg: f64,
+        torsion_deg: f64,
+    ) -> [f64; 3] {
+        let bc_raw = sub3(c, b);
+        let bc_len = mag3(bc_raw);
+        let bc = [bc_raw[0] / bc_len, bc_raw[1] / bc_len, bc_raw[2] / bc_len];
+        let normal_raw = cross3(sub3(b, a), bc);
+        let normal_len = mag3(normal_raw);
+        let normal = [
+            normal_raw[0] / normal_len,
+            normal_raw[1] / normal_len,
+            normal_raw[2] / normal_len,
+        ];
+        let in_plane = cross3(normal, bc);
+        let (sin_angle, cos_angle) = angle_deg.to_radians().sin_cos();
+        let (sin_torsion, cos_torsion) = torsion_deg.to_radians().sin_cos();
+        let local = [
+            -length * cos_angle,
+            length * sin_angle * cos_torsion,
+            length * sin_angle * sin_torsion,
+        ];
+        std::array::from_fn(|k| {
+            c[k] + local[0] * bc[k] + local[1] * in_plane[k] + local[2] * normal[k]
+        })
+    }
+    /// Backbone (N, CA, C, O) of a `n_res`-residue chain with uniform backbone
+    /// torsions (`phi`, `psi`, trans peptide bonds) and Engh-Huber geometry.
+    fn ideal_backbone(n_res: usize, phi_deg: f64, psi_deg: f64) -> SecondaryStructure {
+        const N_CA: f64 = 1.458;
+        const CA_C: f64 = 1.525;
+        const C_N: f64 = 1.329;
+        const C_O: f64 = 1.231;
+        const ANGLE_N_CA_C: f64 = 111.2;
+        const ANGLE_CA_C_N: f64 = 116.2;
+        const ANGLE_C_N_CA: f64 = 121.7;
+        const ANGLE_CA_C_O: f64 = 120.8;
+        let (sin_n_ca_c, cos_n_ca_c) = ANGLE_N_CA_C.to_radians().sin_cos();
+        let mut n_pos = vec![[0.0, 0.0, 0.0]];
+        let mut ca_pos = vec![[N_CA, 0.0, 0.0]];
+        let mut c_pos = vec![[N_CA - CA_C * cos_n_ca_c, CA_C * sin_n_ca_c, 0.0]];
+        let mut o_pos = Vec::new();
+        for i in 0..n_res {
+            o_pos.push(nerf_place(
+                n_pos[i],
+                ca_pos[i],
+                c_pos[i],
+                C_O,
+                ANGLE_CA_C_O,
+                psi_deg + 180.0,
+            ));
+            if i + 1 < n_res {
+                let n_next = nerf_place(n_pos[i], ca_pos[i], c_pos[i], C_N, ANGLE_CA_C_N, psi_deg);
+                let ca_next = nerf_place(ca_pos[i], c_pos[i], n_next, N_CA, ANGLE_C_N_CA, 180.0);
+                let c_next = nerf_place(c_pos[i], n_next, ca_next, CA_C, ANGLE_N_CA_C, phi_deg);
+                n_pos.push(n_next);
+                ca_pos.push(ca_next);
+                c_pos.push(c_next);
+            }
+        }
+        SecondaryStructure::new(n_pos, ca_pos, c_pos, o_pos)
+    }
+    #[test]
+    fn test_ideal_backbone_builder_reproduces_the_engh_huber_geometry() {
+        let ss = ideal_backbone(12, -57.0, -47.0);
+        assert_eq!(ss.n_pos.len(), 12);
+        assert_eq!(ss.o_pos.len(), 12);
+        for i in 0..11 {
+            assert!((dist3(ss.n_pos[i], ss.ca_pos[i]) - 1.458).abs() < 1e-12);
+            assert!((dist3(ss.ca_pos[i], ss.c_pos[i]) - 1.525).abs() < 1e-12);
+            assert!((dist3(ss.c_pos[i], ss.n_pos[i + 1]) - 1.329).abs() < 1e-12);
+            assert!((dist3(ss.c_pos[i], ss.o_pos[i]) - 1.231).abs() < 1e-12);
+        }
+        // The alpha-helix i -> i+4 carbonyl-oxygen to nitrogen distance.
+        let d_on = dist3(ss.o_pos[0], ss.n_pos[4]);
+        assert!((d_on - 3.091_796_372).abs() < 1e-8, "d(O0,N4) = {d_on}");
+    }
+    #[test]
+    fn test_amide_h_positions_follow_the_dssp_construction() {
+        let ss = ideal_backbone(6, -57.0, -47.0);
+        let hydrogens = amide_h_positions(&ss);
+        assert_eq!(hydrogens.len(), 6);
+        assert_eq!(
+            hydrogens[0], None,
+            "the first residue has no amide hydrogen"
+        );
+        for (j, hydrogen) in hydrogens.iter().enumerate().skip(1) {
+            let h = hydrogen.expect("residue with a preceding carbonyl has an H");
+            assert_eq!(Some(h), amide_h_position(&ss, j));
+            let nh = sub3(h, ss.n_pos[j]);
+            assert!((mag3(nh) - AMIDE_NH_BOND_LENGTH).abs() < 1e-12);
+            // H_j = N_j + unit(C_{j-1} - O_{j-1}): parallel to the preceding C-O bond.
+            let c_o = sub3(ss.c_pos[j - 1], ss.o_pos[j - 1]);
+            let cos = dot3(nh, c_o) / (mag3(nh) * mag3(c_o));
+            assert!(
+                (cos - 1.0).abs() < 1e-12,
+                "N-H must be parallel to C-O: {cos}"
+            );
+        }
+        assert_eq!(amide_h_position(&ss, 6), None, "index past the chain");
+    }
+    #[test]
+    fn test_amide_h_positions_reject_missing_or_degenerate_carbonyls() {
+        let mut ss = ideal_backbone(4, -57.0, -47.0);
+        // Only the oxygens of residues 0 and 1 are known: the hydrogens of
+        // residues 1 and 2 can be built, residue 3 would need the oxygen of
+        // residue 2.
+        ss.o_pos.truncate(2);
+        let h = amide_h_positions(&ss);
+        assert!(h[1].is_some());
+        assert!(h[2].is_some());
+        assert_eq!(h[3], None);
+        let mut collapsed = ideal_backbone(3, -57.0, -47.0);
+        collapsed.o_pos[1] = collapsed.c_pos[1];
+        assert_eq!(amide_h_position(&collapsed, 2), None);
+    }
+    #[test]
+    fn test_find_ks_hbonds_alpha_helix_has_every_i_to_i_plus_4_bond() {
+        let ss = ideal_backbone(12, -57.0, -47.0);
+        let mut bonds = find_kabsch_sander_hbonds(&ss, -0.5);
+        bonds.sort_by_key(|&(i, j, _)| (i, j));
+        let pairs: Vec<(usize, usize)> = bonds.iter().map(|&(i, j, _)| (i, j)).collect();
+        let expected: Vec<(usize, usize)> = (0..8).map(|i| (i, i + 4)).collect();
+        assert_eq!(
+            pairs, expected,
+            "an ideal helix has exactly the i -> i+4 bonds"
+        );
+        for &(i, j, e) in &bonds {
+            // 3.09 A O...N distance, E = -2.1686 kcal/mol (DSSP value ~ -2).
+            assert!((e + 2.168_648_982).abs() < 1e-6, "E({i}->{j}) = {e}");
+        }
+        // The i -> i+3 and i -> i+5 pairs stay above the -0.5 kcal/mol cut.
+        let (e_i3, e_i5) = (hbond_energy_pair(&ss, 0, 3), hbond_energy_pair(&ss, 0, 5));
+        assert!(
+            e_i3 > 0.0 && e_i5 > -0.5,
+            "E(0->3) = {e_i3}, E(0->5) = {e_i5}"
+        );
+    }
+    /// Energy of the pair (acceptor `i`, donor `j`) with the rebuilt hydrogen.
+    fn hbond_energy_pair(ss: &SecondaryStructure, i: usize, j: usize) -> f64 {
+        let h = amide_h_position(ss, j).expect("donor needs a preceding residue");
+        kabsch_sander_hbond(ss.o_pos[i], ss.c_pos[i], ss.n_pos[j], h)
+    }
+    #[test]
+    fn test_find_ks_hbonds_extended_strand_has_none() {
+        let ss = ideal_backbone(12, -120.0, 130.0);
+        assert!(find_kabsch_sander_hbonds(&ss, -0.5).is_empty());
+    }
+    #[test]
+    fn test_secondary_structure_assign_labels_the_ideal_helix() {
+        let mut helix = ideal_backbone(12, -57.0, -47.0);
+        helix.assign();
+        for i in 0..8 {
+            assert_eq!(helix.labels[i], DsspLabel::AlphaHelix, "residue {i}");
+        }
+        for i in 8..12 {
+            assert_eq!(helix.labels[i], DsspLabel::Coil, "residue {i}");
+        }
+        assert_eq!(helix.count_label(DsspLabel::AlphaHelix), 8);
+        assert!((helix.hbond_matrix[0][4] + 2.168_648_982).abs() < 1e-6);
+        assert!((helix.hbond_energy(3, 7) - helix.hbond_matrix[3][7]).abs() < 1e-15);
+        // Chain neighbours, a donor without hydrogen and indices past the chain
+        // carry no H-bond energy.
+        assert_eq!(helix.hbond_energy(0, 1), 0.0);
+        assert_eq!(helix.hbond_energy(5, 5), 0.0);
+        assert_eq!(helix.hbond_energy(5, 0), 0.0);
+        assert_eq!(helix.hbond_energy(0, 99), 0.0);
+        assert_eq!(helix.hbond_energy(99, 4), 0.0);
+
+        let mut strand = ideal_backbone(12, -120.0, 130.0);
+        strand.assign();
+        assert_eq!(strand.count_label(DsspLabel::Coil), 12);
+    }
+    #[test]
+    fn test_find_ks_hbonds_skip_chain_neighbours_and_the_first_donor() {
+        // A cutoff above every energy returns all candidate pairs: acceptors
+        // i = 0..12 against donors j = 1..12 with |i - j| >= 2.
+        let ss = ideal_backbone(12, -57.0, -47.0);
+        let all = find_kabsch_sander_hbonds(&ss, f64::INFINITY);
+        assert_eq!(all.len(), 100);
+        assert!(all.iter().all(|&(i, j, _)| j >= 1 && i.abs_diff(j) >= 2));
     }
     #[test]
     fn test_q_fold_identical_conformations() {

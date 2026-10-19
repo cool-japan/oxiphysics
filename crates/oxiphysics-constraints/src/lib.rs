@@ -63,7 +63,9 @@ pub mod six_dof_constraint;
 pub use six_dof_constraint::{AxisConfig, MotorConfig, SixDofConstraint, compute_jacobian_6dof};
 
 pub mod simd_pgs;
-pub use simd_pgs::{BatchPgsSolver, SoaConstraintRow, SoaConstraints, SoaContactBuilder};
+pub use simd_pgs::{
+    BatchPgsSolver, SoaConstraintRow, SoaConstraints, SoaContact, SoaContactBuilder,
+};
 
 pub mod deformable_coupling;
 pub use deformable_coupling::{
@@ -972,6 +974,7 @@ pub mod cable_constraints;
 pub mod contact_constraints;
 pub mod contact_stability;
 pub mod contact_theory;
+mod dense_linalg;
 pub mod energy_management_constraints;
 pub mod game_physics_constraints;
 pub mod haptic_constraints;

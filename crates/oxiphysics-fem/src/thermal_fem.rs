@@ -3,9 +3,9 @@
 
 //! Thermal FEM for 3-D tetrahedral elements.
 //!
-//! Provides steady-state and transient (explicit Euler) thermal analysis with
-//! Dirichlet boundary conditions, heat-flux computation, and thermo-elastic
-//! strain coupling.
+//! Provides steady-state and transient (θ-method: explicit Euler,
+//! Crank–Nicolson, implicit Euler) thermal analysis with Dirichlet boundary
+//! conditions, heat-flux computation, and thermo-elastic strain coupling.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 1  Data structures
@@ -90,80 +90,85 @@ pub fn fourier_heat_flux(k: f64, grad_t: f64) -> f64 {
 // § 3  Element stiffness (conductivity) matrix
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Relative threshold under which a tetrahedron is treated as degenerate.
+///
+/// With edge vectors `a`, `b`, `c` from the first vertex the element is
+/// degenerate when `|a · (b × c)| <= TET_DEGENERACY_TOL · |a| |b| |c|`, i.e. for
+/// coincident or (numerically) coplanar vertices.  The test is scale invariant,
+/// so very small (nano-scale) elements are not rejected by accident.
+const TET_DEGENERACY_TOL: f64 = 1.0e-12;
+
+/// Constant shape-function gradients and volume of a linear tetrahedron.
+///
+/// With `a = p1 − p0`, `b = p2 − p0`, `c = p3 − p0` and `det = a · (b × c)` the
+/// barycentric coordinates satisfy
+///
+/// ```text
+/// ∇N1 = (b × c) / det,   ∇N2 = (c × a) / det,   ∇N3 = (a × b) / det,
+/// ∇N0 = −(∇N1 + ∇N2 + ∇N3).
+/// ```
+///
+/// These are the *rows* of `J⁻¹` for `J = [a | b | c]` (equivalently the columns
+/// of `J⁻ᵀ`).  Using the columns of `J⁻¹` instead is only equivalent for a
+/// symmetric `J`, which is the case for the unit right tetrahedron but not for a
+/// general element, so a skewed tetrahedron would fail the linear patch test.
+///
+/// Returns `(gradients, volume)` with `volume = |det| / 6`, or `None` when the
+/// tetrahedron is degenerate (see [`TET_DEGENERACY_TOL`]) or has non-finite
+/// coordinates.
+fn tet_shape_gradients(nodes: &[[f64; 3]; 4]) -> Option<([[f64; 3]; 4], f64)> {
+    let sub = |p: [f64; 3], q: [f64; 3]| [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    let cross = |u: [f64; 3], v: [f64; 3]| {
+        [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ]
+    };
+    let dot = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+
+    let a = sub(nodes[1], nodes[0]);
+    let b = sub(nodes[2], nodes[0]);
+    let c = sub(nodes[3], nodes[0]);
+    let b_cross_c = cross(b, c);
+    let det = dot(a, b_cross_c);
+    let scale = dot(a, a).sqrt() * dot(b, b).sqrt() * dot(c, c).sqrt();
+    if !det.is_finite() || !scale.is_finite() || det.abs() <= TET_DEGENERACY_TOL * scale {
+        return None;
+    }
+
+    let inv_det = 1.0 / det;
+    let c_cross_a = cross(c, a);
+    let a_cross_b = cross(a, b);
+    let mut grads = [[0.0_f64; 3]; 4];
+    for d in 0..3 {
+        grads[1][d] = b_cross_c[d] * inv_det;
+        grads[2][d] = c_cross_a[d] * inv_det;
+        grads[3][d] = a_cross_b[d] * inv_det;
+        grads[0][d] = -(grads[1][d] + grads[2][d] + grads[3][d]);
+    }
+    Some((grads, det.abs() / 6.0))
+}
+
 /// Compute the 4×4 element thermal conductivity matrix for a linear tetrahedron.
 ///
 /// Uses the constant-gradient (linear) tet formulation:
 /// `K_e = V B^T D B` where B encodes the shape-function gradients and D is
 /// the anisotropic conductivity tensor (diagonal \[kx, ky, kz\]).
 ///
-/// Shape-function gradients are computed via the volume coordinates of the
-/// four vertices.
+/// Shape-function gradients are the exact gradients of the barycentric
+/// coordinates of the four vertices (rows of `J⁻¹`), so a linear temperature
+/// field is reproduced exactly on any non-degenerate (also skewed) element and
+/// every row of `K_e` sums to zero.  A degenerate tetrahedron yields the zero
+/// matrix.
 ///
 /// # Arguments
 /// * `nodes` – four corner positions \[\[x,y,z\\]; 4]
 /// * `k`     – conductivity components \[kx, ky, kz\]
 pub fn tet_thermal_conductivity_matrix(nodes: &[[f64; 3]; 4], k: [f64; 3]) -> [[f64; 4]; 4] {
-    // Jacobian matrix [3×3]: columns are (p1-p0), (p2-p0), (p3-p0)
-    let p0 = nodes[0];
-    let p1 = nodes[1];
-    let p2 = nodes[2];
-    let p3 = nodes[3];
-
-    let a = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-    let b = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
-    let c = [p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]];
-
-    // det(J) = a · (b × c)
-    let bxc = [
-        b[1] * c[2] - b[2] * c[1],
-        b[2] * c[0] - b[0] * c[2],
-        b[0] * c[1] - b[1] * c[0],
-    ];
-    let det_j = a[0] * bxc[0] + a[1] * bxc[1] + a[2] * bxc[2];
-    let vol = det_j.abs() / 6.0;
-
-    if vol < 1e-30 {
+    let Some((dn, vol)) = tet_shape_gradients(nodes) else {
         return [[0.0; 4]; 4];
-    }
-
-    // Inverse of J (3×3, column-major from a,b,c):
-    // J = [a | b | c] as column vectors → J^{-T} rows give grad(N)
-    let inv_det = 1.0 / det_j;
-
-    // Cofactor matrix rows (transposed inverse scaled by det)
-    // Row i of J^{-1} = cofactor col / det
-    let j_inv = [
-        [
-            (b[1] * c[2] - b[2] * c[1]) * inv_det,
-            -(a[1] * c[2] - a[2] * c[1]) * inv_det,
-            (a[1] * b[2] - a[2] * b[1]) * inv_det,
-        ],
-        [
-            -(b[0] * c[2] - b[2] * c[0]) * inv_det,
-            (a[0] * c[2] - a[2] * c[0]) * inv_det,
-            -(a[0] * b[2] - a[2] * b[0]) * inv_det,
-        ],
-        [
-            (b[0] * c[1] - b[1] * c[0]) * inv_det,
-            -(a[0] * c[1] - a[1] * c[0]) * inv_det,
-            (a[0] * b[1] - a[1] * b[0]) * inv_det,
-        ],
-    ];
-
-    // Shape-function gradients in global coords (B matrix, 3×4)
-    // grad N0 = -sum(grad Ni for i=1..3)
-    // grad N1 = J^{-T} e1, grad N2 = J^{-T} e2, grad N3 = J^{-T} e3
-    // where ei is the i-th column of J^{-T} = rows of J^{-1}
-    let dn: [[f64; 3]; 4] = [
-        [
-            -(j_inv[0][0] + j_inv[1][0] + j_inv[2][0]),
-            -(j_inv[0][1] + j_inv[1][1] + j_inv[2][1]),
-            -(j_inv[0][2] + j_inv[1][2] + j_inv[2][2]),
-        ],
-        [j_inv[0][0], j_inv[0][1], j_inv[0][2]],
-        [j_inv[1][0], j_inv[1][1], j_inv[1][2]],
-        [j_inv[2][0], j_inv[2][1], j_inv[2][2]],
-    ];
+    };
 
     // K_e = V * B^T D B  where D = diag(kx,ky,kz)
     let mut ke = [[0.0_f64; 4]; 4];
@@ -337,63 +342,19 @@ pub fn thermal_transient_euler(
 
 /// Compute the heat-flux vector for a single tet element.
 ///
-/// `q = -D B T_e`  where D = diag(kx,ky,kz), B = shape-function gradient matrix.
+/// `q = -D B T_e`  where D = diag(kx,ky,kz), B = shape-function gradient matrix
+/// (exact barycentric gradients, see [`tet_thermal_conductivity_matrix`]), so the
+/// flux of a linear temperature field is recovered exactly on skewed elements.
+/// A degenerate tetrahedron yields the zero vector.
 ///
 /// # Arguments
-/// * `temps` – global nodal temperatures (indexed by element node indices)
+/// * `temps` – temperatures at the four element nodes, in the order of `nodes`
 /// * `nodes` – four corner positions \[\[x,y,z\\]; 4]
 /// * `k`     – conductivity components \[kx, ky, kz\]
 pub fn heat_flux_element(temps: &[f64], nodes: &[[f64; 3]; 4], k: [f64; 3]) -> [f64; 3] {
-    // We need the shape-function gradients.  Recompute via the same approach
-    // used in tet_thermal_conductivity_matrix.
-    let p0 = nodes[0];
-    let p1 = nodes[1];
-    let p2 = nodes[2];
-    let p3 = nodes[3];
-
-    let a = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-    let b = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
-    let c_vec = [p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]];
-
-    let bxc = [
-        b[1] * c_vec[2] - b[2] * c_vec[1],
-        b[2] * c_vec[0] - b[0] * c_vec[2],
-        b[0] * c_vec[1] - b[1] * c_vec[0],
-    ];
-    let det_j = a[0] * bxc[0] + a[1] * bxc[1] + a[2] * bxc[2];
-    if det_j.abs() < 1e-30 {
+    let Some((dn, _volume)) = tet_shape_gradients(nodes) else {
         return [0.0; 3];
-    }
-    let inv_det = 1.0 / det_j;
-
-    let j_inv = [
-        [
-            (b[1] * c_vec[2] - b[2] * c_vec[1]) * inv_det,
-            -(a[1] * c_vec[2] - a[2] * c_vec[1]) * inv_det,
-            (a[1] * b[2] - a[2] * b[1]) * inv_det,
-        ],
-        [
-            -(b[0] * c_vec[2] - b[2] * c_vec[0]) * inv_det,
-            (a[0] * c_vec[2] - a[2] * c_vec[0]) * inv_det,
-            -(a[0] * b[2] - a[2] * b[0]) * inv_det,
-        ],
-        [
-            (b[0] * c_vec[1] - b[1] * c_vec[0]) * inv_det,
-            -(a[0] * c_vec[1] - a[1] * c_vec[0]) * inv_det,
-            (a[0] * b[1] - a[1] * b[0]) * inv_det,
-        ],
-    ];
-
-    let dn: [[f64; 3]; 4] = [
-        [
-            -(j_inv[0][0] + j_inv[1][0] + j_inv[2][0]),
-            -(j_inv[0][1] + j_inv[1][1] + j_inv[2][1]),
-            -(j_inv[0][2] + j_inv[1][2] + j_inv[2][2]),
-        ],
-        [j_inv[0][0], j_inv[0][1], j_inv[0][2]],
-        [j_inv[1][0], j_inv[1][1], j_inv[1][2]],
-        [j_inv[2][0], j_inv[2][1], j_inv[2][2]],
-    ];
+    };
 
     // grad T = B T_e
     let mut grad_t = [0.0_f64; 3];
@@ -1040,101 +1001,9 @@ pub fn apply_thermal_bcs(k: &mut [Vec<f64>], f: &mut [f64], bcs: &[ThermalBc]) {
 // § 14  TransientThermalSolver — theta-method (Euler / Crank–Nicolson)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Transient solver using the generalised θ-method.
-///
-/// θ = 0  → explicit Euler.
-/// θ = 0.5 → Crank–Nicolson (second-order accurate, unconditionally stable).
-/// θ = 1  → implicit Euler.
-pub struct TransientThermalSolver {
-    /// θ parameter in \[0, 1\].
-    pub theta: f64,
-    /// Time step \[s\].
-    pub dt: f64,
-}
+mod transient;
 
-impl TransientThermalSolver {
-    /// Create a solver with explicit Euler (θ = 0).
-    pub fn explicit_euler(dt: f64) -> Self {
-        Self { theta: 0.0_f64, dt }
-    }
-
-    /// Create a Crank–Nicolson solver (θ = 0.5).
-    pub fn crank_nicolson(dt: f64) -> Self {
-        Self { theta: 0.5_f64, dt }
-    }
-
-    /// Create an implicit Euler solver (θ = 1).
-    pub fn implicit_euler(dt: f64) -> Self {
-        Self { theta: 1.0_f64, dt }
-    }
-
-    /// Advance one time step.
-    ///
-    /// Solves `(M + θ dt K) T_{n+1} = (M - (1-θ) dt K) T_n + dt f`.
-    ///
-    /// Uses the lumped mass matrix (diagonal of `m_full`) for simplicity.
-    pub fn step(&self, temps: &[f64], k: &[Vec<f64>], m: &[Vec<f64>], f: &[f64]) -> Vec<f64> {
-        let n = temps.len();
-        let dt = self.dt;
-        let theta = self.theta;
-
-        // Lumped capacitance: sum of each row of M
-        let c_lumped: Vec<f64> = (0..n)
-            .map(|i| m[i].iter().sum::<f64>().max(1e-30))
-            .collect();
-
-        // RHS: c_lumped * T_n - (1-theta)*dt*(K T_n) + dt*f
-        let mut rhs = vec![0.0_f64; n];
-        for i in 0..n {
-            let kt_i: f64 = k[i]
-                .iter()
-                .zip(temps.iter())
-                .map(|(kij, tj)| kij * tj)
-                .sum();
-            rhs[i] = c_lumped[i] * temps[i] - (1.0_f64 - theta) * dt * kt_i + dt * f[i];
-        }
-
-        if theta == 0.0_f64 {
-            // Explicit: T_{n+1} = rhs / c_lumped
-            rhs.iter()
-                .zip(c_lumped.iter())
-                .map(|(r, c)| r / c)
-                .collect()
-        } else {
-            // Implicit: (c_lumped + theta*dt*K_diag)*T_{n+1} ≈ rhs  (diagonal approx)
-            // For a full solve we use the diagonal approximation to avoid linear algebra
-            (0..n)
-                .map(|i| {
-                    let lhs_diag = c_lumped[i] + theta * dt * k[i][i];
-                    if lhs_diag.abs() < 1e-30 {
-                        0.0_f64
-                    } else {
-                        rhs[i] / lhs_diag
-                    }
-                })
-                .collect()
-        }
-    }
-
-    /// Run `n_steps` time integration steps, returning temperature history.
-    pub fn integrate(
-        &self,
-        t0: &[f64],
-        k: &[Vec<f64>],
-        m: &[Vec<f64>],
-        f: &[f64],
-        n_steps: usize,
-    ) -> Vec<Vec<f64>> {
-        let mut history = Vec::with_capacity(n_steps + 1);
-        let mut temps = t0.to_vec();
-        history.push(temps.clone());
-        for _ in 0..n_steps {
-            temps = self.step(&temps, k, m, f);
-            history.push(temps.clone());
-        }
-        history
-    }
-}
+pub use self::transient::TransientThermalSolver;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 15  RadiationBoundary — Stefan–Boltzmann
@@ -1177,14 +1046,28 @@ impl RadiationBoundary {
         4.0_f64 * self.emissivity * STEFAN_BOLTZMANN * t_surf.powi(3)
     }
 
-    /// Apply linearised radiation BC to node `i` of the global system.
+    /// Apply the Newton-linearised radiation BC to node `node` of the global
+    /// system `K T = f` (flux per unit surface area).
+    ///
+    /// The radiative loss `q(T)` is linearised about the current iterate
+    /// `t_surf`: `q(T) ≈ q(t_surf) + h_rad (T − t_surf)` with
+    /// `h_rad = 4 ε σ t_surf³`.  Moving the loss to the left-hand side gives
+    ///
+    /// ```text
+    /// K[node][node] += h_rad,      f[node] += h_rad · t_surf − q(t_surf).
+    /// ```
+    ///
+    /// The right-hand side depends on the iterate, so the caller must re-assemble
+    /// (or re-apply this BC to a fresh `K`, `f`) with the updated `t_surf` in every
+    /// non-linear iteration.  At `t_surf = T_surr` the flux vanishes and the
+    /// solve returns `T_surr` exactly.
     pub fn apply_to_node(&self, k: &mut [Vec<f64>], f: &mut [f64], node: usize, t_surf: f64) {
         if node >= f.len() {
             return;
         }
         let h_rad = self.linearised_conductance(t_surf);
         k[node][node] += h_rad;
-        f[node] += h_rad * self.t_surrounding + self.heat_flux(t_surf) - h_rad * t_surf;
+        f[node] += h_rad * t_surf - self.heat_flux(t_surf);
     }
 }
 
@@ -1238,32 +1121,38 @@ impl ThermoElasticCoupling {
 
     /// Equivalent nodal thermal load for a tet element.
     ///
-    /// `f_th = ∫ B^T D ε_th dV = V B^T D ε_th` (constant strain tet).
+    /// `f_th = ∫ B^T D ε_th dV = V B^T D ε_th` (constant strain tet).  Since
+    /// `σ_th = -D ε_th` is [`stress_vector`](Self::stress_vector), the load of
+    /// node `a` in direction `i` is
+    ///
+    /// ```text
+    /// f_th[3a + i] = −V Σ_j σ_th[i][j] · ∂N_a/∂x_j
+    /// ```
+    ///
+    /// with the exact shape-function gradients of the tetrahedron.  Because
+    /// `Σ_a ∇N_a = 0` the loads of the four nodes sum to zero in every direction
+    /// (a uniform temperature change exerts no net force), and heating
+    /// (`ΔT > 0`) pushes every node outward from the element.  A degenerate
+    /// tetrahedron yields a zero load.
     ///
     /// Returns a 12-component vector (3 DOF × 4 nodes).
     pub fn nodal_thermal_load(&self, nodes: &[[f64; 3]; 4], delta_t_avg: f64) -> Vec<f64> {
-        let stress = self.stress_vector(delta_t_avg);
-        // Volume of tet
-        let p0 = nodes[0];
-        let p1 = nodes[1];
-        let p2 = nodes[2];
-        let p3 = nodes[3];
-        let a = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-        let b = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
-        let cv = [p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]];
-        let bxc = [
-            b[1] * cv[2] - b[2] * cv[1],
-            b[2] * cv[0] - b[0] * cv[2],
-            b[0] * cv[1] - b[1] * cv[0],
-        ];
-        let vol = (a[0] * bxc[0] + a[1] * bxc[1] + a[2] * bxc[2]).abs() / 6.0_f64;
-        // For a tet, B^T σ_th gives nodal forces; simplified: distribute equally
-        let nodal_force = vol / 4.0_f64;
         let mut load = vec![0.0_f64; 12];
-        for nd in 0..4 {
-            load[nd * 3] = nodal_force * stress[0];
-            load[nd * 3 + 1] = nodal_force * stress[1];
-            load[nd * 3 + 2] = nodal_force * stress[2];
+        let Some((dn, vol)) = tet_shape_gradients(nodes) else {
+            return load;
+        };
+        // σ_th as a symmetric tensor from the Voigt vector [σx σy σz τxy τyz τxz].
+        let s = self.stress_vector(delta_t_avg);
+        let sigma = [[s[0], s[3], s[5]], [s[3], s[1], s[4]], [s[5], s[4], s[2]]];
+        for (a, grad_n) in dn.iter().enumerate() {
+            for (i, sigma_row) in sigma.iter().enumerate() {
+                let bt_sigma: f64 = sigma_row
+                    .iter()
+                    .zip(grad_n.iter())
+                    .map(|(s_ij, g_j)| s_ij * g_j)
+                    .sum();
+                load[3 * a + i] = -vol * bt_sigma;
+            }
         }
         load
     }
@@ -1442,6 +1331,9 @@ pub fn assemble_lumped_capacity(
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+mod regression_tests;
+
+#[cfg(test)]
 mod tests_extended {
     use super::*;
 
@@ -1591,7 +1483,7 @@ mod tests_extended {
         let m = vec![vec![1.0_f64, 0.0_f64], vec![0.0_f64, 1.0_f64]];
         let f = vec![0.0_f64, 0.0_f64];
         let t0 = vec![100.0_f64, 50.0_f64];
-        let t1 = solver.step(&t0, &k, &m, &f);
+        let t1 = solver.step(&t0, &k, &m, &f).expect("explicit step");
         // With decay, temperatures should decrease
         assert!(t1[0] < t0[0]);
         assert!(t1[1] < t0[1]);
@@ -1604,7 +1496,9 @@ mod tests_extended {
         let m = vec![vec![1.0_f64, 0.0_f64], vec![0.0_f64, 1.0_f64]];
         let f = vec![0.0_f64, 0.0_f64];
         let t0 = vec![100.0_f64, 50.0_f64];
-        let history = solver.integrate(&t0, &k, &m, &f, 5);
+        let history = solver
+            .integrate(&t0, &k, &m, &f, 5)
+            .expect("Crank-Nicolson integration");
         assert_eq!(history.len(), 6, "should have initial + 5 steps");
     }
 
@@ -1616,7 +1510,7 @@ mod tests_extended {
         let m = vec![vec![1.0_f64, 0.0_f64], vec![0.0_f64, 1.0_f64]];
         let f = vec![0.0_f64, 0.0_f64];
         let t0 = vec![100.0_f64, 50.0_f64];
-        let t1 = solver.step(&t0, &k, &m, &f);
+        let t1 = solver.step(&t0, &k, &m, &f).expect("implicit step");
         assert!(t1[0].is_finite());
         assert!(t1[1].is_finite());
     }
@@ -1827,7 +1721,7 @@ mod tests_extended {
         let m = vec![vec![1.0_f64, 0.0_f64], vec![0.0_f64, 1.0_f64]];
         let f = vec![5.0_f64, 10.0_f64];
         let t0 = vec![5.0_f64, 10.0_f64];
-        let t1 = solver.step(&t0, &k, &m, &f);
+        let t1 = solver.step(&t0, &k, &m, &f).expect("explicit step");
         assert!((t1[0] - t0[0]).abs() < 1e-10, "should be at steady state");
         assert!((t1[1] - t0[1]).abs() < 1e-10, "should be at steady state");
     }

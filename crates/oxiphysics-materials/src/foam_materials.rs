@@ -928,6 +928,15 @@ impl FoamThermalConductivity {
 // Impact attenuation
 // ===========================================================================
 
+/// Gravitational acceleration used to express decelerations in g \[m/s²\].
+const GRAVITY: f64 = 9.81;
+
+/// Maximum integration window of HIC36 \[s\].
+const HIC36_MAX_WINDOW: f64 = 0.036;
+
+/// Maximum integration window of HIC15 \[s\].
+const HIC15_MAX_WINDOW: f64 = 0.015;
+
 /// Impact attenuation model for foam packaging/helmets.
 ///
 /// Predicts peak acceleration, HIC, and energy absorption for
@@ -982,29 +991,66 @@ impl ImpactAttenuation {
 
     /// Peak deceleration in g's for a given impact velocity.
     ///
-    /// a_peak = sigma_p * A / (m * g)   when v < v_crit
-    pub fn peak_g(&self, _impact_velocity: f64) -> f64 {
-        let g = 9.81;
+    /// While the foam absorbs the impact on its plateau (`v < v_crit`) the
+    /// deceleration is constant:
+    ///
+    /// a_peak = sigma_p * A / (m * g)
+    ///
+    /// Once the impact energy exceeds the foam capacity
+    /// ([`is_bottomed_out`](Self::is_bottomed_out), `v >= v_crit`) the foam
+    /// densifies and acts as a rigid stop.  The plateau model has no finite peak
+    /// there, so `f64::INFINITY` is returned.
+    pub fn peak_g(&self, impact_velocity: f64) -> f64 {
         if self.impactor_mass.abs() < 1.0e-30 {
             return 0.0;
         }
-        self.plateau_stress * self.contact_area / (self.impactor_mass * g)
+        if self.is_bottomed_out(impact_velocity) {
+            return f64::INFINITY;
+        }
+        self.plateau_stress * self.contact_area / (self.impactor_mass * GRAVITY)
     }
 
-    /// Head Injury Criterion (HIC) estimate.
+    /// Head Injury Criterion over a window of at most `max_window` seconds.
     ///
-    /// HIC = ((1/(t2-t1)) * integral_t1^t2 a(t) dt)^2.5 * (t2 - t1)
-    /// For constant deceleration a: HIC = a^2.5 * dt
-    pub fn hic_estimate(&self, impact_velocity: f64) -> f64 {
-        let a_g = self.peak_g(impact_velocity);
-        if a_g.abs() < 1.0e-30 || self.plateau_stress.abs() < 1.0e-30 {
+    /// HIC = max over (t2 - t1) <= max_window of
+    ///       (t2 - t1) * ((1/(t2 - t1)) * integral_t1^t2 a(t) dt)^2.5
+    ///
+    /// with the acceleration `a` in units of g and the time in seconds.  For the
+    /// constant plateau deceleration of this model the pulse lasts
+    /// `dt = m * v / (sigma_p * A)` and the maximum is reached by the longest
+    /// window inside the pulse: HIC = a_g^2.5 * min(dt, max_window).
+    /// `f64::INFINITY` is returned when the foam bottoms out.
+    fn hic_for_window(&self, impact_velocity: f64, max_window: f64) -> f64 {
+        if impact_velocity.is_nan() {
+            return f64::NAN;
+        }
+        let force = self.plateau_stress * self.contact_area;
+        if force.abs() < 1.0e-30 {
             return 0.0;
         }
-        // Impact duration: dt = m * v / (sigma_p * A)
-        let dt = self.impactor_mass * impact_velocity / (self.plateau_stress * self.contact_area);
-        // HIC = (a_g * g)^2.5 * dt  (with acceleration in m/s^2)
-        let a_ms2 = a_g * 9.81;
-        a_ms2.powf(2.5) * dt
+        let pulse_duration = self.impactor_mass * impact_velocity.abs() / force;
+        if pulse_duration <= 0.0 {
+            return 0.0;
+        }
+        let a_g = self.peak_g(impact_velocity);
+        if a_g.abs() < 1.0e-30 {
+            return 0.0;
+        }
+        a_g.powf(2.5) * pulse_duration.min(max_window)
+    }
+
+    /// HIC36: Head Injury Criterion with a maximum window of 36 ms.
+    ///
+    /// The acceleration enters in units of g and the time in seconds, so a
+    /// constant 100 g pulse of 10 ms gives HIC = 100^2.5 * 0.01 = 1000.  See
+    /// [`peak_g`](Self::peak_g) for the bottoming-out limit (infinite HIC).
+    pub fn hic_estimate(&self, impact_velocity: f64) -> f64 {
+        self.hic_for_window(impact_velocity, HIC36_MAX_WINDOW)
+    }
+
+    /// HIC15: Head Injury Criterion with a maximum window of 15 ms.
+    pub fn hic15(&self, impact_velocity: f64) -> f64 {
+        self.hic_for_window(impact_velocity, HIC15_MAX_WINDOW)
     }
 
     /// Compression depth for a given impact velocity \[m\].
@@ -1630,5 +1676,81 @@ mod tests {
         let eff = ea.efficiency(0.4); // well into plateau
         assert!(eff > 0.5, "Efficiency in plateau should be high, got {eff}");
         assert!(eff <= 1.0, "Efficiency should not exceed 1.0, got {eff}");
+    }
+
+    /// 1 kg impactor on a 981 N plateau: a = 100 g, v_crit = 12.5 m/s.
+    fn hundred_g_foam() -> ImpactAttenuation {
+        ImpactAttenuation::new(9.81e4, 0.8, 0.1, 0.01, 1.0)
+    }
+
+    // 29. HIC uses the acceleration in g, not in m/s^2
+    #[test]
+    fn test_hic_uses_acceleration_in_g() {
+        let ia = hundred_g_foam();
+        let v = 9.81; // pulse duration m v / (sigma_p A) = 10 ms
+        assert!(
+            (ia.peak_g(v) - 100.0).abs() < 1.0e-9,
+            "a = {}",
+            ia.peak_g(v)
+        );
+        assert!(v < ia.critical_velocity());
+        let hic = ia.hic_estimate(v);
+        // 100^2.5 * 0.01 = 1000; the m/s^2 form was 9.81^2.5 = 301 times larger.
+        assert!((hic - 1000.0).abs() < 1.0e-6 * 1000.0, "HIC = {hic}");
+        // The 10 ms pulse is shorter than both windows.
+        assert!((ia.hic15(v) - 1000.0).abs() < 1.0e-6 * 1000.0);
+    }
+
+    // 30. HIC36 / HIC15 cap the integration window
+    #[test]
+    fn test_hic_window_caps_long_pulses() {
+        // 98.1 N plateau on 1 kg: a = 10 g.  At v = 4.905 m/s the pulse lasts 50 ms.
+        let ia = ImpactAttenuation::new(9.81e3, 0.8, 0.2, 0.01, 1.0);
+        let v = 4.905;
+        assert!((ia.peak_g(v) - 10.0).abs() < 1.0e-9);
+        assert!(v < ia.critical_velocity());
+        let a25 = 10.0_f64.powf(2.5);
+        assert!((ia.hic_estimate(v) - a25 * 0.036).abs() < 1.0e-9 * a25);
+        assert!((ia.hic15(v) - a25 * 0.015).abs() < 1.0e-9 * a25);
+        // A 20 ms pulse (v = 1.962 m/s) fits inside HIC36 but not HIC15.
+        let short = 1.962;
+        assert!((ia.hic_estimate(short) - a25 * 0.02).abs() < 1.0e-9 * a25);
+        assert!((ia.hic15(short) - a25 * 0.015).abs() < 1.0e-9 * a25);
+    }
+
+    // 31. HIC is zero without an impact and ignores the sign of the velocity
+    #[test]
+    fn test_hic_zero_at_rest_and_sign_independent() {
+        let ia = hundred_g_foam();
+        assert_eq!(ia.hic_estimate(0.0), 0.0);
+        assert_eq!(ia.hic15(0.0), 0.0);
+        assert!(ia.hic_estimate(-9.81) > 0.0);
+        assert!((ia.hic_estimate(-9.81) - ia.hic_estimate(9.81)).abs() < 1.0e-12);
+    }
+
+    // 31b. A NaN velocity is not silently turned into a finite HIC
+    #[test]
+    fn test_hic_propagates_nan_velocity() {
+        let ia = hundred_g_foam();
+        assert!(ia.hic_estimate(f64::NAN).is_nan());
+        assert!(ia.hic15(f64::NAN).is_nan());
+    }
+
+    // 32. Peak g depends on the velocity: infinite once the foam bottoms out
+    #[test]
+    fn test_peak_g_infinite_when_foam_bottoms_out() {
+        let ia = ImpactAttenuation::new(1.0e5, 0.7, 0.05, 0.01, 5.0);
+        let plateau_g = 1.0e5 * 0.01 / (5.0 * 9.81);
+        let v_crit = ia.critical_velocity();
+        assert!((ia.peak_g(0.5 * v_crit) - plateau_g).abs() < 1.0e-12);
+        assert!((ia.peak_g(0.99 * v_crit) - plateau_g).abs() < 1.0e-12);
+        assert!(!ia.is_bottomed_out(0.99 * v_crit));
+        let beyond = 1.5 * v_crit;
+        assert!(ia.is_bottomed_out(beyond));
+        assert_eq!(ia.peak_g(beyond), f64::INFINITY);
+        assert_eq!(ia.hic_estimate(beyond), f64::INFINITY);
+        assert_eq!(ia.hic15(beyond), f64::INFINITY);
+        // Both below and above the capacity the sign of the velocity is irrelevant.
+        assert_eq!(ia.peak_g(-beyond), f64::INFINITY);
     }
 }

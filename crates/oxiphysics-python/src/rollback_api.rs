@@ -6,7 +6,7 @@
 //! Exposes a byte-command rollback buffer (`RollbackBuffer<Vec<u8>>`) and
 //! desync detection to Python.
 
-use oxiphysics::rollback::{DesyncReport, Frame, RollbackBuffer};
+use oxiphysics::rollback::{Frame, RollbackBuffer};
 use pyo3::prelude::*;
 use std::collections::HashMap;
 
@@ -85,45 +85,26 @@ impl PyRollbackBuffer {
     /// Returns a JSON `DesyncReport` if a mismatch is found, `None` if
     /// hashes match or the tick is not in the buffer.
     ///
-    /// The hash is FNV-1a 64-bit over the raw snapshot bytes.
+    /// The hash is the standard 64-bit FNV-1a (offset basis
+    /// `0xcbf29ce484222325`, prime `0x100000001b3`) over the raw snapshot
+    /// bytes -- the same function the native `RollbackWorld` and the WASM
+    /// bindings use.
     pub fn check_desync_json(&self, tick: u64, remote_hash: u64) -> PyResult<Option<String>> {
-        let report = self.inner.get(tick).and_then(|frame| {
-            let local_hash = fnv1a_hash(&frame.snapshot);
-            if local_hash != remote_hash {
-                Some(DesyncReport {
-                    tick,
-                    local_hash,
-                    remote_hash,
-                })
-            } else {
-                None
-            }
-        });
-        match report {
+        match self.inner.check_desync(tick, remote_hash) {
             None => Ok(None),
-            Some(r) => serde_json::to_string(&r)
+            Some(report) => serde_json::to_string(&report)
                 .map(Some)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string())),
         }
     }
 
-    /// Compute the FNV-1a 64-bit hash of the snapshot at `tick`, or `None`.
+    /// Compute the 64-bit FNV-1a hash of the snapshot at `tick`, or `None`.
+    ///
+    /// Identical to `oxiphysics_core::fnv1a_64` over the stored snapshot bytes
+    /// and to `RollbackWorld::snapshot_hash` on the native side.
     pub fn snapshot_hash(&self, tick: u64) -> Option<u64> {
-        self.inner.get(tick).map(|f| fnv1a_hash(&f.snapshot))
+        self.inner.snapshot_hash(tick)
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: FNV-1a 64-bit hash (mirrors oxiphysics internals)
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn fnv1a_hash(data: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for &b in data {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000003d811_u64);
-    }
-    h
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,6 +128,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxiphysics_core::fnv1a_64;
 
     #[test]
     fn test_rollback_buffer_instantiation() {
@@ -187,7 +169,7 @@ mod tests {
         let snapshot = vec![0xABu8, 0xCD];
         buf.push_frame(1, snapshot.clone(), HashMap::new());
 
-        let local_hash = fnv1a_hash(&snapshot);
+        let local_hash = fnv1a_64(&snapshot);
         // Same hash → no desync
         let no_desync = buf.check_desync_json(1, local_hash).expect("check ok");
         assert!(no_desync.is_none());
@@ -204,9 +186,48 @@ mod tests {
     #[test]
     fn test_snapshot_hash_is_stable() {
         let data = b"hello rollback";
-        let h1 = fnv1a_hash(data);
-        let h2 = fnv1a_hash(data);
+        let h1 = fnv1a_64(data);
+        let h2 = fnv1a_64(data);
         assert_eq!(h1, h2);
+    }
+
+    /// Regression: the binding used to multiply by `0x100000003d811`, which is
+    /// not the FNV prime, so its hashes never matched a peer following the
+    /// documented FNV-1a-64 (such as the WASM bridge).
+    #[test]
+    fn test_snapshot_hash_is_standard_fnv1a_64() {
+        let mut buf = PyRollbackBuffer::new(8);
+        buf.push_frame(1, b"a".to_vec(), HashMap::new());
+        buf.push_frame(2, Vec::new(), HashMap::new());
+        buf.push_frame(3, 5_i64.to_le_bytes().to_vec(), HashMap::new());
+
+        assert_eq!(buf.snapshot_hash(1), Some(0xaf63_dc4c_8601_ec8c));
+        assert_eq!(buf.snapshot_hash(2), Some(0xcbf2_9ce4_8422_2325));
+        assert_eq!(buf.snapshot_hash(3), Some(0x0de2_1504_f16d_c720));
+        assert_eq!(buf.snapshot_hash(4), None);
+        // The pre-fix value for b"a".
+        assert_ne!(buf.snapshot_hash(1), Some(0x396e_c70f_fdd1_b784));
+    }
+
+    #[test]
+    fn test_remote_peer_with_standard_hash_sees_no_desync() {
+        let mut buf = PyRollbackBuffer::new(8);
+        buf.push_frame(7, b"foobar".to_vec(), HashMap::new());
+
+        // A remote peer hashing the same bytes with standard FNV-1a-64.
+        let remote_hash = 0x8594_4171_f739_67e8_u64;
+        assert!(
+            buf.check_desync_json(7, remote_hash)
+                .expect("check ok")
+                .is_none()
+        );
+
+        let report = buf
+            .check_desync_json(7, remote_hash ^ 1)
+            .expect("check ok")
+            .expect("one flipped bit must be reported");
+        assert!(report.contains("\"tick\":7"));
+        assert!(report.contains(&format!("\"local_hash\":{remote_hash}")));
     }
 
     #[test]

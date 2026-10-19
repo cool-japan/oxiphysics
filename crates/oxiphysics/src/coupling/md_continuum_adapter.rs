@@ -6,7 +6,8 @@
 //! `MdContinuumAdapter` is a `DomainCoupler` that links a particle-based
 //! MD region (`MockMdDomain`) to a mesh-based continuum region
 //! (`MockContinuumDomain`) using a penalty force analogous to the
-//! Bridging Domain Method (BDM).
+//! Bridging Domain Method (BDM): a spring-damper that pulls the two sides of
+//! every interface site together and damps their relative velocity.
 
 use crate::coupling::{
     CouplingDomain, CouplingReport, DomainCoupler, DomainKind, InterfaceForce, InterfaceForceVec,
@@ -19,8 +20,11 @@ use crate::coupling::{
 
 /// Mock molecular-dynamics domain for coupling tests.
 ///
-/// Stores particle positions, velocities, and masses and accumulates
-/// velocity impulses from applied forces.
+/// Stores particle positions, velocities, and masses and integrates the
+/// applied forces with semi-implicit Euler (`v += F * dt / m`, then
+/// `x += v * dt`).  Only particles that receive a force entry are advanced, and
+/// they are advanced once per received entry, so list every interface particle
+/// once per step.
 pub struct MockMdDomain {
     /// Particle positions in world coordinates.
     pub positions: Vec<[f64; 3]>,
@@ -82,11 +86,11 @@ impl CouplingDomain for MockMdDomain {
         let states = sites
             .iter()
             .map(|s| {
-                let idx = s.id as usize;
-                let (position, velocity) = if idx < self.positions.len() {
-                    (self.positions[idx], self.velocities[idx])
-                } else {
-                    (s.position, [0.0; 3])
+                let particle = InterfaceSite::local_index(s.id)
+                    .and_then(|idx| Some((self.positions.get(idx)?, self.velocities.get(idx)?)));
+                let (position, velocity) = match particle {
+                    Some((&position, &velocity)) => (position, velocity),
+                    None => (s.position, [0.0; 3]),
                 };
                 InterfaceState {
                     id: s.id,
@@ -98,16 +102,25 @@ impl CouplingDomain for MockMdDomain {
         InterfaceStateVec { states }
     }
 
-    /// Apply impulse `f / mass` to each particle identified by `force.id`.
-    fn apply_interface_force(&mut self, forces: &InterfaceForceVec) {
+    /// Integrate the force on each particle identified by `force.id`:
+    /// `v += F * dt / m`, then `x += v * dt`.  Massless particles (`m <= ε`)
+    /// and unknown ids are left untouched.
+    fn apply_interface_force(&mut self, forces: &InterfaceForceVec, dt: f64) {
         for iforce in &forces.forces {
-            let idx = iforce.id as usize;
-            if idx < self.velocities.len() {
-                let mass = self.masses[idx];
-                if mass > f64::EPSILON {
-                    for j in 0..3 {
-                        self.velocities[idx][j] += iforce.force[j] / mass;
-                    }
+            let Some(idx) = InterfaceSite::local_index(iforce.id) else {
+                continue;
+            };
+            let (Some(&mass), Some(velocity), Some(position)) = (
+                self.masses.get(idx),
+                self.velocities.get_mut(idx),
+                self.positions.get_mut(idx),
+            ) else {
+                continue;
+            };
+            if mass > f64::EPSILON {
+                for j in 0..3 {
+                    velocity[j] += iforce.force[j] / mass * dt;
+                    position[j] += velocity[j] * dt;
                 }
             }
         }
@@ -120,8 +133,10 @@ impl CouplingDomain for MockMdDomain {
 
 /// Mock continuum (FEM/FVM) domain for coupling tests.
 ///
-/// Stores node positions, velocities, and masses and accumulates velocity
-/// impulses from applied forces.
+/// Stores node positions, velocities, and masses and integrates the applied
+/// forces with semi-implicit Euler (`v += F * dt / m`, then `x += v * dt`).
+/// Only nodes that receive a force entry are advanced, and they are advanced
+/// once per received entry, so list every interface node once per step.
 pub struct MockContinuumDomain {
     /// Node positions in world coordinates.
     pub node_positions: Vec<[f64; 3]>,
@@ -183,11 +198,15 @@ impl CouplingDomain for MockContinuumDomain {
         let states = sites
             .iter()
             .map(|s| {
-                let idx = s.id as usize;
-                let (position, velocity) = if idx < self.node_positions.len() {
-                    (self.node_positions[idx], self.node_velocities[idx])
-                } else {
-                    (s.position, [0.0; 3])
+                let node = InterfaceSite::local_index(s.id).and_then(|idx| {
+                    Some((
+                        self.node_positions.get(idx)?,
+                        self.node_velocities.get(idx)?,
+                    ))
+                });
+                let (position, velocity) = match node {
+                    Some((&position, &velocity)) => (position, velocity),
+                    None => (s.position, [0.0; 3]),
                 };
                 InterfaceState {
                     id: s.id,
@@ -199,16 +218,25 @@ impl CouplingDomain for MockContinuumDomain {
         InterfaceStateVec { states }
     }
 
-    /// Apply impulse `f / mass` to each node identified by `force.id`.
-    fn apply_interface_force(&mut self, forces: &InterfaceForceVec) {
+    /// Integrate the force on each node identified by `force.id`:
+    /// `v += F * dt / m`, then `x += v * dt`.  Massless nodes (`m <= ε`) and
+    /// unknown ids are left untouched.
+    fn apply_interface_force(&mut self, forces: &InterfaceForceVec, dt: f64) {
         for iforce in &forces.forces {
-            let idx = iforce.id as usize;
-            if idx < self.node_velocities.len() {
-                let mass = self.node_masses[idx];
-                if mass > f64::EPSILON {
-                    for j in 0..3 {
-                        self.node_velocities[idx][j] += iforce.force[j] / mass;
-                    }
+            let Some(idx) = InterfaceSite::local_index(iforce.id) else {
+                continue;
+            };
+            let (Some(&mass), Some(velocity), Some(position)) = (
+                self.node_masses.get(idx),
+                self.node_velocities.get_mut(idx),
+                self.node_positions.get_mut(idx),
+            ) else {
+                continue;
+            };
+            if mass > f64::EPSILON {
+                for j in 0..3 {
+                    velocity[j] += iforce.force[j] / mass * dt;
+                    position[j] += velocity[j] * dt;
                 }
             }
         }
@@ -221,30 +249,45 @@ impl CouplingDomain for MockContinuumDomain {
 
 /// Penalty coupler bridging an MD domain (A) and a continuum domain (B).
 ///
-/// Implements a simplified Bridging Domain Method: the penalty force at each
-/// interface site is
+/// Implements a penalty form of the Bridging Domain Method: at each interface
+/// site a spring-damper joins the MD particle and the continuum node, with the
+/// force (newtons)
 ///
 /// ```text
-/// f = k * (v_md - v_cont) * dt + c * (x_md - x_cont)
+/// f = k * (x_md - x_cont) + c * (v_md - v_cont)
 /// ```
 ///
-/// with `−f` applied to the continuum side and `+f` applied to the MD side
-/// (Newton's third law).
+/// `−f` is applied to the MD side and `+f` to the continuum side (Newton's
+/// third law), so the MD particle is pulled towards the continuum node and
+/// their relative velocity is damped.
 pub struct MdContinuumAdapter {
-    /// Penalty stiffness coefficient (N/m).
+    /// Interface sites shared by the MD and the continuum region.  Each
+    /// domain reads [`InterfaceSite::id`] as its own local particle / node
+    /// index.
+    pub sites: Vec<InterfaceSite>,
+    /// Penalty stiffness `k` (N/m), acting on the position mismatch.
     pub stiffness: f64,
-    /// Penalty damping coefficient (N·s/m).
+    /// Penalty damping `c` (N·s/m), acting on the relative velocity.
     pub damping: f64,
 }
 
 impl MdContinuumAdapter {
-    /// Create a new adapter with the given penalty coefficients.
-    pub fn new(stiffness: f64, damping: f64) -> Self {
-        Self { stiffness, damping }
+    /// Create a new adapter for the given interface `sites` and penalty
+    /// coefficients.
+    pub fn new(sites: Vec<InterfaceSite>, stiffness: f64, damping: f64) -> Self {
+        Self {
+            sites,
+            stiffness,
+            damping,
+        }
     }
 }
 
 impl DomainCoupler for MdContinuumAdapter {
+    fn interface_sites(&self) -> &[InterfaceSite] {
+        &self.sites
+    }
+
     /// Compute BDM penalty forces between an MD region (A) and a continuum
     /// region (B).
     fn step(
@@ -265,20 +308,21 @@ impl DomainCoupler for MdContinuumAdapter {
             let sa = &state_a.states[i];
             let sb = &state_b.states[i];
 
-            // f = k*(v_md - v_cont)*dt + c*(x_md - x_cont)
+            // Spring-damper (newtons): f = k*(x_md - x_cont) + c*(v_md - v_cont).
             let f: [f64; 3] = std::array::from_fn(|j| {
-                self.stiffness * (sa.velocity[j] - sb.velocity[j]) * dt
-                    + self.damping * (sa.position[j] - sb.position[j])
+                self.stiffness * (sa.position[j] - sb.position[j])
+                    + self.damping * (sa.velocity[j] - sb.velocity[j])
             });
 
-            // MD gets +f, continuum gets −f
+            // MD gets −f (pulled towards the continuum node), the continuum
+            // gets +f (pulled towards the MD particle).
             forces_a.push(InterfaceForce {
                 id: sa.id,
-                force: f,
+                force: [-f[0], -f[1], -f[2]],
             });
             forces_b.push(InterfaceForce {
                 id: sb.id,
-                force: [-f[0], -f[1], -f[2]],
+                force: f,
             });
 
             for j in 0..3 {

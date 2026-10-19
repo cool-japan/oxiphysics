@@ -6,6 +6,8 @@
 //! This module provides:
 //!
 //! - **CombustionLbm**: Main solver coupling species transport, temperature, and LBM flow.
+//! - **PassiveScalarLbm**: D2Q9 advection-diffusion LBM that carries each species and the
+//!   temperature with the flow velocity of the host solver.
 //! - **ArrheniusKinetics**: Arrhenius-type reaction rate for premixed/diffusion flames.
 //! - **SpeciesField**: Multi-species (fuel, oxidizer, products) concentration fields.
 //! - **FlameTracker**: Detects and tracks flame front position.
@@ -15,6 +17,12 @@
 //! - **SootModel**: Simple soot formation/oxidation model.
 //! - **NoxModel**: Thermal-NOx and prompt-NOx formation.
 //! - **CoModel**: CO formation/oxidation sub-mechanism.
+
+mod scalar_transport;
+#[cfg(test)]
+mod transport_tests;
+
+pub use scalar_transport::{PassiveScalarLbm, scalar_relaxation_rate};
 
 // ---------------------------------------------------------------------------
 // D2Q9 lattice constants
@@ -244,6 +252,9 @@ impl SpeciesField {
     }
 
     /// Diffuse all species using explicit finite differences with periodic BC.
+    ///
+    /// This is a stand-alone diffusion-only utility (no advection); [`CombustionLbm`] transports
+    /// the species with [`PassiveScalarLbm`] instead.
     pub fn diffuse(&mut self, diffusivity: f64, dt: f64) {
         let nx = self.nx;
         let ny = self.ny;
@@ -348,7 +359,10 @@ impl ThermalField {
         }
     }
 
-    /// Diffuse temperature with periodic BC.
+    /// Diffuse temperature with periodic BC (explicit finite differences, no advection).
+    ///
+    /// This is a stand-alone diffusion-only utility; [`CombustionLbm`] transports the
+    /// temperature with [`PassiveScalarLbm`] instead.
     pub fn diffuse(&mut self, dt: f64) {
         let nx = self.nx;
         let ny = self.ny;
@@ -808,8 +822,11 @@ pub fn equilibrium_d2q9(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
 }
 
 /// Compute D2Q9 equilibrium for a passive scalar `phi` advected by velocity (ux, uy).
-pub fn scalar_equilibrium_d2q9(phi: f64, ux: f64, uy: f64, omega_s: f64) -> [f64; 9] {
-    let _ = omega_s;
+///
+/// `geq_q = w_q phi (1 + c_q·u / cs²)`: its zeroth moment is `phi` and its first moment is
+/// `phi u`, so the BGK collision towards it transports the scalar with the flow
+/// (see [`PassiveScalarLbm`]).
+pub fn scalar_equilibrium_d2q9(phi: f64, ux: f64, uy: f64) -> [f64; 9] {
     let mut geq = [0.0f64; 9];
     for q in 0..9 {
         let cu = C9[q].0 as f64 * ux + C9[q].1 as f64 * uy;
@@ -833,7 +850,17 @@ pub fn bgk_collision(f: [f64; 9], feq: [f64; 9], omega: f64) -> [f64; 9] {
 
 /// Main combustion LBM solver coupling flow, species, and temperature.
 ///
-/// Uses D2Q9 lattice for flow, with separate passive-scalar LBM for each species.
+/// The flow is a D2Q9 BGK lattice. Every species (fuel, oxidizer, products, inert) and the
+/// temperature is a passive scalar carried by a separate D2Q9 advection-diffusion LBM
+/// ([`PassiveScalarLbm`]) that follows the flow velocity of the same step, with the lattice
+/// diffusivity `cs² (1/ω_s − 1/2)` for the species and [`ThermalField::alpha`] for the
+/// temperature. One step advances physical time by `dt`; the transport is a lattice step
+/// (cells and steps), while the reaction and heat-release sources are integrated over `dt`.
+///
+/// Each step: flow collision and streaming, scalar transport, species reaction, heat release,
+/// pollutant sub-models, flame tracking. The reaction and heat-release changes (and any direct
+/// edit of the macroscopic fields, e.g. [`CombustionLbm::ignite`]) are imported into the scalar
+/// populations at the start of the next transport step as `w_q S Δt`. The domain is periodic.
 pub struct CombustionLbm {
     /// Number of cells in x.
     pub nx: usize,
@@ -851,6 +878,11 @@ pub struct CombustionLbm {
     pub omega: f64,
     /// Species diffusion relaxation parameter.
     pub omega_s: f64,
+    /// Passive-scalar LBM carrying the species fields, in the order fuel, oxidizer, products,
+    /// inert (the fields of [`CombustionLbm::species`]).
+    pub species_lbm: [PassiveScalarLbm; 4],
+    /// Passive-scalar LBM carrying the temperature field of [`CombustionLbm::temperature`].
+    pub temperature_lbm: PassiveScalarLbm,
     /// Flame tracker.
     pub tracker: FlameTracker,
     /// Soot model.
@@ -880,8 +912,7 @@ impl CombustionLbm {
     ) -> Self {
         let n = nx * ny;
         let alpha = CS2 * (1.0 / omega - 0.5);
-        let nu = alpha;
-        let _ = nu;
+        let species_diffusivity = CS2 * (1.0 / omega_s - 0.5);
 
         // Initialise f to rest state (rho=1, u=0)
         let feq0 = equilibrium_d2q9(1.0, 0.0, 0.0);
@@ -889,6 +920,13 @@ impl CombustionLbm {
 
         let species = SpeciesField::new(nx, ny, 0.05, 0.23, 0.0, 0.72);
         let temperature = ThermalField::new(nx, ny, t0, alpha, 1200.0, 1.2);
+        let species_lbm = [
+            PassiveScalarLbm::uniform(nx, ny, species_diffusivity, 0.05),
+            PassiveScalarLbm::uniform(nx, ny, species_diffusivity, 0.23),
+            PassiveScalarLbm::uniform(nx, ny, species_diffusivity, 0.0),
+            PassiveScalarLbm::uniform(nx, ny, species_diffusivity, 0.72),
+        ];
+        let temperature_lbm = PassiveScalarLbm::uniform(nx, ny, alpha, t0);
         let tracker = FlameTracker::new(nx, ny, t0 + 200.0);
         let soot = SootModel::new(n, 1e-4, 1e-5, 1e-3, 1800.0);
         let nox = NoxModel::new(n, 6e16, 69090.0, 1e10);
@@ -903,6 +941,8 @@ impl CombustionLbm {
             kinetics,
             omega,
             omega_s,
+            species_lbm,
+            temperature_lbm,
             tracker,
             soot,
             nox,
@@ -942,10 +982,61 @@ impl CombustionLbm {
         [ux, uy]
     }
 
-    /// Perform one LBM time step: collision, streaming, species, temperature, pollutants.
+    /// Impose a uniform flow `(ux, uy)` of density `rho` by resetting the flow populations to
+    /// the corresponding equilibrium. The species and the temperature are advected with it from
+    /// the next step on.
+    pub fn set_uniform_flow(&mut self, rho: f64, ux: f64, uy: f64) {
+        let feq = equilibrium_d2q9(rho, ux, uy);
+        for cell in self.f.iter_mut() {
+            *cell = feq;
+        }
+    }
+
+    /// Flow velocity components `(ux, uy)` of every cell (`iy * nx + ix` layout).
+    pub fn velocity_components(&self) -> (Vec<f64>, Vec<f64>) {
+        let n = self.nx * self.ny;
+        let mut ux = Vec::with_capacity(n);
+        let mut uy = Vec::with_capacity(n);
+        for i in 0..n {
+            let [u_x, u_y] = self.velocity(i);
+            ux.push(u_x);
+            uy.push(u_y);
+        }
+        (ux, uy)
+    }
+
+    /// Carry the species and the temperature with the velocity field `(ux, uy)` for one lattice
+    /// step: each scalar is synchronised with its macroscopic field (importing the previous
+    /// step's source terms and any direct edits), advected and diffused by its
+    /// [`PassiveScalarLbm`], and written back.
+    fn transport_scalars(&mut self, ux: &[f64], uy: &[f64]) {
+        let species_diffusivity = CS2 * (1.0 / self.omega_s - 0.5);
+        let species_fields = [
+            &mut self.species.fuel,
+            &mut self.species.oxidizer,
+            &mut self.species.products,
+            &mut self.species.inert,
+        ];
+        for (transport, field) in self.species_lbm.iter_mut().zip(species_fields) {
+            transport.set_diffusivity(species_diffusivity);
+            transport.sync_to_field(field);
+            transport.step(ux, uy);
+            transport.read_field(field);
+        }
+        self.temperature_lbm.set_diffusivity(self.temperature.alpha);
+        self.temperature_lbm.sync_to_field(&self.temperature.temp);
+        self.temperature_lbm.step(ux, uy);
+        self.temperature_lbm.read_field(&mut self.temperature.temp);
+    }
+
+    /// Perform one LBM time step: flow collision and streaming, scalar transport (advection by
+    /// the flow plus diffusion), reaction, heat release, pollutants and flame tracking.
     pub fn advance(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
+
+        // Velocity at the start of the step: the scalars stream together with the flow.
+        let (ux_field, uy_field) = self.velocity_components();
 
         // --- Collision ---
         let mut f_post = self.f.clone();
@@ -973,8 +1064,10 @@ impl CombustionLbm {
         }
         self.f = f_new;
 
-        // --- Species reaction and diffusion ---
-        let diffusivity = CS2 * (1.0 / self.omega_s - 0.5);
+        // --- Species and temperature: advection by the flow + diffusion ---
+        self.transport_scalars(&ux_field, &uy_field);
+
+        // --- Species reaction ---
         let rho_field: Vec<f64> = (0..nx * ny).map(|i| self.density(i)).collect();
         self.species.react(
             &self.temperature.temp.clone(),
@@ -982,12 +1075,10 @@ impl CombustionLbm {
             self.dt,
             &rho_field,
         );
-        self.species.diffuse(diffusivity, self.dt);
 
-        // --- Temperature: heat release + diffusion ---
+        // --- Temperature: heat release ---
         self.temperature
             .apply_heat_release(&self.species, &self.kinetics, self.dt);
-        self.temperature.diffuse(self.dt);
 
         // --- Pollutant sub-models ---
         let yf = self.species.fuel.clone();

@@ -468,8 +468,11 @@ impl TsaiWuCriterion {
     }
 
     /// F12 interaction coefficient.
+    ///
+    /// `F12 = F12* · √(F11 · F22)`, so that the dimensionless `F12*` (typically
+    /// −0.5) scales the geometric mean of the quadratic coefficients.
     pub fn f12(&self) -> f64 {
-        self.f12_star / (self.f11() * self.f22()).sqrt()
+        self.f12_star * (self.f11() * self.f22()).sqrt()
     }
 
     /// Tsai-Wu failure index (FI < 1 = safe).
@@ -1008,6 +1011,84 @@ mod tests {
         let tw = TsaiWuCriterion::new(1500e6, 1200e6, 50e6, 200e6, 70e6, -0.5);
         let r = tw.strength_ratio(500e6, 10e6, 5e6);
         assert!(r > 0.0);
+    }
+
+    #[test]
+    fn test_tsai_wu_f12_is_star_times_geometric_mean() {
+        let tw = TsaiWuCriterion::new(1500e6, 1200e6, 50e6, 200e6, 70e6, -0.5);
+        let geometric_mean = (tw.f11() * tw.f22()).sqrt();
+        let expected = -0.5 * geometric_mean;
+        assert!(
+            (tw.f12() - expected).abs() <= 1e-12 * expected.abs(),
+            "F12 = {} but F12* sqrt(F11 F22) = {expected}",
+            tw.f12()
+        );
+        // Physical scale: F12 has the units of F11/F22 (Pa^-2) and the
+        // stability condition |F12| < sqrt(F11 F22) must hold for F12* = -0.5.
+        assert!(tw.f12().abs() < geometric_mean);
+        assert!(tw.f12().abs() < 1.0e-15, "F12 = {}", tw.f12());
+    }
+
+    #[test]
+    fn test_tsai_wu_interaction_term_magnitude() {
+        // The only difference between F12* = -0.5 and F12* = 0 is the term
+        // 2 F12 s1 s2 = -s1 s2 / sqrt(Xt Xc Yt Yc), a modest correction
+        // (about -0.037 here), not the ~1e16 of the inverted formula.
+        let with_coupling = TsaiWuCriterion::new(1500e6, 1200e6, 50e6, 200e6, 70e6, -0.5);
+        let without = TsaiWuCriterion::new(1500e6, 1200e6, 50e6, 200e6, 70e6, 0.0);
+        let (s1, s2) = (500e6, 10e6);
+        let delta = with_coupling.failure_index(s1, s2, 0.0) - without.failure_index(s1, s2, 0.0);
+        let expected = -s1 * s2 / (1500e6_f64 * 1200e6 * 50e6 * 200e6).sqrt();
+        assert!(
+            (delta - expected).abs() <= 1e-9 * expected.abs(),
+            "delta = {delta}, expected {expected}"
+        );
+        assert!((-0.045..-0.030).contains(&delta), "delta = {delta}");
+        let fi = with_coupling.failure_index(s1, s2, 0.0);
+        assert!(
+            (0.0..1.0).contains(&fi),
+            "biaxial FI should be moderate: {fi}"
+        );
+    }
+
+    #[test]
+    fn test_tsai_wu_matches_damage_module_biaxial() {
+        // Two Tsai-Wu implementations live in this crate and must agree.
+        let local = TsaiWuCriterion::new(1500e6, 1200e6, 50e6, 200e6, 70e6, -0.5);
+        let reference =
+            crate::damage::TsaiWuCriterion::new(1500e6, 1200e6, 50e6, 200e6, 70e6, -0.5);
+        let states = [
+            (10e6, 10e6, 0.0),
+            (500e6, 10e6, 5e6),
+            (-300e6, 20e6, 15e6),
+            (800e6, -90e6, 10e6),
+        ];
+        for &(s1, s2, t12) in &states {
+            let a = local.failure_index(s1, s2, t12);
+            let b = reference.failure_index(s1, s2, t12);
+            assert!(
+                (a - b).abs() <= 1e-12 * b.abs(),
+                "failure_index mismatch at ({s1}, {s2}, {t12}): {a} vs {b}"
+            );
+            let ra = local.strength_ratio(s1, s2, t12);
+            let rb = reference.strength_ratio(s1, s2, t12);
+            assert!(
+                (ra - rb).abs() <= 1e-10 * rb.abs(),
+                "strength_ratio mismatch at ({s1}, {s2}, {t12}): {ra} vs {rb}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tsai_wu_strength_ratio_lands_on_failure_surface() {
+        let tw = TsaiWuCriterion::new(1500e6, 1200e6, 50e6, 200e6, 70e6, -0.5);
+        let (s1, s2, t12) = (500e6, 10e6, 5e6);
+        let r = tw.strength_ratio(s1, s2, t12);
+        let fi = tw.failure_index(r * s1, r * s2, r * t12);
+        assert!(
+            (fi - 1.0).abs() < 1e-9,
+            "FI at R*sigma should be 1, got {fi}"
+        );
     }
 
     #[test]

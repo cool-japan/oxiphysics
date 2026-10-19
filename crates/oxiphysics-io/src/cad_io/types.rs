@@ -3,6 +3,9 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use super::iges_parser;
+/// Length unit assumed for an IGES model that has no global section.
+const DEFAULT_IGES_UNITS: LengthUnit = LengthUnit::Millimeter;
 /// Basic IGES file reader.
 ///
 /// Parses the fixed-column IGES format to extract geometric entities.
@@ -10,9 +13,10 @@ use super::functions::*;
 pub struct IgesReader {
     /// Parsed entities.
     pub entities: Vec<IgesEntity>,
-    /// Global section data.
+    /// Global section parameters, parameter 1 (the parameter delimiter) first,
+    /// each as written in the file.
     pub global_params: Vec<String>,
-    /// Units identifier.
+    /// Length unit of the model, from the units flag of the global section.
     pub units: LengthUnit,
 }
 impl IgesReader {
@@ -21,79 +25,44 @@ impl IgesReader {
         Self {
             entities: Vec::new(),
             global_params: Vec::new(),
-            units: LengthUnit::Millimeter,
+            units: DEFAULT_IGES_UNITS,
         }
     }
     /// Parse IGES content from a string.
     ///
-    /// IGES files have a fixed 80-column format with section identifiers
-    /// in column 73.
+    /// IGES files have a fixed 80-column format with the section identifier
+    /// in column 73.  The reader
+    ///
+    /// - takes the parameter and record delimiters of the file from the first
+    ///   two global parameters (default `,` and `;`) and stores the global
+    ///   parameters in [`IgesReader::global_params`],
+    /// - sets [`IgesReader::units`] from the units flag (global parameter 14;
+    ///   flag 3 is resolved through the units name, parameter 15; a blank flag
+    ///   means the IGES default, inches); a file without a global section gets
+    ///   the default of [`IgesReader::new`] (millimeters),
+    /// - finds the parameter data of every directory entry through its
+    ///   parameter data pointer and line count, not by position, and checks
+    ///   that the data starts with the entity type of the directory entry,
+    /// - drops that leading entity type number, so [`IgesEntity::parameters`]
+    ///   holds the parameters only,
+    /// - reads Fortran exponents (`1.5D+2`) and keeps Hollerith constants
+    ///   (`5HHello`) intact in [`IgesEntity::raw_parameters`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a description of the first defect: a malformed global section,
+    /// an odd number of directory records, a directory field that is not a
+    /// number, parameter data outside the parameter section, parameter data
+    /// that starts with another entity type than its directory entry or lacks
+    /// the record delimiter, or a parameter that is neither a number, a
+    /// Hollerith constant nor omitted.
     pub fn parse(&mut self, content: &str) -> Result<(), String> {
         self.entities.clear();
         self.global_params.clear();
-        let lines: Vec<&str> = content.lines().collect();
-        let mut _start_lines = Vec::new();
-        let mut global_lines = Vec::new();
-        let mut directory_lines = Vec::new();
-        let mut parameter_lines = Vec::new();
-        for line in &lines {
-            if line.len() < 73 {
-                continue;
-            }
-            let section = line.chars().nth(72).unwrap_or(' ');
-            match section {
-                'S' => _start_lines.push(*line),
-                'G' => global_lines.push(*line),
-                'D' => directory_lines.push(*line),
-                'P' => parameter_lines.push(*line),
-                _ => {}
-            }
-        }
-        let global_text: String = global_lines
-            .iter()
-            .map(|l| &l[..72.min(l.len())])
-            .collect::<Vec<_>>()
-            .join("");
-        self.global_params = global_text
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .collect();
-        let mut i = 0;
-        while i + 1 < directory_lines.len() {
-            let line1 = directory_lines[i];
-            let _line2 = directory_lines[i + 1];
-            let entity_type_str = line1[0..8.min(line1.len())].trim();
-            if let Ok(etype_num) = entity_type_str.parse::<u32>() {
-                let etype = IgesEntityType::from_type_number(etype_num);
-                let seq = i / 2 + 1;
-                let entity = IgesEntity::new(seq, etype);
-                self.entities.push(entity);
-            }
-            i += 2;
-        }
-        let param_text: String = parameter_lines
-            .iter()
-            .map(|l| &l[..64.min(l.len())])
-            .collect::<Vec<_>>()
-            .join("");
-        let records: Vec<&str> = param_text.split(';').collect();
-        for (idx, record) in records.iter().enumerate() {
-            if idx >= self.entities.len() {
-                break;
-            }
-            let values: Vec<f64> = record
-                .split(',')
-                .filter_map(|s| {
-                    let s = s.trim();
-                    if s.is_empty() {
-                        None
-                    } else {
-                        s.parse::<f64>().ok()
-                    }
-                })
-                .collect();
-            self.entities[idx].parameters = values;
-        }
+        let parsed = iges_parser::parse(content)?;
+        self.entities = parsed.entities;
+        self.global_params = parsed.global_params;
+        self.units = parsed.units.unwrap_or(DEFAULT_IGES_UNITS);
         Ok(())
     }
     /// Get all entities of a specific type.
@@ -107,59 +76,55 @@ impl IgesReader {
     pub fn entity_count(&self) -> usize {
         self.entities.len()
     }
-    /// Extract points (entity type 116).
+    /// Extract points (entity type 116: `X, Y, Z, PTR`).
+    ///
+    /// A point whose coordinates are not all numeric is skipped.
     pub fn extract_points(&self) -> Vec<[f64; 3]> {
-        let mut points = Vec::new();
-        for entity in self.find_entities(IgesEntityType::Point) {
-            if entity.parameters.len() >= 3 {
-                points.push([
-                    entity.parameters[0],
-                    entity.parameters[1],
-                    entity.parameters[2],
-                ]);
-            }
-        }
-        points
+        self.find_entities(IgesEntityType::Point)
+            .into_iter()
+            .filter_map(leading_parameters::<3>)
+            .collect()
     }
-    /// Extract lines (entity type 110).
+    /// Extract lines (entity type 110: `X1, Y1, Z1, X2, Y2, Z2`).
+    ///
+    /// A line whose coordinates are not all numeric is skipped.
     pub fn extract_lines(&self) -> Vec<([f64; 3], [f64; 3])> {
-        let mut lines = Vec::new();
-        for entity in self.find_entities(IgesEntityType::Line) {
-            if entity.parameters.len() >= 6 {
-                let p1 = [
-                    entity.parameters[0],
-                    entity.parameters[1],
-                    entity.parameters[2],
-                ];
-                let p2 = [
-                    entity.parameters[3],
-                    entity.parameters[4],
-                    entity.parameters[5],
-                ];
-                lines.push((p1, p2));
-            }
-        }
-        lines
+        self.find_entities(IgesEntityType::Line)
+            .into_iter()
+            .filter_map(|entity| {
+                let [x1, y1, z1, x2, y2, z2] = leading_parameters::<6>(entity)?;
+                Some(([x1, y1, z1], [x2, y2, z2]))
+            })
+            .collect()
     }
-    /// Extract circular arcs (entity type 100).
+    /// Extract circular arcs (entity type 100: `ZT, X1, Y1, X2, Y2, X3, Y3`,
+    /// the center, the start point and the end point in the plane `z = ZT`).
+    ///
+    /// An arc that lacks one of the seven values, or whose values are not all
+    /// numeric, is skipped.
     pub fn extract_circular_arcs(&self) -> Vec<IgesCircularArc> {
-        let mut arcs = Vec::new();
-        for entity in self.find_entities(IgesEntityType::CircularArc) {
-            if entity.parameters.len() >= 6 {
-                arcs.push(IgesCircularArc {
-                    z_displacement: entity.parameters[0],
-                    center: [entity.parameters[1], entity.parameters[2]],
-                    start: [entity.parameters[3], entity.parameters[4]],
-                    end: if entity.parameters.len() >= 7 {
-                        [entity.parameters[5], entity.parameters[6]]
-                    } else {
-                        [entity.parameters[3], entity.parameters[4]]
-                    },
-                });
-            }
-        }
-        arcs
+        self.find_entities(IgesEntityType::CircularArc)
+            .into_iter()
+            .filter_map(|entity| {
+                let [z, cx, cy, sx, sy, ex, ey] = leading_parameters::<7>(entity)?;
+                Some(IgesCircularArc {
+                    z_displacement: z,
+                    center: [cx, cy],
+                    start: [sx, sy],
+                    end: [ex, ey],
+                })
+            })
+            .collect()
     }
+}
+/// The first `N` parameters of `entity`; `None` when it has fewer, or when one
+/// of them has no numeric value (an omitted parameter or a text constant).
+fn leading_parameters<const N: usize>(entity: &IgesEntity) -> Option<[f64; N]> {
+    let leading = entity.parameters.get(..N)?;
+    if leading.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    <[f64; N]>::try_from(leading).ok()
 }
 /// Circular arc data from IGES entity type 100.
 #[derive(Debug, Clone)]
@@ -269,11 +234,17 @@ impl Assembly {
         self.root.world_bounding_box()
     }
     /// Export the assembly to STL by tessellating all components.
-    pub fn to_stl(&self) -> String {
+    ///
+    /// # Errors
+    ///
+    /// Returns the tessellation error of the first component whose solid
+    /// cannot be tessellated (see [`tessellate_brep`]), prefixed with the
+    /// name of the component.
+    pub fn to_stl(&self) -> Result<String, String> {
         let exporter = StlExporter::new(&self.name);
         let mut mesh = TriangleMesh::new();
-        self.collect_meshes(&self.root, &AssemblyTransform::identity(), &mut mesh);
-        exporter.to_ascii_stl(&mesh)
+        self.collect_meshes(&self.root, &AssemblyTransform::identity(), &mut mesh)?;
+        Ok(exporter.to_ascii_stl(&mesh))
     }
     /// Recursively collect meshes from all components.
     fn collect_meshes(
@@ -281,9 +252,10 @@ impl Assembly {
         component: &AssemblyComponent,
         parent_transform: &AssemblyTransform,
         mesh: &mut TriangleMesh,
-    ) {
+    ) -> Result<(), String> {
         let world_transform = parent_transform.compose(&component.transform);
-        let component_mesh = tessellate_brep(&component.solid, 10);
+        let component_mesh = tessellate_brep(&component.solid, 10)
+            .map_err(|message| format!("component `{}`: {message}", component.name))?;
         let offset = mesh.vertices.len();
         for v in &component_mesh.vertices {
             mesh.vertices.push(world_transform.apply(*v));
@@ -293,8 +265,9 @@ impl Assembly {
                 .push([tri[0] + offset, tri[1] + offset, tri[2] + offset]);
         }
         for child in &component.children {
-            self.collect_meshes(child, &world_transform, mesh);
+            self.collect_meshes(child, &world_transform, mesh)?;
         }
+        Ok(())
     }
 }
 /// Basic STEP file parser for extracting entities.
@@ -575,7 +548,10 @@ impl BrepEdge {
             control_points: Vec::new(),
         }
     }
-    /// Create a new arc edge.
+    /// Create a new arc edge from `start` to `end` about `center`.
+    ///
+    /// The arc is the shorter way round the circle through the two end points,
+    /// so it must subtend less than 180 degrees (see [`BrepEdge::evaluate`]).
     pub fn arc(id: usize, start: usize, end: usize, center: [f64; 3]) -> Self {
         Self {
             id,
@@ -587,6 +563,13 @@ impl BrepEdge {
         }
     }
     /// Evaluate a point on the edge at parameter t in \[0,1\].
+    ///
+    /// A circular arc is evaluated by blending the radius vectors of its end
+    /// points, `cos(t pi/2) r0 + sin(t pi/2) r1`, and rescaling the blend to
+    /// the mean radius.  The points lie on the shorter arc between the end
+    /// points and `t = 0`, `t = 1` give the end points exactly, but the angle
+    /// grows at a constant rate with `t` only for a quarter circle.  An arc of
+    /// 180 degrees or more cannot be represented this way.
     pub fn evaluate(&self, t: f64, vertices: &[BrepVertex]) -> [f64; 3] {
         let p0 = vertices[self.start_vertex].position;
         let p1 = vertices[self.end_vertex].position;
@@ -750,7 +733,9 @@ impl BrepSolid {
         let e9 = solid.add_line_edge(v1, v5);
         let e10 = solid.add_line_edge(v2, v6);
         let e11 = solid.add_line_edge(v3, v7);
-        solid.add_planar_face(vec![e0, e1, e2, e3], [0.0, 0.0, -1.0], [0.0, 0.0, 0.0]);
+        // Every loop runs counter-clockwise about the outward normal of its
+        // face; the bottom face is walked against the direction of its edges.
+        solid.add_planar_face(vec![e3, e2, e1, e0], [0.0, 0.0, -1.0], [0.0, 0.0, 0.0]);
         solid.add_planar_face(vec![e4, e5, e6, e7], [0.0, 0.0, 1.0], [0.0, 0.0, sz]);
         solid.add_planar_face(vec![e0, e9, e4, e8], [0.0, -1.0, 0.0], [0.0, 0.0, 0.0]);
         solid.add_planar_face(vec![e2, e11, e6, e10], [0.0, 1.0, 0.0], [0.0, sy, 0.0]);
@@ -966,6 +951,14 @@ pub enum LengthUnit {
     Foot,
     /// Micrometers.
     Micrometer,
+    /// Kilometers.
+    Kilometer,
+    /// Statute miles (1609.344 m).
+    Mile,
+    /// Mils, thousandths of an inch.
+    Mil,
+    /// Microinches, millionths of an inch.
+    Microinch,
 }
 impl LengthUnit {
     /// Conversion factor to meters.
@@ -977,6 +970,10 @@ impl LengthUnit {
             LengthUnit::Inch => 0.0254,
             LengthUnit::Foot => 0.3048,
             LengthUnit::Micrometer => 1e-6,
+            LengthUnit::Kilometer => 1000.0,
+            LengthUnit::Mile => 1609.344,
+            LengthUnit::Mil => 2.54e-5,
+            LengthUnit::Microinch => 2.54e-8,
         }
     }
     /// Convert a length from this unit to another unit.
@@ -1099,9 +1096,14 @@ impl StlExporter {
         data
     }
     /// Export a BREP solid as ASCII STL.
-    pub fn export_brep_ascii(&self, solid: &BrepSolid) -> String {
-        let mesh = tessellate_brep(solid, 10);
-        self.to_ascii_stl(&mesh)
+    ///
+    /// # Errors
+    ///
+    /// Returns the tessellation error when the solid cannot be tessellated
+    /// (see [`tessellate_brep`]).
+    pub fn export_brep_ascii(&self, solid: &BrepSolid) -> Result<String, String> {
+        let mesh = tessellate_brep(solid, 10)?;
+        Ok(self.to_ascii_stl(&mesh))
     }
 }
 /// A parsed STEP entity.
@@ -1127,18 +1129,31 @@ impl StepEntity {
 /// Parsed IGES entity.
 #[derive(Debug, Clone)]
 pub struct IgesEntity {
-    /// Directory entry sequence number.
+    /// Directory entry sequence number: the sequence number of the first of
+    /// the two directory records of the entity (1, 3, 5, ...), which is what
+    /// other entities use as a pointer to this one.
     pub sequence_number: usize,
     /// Entity type.
     pub entity_type: IgesEntityType,
-    /// Parameter data pointer.
+    /// Parameter data pointer: the sequence number of the first record of the
+    /// entity's parameter data.
     pub parameter_pointer: usize,
-    /// Status flags.
+    /// Status number (blank status, subordinate switch, use flag and
+    /// hierarchy, two digits each, read as one number).
     pub status: u32,
     /// Entity label.
     pub label: String,
-    /// Raw parameter data values.
+    /// Numeric parameter values, without the leading entity type number.
+    ///
+    /// The position of a value is its parameter number minus one.  A parameter
+    /// that is omitted (defaulted) or a Hollerith text constant has no numeric
+    /// value and is `NaN` here; [`IgesEntity::raw_parameters`] holds it as
+    /// written.
     pub parameters: Vec<f64>,
+    /// Every parameter as written in the file, without the leading entity type
+    /// number: numbers (trimmed), Hollerith constants such as `5HHello` (kept
+    /// whole, with their text), and empty strings for omitted parameters.
+    pub raw_parameters: Vec<String>,
 }
 impl IgesEntity {
     /// Create a new IGES entity.
@@ -1150,6 +1165,7 @@ impl IgesEntity {
             status: 0,
             label: String::new(),
             parameters: Vec::new(),
+            raw_parameters: Vec::new(),
         }
     }
 }

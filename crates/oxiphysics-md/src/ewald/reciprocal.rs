@@ -237,7 +237,7 @@ impl PmeGrid {
         self.grid.iter().filter(|&&v| v.abs() > 1e-20).count()
     }
 
-    /// Reciprocal-space energy via full FFT-based PME (replaces proxy stub).
+    /// Reciprocal-space energy from a 3D FFT of the spread charge grid.
     ///
     /// Performs a 3D FFT of the pre-spread charge grid and accumulates the
     /// standard Ewald reciprocal-space sum:

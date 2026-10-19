@@ -7,6 +7,8 @@ pub mod miegruneiseneos_traits;
 pub mod murnaghaneos_traits;
 pub mod nobleabeleos_traits;
 pub mod polynomialeos_traits;
+#[cfg(test)]
+mod stiffened_gas_vdw_vinet_tests;
 pub mod stiffenedgaseos_traits;
 pub mod taiteos_traits;
 pub mod tillotsoneos_traits;

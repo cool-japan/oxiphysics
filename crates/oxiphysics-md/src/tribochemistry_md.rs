@@ -337,10 +337,24 @@ impl TriboBond {
         }
     }
 
-    /// Current stretching force (N) given actual bond vector.
+    /// Current stretching force (N) given the two atom positions.
+    ///
+    /// `pos_i` and `pos_j` must refer to the same periodic image of the pair
+    /// (open boundaries).  Inside a periodic or Lees-Edwards box use
+    /// [`TriboBond::stretching_force_from_separation`] with the
+    /// [`TriboBox::min_image`] separation instead, otherwise a bond that
+    /// straddles a boundary looks as long as the box.
     pub fn stretching_force(&self, pos_i: [f64; 3], pos_j: [f64; 3]) -> f64 {
-        let r = norm3(sub3(pos_i, pos_j));
-        self.k_spring * (r - self.length_eq)
+        self.stretching_force_from_separation(sub3(pos_i, pos_j))
+    }
+
+    /// Stretching force (N) of the bond for the separation vector
+    /// `dr = r_i − r_j` (m): `k·(|dr| − length_eq)`, positive when stretched.
+    ///
+    /// In a periodic box `dr` must be the minimum-image separation returned
+    /// by [`TriboBox::min_image`].
+    pub fn stretching_force_from_separation(&self, dr: [f64; 3]) -> f64 {
+        self.k_spring * (norm3(dr) - self.length_eq)
     }
 
     /// Try to break this bond stochastically.
@@ -378,8 +392,15 @@ pub struct TriboAtom {
     pub species: TriboChem,
     /// Charge (elementary units).
     pub charge: f64,
-    /// Stress tensor contribution (Pa·m³), stored as 6 independent components
-    /// \[xx, yy, zz, xy, xz, yz\].
+    /// Per-atom share of the bond virial `½·Σ_bonds r_ij ⊗ f_ij` (J = Pa·m³),
+    /// stored as 6 independent components \[xx, yy, zz, xy, xz, yz\].
+    ///
+    /// `r_ij = r_i − r_j` is the minimum-image separation of a bonded pair and
+    /// `f_ij` the force on atom `i`; every unbroken bond adds half of its
+    /// tensor to each of its two atoms.  [`TriboSimulation`] rebuilds the
+    /// field on every force evaluation, so the sum over all atoms is the total
+    /// virial `W` that enters `P = (2·KE + tr W)/(3V)` and
+    /// `σ_xz = −(Σ m·ṽ_x·v_z + W_xz)/V`.
     pub virial: [f64; 6],
 }
 
@@ -469,9 +490,10 @@ impl LjParams {
         4.0 * self.epsilon * (sr.powi(12) - sr.powi(6))
     }
 
-    /// Lennard-Jones force magnitude (N) — negative means attractive.
+    /// Lennard-Jones force magnitude (N) along the pair axis.
     ///
-    /// Returns `dU/dr` (positive = repulsive).
+    /// Returns `−dU/dr`: positive means repulsive (pushes the pair apart),
+    /// negative means attractive.
     pub fn force_magnitude(&self, r: f64) -> f64 {
         if r >= self.cutoff {
             return 0.0;
@@ -532,13 +554,22 @@ impl MorseParams {
         self.de * (1.0 - e) * (1.0 - e) - self.de
     }
 
-    /// Morse force magnitude (N, positive = repulsive).
+    /// Morse force magnitude (N) along the pair axis.
+    ///
+    /// Returns `−dU/dr` with `U(r) = De·(1 − e)² − De` and
+    /// `e = exp(−α·(r − r_eq))`, i.e. `−2·De·α·e·(1 − e)`.  Positive means
+    /// repulsive (pushes the pair apart): a bond compressed below `r_eq` is
+    /// repulsive and a stretched bond (`r > r_eq`, `e < 1`) is attractive.
+    /// This is the same sign convention as [`LjParams::force_magnitude`].
     pub fn force_magnitude(&self, r: f64) -> f64 {
         let e = (-self.alpha * (r - self.r_eq)).exp();
-        2.0 * self.de * self.alpha * e * (1.0 - e)
+        -2.0 * self.de * self.alpha * e * (1.0 - e)
     }
 
     /// Morse force vector on atom i from atom j.
+    ///
+    /// Points along `r_i − r_j` when the pair is compressed (repulsive) and
+    /// towards atom `j` when the bond is stretched (attractive).
     pub fn force_vector(&self, pos_i: [f64; 3], pos_j: [f64; 3]) -> [f64; 3] {
         let r_vec = sub3(pos_i, pos_j);
         let r = norm3(r_vec);
@@ -1047,7 +1078,10 @@ pub struct TriboBox {
     pub shear_rate: f64,
     /// Accumulated shear strain.
     pub strain: f64,
-    /// Current box tilt factor (Lees-Edwards offset in x per Lz).
+    /// Current box tilt factor: the Lees-Edwards image offset in x per unit
+    /// `Lz`, i.e. the periodic image displaced by one box along z is also
+    /// displaced by `tilt·Lz` along x.  Kept folded into
+    /// `[−Lx/(2·Lz), Lx/(2·Lz)]` by [`TriboBox::shear_step`].
     pub tilt: f64,
 }
 
@@ -1089,16 +1123,58 @@ impl TriboBox {
         (p, v)
     }
 
+    /// Minimum-image separation vector in the (possibly sheared) periodic box.
+    ///
+    /// `dr` is a raw separation `r_i − r_j` (m).  The box is periodic under the
+    /// translations `(Lx, 0, 0)`, `(0, Ly, 0)` and `(tilt·Lz, 0, Lz)`: the image
+    /// one box above is shifted by `tilt·Lz` along x, exactly the offset that
+    /// [`TriboBox::wrap_lees_edwards`] applies when an atom crosses a z face.
+    /// The reduction therefore removes the z image first (shifting x by the same
+    /// number of offsets) and then folds x and y.
+    ///
+    /// For a separation shorter than half of every box length (always true for
+    /// a covalent bond) the result is the nearest image.
+    pub fn min_image(&self, dr: [f64; 3]) -> [f64; 3] {
+        let [lx, ly, lz] = self.lengths;
+        let mut d = dr;
+        if lz > 0.0 {
+            let n_z = (d[2] / lz).round();
+            d[2] -= n_z * lz;
+            d[0] -= n_z * self.tilt * lz;
+        }
+        if lx > 0.0 {
+            d[0] -= lx * (d[0] / lx).round();
+        }
+        if ly > 0.0 {
+            d[1] -= ly * (d[1] / ly).round();
+        }
+        d
+    }
+
+    /// Streaming (affine shear flow) velocity along x (m s⁻¹) at height `z` (m):
+    /// `shear_rate·(z − Lz/2)`.
+    ///
+    /// The profile is centred in the box, so that an atom leaving through a z
+    /// face re-enters with the velocity jump of `±shear_rate·Lz` applied by
+    /// [`TriboBox::wrap_lees_edwards`].  Subtracting it from the x velocity
+    /// gives the peculiar velocity that carries the kinetic part of the shear
+    /// stress.
+    pub fn streaming_velocity_x(&self, z: f64) -> f64 {
+        self.shear_rate * (z - 0.5 * self.lengths[2])
+    }
+
     /// Advance the shear strain by time step `dt` (s).
     pub fn shear_step(&mut self, dt: f64) {
         self.strain += self.shear_rate * dt;
         self.tilt += self.shear_rate * dt;
-        // Fold tilt back to (-0.5, 0.5) range
-        while self.tilt > 0.5 {
-            self.tilt -= 1.0;
-        }
-        while self.tilt < -0.5 {
-            self.tilt += 1.0;
+        // The image offset is `tilt·Lz` along x, and x is periodic with period
+        // `Lx`: offsets that differ by a multiple of `Lx` describe the same
+        // lattice.  Fold the offset into [−Lx/2, Lx/2], i.e. `tilt` modulo
+        // `Lx/Lz` (the accumulated `strain` is left unfolded).
+        let (lx, lz) = (self.lengths[0], self.lengths[2]);
+        if lx > 0.0 && lz > 0.0 {
+            let period = lx / lz;
+            self.tilt -= period * (self.tilt / period).round();
         }
     }
 
@@ -1168,7 +1244,8 @@ pub struct TriboSimulation {
     pub time: f64,
     /// Step counter.
     pub step: usize,
-    /// Shear stress history (Pa).
+    /// Signed xz shear stress (Pa) measured in every step, see
+    /// [`TriboSimulation::shear_stress`].
     pub shear_stress_history: Vec<f64>,
 }
 
@@ -1220,10 +1297,13 @@ impl TriboSimulation {
         2.0 * ke / (3.0 * n as f64 * K_B)
     }
 
-    /// Virial pressure (Pa).
+    /// Virial pressure (Pa): `P = (2·KE + tr W)/(3·V)`.
+    ///
+    /// `W` is the bond virial accumulated in [`TriboAtom::virial`] by the last
+    /// force evaluation; without bonds this reduces to the ideal-gas pressure
+    /// `N·k_B·T/V`.
     pub fn pressure(&self) -> f64 {
         let vol = self.box_.volume();
-        let n = self.atoms.len();
         if vol < 1.0e-60 {
             return 0.0;
         }
@@ -1233,17 +1313,35 @@ impl TriboSimulation {
             .iter()
             .map(|a| a.virial[0] + a.virial[1] + a.virial[2])
             .sum();
-        (2.0 * ke + virial) / (3.0 * vol * n.max(1) as f64)
+        (2.0 * ke + virial) / (3.0 * vol)
     }
 
-    /// Current shear stress estimate (Pa).
+    /// Instantaneous xz shear stress `σ_xz` (Pa), signed:
+    ///
+    /// ```text
+    /// σ_xz = −(1/V)·[ Σ_i m_i·ṽ_x,i·v_z,i + Σ_i W_xz,i ]
+    /// ```
+    ///
+    /// The first sum is the momentum flux built from the *peculiar* x velocity
+    /// `ṽ_x = v_x − u_x(z)` (see [`TriboBox::streaming_velocity_x`]); the
+    /// second is the xz component of the bond virial.  A bond of length `r`
+    /// under tension `T` (negative when compressed) whose axis has direction
+    /// cosines `(n_x, n_z)` contributes `T·r·n_x·n_z/V`.  Consumers that only
+    /// depend on the magnitude of the stress (film removal, mechanochemical
+    /// rates, phase transformation) use `shear_stress().abs()`.
     pub fn shear_stress(&self) -> f64 {
         let vol = self.box_.volume();
         if vol < 1.0e-60 {
             return 0.0;
         }
-        let virial_xz: f64 = self.atoms.iter().map(|a| a.virial[4]).sum();
-        virial_xz.abs() / vol
+        let mut kinetic_xz = 0.0;
+        let mut virial_xz = 0.0;
+        for atom in &self.atoms {
+            let peculiar_vx = atom.vel[0] - self.box_.streaming_velocity_x(atom.pos[2]);
+            kinetic_xz += atom.mass() * peculiar_vx * atom.vel[2];
+            virial_xz += atom.virial[4];
+        }
+        -(kinetic_xz + virial_xz) / vol
     }
 
     /// Apply Berendsen velocity scaling thermostat.
@@ -1262,11 +1360,18 @@ impl TriboSimulation {
         }
     }
 
-    /// Compute forces from all bond interactions.
+    /// Compute forces from all bond interactions and rebuild the virial.
+    ///
+    /// The bond vector is the minimum-image separation ([`TriboBox::min_image`]),
+    /// so bonds across a periodic or Lees-Edwards boundary feel their true
+    /// extension.  For every unbroken bond (force `f_ij` on atom `i`, separation
+    /// `r_ij = r_i − r_j`) half of `r_ij ⊗ f_ij` is added to the
+    /// [`TriboAtom::virial`] of both atoms; the virials are zeroed first.
     fn compute_bond_forces(&mut self) {
-        // Reset forces
+        // Reset forces and virials
         for atom in &mut self.atoms {
             atom.force = [0.0; 3];
+            atom.virial = [0.0; 6];
         }
         let positions: Vec<[f64; 3]> = self.atoms.iter().map(|a| a.pos).collect();
         for bond in &self.bonds {
@@ -1278,15 +1383,28 @@ impl TriboSimulation {
             if i >= positions.len() || j >= positions.len() {
                 continue;
             }
-            let r_vec = sub3(positions[i], positions[j]);
+            let r_vec = self.box_.min_image(sub3(positions[i], positions[j]));
             let r = norm3(r_vec);
             if r < 1.0e-20 {
                 continue;
             }
-            let f_mag = bond.k_spring * (r - bond.length_eq);
+            let f_mag = bond.stretching_force_from_separation(r_vec);
             let f_vec = scale3(normalize3(r_vec), -f_mag);
             self.atoms[i].force = add3(self.atoms[i].force, f_vec);
             self.atoms[j].force = add3(self.atoms[j].force, scale3(f_vec, -1.0));
+            // Components: [xx, yy, zz, xy, xz, yz]
+            let half_virial = [
+                0.5 * r_vec[0] * f_vec[0],
+                0.5 * r_vec[1] * f_vec[1],
+                0.5 * r_vec[2] * f_vec[2],
+                0.5 * r_vec[0] * f_vec[1],
+                0.5 * r_vec[0] * f_vec[2],
+                0.5 * r_vec[1] * f_vec[2],
+            ];
+            for (k, w) in half_virial.iter().enumerate() {
+                self.atoms[i].virial[k] += w;
+                self.atoms[j].virial[k] += w;
+            }
         }
     }
 
@@ -1326,7 +1444,9 @@ impl TriboSimulation {
         // 6. Thermostat
         self.apply_thermostat();
 
-        // 7. Bond breaking (stochastic)
+        // 7. Bond breaking (stochastic).  The Bell force is the tension of the
+        // minimum-image bond, so a bond that straddles a periodic or
+        // Lees-Edwards boundary is not mistaken for one as long as the box.
         if self.config.reactive {
             let positions2: Vec<[f64; 3]> = self.atoms.iter().map(|a| a.pos).collect();
             for (idx, bond) in self.bonds.iter_mut().enumerate() {
@@ -1338,27 +1458,34 @@ impl TriboSimulation {
                 if i >= positions2.len() || j >= positions2.len() {
                     continue;
                 }
-                let f = bond.stretching_force(positions2[i], positions2[j]);
+                let dr = self.box_.min_image(sub3(positions2[i], positions2[j]));
+                let f = bond.stretching_force_from_separation(dr);
                 let rng = rng_vals.get(idx).copied().unwrap_or(0.5);
                 bond.attempt_break(f, t, dt, rng);
             }
         }
 
+        // The mechanochemical drivers below use the shear stress measured on
+        // the current configuration (bond virial + peculiar momentum flux).
+        // The film removal rate, the additive's exp(γτ/k_BT) factor and the
+        // phase-transformation threshold all depend on the stress magnitude,
+        // not on the direction of the shear, hence |τ|.
+        let tau_signed = self.shear_stress();
+        let tau = tau_signed.abs();
+
         // 8. ZDDP film growth
         if self.config.zddp_film {
-            let tau = self.shear_stress();
             self.film.step(t, self.config.normal_stress, tau, dt);
         }
 
         // 9. Additive decomposition
         for add in &mut self.additives {
-            add.shear_stress = self.config.normal_stress * 0.1;
+            add.shear_stress = tau;
             add.temperature = t;
             add.step(dt);
         }
 
         // 10. Phase transformation
-        let tau = self.config.normal_stress * 0.15;
         self.phase.step(tau, dt);
 
         // 11. Shear box advance
@@ -1366,7 +1493,7 @@ impl TriboSimulation {
         self.box_.shear_rate = sr;
         self.box_.shear_step(dt);
 
-        self.shear_stress_history.push(self.shear_stress());
+        self.shear_stress_history.push(tau_signed);
         self.time += dt;
         self.step += 1;
     }
@@ -1773,3 +1900,6 @@ mod tests {
         assert!((ke - expected).abs() < 1.0e-35, "KE: {ke} vs {expected}");
     }
 }
+
+#[cfg(test)]
+mod regression_tests;

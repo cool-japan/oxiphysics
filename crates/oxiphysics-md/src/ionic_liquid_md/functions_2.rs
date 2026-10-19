@@ -13,6 +13,8 @@ mod tests {
     use crate::ionic_liquid_md::PairType;
     use crate::ionic_liquid_md::RdfResult;
     use crate::ionic_liquid_md::WolfParams;
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
     use std::f64::consts::PI;
     fn make_two_ion_state() -> IonState {
         let cat = IonModel::emim_cation();
@@ -206,6 +208,112 @@ mod tests {
         let rdf = compute_rdf(&state, &params, PairType::All, 50, 15.0);
         let sum: f64 = rdf.g_r.iter().sum();
         assert!(sum > 0.0, "RDF should have nonzero values, sum={:.6e}", sum);
+    }
+    /// Ideal-gas ion configuration: `n_each` cations followed by `n_each`
+    /// anions at uniformly random positions of a cubic box.
+    fn random_ideal_gas(n_each: usize, box_len: f64, seed: u64) -> IonState {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let cation = IonModel::emim_cation();
+        let anion = IonModel::bf4_anion();
+        let mut state = IonState::new();
+        for model in [&cation, &anion] {
+            for _ in 0..n_each {
+                let pos = [
+                    rng.random_range(0.0..box_len),
+                    rng.random_range(0.0..box_len),
+                    rng.random_range(0.0..box_len),
+                ];
+                state.add_ion(model, pos, [0.0; 3]);
+            }
+        }
+        state
+    }
+    /// Mean of `g(r)` over the bins whose centre lies in `[r_lo, r_hi]`.
+    fn mean_g_between(rdf: &RdfResult, r_lo: f64, r_hi: f64) -> f64 {
+        let selected: Vec<f64> = rdf
+            .r
+            .iter()
+            .zip(rdf.g_r.iter())
+            .filter(|&(&r, _)| r >= r_lo && r <= r_hi)
+            .map(|(_, &g)| g)
+            .collect();
+        assert!(!selected.is_empty(), "no RDF bins in [{r_lo}, {r_hi}]");
+        selected.iter().sum::<f64>() / selected.len() as f64
+    }
+    #[test]
+    fn test_rdf_ideal_gas_tends_to_one_for_every_pair_type() {
+        // Uncorrelated ions have g(r) = 1 at every separation; the cation-anion
+        // histogram used to be doubled, so g_+-(r) came out as 2.
+        let box_len = 50.0;
+        let state = random_ideal_gas(200, box_len, 20_260_619);
+        let params = IlSimParams {
+            box_len,
+            ..IlSimParams::default_params()
+        };
+        let r_max = 0.45 * box_len;
+        for pair_type in [
+            PairType::CationAnion,
+            PairType::CationCation,
+            PairType::AnionAnion,
+            PairType::All,
+        ] {
+            let rdf = compute_rdf(&state, &params, pair_type, 90, r_max);
+            let mean_g = mean_g_between(&rdf, 0.3 * box_len, r_max);
+            assert!(
+                (mean_g - 1.0).abs() < 0.1,
+                "{pair_type:?}: mean g(r) over [0.3 L, 0.45 L] is {mean_g}, expected 1"
+            );
+        }
+    }
+    #[test]
+    fn test_rdf_single_pair_counts_each_pair_once_per_normalisation() {
+        // One ion pair at r = 3 A in a 40 A box.  For two ions of any
+        // composition the ideal count is one pair in the shell, so the peak
+        // height is exactly V / V_shell for the cation-anion, cation-cation
+        // and all-pairs selections alike.
+        let box_len = 40.0;
+        let params = IlSimParams {
+            box_len,
+            ..IlSimParams::default_params()
+        };
+        let cation = IonModel::emim_cation();
+        let anion = IonModel::bf4_anion();
+        let (n_bins, r_max) = (20, 10.0);
+        let dr = r_max / n_bins as f64;
+        let bin = 6; // r = 3.0 lies at the lower edge of bin 6 = [3.0, 3.5)
+        let shell_volume = (4.0 / 3.0) * PI * ((bin as f64 + 1.0) * dr).powi(3)
+            - (4.0 / 3.0) * PI * (bin as f64 * dr).powi(3);
+        let expected_peak = box_len.powi(3) / shell_volume;
+
+        let mut mixed = IonState::new();
+        mixed.add_ion(&cation, [10.0, 10.0, 10.0], [0.0; 3]);
+        mixed.add_ion(&anion, [13.0, 10.0, 10.0], [0.0; 3]);
+        let mut two_cations = IonState::new();
+        two_cations.add_ion(&cation, [10.0, 10.0, 10.0], [0.0; 3]);
+        two_cations.add_ion(&cation, [13.0, 10.0, 10.0], [0.0; 3]);
+
+        let cases = [
+            (&mixed, PairType::CationAnion),
+            (&mixed, PairType::All),
+            (&two_cations, PairType::CationCation),
+            (&two_cations, PairType::All),
+        ];
+        for (state, pair_type) in cases {
+            let rdf = compute_rdf(state, &params, pair_type, n_bins, r_max);
+            assert!(
+                (rdf.g_r[bin] - expected_peak).abs() < 1.0e-9 * expected_peak,
+                "{pair_type:?}: g = {} but V / V_shell = {expected_peak}",
+                rdf.g_r[bin]
+            );
+            let elsewhere: f64 = rdf
+                .g_r
+                .iter()
+                .enumerate()
+                .filter(|&(k, _)| k != bin)
+                .map(|(_, &g)| g)
+                .sum();
+            assert_eq!(elsewhere, 0.0, "{pair_type:?}: stray counts");
+        }
     }
     #[test]
     fn test_coordination_number() {

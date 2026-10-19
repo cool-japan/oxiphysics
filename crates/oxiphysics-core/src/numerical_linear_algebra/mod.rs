@@ -1,6 +1,7 @@
 //! Auto-generated module structure
 
 pub mod functions;
+pub(crate) mod general_eigen;
 mod hessenberg_qr;
 pub mod ilu0preconditioner_traits;
 pub mod ilutpreconditioner_traits;

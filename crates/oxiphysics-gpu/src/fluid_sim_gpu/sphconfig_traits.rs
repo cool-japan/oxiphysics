@@ -9,6 +9,10 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 use super::types::SphConfig;
 
+/// The default `surface_tension` of `0.0728` is the Akinci coefficient `γ` of
+/// [`sph_compute_forces`](super::functions::sph_compute_forces): the number
+/// coincides with the surface tension of water in N/m, but it is only a tuning
+/// coefficient of the cohesion and curvature model, not a physical calibration.
 impl Default for SphConfig {
     fn default() -> Self {
         Self {

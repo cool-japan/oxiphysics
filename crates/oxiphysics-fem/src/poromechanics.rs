@@ -19,6 +19,7 @@ use std::f64::consts::PI;
 use crate::error::{Error, Result};
 use crate::sparse::CsrMatrix;
 
+mod element_coupling;
 mod spd_solve;
 use spd_solve::{SpdPreconditioner, csr_triplets_checked, mask_matrix, preconditioned_cg};
 
@@ -129,23 +130,45 @@ impl PorousElement {
         }
     }
 
-    /// Compute a simplified coupling matrix L = α B^T m N_p dV.
+    /// Element coupling matrix `Q_e = α ∫ Bᵀ m N_p dV` of the Biot u-p
+    /// formulation (`m = (1, 1, 1, 0, 0, 0)ᵀ`), integrated over the element
+    /// spanned by `node_coords` with equal-order interpolation of displacement
+    /// and pore pressure.
     ///
-    /// Returns a flat vector of length `3 * n_nodes` representing coupling
-    /// contributions for a single Gauss point with unit volume and Biot α = 1.
-    pub fn compute_coupling_matrix(&self) -> Vec<f64> {
-        let n = self.node_ids.len();
-        // Each displacement node has 3 DOFs; each pressure node has 1 DOF.
-        // Simplified: return B^T m shape for unit Jacobian, α=1.
-        let mut coupling = vec![0.0_f64; 3 * n];
-        let n_f64 = n as f64;
-        for i in 0..n {
-            // Uniform shape function gradient contribution (1/n per direction)
-            coupling[3 * i] = 1.0 / n_f64;
-            coupling[3 * i + 1] = 1.0 / n_f64;
-            coupling[3 * i + 2] = 1.0 / n_f64;
+    /// The result is row-major with `3·n` rows and `n` columns (`n` = number of
+    /// nodes): row `3a + i` is the displacement component `i` of node `a`,
+    /// column `b` the pressure of node `b`, and
+    /// `Q_e[3a + i, b] = α ∫ (∂N_a/∂x_i) N_b dV`.  It can be scattered into
+    /// [`BiotBlock::Coupling`] with [`ConsolidationSolver::add_element_block`],
+    /// using the global displacement DOFs `3·node + i` as rows and the node
+    /// indices as columns.
+    ///
+    /// Supported elements are the 4-node linear tetrahedron (exact integral)
+    /// and the 8-node trilinear hexahedron (2×2×2 Gauss quadrature, nodes
+    /// ordered as the bottom face counter-clockwise followed by the top face).
+    ///
+    /// # Arguments
+    /// * `node_coords` – coordinates of the element nodes, in the order of
+    ///   [`PorousElement::node_ids`]
+    /// * `alpha`       – Biot effective-stress coefficient α
+    ///
+    /// # Errors
+    /// [`Error::InvalidInput`] if `node_coords` does not match the node list,
+    /// the node count is not 4 or 8, a coordinate or `alpha` is not finite, or
+    /// the element is degenerate or twisted.
+    pub fn compute_coupling_matrix(
+        &self,
+        node_coords: &[[f64; 3]],
+        alpha: f64,
+    ) -> Result<Vec<f64>> {
+        if node_coords.len() != self.node_ids.len() {
+            return Err(Error::InvalidInput(format!(
+                "{} node coordinates were given for an element with {} nodes",
+                node_coords.len(),
+                self.node_ids.len()
+            )));
         }
-        coupling
+        element_coupling::coupling_matrix(node_coords, alpha)
     }
 
     /// Permeability in the x-direction k_xx \[m²\].
@@ -1088,21 +1111,46 @@ mod tests {
     }
 
     #[test]
-    fn test_porous_element_coupling_matrix_length() {
+    fn test_porous_element_coupling_matrix_shape() {
         let k = [1e-12; 9];
         let elem = PorousElement::new(vec![0, 1, 2, 3], k, 0.3, 1e7);
-        let coupling = elem.compute_coupling_matrix();
-        assert_eq!(coupling.len(), 12); // 3 * 4
+        let coords = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let coupling = elem
+            .compute_coupling_matrix(&coords, 1.0)
+            .expect("unit tetrahedron");
+        // 3 displacement DOFs per node by 1 pressure DOF per node: 12 x 4.
+        assert_eq!(coupling.len(), 12 * 4);
     }
 
     #[test]
-    fn test_porous_element_coupling_matrix_values() {
+    fn test_porous_element_coupling_matrix_depends_on_geometry_and_alpha() {
         let k = [1e-12; 9];
         let elem = PorousElement::new(vec![0, 1, 2, 3], k, 0.3, 1e7);
-        let coupling = elem.compute_coupling_matrix();
-        // Each entry should be 1/4 = 0.25
-        for &v in &coupling {
-            assert!((v - 0.25).abs() < 1e-12);
+        let unit = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let double = unit.map(|p| [2.0 * p[0], 2.0 * p[1], 2.0 * p[2]]);
+        let q_unit = elem.compute_coupling_matrix(&unit, 1.0).expect("unit");
+        let q_double = elem.compute_coupling_matrix(&double, 1.0).expect("double");
+        let q_half_alpha = elem.compute_coupling_matrix(&unit, 0.5).expect("alpha");
+        // The old placeholder returned a constant 1/n for every element.
+        assert!(q_unit.iter().any(|v| (v - 0.25).abs() > 1e-3));
+        for ((u, d), h) in q_unit.iter().zip(&q_double).zip(&q_half_alpha) {
+            assert!((d - 4.0 * u).abs() < 1e-14, "size scaling: {d} vs {u}");
+            assert!((h - 0.5 * u).abs() < 1e-14, "alpha scaling: {h} vs {u}");
+        }
+        // Node 1 sits on the x axis, so ∇N_1 = (1, 0, 0) and
+        // Q[3·1 + 0, b] = α V / 4 = 1/24 for every pressure node b.
+        for b in 0..4 {
+            assert!((q_unit[3 * 4 + b] - 1.0 / 24.0).abs() < 1e-15);
         }
     }
 
@@ -1225,14 +1273,14 @@ mod tests {
         let degree = -solver.u_dofs[n_el] / s_final;
         let exact = terzaghi_u(tv_end);
         assert!(
-            ((degree - exact) / exact).abs() < 0.03,
+            ((degree - exact) / exact).abs() < 0.01,
             "U_num = {degree}, U_exact = {exact}"
         );
         // Excess pore pressure at the impermeable base (distance H from the drain).
         let p_base = solver.p_dofs[0] / load;
         let p_exact = pore_pressure_ratio(height, height, tv_end);
         assert!(
-            (p_base - p_exact).abs() < 0.03,
+            (p_base - p_exact).abs() < 0.01,
             "p_base/q = {p_base}, exact = {p_exact}"
         );
         assert_eq!(solver.u_dofs[0], 0.0);

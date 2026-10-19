@@ -1128,7 +1128,19 @@ impl FluidFilmSimulation {
 
     /// Advance the simulation by one time step.
     ///
-    /// Uses a simple diffusion-like scheme along edges.
+    /// Uses a simple diffusion-like scheme along edges. Every edge `(i, j)`
+    /// carries the volume flux (per unit width) from node `i` to node `j`
+    ///
+    /// ```text
+    /// q_ij = rho h^3 / (3 mu) * (g_along - G dh/dx),   dh/dx = (h_j - h_i) / |x_j - x_i|
+    /// ```
+    ///
+    /// where `h` is the mean thickness of the two nodes and `g_along` the
+    /// surface-tangent gravity component along the edge direction `x_j - x_i`.
+    /// Gravity therefore moves fluid downhill (from `i` to `j` when
+    /// `g_along > 0`) while the hydrostatic levelling term moves it from the
+    /// thicker to the thinner node. The flux leaves node `i` and enters node `j`,
+    /// so the total volume is conserved (up to the `h_min` floor).
     pub fn step(&mut self, dt: f64) {
         let n = self.nodes.len();
         let mut dh = vec![0.0_f64; n];
@@ -1154,14 +1166,19 @@ impl FluidFilmSimulation {
             let g_avg = vec_scale(vec_add(g_tang_i, g_tang_j), 0.5);
             let g_along = vec_dot(g_avg, vec_normalize(dx));
 
-            // Film equation flux: Q = ρ g h³ / (3μ) per unit width
+            // Film equation flux: Q = ρ g h³ / (3μ) per unit width. Positive
+            // `flux_grav` means fluid flowing from node i towards node j.
             let flux_grav = rho * g_along * h_avg.powi(3) / (3.0 * mu);
 
-            // Thickness-gradient driven flux (leveling)
+            // Thickness-gradient driven flux (leveling). Positive `flux_level`
+            // (h_j > h_i) means fluid flowing from the thicker node j to the
+            // thinner node i, i.e. opposite to the i -> j direction.
             let dh_dx = (hj - hi) / dist;
             let flux_level = rho * G_ACCEL * h_avg.powi(3) * dh_dx / (3.0 * mu);
 
-            let total_flux = (flux_grav + flux_level) * dt / dist;
+            // Thickness change of node i: it loses what gravity carries away
+            // towards j and gains what levelling brings in from a thicker j.
+            let total_flux = (flux_level - flux_grav) * dt / dist;
 
             dh[i] += total_flux;
             dh[j] -= total_flux;
@@ -1196,6 +1213,9 @@ impl FluidFilmSimulation {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod gravity_flux_tests;
 
 #[cfg(test)]
 mod tests {

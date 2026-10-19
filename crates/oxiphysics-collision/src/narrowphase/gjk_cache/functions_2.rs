@@ -290,16 +290,30 @@ mod tests_gjk_distance_termination {
         ]
     }
 
-    fn sphere_pair_distance(c1: [f64; 3], c2: [f64; 3], r1: f64, r2: f64) -> GjkDistanceResult {
+    /// Accuracy asserted for queries run with the default termination criteria
+    /// (`rel_tol = 1e-6`): the stagnation test may stop a few multiples of the
+    /// relative tolerance short of the exact gap.
+    const DEFAULT_ACCURACY: f64 = 1e-5;
+
+    fn sphere_pair_distance_with(
+        c1: [f64; 3],
+        c2: [f64; 3],
+        r1: f64,
+        r2: f64,
+        termination: &GjkTermination,
+    ) -> GjkDistanceResult {
         let mut cache = GjkCache::new();
-        let termination = GjkTermination::default_criteria();
         gjk_distance(
             &mut |dir: [f64; 3]| {
                 CachedSupport::new(sphere_sup(c1, r1, dir), sphere_sup(c2, r2, negate3(dir)))
             },
             &mut cache,
-            &termination,
+            termination,
         )
+    }
+
+    fn sphere_pair_distance(c1: [f64; 3], c2: [f64; 3], r1: f64, r2: f64) -> GjkDistanceResult {
+        sphere_pair_distance_with(c1, c2, r1, r2, &GjkTermination::default_criteria())
     }
 
     #[test]
@@ -309,15 +323,29 @@ mod tests_gjk_distance_termination {
         let result = sphere_pair_distance([0.0; 3], [0.0, 5.0, 0.0], 1.0, 1.0);
         assert!(!result.intersecting);
         assert!(
-            (result.distance - 3.0).abs() < 1e-6,
+            (result.distance - 3.0).abs() < DEFAULT_ACCURACY,
             "expected 3, got {}",
             result.distance
         );
         let gap = sub3_arr(result.point_b, result.point_a);
         assert!(
-            (len3_arr(gap) - 3.0).abs() < 1e-6 && gap[1] > 2.99,
+            (len3_arr(gap) - 3.0).abs() < DEFAULT_ACCURACY && gap[1] > 2.99,
             "witness gap {gap:?}"
         );
+        // The distance is an upper bound that tightens with the criteria.
+        let tight = sphere_pair_distance_with(
+            [0.0; 3],
+            [0.0, 5.0, 0.0],
+            1.0,
+            1.0,
+            &GjkTermination::tight(),
+        );
+        assert!(
+            (tight.distance - 3.0).abs() < 1e-8,
+            "tight criteria gave {}",
+            tight.distance
+        );
+        assert!(tight.distance <= result.distance + 1e-12);
     }
 
     #[test]
@@ -325,9 +353,21 @@ mod tests_gjk_distance_termination {
         let result = sphere_pair_distance([0.0; 3], [3.0, 3.0, 3.0], 1.0, 0.5);
         let expected = 27.0_f64.sqrt() - 1.5;
         assert!(
-            (result.distance - expected).abs() < 1e-6,
+            (result.distance - expected).abs() < DEFAULT_ACCURACY,
             "expected {expected}, got {}",
             result.distance
+        );
+        let tight = sphere_pair_distance_with(
+            [0.0; 3],
+            [3.0, 3.0, 3.0],
+            1.0,
+            0.5,
+            &GjkTermination::tight(),
+        );
+        assert!(
+            (tight.distance - expected).abs() < 1e-8,
+            "tight criteria gave {}",
+            tight.distance
         );
     }
 
@@ -354,7 +394,13 @@ mod tests_gjk_distance_termination {
             let result = sphere_pair_distance([0.0; 3], c2, r1, r2);
             assert!(!result.intersecting);
             assert!(
-                (result.distance - gap).abs() < 1e-6,
+                (result.distance - gap).abs() < DEFAULT_ACCURACY * gap,
+                "gap {gap}, got {}",
+                result.distance
+            );
+            // The reported distance never undercuts the true gap.
+            assert!(
+                result.distance > gap - 1e-9,
                 "gap {gap}, got {}",
                 result.distance
             );
@@ -421,14 +467,20 @@ mod tests_gjk_distance_termination {
         let warm = gjk_distance(&mut support, &mut cache, &termination);
         assert!(!cold.warm_started && warm.warm_started);
         assert!(
-            (cold.distance - 2.75).abs() < 1e-6,
+            (cold.distance - 2.75).abs() < DEFAULT_ACCURACY,
             "cold {}",
             cold.distance
         );
         assert!(
-            (warm.distance - cold.distance).abs() < 1e-9,
+            (warm.distance - 2.75).abs() < DEFAULT_ACCURACY,
             "warm {}",
             warm.distance
+        );
+        assert!(
+            (warm.distance - cold.distance).abs() < DEFAULT_ACCURACY,
+            "warm {} vs cold {}",
+            warm.distance,
+            cold.distance
         );
         assert!(warm.iterations <= cold.iterations);
     }
@@ -443,7 +495,11 @@ mod tests_gjk_distance_termination {
                 sphere_sup(c2, 1.0, dir)
             });
             assert!(!result.overlapping);
-            assert!((result.distance - 3.0).abs() < 1e-6, "{}", result.distance);
+            assert!(
+                (result.distance - 3.0).abs() < DEFAULT_ACCURACY,
+                "{}",
+                result.distance
+            );
             assert!(result.normal[1].abs() > 0.999, "{:?}", result.normal);
         }
     }
@@ -472,5 +528,377 @@ mod tests_gjk_distance_termination {
         assert!(result.bary[2] < 1e-12);
         let edge_only = johnson_closest_point(&[a, b]);
         assert_eq!(edge_only.num_active, 2);
+    }
+
+    /// Closest points of two spheres through [`GjkCache::closest_points_cached`].
+    fn sphere_closest_points(
+        c1: [f64; 3],
+        r1: f64,
+        c2: [f64; 3],
+        r2: f64,
+    ) -> Option<([f64; 3], [f64; 3])> {
+        let mut cache = GjkCache::new();
+        cache.closest_points_cached(|dir| {
+            CachedSupport::new(sphere_sup(c1, r1, dir), sphere_sup(c2, r2, negate3(dir)))
+        })
+    }
+
+    #[test]
+    fn closest_points_of_separated_spheres_are_on_the_line_of_centres() {
+        let (pa, pb) = sphere_closest_points([0.0; 3], 1.0, [5.0, 0.0, 0.0], 1.0)
+            .expect("spheres 3 apart are separated");
+        assert!(len3_arr(sub3_arr(pa, [1.0, 0.0, 0.0])) < 1e-9, "{pa:?}");
+        assert!(len3_arr(sub3_arr(pb, [4.0, 0.0, 0.0])) < 1e-9, "{pb:?}");
+    }
+
+    #[test]
+    fn closest_points_converge_off_the_initial_search_direction() {
+        // The first search direction (1, 0, 0) is perpendicular to the line of
+        // centres, so the first support points are far from the closest ones.
+        let (pa, pb) = sphere_closest_points([0.0; 3], 1.0, [0.0, 5.0, 0.0], 1.0)
+            .expect("spheres 3 apart are separated");
+        assert!((len3_arr(sub3_arr(pb, pa)) - 3.0).abs() < 1e-8);
+        assert!(len3_arr(sub3_arr(pa, [0.0, 1.0, 0.0])) < 1e-3, "{pa:?}");
+        assert!(len3_arr(sub3_arr(pb, [0.0, 4.0, 0.0])) < 1e-3, "{pb:?}");
+
+        let centre = [3.0, 3.0, 3.0];
+        let (pa, pb) = sphere_closest_points([0.0; 3], 1.0, centre, 0.5)
+            .expect("spheres on the diagonal are separated");
+        let expected = len3_arr(centre) - 1.5;
+        assert!((len3_arr(sub3_arr(pb, pa)) - expected).abs() < 1e-8);
+    }
+
+    #[test]
+    fn overlapping_and_touching_shapes_have_no_closest_pair() {
+        // Overlapping spheres: the old inverted termination test reported them
+        // as separated.
+        assert!(sphere_closest_points([0.0; 3], 1.0, [0.5, 0.0, 0.0], 1.0).is_none());
+        assert!(sphere_closest_points([0.0; 3], 1.0, [0.0, 1.5, 0.0], 1.0).is_none());
+        // Concentric spheres and exactly touching spheres.
+        assert!(sphere_closest_points([0.0; 3], 1.0, [0.0; 3], 0.5).is_none());
+        assert!(sphere_closest_points([0.0; 3], 1.0, [2.0, 0.0, 0.0], 1.0).is_none());
+        // Overlapping boxes.
+        let mut cache = GjkCache::new();
+        let half = [1.0, 1.0, 1.0];
+        let c2 = [0.7, 0.4, -0.2];
+        let boxes = cache.closest_points_cached(|dir| {
+            CachedSupport::new(
+                box_sup([0.0; 3], half, dir),
+                box_sup(c2, half, negate3(dir)),
+            )
+        });
+        assert!(boxes.is_none(), "{boxes:?}");
+    }
+
+    #[test]
+    fn closest_points_of_point_shapes_are_finite() {
+        // Two single points make every support query return the same Minkowski
+        // vertex, the degenerate simplex that used to divide 0 by 0.
+        let mut cache = GjkCache::new();
+        let (pa, pb) = cache
+            .closest_points_cached(|_dir| CachedSupport::new([0.0; 3], [3.0, 0.0, 0.0]))
+            .expect("distinct points are separated");
+        assert_eq!(pa, [0.0; 3]);
+        assert_eq!(pb, [3.0, 0.0, 0.0]);
+        // Coincident points touch.
+        let touching = cache.closest_points_cached(|_dir| CachedSupport::new([1.0; 3], [1.0; 3]));
+        assert!(touching.is_none());
+    }
+
+    #[test]
+    fn non_finite_support_points_have_no_closest_pair() {
+        let mut cache = GjkCache::new();
+        let result =
+            cache.closest_points_cached(|_dir| CachedSupport::new([f64::NAN; 3], [0.0; 3]));
+        assert!(result.is_none(), "{result:?}");
+        // The garbage simplex must not become the next query's warm start.
+        assert!(cache.simplex_vertices.is_empty());
+    }
+
+    #[test]
+    fn closest_points_keep_the_warm_start_state() {
+        let c2 = [0.0, 0.0, 4.0];
+        let mut cache = GjkCache::new();
+        let mut support = |dir: [f64; 3]| {
+            CachedSupport::new(
+                sphere_sup([0.0; 3], 0.75, dir),
+                sphere_sup(c2, 0.5, negate3(dir)),
+            )
+        };
+        let cold = cache
+            .closest_points_cached(&mut support)
+            .expect("separated");
+        assert!(!cache.simplex_vertices.is_empty());
+        // The stored direction points from A towards B.
+        assert!(
+            cache.last_direction[2] > 0.999,
+            "{:?}",
+            cache.last_direction
+        );
+        let warm = cache
+            .closest_points_cached(&mut support)
+            .expect("separated");
+        // Both runs converge to the same distance; on smooth shapes the witnesses
+        // are only determined to about the square root of the distance tolerance.
+        let cold_gap = len3_arr(sub3_arr(cold.1, cold.0));
+        let warm_gap = len3_arr(sub3_arr(warm.1, warm.0));
+        assert!((cold_gap - 2.75).abs() < 1e-8, "cold {cold_gap}");
+        assert!((warm_gap - 2.75).abs() < 1e-8, "warm {warm_gap}");
+        assert!(len3_arr(sub3_arr(warm.0, cold.0)) < 1e-3);
+        assert!(len3_arr(sub3_arr(warm.1, cold.1)) < 1e-3);
+        assert_eq!(cache.stats.queries, 2);
+        assert_eq!(cache.stats.warm_started, 1);
+    }
+
+    /// Exact reference shape for the randomised comparison.
+    #[derive(Clone, Copy, Debug)]
+    enum Reference {
+        Sphere { centre: [f64; 3], radius: f64 },
+        Cuboid { centre: [f64; 3], half: [f64; 3] },
+    }
+
+    impl Reference {
+        fn support(&self, dir: [f64; 3]) -> [f64; 3] {
+            match *self {
+                Reference::Sphere { centre, radius } => sphere_sup(centre, radius, dir),
+                Reference::Cuboid { centre, half } => box_sup(centre, half, dir),
+            }
+        }
+
+        /// Distance from `p` to the shape (0 inside).
+        fn distance_to_point(&self, p: [f64; 3]) -> f64 {
+            match *self {
+                Reference::Sphere { centre, radius } => {
+                    (len3_arr(sub3_arr(p, centre)) - radius).max(0.0)
+                }
+                Reference::Cuboid { centre, half } => {
+                    let mut outside = [0.0; 3];
+                    for axis in 0..3 {
+                        outside[axis] = ((p[axis] - centre[axis]).abs() - half[axis]).max(0.0);
+                    }
+                    len3_arr(outside)
+                }
+            }
+        }
+    }
+
+    /// Exact distance between two reference shapes.
+    fn reference_distance(a: Reference, b: Reference) -> f64 {
+        match (a, b) {
+            (
+                Reference::Sphere {
+                    centre: ca,
+                    radius: ra,
+                },
+                Reference::Sphere {
+                    centre: cb,
+                    radius: rb,
+                },
+            ) => len3_arr(sub3_arr(ca, cb)) - ra - rb,
+            (Reference::Sphere { centre, radius }, cuboid @ Reference::Cuboid { .. })
+            | (cuboid @ Reference::Cuboid { .. }, Reference::Sphere { centre, radius }) => {
+                cuboid.distance_to_point(centre) - radius
+            }
+            (
+                Reference::Cuboid {
+                    centre: ca,
+                    half: ha,
+                },
+                Reference::Cuboid {
+                    centre: cb,
+                    half: hb,
+                },
+            ) => {
+                let mut gap = [0.0; 3];
+                for axis in 0..3 {
+                    gap[axis] = ((ca[axis] - cb[axis]).abs() - ha[axis] - hb[axis]).max(0.0);
+                }
+                len3_arr(gap)
+            }
+        }
+    }
+
+    #[test]
+    fn random_sphere_and_box_pairs_match_the_exact_distance_and_certificate() {
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut separated = 0;
+        for case in 0..240 {
+            let mut shape = |kind: usize| {
+                let centre = [next() * 8.0 - 4.0, next() * 8.0 - 4.0, next() * 8.0 - 4.0];
+                if kind.is_multiple_of(2) {
+                    Reference::Sphere {
+                        centre,
+                        radius: 0.3 + next(),
+                    }
+                } else {
+                    Reference::Cuboid {
+                        centre,
+                        half: [0.3 + next(), 0.3 + next(), 0.3 + next()],
+                    }
+                }
+            };
+            let a = shape(case);
+            let b = shape(case / 2);
+            let exact = reference_distance(a, b);
+            if exact.abs() < 1e-6 {
+                continue;
+            }
+            let mut cache = GjkCache::new();
+            let result = cache.closest_points_cached(|dir| {
+                CachedSupport::new(a.support(dir), b.support(negate3(dir)))
+            });
+            if exact < 0.0 {
+                assert!(result.is_none(), "overlap {exact} reported as {result:?}");
+                continue;
+            }
+            let (pa, pb) =
+                result.unwrap_or_else(|| panic!("separation {exact} reported as overlap"));
+            separated += 1;
+            let found = len3_arr(sub3_arr(pb, pa));
+            assert!(
+                (found - exact).abs() < 1e-7 * (1.0 + exact),
+                "exact {exact}, found {found} for {a:?} and {b:?}"
+            );
+            // Optimality certificate: the planes through the witnesses with the
+            // closest-point normal support the two shapes from opposite sides.
+            let n = scale3_arr(sub3_arr(pb, pa), 1.0 / found);
+            let top_a = dot3_arr(n, a.support(n));
+            let bottom_b = dot3_arr(n, b.support(negate3(n)));
+            assert!(
+                (top_a - dot3_arr(n, pa)).abs() < 1e-7,
+                "A overshoots its witness"
+            );
+            assert!(
+                (bottom_b - dot3_arr(n, pb)).abs() < 1e-7,
+                "B overshoots its witness"
+            );
+        }
+        assert!(separated >= 100, "only {separated} separated pairs");
+    }
+
+    /// The point `sum_i bary[i] * simplex[i]`.
+    fn weighted_point(simplex: &[CachedSupport], bary: &[f64; 4]) -> [f64; 3] {
+        let mut point = [0.0; 3];
+        for (vertex, weight) in simplex.iter().zip(bary) {
+            for (coordinate, component) in point.iter_mut().zip(vertex.minkowski_point) {
+                *coordinate += weight * component;
+            }
+        }
+        point
+    }
+
+    #[test]
+    fn sliver_triangle_weights_reproduce_the_closest_point_on_the_far_edge() {
+        // Vertices `a` and `c` are almost coincident, so the triangle is treated
+        // as degenerate and the closest point is found on its edges. It lies on
+        // the edge `bc`, whose weights used to come back swapped.
+        let a = CachedSupport::new(
+            [
+                0.117_311_962_788_504_86,
+                -0.149_304_520_925_614_97,
+                -3.131_343_814_998_244_7,
+            ],
+            [0.0; 3],
+        );
+        let b = CachedSupport::new(
+            [
+                -0.962_663_206_898_577_9,
+                -0.149_304_520_897_032_5,
+                -3.131_343_814_398_788_6,
+            ],
+            [0.0; 3],
+        );
+        let c = CachedSupport::new(
+            [
+                0.117_283_365_568_119_36,
+                -0.149_304_520_897_032_5,
+                -3.131_343_814_398_788_6,
+            ],
+            [0.0; 3],
+        );
+        let simplex = [a, b, c];
+        let result = johnson_closest_point(&simplex);
+        assert!(!result.origin_inside);
+        assert!(result.bary[0].abs() < 1e-12, "{:?}", result.bary);
+        let reproduced = weighted_point(&simplex, &result.bary);
+        assert!(
+            len3_arr(sub3_arr(reproduced, result.closest)) < 1e-12,
+            "weights {:?} give {reproduced:?}, closest is {:?}",
+            result.bary,
+            result.closest
+        );
+        // The closest point is where the edge crosses x = 0.
+        assert!(result.closest[0].abs() < 1e-12, "{:?}", result.closest);
+        let (pa, pb) = barycentric_witness(&simplex, &result.bary);
+        assert!(len3_arr(sub3_arr(sub3_arr(pa, pb), result.closest)) < 1e-12);
+    }
+
+    #[test]
+    fn johnson_weights_reproduce_the_closest_point_on_random_simplices() {
+        let mut state = 0xD1B5_4A32_D192_ED03_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut checked = 0;
+        for case in 0..600 {
+            let count = 1 + case % 4;
+            let mut points: Vec<[f64; 3]> = (0..count)
+                .map(|_| {
+                    [
+                        next() * 6.0 - 3.0,
+                        next() * 6.0 - 3.0,
+                        next() * 6.0 - 3.0 + 3.5,
+                    ]
+                })
+                .collect();
+            // Every third simplex gets slivers: a vertex pushed next to another.
+            if case % 3 == 0 && count >= 3 {
+                let tiny = 10f64.powf(-3.0 - 3.0 * next());
+                points[2] = [
+                    points[0][0] + tiny * (next() - 0.5),
+                    points[0][1] + tiny * (next() - 0.5),
+                    points[0][2] + tiny * (next() - 0.5),
+                ];
+            }
+            let simplex: Vec<CachedSupport> = points
+                .iter()
+                .map(|p| CachedSupport::new(*p, [0.0; 3]))
+                .collect();
+            let result = johnson_closest_point(&simplex);
+            if result.origin_inside {
+                continue;
+            }
+            checked += 1;
+            let active: f64 = result.bary[..count].iter().sum();
+            assert!((active - 1.0).abs() < 1e-9, "weights {:?}", result.bary);
+            assert!(result.bary[..count].iter().all(|w| *w >= -1e-12));
+            assert!(result.bary[count..].iter().all(|w| *w == 0.0));
+            let reproduced = weighted_point(&simplex, &result.bary);
+            assert!(
+                len3_arr(sub3_arr(reproduced, result.closest)) < 1e-9,
+                "case {case}: weights {:?} give {reproduced:?}, closest {:?} of {points:?}",
+                result.bary,
+                result.closest
+            );
+            // Never farther than a vertex, and never farther than the midpoint of
+            // any edge (up to the conditioning of slivers).
+            for (i, p) in points.iter().enumerate() {
+                assert!(result.distance() <= len3_arr(*p) + 1e-7);
+                for q in &points[i + 1..] {
+                    let mid = scale3_arr([p[0] + q[0], p[1] + q[1], p[2] + q[2]], 0.5);
+                    assert!(result.distance() <= len3_arr(mid) + 1e-7);
+                }
+            }
+        }
+        assert!(checked > 500, "only {checked} simplices checked");
     }
 }

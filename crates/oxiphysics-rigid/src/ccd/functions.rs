@@ -6,6 +6,7 @@ use super::types::{
     GjkResult, RaySphereHit, RestitutionModel, RotatingSweptBody, SweptBody, SweptCapsule,
     TranslatedSupport,
 };
+use oxiphysics_collision::narrowphase::{GjkCache, GjkTermination, gjk_proximity};
 
 #[inline]
 pub(super) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -398,9 +399,29 @@ pub fn minkowski_difference_support<A: ConvexSupport, B: ConvexSupport>(
 }
 /// Run the GJK distance algorithm between two convex shapes.
 ///
-/// This is a simplified iterative GJK that converges when the improvement
-/// between iterations falls below `tolerance`.  Returns the squared
-/// minimum distance and closest points.
+/// This is the closest-point GJK of van den Bergen on the Minkowski difference
+/// `A - B`, run by [`oxiphysics_collision::narrowphase::gjk_proximity`]: the
+/// simplex (up to a tetrahedron) is reduced to the feature closest to the
+/// origin with Johnson's sub-algorithm, the search direction is the negated
+/// closest point, and the iteration stops once the distance of the simplex
+/// exceeds the lower bound `-v . w` given by the newest support point `w` by no
+/// more than `tolerance` (relative or absolute).  The origin lying inside the
+/// tetrahedron means the shapes intersect.
+///
+/// * `tolerance` - absolute and relative convergence tolerance of the distance.
+///   It is also the distance below which two shapes count as touching:
+///   [`GjkResult::overlapping`] is `true` for shapes that intersect or are
+///   closer than `tolerance`.  Negative values count as zero.
+/// * `max_iter` - iteration cap; the result of the last iteration is returned
+///   when it is reached (an upper bound of the distance).
+///
+/// Returns the squared minimum distance (zero for intersecting shapes) and the
+/// witness points of the closest features.  For disjoint shapes the witness
+/// points are the closest points of the two shapes (exact for polytopes such
+/// as [`AabbSupport`](super::AabbSupport); for curved shapes such as spheres
+/// the distance converges like `tolerance` and the witness points like its
+/// square root); for overlapping shapes they are arbitrary support points of
+/// the first iteration and carry no meaning.
 ///
 /// # Complexity
 /// O(`max_iter`) iterations, each O(1) for sphere/AABB support.
@@ -410,37 +431,25 @@ pub fn gjk_distance<A: ConvexSupport, B: ConvexSupport>(
     tolerance: f64,
     max_iter: usize,
 ) -> GjkResult {
-    let mut dir = [1.0, 0.0, 0.0_f64];
-    let mut closest_a = a.support(dir);
-    let mut closest_b = b.support(scale(dir, -1.0));
-    let mut sq_dist = f64::MAX;
-    for _ in 0..max_iter {
-        let w = sub(closest_a, closest_b);
-        let new_sq_dist = dot(w, w);
-        if new_sq_dist < 1e-28 {
-            return GjkResult {
-                sq_dist: 0.0,
-                closest_a,
-                closest_b,
-                overlapping: true,
-            };
-        }
-        if (sq_dist - new_sq_dist) / sq_dist.max(1.0) < tolerance {
-            break;
-        }
-        sq_dist = new_sq_dist;
-        dir = scale(w, -1.0);
-        let nd = normalize(dir);
-        closest_a = a.support(nd);
-        closest_b = b.support(scale(nd, -1.0));
-    }
-    let w = sub(closest_a, closest_b);
-    let final_sq = dot(w, w);
+    let tolerance = tolerance.max(0.0);
+    let mut termination = GjkTermination::default_criteria();
+    termination.abs_tol = tolerance;
+    termination.rel_tol = tolerance;
+    termination.max_iters = max_iter;
+    termination.proximity_tol = tolerance;
+    let mut support_a = |d: [f64; 3]| a.support(d);
+    let mut support_b = |d: [f64; 3]| b.support(d);
+    let proximity = gjk_proximity(
+        &mut support_a,
+        &mut support_b,
+        &mut GjkCache::new(),
+        &termination,
+    );
     GjkResult {
-        sq_dist: final_sq,
-        closest_a,
-        closest_b,
-        overlapping: final_sq < tolerance * tolerance,
+        sq_dist: proximity.distance * proximity.distance,
+        closest_a: proximity.point_a,
+        closest_b: proximity.point_b,
+        overlapping: proximity.overlapping || proximity.distance < tolerance,
     }
 }
 /// Conservative-advancement TOI solver using GJK distance queries.
@@ -448,8 +457,19 @@ pub fn gjk_distance<A: ConvexSupport, B: ConvexSupport>(
 /// Advances from `t = 0` towards `t = dt` by computing the GJK distance at
 /// each step and estimating a safe advance as `dist / max_relative_speed`.
 ///
-/// Returns the time `t ∈ [0, dt]` when the two shapes first touch, or `None`
-/// if they remain separated throughout.
+/// `a_shape` and `b_shape` are the shapes in their local frames; at time `t`
+/// shape A is translated by `a_pos + a_vel * t` and shape B by
+/// `b_pos + b_vel * t`.  `tolerance` is the distance at which the shapes count
+/// as touching (see [`gjk_distance`]); `max_iter` bounds the number of
+/// advancement steps.
+///
+/// Returns the time `t ∈ [0, dt]` when the two shapes first touch (`0.0` if
+/// they already touch or overlap at `t = 0`), or `None` if they remain
+/// separated throughout or the iteration budget is exhausted before they
+/// touch.  The advance is conservative: for polytopes (exact GJK distance) `t`
+/// never passes the true time of impact; for curved shapes the GJK distance is
+/// an upper bound that is within `tolerance` of the true one, so `t` may pass
+/// the true time of impact by at most `tolerance` of relative travel.
 pub fn gjk_conservative_advancement<A: ConvexSupport + Clone, B: ConvexSupport + Clone>(
     a_shape: &A,
     a_pos: [f64; 3],
@@ -634,11 +654,27 @@ mod tests {
         assert!(toi.is_none());
     }
     #[test]
-    fn sphere_sphere_already_overlapping() {
-        let a = make_body([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 1.0, 1.0);
+    fn sphere_sphere_overlapping_and_approaching_is_an_immediate_impact() {
+        let a = make_body([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1.0, 1.0);
         let b = make_body([0.5, 0.0, 0.0], [0.0, 0.0, 0.0], 1.0, 1.0);
         let toi = TunnelTest::check_sphere_sphere(&a, &b, 1.0);
         assert_eq!(toi, Some(0.0));
+    }
+    #[test]
+    fn sphere_sphere_resting_overlap_is_not_an_impact() {
+        let a = make_body([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 1.0, 1.0);
+        let b = make_body([0.5, 0.0, 0.0], [0.0, 0.0, 0.0], 1.0, 1.0);
+        assert_eq!(TunnelTest::check_sphere_sphere(&a, &b, 1.0), None);
+        // Co-moving spheres do not close in on each other either.
+        let a = make_body([0.0, 0.0, 0.0], [2.0, 1.0, 0.0], 1.0, 1.0);
+        let b = make_body([0.5, 0.0, 0.0], [2.0, 1.0, 0.0], 1.0, 1.0);
+        assert_eq!(TunnelTest::check_sphere_sphere(&a, &b, 1.0), None);
+    }
+    #[test]
+    fn sphere_sphere_separating_overlap_is_not_an_impact() {
+        let a = make_body([0.0, 0.0, 0.0], [-1.0, 0.0, 0.0], 1.0, 1.0);
+        let b = make_body([0.5, 0.0, 0.0], [1.0, 0.0, 0.0], 1.0, 1.0);
+        assert_eq!(TunnelTest::check_sphere_sphere(&a, &b, 10.0), None);
     }
     #[test]
     fn sphere_sphere_miss_different_axis() {
@@ -1270,7 +1306,8 @@ mod tests {
         );
         assert!(toi.is_some(), "spheres should collide");
         let t = toi.unwrap();
-        assert!((0.0..=10.0).contains(&t), "t={t}");
+        // The surfaces are 8 - 1 = 7 m apart and close at 2 m/s.
+        assert!(t <= 3.5 + 1e-12 && (3.5 - t) < 1e-5, "t={t}");
     }
     #[test]
     fn gjk_ca_spheres_diverging() {
@@ -1420,17 +1457,42 @@ mod tests {
         assert!(toi.is_none(), "diverging spheres should not collide");
     }
     #[test]
-    fn ccd_sweep_sphere_already_overlapping_returns_zero() {
+    fn ccd_sweep_sphere_overlapping_and_approaching_returns_zero() {
         let toi = CcdSweep::compute_collision_time_sphere(
             [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
             1.0,
-            [0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
             [0.0, 0.0, 0.0],
             1.0,
             1.0,
         );
         assert_eq!(toi, Some(0.0));
+    }
+    #[test]
+    fn ccd_sweep_sphere_resting_or_separating_overlap_is_not_an_impact() {
+        // Resting overlap.
+        let resting = CcdSweep::compute_collision_time_sphere(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            1.0,
+            [0.5, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            1.0,
+            1.0,
+        );
+        assert_eq!(resting, None);
+        // Separating overlap: the exit time of the overlap is not an impact.
+        let separating = CcdSweep::compute_collision_time_sphere(
+            [0.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            1.0,
+            [0.5, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            1.0,
+            10.0,
+        );
+        assert_eq!(separating, None);
     }
     #[test]
     fn ccd_sweep_sphere_miss_lateral() {

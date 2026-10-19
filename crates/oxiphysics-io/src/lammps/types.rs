@@ -3,9 +3,10 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use crate::lammps_dump::LammpsDumpFrame;
 use crate::{Error, Result};
 use oxiphysics_core::math::Vec3;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 
 /// Describes a custom column set for a LAMMPS dump.
 #[derive(Debug, Clone)]
@@ -62,8 +63,13 @@ impl DumpColumnSpec {
         self.columns.iter().position(|c| c == name)
     }
 }
-/// LAMMPS-style restart file: stores atom positions and velocities in a
-/// compact binary format for simulation restart.
+/// Writer for this crate's binary restart format (magic `LRST`): the type
+/// masses and the positions and velocities of the atoms, for restarting a
+/// simulation.
+///
+/// The layout is specific to this crate.  It is not the format of the files
+/// LAMMPS writes with `write_restart`: LAMMPS cannot read these files and
+/// [`LammpsRestartReader`] cannot read LAMMPS restart files.
 pub struct LammpsRestartWriter;
 impl LammpsRestartWriter {
     /// Write restart data to `writer`.
@@ -84,23 +90,19 @@ impl LammpsRestartWriter {
         masses: &[f64],
         atoms: &[LammpsAtom],
     ) -> Result<()> {
+        let n_atoms = i64_field(atoms.len(), "atom count")?;
+        let n_types = i32_field(masses.len(), "atom type count")?;
+        check_atoms_fit_binary_format(atoms)?;
         writer.write_all(b"LRST")?;
         writer.write_all(&1_i32.to_le_bytes())?;
         writer.write_all(&timestep.to_le_bytes())?;
-        writer.write_all(&(atoms.len() as i64).to_le_bytes())?;
-        writer.write_all(&(masses.len() as i32).to_le_bytes())?;
+        writer.write_all(&n_atoms.to_le_bytes())?;
+        writer.write_all(&n_types.to_le_bytes())?;
         for &m in masses {
             writer.write_all(&m.to_le_bytes())?;
         }
         for a in atoms {
-            writer.write_all(&(a.id as i32).to_le_bytes())?;
-            writer.write_all(&(a.type_id as i32).to_le_bytes())?;
-            writer.write_all(&a.position.x.to_le_bytes())?;
-            writer.write_all(&a.position.y.to_le_bytes())?;
-            writer.write_all(&a.position.z.to_le_bytes())?;
-            writer.write_all(&a.velocity.x.to_le_bytes())?;
-            writer.write_all(&a.velocity.y.to_le_bytes())?;
-            writer.write_all(&a.velocity.z.to_le_bytes())?;
+            write_atom_record(writer, a)?;
         }
         Ok(())
     }
@@ -245,10 +247,13 @@ impl LammpsInputScript {
         format!("read_data {filename}\n")
     }
 }
-/// Writer for LAMMPS binary dump format (little-endian).
+/// Writer for this crate's little-endian binary frame format.
 ///
 /// Produces a compact binary representation of a single frame with the
-/// standard `id type x y z vx vy vz` per-atom layout.
+/// `id type x y z vx vy vz` per-atom layout.  The layout is specific to this
+/// crate: it is not the native LAMMPS binary dump format (the `.bin` files of
+/// `dump custom`), so LAMMPS tools such as `binary2txt` cannot read it.  Read
+/// the frames back with [`LammpsBinaryDumpReader`].
 pub struct LammpsBinaryDumpWriter;
 impl LammpsBinaryDumpWriter {
     /// Write one binary frame to `writer`.
@@ -269,21 +274,16 @@ impl LammpsBinaryDumpWriter {
         box_bounds: [[f64; 2]; 3],
         atoms: &[LammpsAtom],
     ) -> Result<()> {
+        let n_atoms = i64_field(atoms.len(), "atom count")?;
+        check_atoms_fit_binary_format(atoms)?;
         writer.write_all(&timestep.to_le_bytes())?;
-        writer.write_all(&(atoms.len() as i64).to_le_bytes())?;
+        writer.write_all(&n_atoms.to_le_bytes())?;
         for b in &box_bounds {
             writer.write_all(&b[0].to_le_bytes())?;
             writer.write_all(&b[1].to_le_bytes())?;
         }
         for a in atoms {
-            writer.write_all(&(a.id as i32).to_le_bytes())?;
-            writer.write_all(&(a.type_id as i32).to_le_bytes())?;
-            writer.write_all(&a.position.x.to_le_bytes())?;
-            writer.write_all(&a.position.y.to_le_bytes())?;
-            writer.write_all(&a.position.z.to_le_bytes())?;
-            writer.write_all(&a.velocity.x.to_le_bytes())?;
-            writer.write_all(&a.velocity.y.to_le_bytes())?;
-            writer.write_all(&a.velocity.z.to_le_bytes())?;
+            write_atom_record(writer, a)?;
         }
         Ok(())
     }
@@ -788,83 +788,97 @@ impl LammpsRunBlock {
         s
     }
 }
-/// Reader for LAMMPS custom dump format.
-pub struct LammpsDumpReader;
-impl LammpsDumpReader {
-    /// Read a single frame from a LAMMPS dump stream.
-    ///
-    /// Returns `(timestep, atoms)`. The stream must start at the beginning of a frame.
-    pub fn read_frame<R: Read>(reader: R) -> Result<(u64, Vec<LammpsAtom>)> {
-        let buf = BufReader::new(reader);
-        let mut lines = buf.lines();
-        let mut timestep: u64 = 0;
-        let mut n_atoms: usize = 0;
-        let mut atoms: Vec<LammpsAtom> = Vec::new();
-        let mut reading_atoms = false;
-        let mut atom_count = 0;
-        while let Some(line) = lines.next() {
-            let line = line?;
-            let trimmed = line.trim();
-            if trimmed == "ITEM: TIMESTEP" {
-                if let Some(ts_line) = lines.next() {
-                    timestep = ts_line?
-                        .trim()
-                        .parse::<u64>()
-                        .map_err(|e| Error::Parse(e.to_string()))?;
-                }
-            } else if trimmed == "ITEM: NUMBER OF ATOMS" {
-                if let Some(n_line) = lines.next() {
-                    n_atoms = n_line?
-                        .trim()
-                        .parse::<usize>()
-                        .map_err(|e| Error::Parse(e.to_string()))?;
-                    atoms.reserve(n_atoms);
-                }
-            } else if trimmed.starts_with("ITEM: BOX BOUNDS") {
-                for _ in 0..3 {
-                    lines.next();
-                }
-            } else if trimmed.starts_with("ITEM: ATOMS") {
-                reading_atoms = true;
-            } else if reading_atoms && atom_count < n_atoms {
-                let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                if parts.len() >= 8 {
-                    let id = parts[0]
-                        .parse::<usize>()
-                        .map_err(|e| Error::Parse(e.to_string()))?;
-                    let type_id = parts[1]
-                        .parse::<usize>()
-                        .map_err(|e| Error::Parse(e.to_string()))?;
-                    let x = parts[2]
-                        .parse::<f64>()
-                        .map_err(|e| Error::Parse(e.to_string()))?;
-                    let y = parts[3]
-                        .parse::<f64>()
-                        .map_err(|e| Error::Parse(e.to_string()))?;
-                    let z = parts[4]
-                        .parse::<f64>()
-                        .map_err(|e| Error::Parse(e.to_string()))?;
-                    let vx = parts[5]
-                        .parse::<f64>()
-                        .map_err(|e| Error::Parse(e.to_string()))?;
-                    let vy = parts[6]
-                        .parse::<f64>()
-                        .map_err(|e| Error::Parse(e.to_string()))?;
-                    let vz = parts[7]
-                        .parse::<f64>()
-                        .map_err(|e| Error::Parse(e.to_string()))?;
-                    atoms.push(LammpsAtom {
-                        id,
-                        type_id,
-                        position: Vec3::new(x, y, z),
-                        velocity: Vec3::new(vx, vy, vz),
-                    });
-                    atom_count += 1;
-                }
+/// `Read` adapter that remembers the first I/O error of the wrapped reader.
+///
+/// The frame parser reports a failure as text.  Keeping the original error lets
+/// [`LammpsDumpReader::read_frame`] still return [`Error::Io`] when the stream
+/// itself failed.
+struct FailureRecorder<R> {
+    inner: R,
+    failure: Option<std::io::Error>,
+}
+impl<R: Read> Read for FailureRecorder<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self.inner.read(buf) {
+            Ok(n) => Ok(n),
+            // The buffered reader retries an interrupted read, so it is not a failure.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Err(error),
+            Err(error) => {
+                let replica = std::io::Error::new(error.kind(), error.to_string());
+                self.failure.get_or_insert(error);
+                Err(replica)
             }
         }
-        Ok((timestep, atoms))
     }
+}
+/// Reader for LAMMPS custom dump format.
+///
+/// A thin adapter over [`crate::lammps_dump::LammpsDumpReader`], which parses
+/// the frame; the atoms are returned as [`LammpsAtom`] values.
+pub struct LammpsDumpReader;
+impl LammpsDumpReader {
+    /// Read the first frame of a LAMMPS dump stream.
+    ///
+    /// Returns `(timestep, atoms)`. The stream must start at the beginning of a
+    /// frame; later frames are left unread.
+    ///
+    /// The columns of the `ITEM: ATOMS` table are found by the names in its
+    /// header, in any order (see [`crate::lammps_dump::LammpsDumpReader::read_frame`]),
+    /// so the common `id type x y z` layout is read like the one with
+    /// velocities, and scaled coordinates (`xs ys zs`) are converted to
+    /// Cartesian ones.  An atom of a dump without `vx vy vz` columns has zero
+    /// velocity.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the stream cannot be read, [`Error::Parse`] when it
+    /// holds no frame or the first frame is malformed or truncated.
+    pub fn read_frame<R: Read>(reader: R) -> Result<(u64, Vec<LammpsAtom>)> {
+        let mut stream = FailureRecorder {
+            inner: reader,
+            failure: None,
+        };
+        let parsed = crate::lammps_dump::LammpsDumpReader::read_frame(BufReader::new(&mut stream));
+        let frame = match parsed {
+            Some(Ok(frame)) => frame,
+            Some(Err(message)) => {
+                return Err(match stream.failure.take() {
+                    Some(io_error) => Error::Io(io_error),
+                    None => Error::Parse(message),
+                });
+            }
+            None => {
+                return Err(Error::Parse(
+                    "LAMMPS dump: the stream holds no frame".into(),
+                ));
+            }
+        };
+        Ok((frame.timestep, atoms_of_frame(&frame)))
+    }
+}
+/// Convert the columns of a parsed dump frame into one [`LammpsAtom`] per atom.
+fn atoms_of_frame(frame: &LammpsDumpFrame) -> Vec<LammpsAtom> {
+    let mut atoms = Vec::with_capacity(frame.atom_ids.len());
+    for (index, ((&id, &type_id), position)) in frame
+        .atom_ids
+        .iter()
+        .zip(&frame.types)
+        .zip(&frame.positions)
+        .enumerate()
+    {
+        let velocity = frame
+            .velocities
+            .as_ref()
+            .and_then(|velocities| velocities.get(index))
+            .map_or_else(|| Vec3::new(0.0, 0.0, 0.0), |v| Vec3::new(v[0], v[1], v[2]));
+        atoms.push(LammpsAtom {
+            id: id as usize,
+            type_id: type_id as usize,
+            position: Vec3::new(position[0], position[1], position[2]),
+            velocity,
+        });
+    }
+    atoms
 }
 /// Generator for LAMMPS pair style commands.
 pub struct LammpsPairStyle;
@@ -994,68 +1008,46 @@ impl LammpsLogParser {
         total
     }
 }
-/// A parsed LAMMPS binary frame: `(timestep, box_bounds, atoms, bytes_consumed)`.
+/// A frame of the binary format of [`LammpsBinaryDumpWriter`]:
+/// `(timestep, box_bounds, atoms, bytes_consumed)`.
 pub type LammpsBinaryFrame = (i64, [[f64; 2]; 3], Vec<LammpsAtom>, usize);
 
-/// Reader for the binary dump format written by [`LammpsBinaryDumpWriter`].
+/// Reader for the binary frame format written by [`LammpsBinaryDumpWriter`].
+///
+/// It does not read native LAMMPS binary dumps, whose layout differs.
 pub struct LammpsBinaryDumpReader;
 impl LammpsBinaryDumpReader {
     /// Read one binary frame from the byte slice starting at `offset`.
     ///
-    /// Returns `(timestep, box_bounds, atoms, bytes_consumed)` on success.
+    /// Returns `(timestep, box_bounds, atoms, bytes_consumed)` on success, so
+    /// the next frame, if any, starts at `offset + bytes_consumed`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Parse`] when the data ends inside the frame, an atom id or type
+    /// is negative, or the atom count is negative or larger than the bytes that
+    /// remain can hold.  The count is validated before any memory is reserved,
+    /// so a corrupt frame cannot trigger a huge allocation.
     pub fn read_frame(data: &[u8], offset: usize) -> Result<LammpsBinaryFrame> {
         let mut pos = offset;
-        let timestep = Self::read_i64(data, &mut pos)?;
-        let n_atoms = Self::read_i64(data, &mut pos)? as usize;
+        let timestep = read_i64_le(data, &mut pos)?;
+        let declared_atoms = read_i64_le(data, &mut pos)?;
         let mut box_bounds = [[0.0_f64; 2]; 3];
         for b in &mut box_bounds {
-            b[0] = Self::read_f64(data, &mut pos)?;
-            b[1] = Self::read_f64(data, &mut pos)?;
+            b[0] = read_f64_le(data, &mut pos)?;
+            b[1] = read_f64_le(data, &mut pos)?;
         }
+        let n_atoms = checked_record_count(
+            declared_atoms,
+            ATOM_RECORD_BYTES,
+            data.len().saturating_sub(pos),
+            "atom",
+        )?;
         let mut atoms = Vec::with_capacity(n_atoms);
         for _ in 0..n_atoms {
-            let id = Self::read_i32(data, &mut pos)? as usize;
-            let type_id = Self::read_i32(data, &mut pos)? as usize;
-            let x = Self::read_f64(data, &mut pos)?;
-            let y = Self::read_f64(data, &mut pos)?;
-            let z = Self::read_f64(data, &mut pos)?;
-            let vx = Self::read_f64(data, &mut pos)?;
-            let vy = Self::read_f64(data, &mut pos)?;
-            let vz = Self::read_f64(data, &mut pos)?;
-            atoms.push(LammpsAtom {
-                id,
-                type_id,
-                position: Vec3::new(x, y, z),
-                velocity: Vec3::new(vx, vy, vz),
-            });
+            atoms.push(read_atom_record(data, &mut pos)?);
         }
         Ok((timestep, box_bounds, atoms, pos - offset))
-    }
-    fn read_i32(data: &[u8], pos: &mut usize) -> Result<i32> {
-        if *pos + 4 > data.len() {
-            return Err(Error::Parse("binary dump: unexpected EOF (i32)".into()));
-        }
-        let v = i32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
-        *pos += 4;
-        Ok(v)
-    }
-    fn read_i64(data: &[u8], pos: &mut usize) -> Result<i64> {
-        if *pos + 8 > data.len() {
-            return Err(Error::Parse("binary dump: unexpected EOF (i64)".into()));
-        }
-        let b = &data[*pos..*pos + 8];
-        let v = i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
-        *pos += 8;
-        Ok(v)
-    }
-    fn read_f64(data: &[u8], pos: &mut usize) -> Result<f64> {
-        if *pos + 8 > data.len() {
-            return Err(Error::Parse("binary dump: unexpected EOF (f64)".into()));
-        }
-        let b = &data[*pos..*pos + 8];
-        let v = f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
-        *pos += 8;
-        Ok(v)
     }
 }
 /// A table of LJ pair parameters for a simulation.
@@ -1212,41 +1204,53 @@ impl LammpsDumpWriter {
         Ok(())
     }
 }
-/// Reader for LAMMPS restart files written by [`LammpsRestartWriter`].
+/// Reader for the restart format written by [`LammpsRestartWriter`].
+///
+/// It does not read the files LAMMPS writes with `write_restart`, whose layout
+/// differs.
 pub struct LammpsRestartReader;
 impl LammpsRestartReader {
     /// Parse a restart file from bytes.
     ///
     /// Returns `(timestep, masses, atoms)` on success.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Parse`] when the magic is missing, the data ends inside the
+    /// file, an atom id or type is negative, or the type or atom count is
+    /// negative or larger than the bytes that follow it can hold.  Both counts
+    /// are validated before any memory is reserved, so a corrupt header cannot
+    /// trigger a huge allocation.
     pub fn read(data: &[u8]) -> Result<(i64, Vec<f64>, Vec<LammpsAtom>)> {
-        if data.len() < 4 || &data[..4] != b"LRST" {
+        if !data.starts_with(b"LRST") {
             return Err(Error::Parse("restart: missing LRST magic".into()));
         }
         let mut pos = 4usize;
         let _version = read_i32_le(data, &mut pos)?;
         let timestep = read_i64_le(data, &mut pos)?;
-        let n_atoms = read_i64_le(data, &mut pos)? as usize;
-        let n_types = read_i32_le(data, &mut pos)? as usize;
+        let declared_atoms = read_i64_le(data, &mut pos)?;
+        let declared_types = read_i32_le(data, &mut pos)?;
+        // The mass table comes first, so the atom count is checked against what
+        // is left after it: together the two tables must fit the file.
+        let n_types = checked_record_count(
+            i64::from(declared_types),
+            std::mem::size_of::<f64>(),
+            data.len().saturating_sub(pos),
+            "atom type",
+        )?;
         let mut masses = Vec::with_capacity(n_types);
         for _ in 0..n_types {
             masses.push(read_f64_le(data, &mut pos)?);
         }
+        let n_atoms = checked_record_count(
+            declared_atoms,
+            ATOM_RECORD_BYTES,
+            data.len().saturating_sub(pos),
+            "atom",
+        )?;
         let mut atoms = Vec::with_capacity(n_atoms);
         for _ in 0..n_atoms {
-            let id = read_i32_le(data, &mut pos)? as usize;
-            let type_id = read_i32_le(data, &mut pos)? as usize;
-            let x = read_f64_le(data, &mut pos)?;
-            let y = read_f64_le(data, &mut pos)?;
-            let z = read_f64_le(data, &mut pos)?;
-            let vx = read_f64_le(data, &mut pos)?;
-            let vy = read_f64_le(data, &mut pos)?;
-            let vz = read_f64_le(data, &mut pos)?;
-            atoms.push(LammpsAtom {
-                id,
-                type_id,
-                position: Vec3::new(x, y, z),
-                velocity: Vec3::new(vx, vy, vz),
-            });
+            atoms.push(read_atom_record(data, &mut pos)?);
         }
         Ok((timestep, masses, atoms))
     }

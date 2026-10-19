@@ -693,6 +693,28 @@ pub struct SearchResult {
     /// Similarity score (interpretation depends on metric).
     pub score: f64,
 }
+/// Common step of a uniformly spaced abscissa, or `None` if the grid is not
+/// equally spaced (or has fewer than two points, or a non-finite step).
+///
+/// A grid counts as uniform when every point lies within a few ulps of
+/// `x[0] + i * step`, which is what a reader reconstructs from `FIRSTX` and
+/// `DELTAX`.
+fn uniform_step(x: &[f64]) -> Option<f64> {
+    let n = x.len();
+    if n < 2 {
+        return None;
+    }
+    let step = (x[n - 1] - x[0]) / (n - 1) as f64;
+    if !step.is_finite() || step == 0.0 {
+        return None;
+    }
+    let scale = x[0].abs().max(x[n - 1].abs());
+    let tolerance = 8.0 * f64::EPSILON * scale + 1e-12 * step.abs();
+    x.iter()
+        .enumerate()
+        .all(|(i, &xi)| (xi - (x[0] + step * i as f64)).abs() <= tolerance)
+        .then_some(step)
+}
 /// Writer for various spectral file formats.
 pub struct SpectralExport;
 impl SpectralExport {
@@ -706,42 +728,82 @@ impl SpectralExport {
         Ok(())
     }
     /// Write a spectrum in JCAMP-DX format.
+    ///
+    /// A uniformly spaced abscissa is written as an `##XYDATA=(X++(Y..Y))`
+    /// table with `##FIRSTX`, `##LASTX` and `##DELTAX`, eight ordinates per
+    /// line; any other abscissa is written as an `##XYPOINTS=(XY..XY)` table
+    /// of explicit pairs, because an `X++(Y..Y)` table can only describe an
+    /// equally spaced grid. `FIRSTX` is `x[0]` and `LASTX` is `x[n - 1]`, so
+    /// descending axes (usual for infrared spectra) are preserved. All numbers
+    /// are written in shortest round-trip scientific notation, so reading the
+    /// file back with [`JcampDxReader`] reproduces the data exactly (up to the
+    /// reconstruction of an equally spaced grid, which is accurate to a few
+    /// ulps).
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::General`] if `x` and `y` differ in length and
+    /// [`crate::Error::Io`] if writing fails.
     pub fn write_jcamp_dx<W: Write>(record: &SpectrumRecord, writer: &mut W) -> crate::Result<()> {
-        let title = &record.metadata.title;
-        let n = record.len();
-        let x_start = record.x_min();
-        let x_end = record.x_max();
-        let y_min = record.y_min();
-        let y_max = record.y_max();
-        writeln!(writer, "##TITLE={}", title).map_err(crate::Error::Io)?;
-        writeln!(writer, "##JCAMP-DX=4.24").map_err(crate::Error::Io)?;
-        writeln!(writer, "##DATA TYPE={}", record.metadata.source).map_err(crate::Error::Io)?;
-        writeln!(writer, "##DATE={}", record.metadata.date).map_err(crate::Error::Io)?;
-        writeln!(writer, "##INSTRUMENT={}", record.metadata.instrument)
-            .map_err(crate::Error::Io)?;
-        writeln!(writer, "##XUNITS={}", record.metadata.x_label).map_err(crate::Error::Io)?;
-        writeln!(writer, "##YUNITS={}", record.metadata.y_label).map_err(crate::Error::Io)?;
-        writeln!(writer, "##NPOINTS={}", n).map_err(crate::Error::Io)?;
-        writeln!(writer, "##FIRSTX={}", x_start).map_err(crate::Error::Io)?;
-        writeln!(writer, "##LASTX={}", x_end).map_err(crate::Error::Io)?;
-        writeln!(writer, "##MINY={}", y_min).map_err(crate::Error::Io)?;
-        writeln!(writer, "##MAXY={}", y_max).map_err(crate::Error::Io)?;
-        writeln!(writer, "##XFACTOR=1.0").map_err(crate::Error::Io)?;
-        writeln!(writer, "##YFACTOR=1.0").map_err(crate::Error::Io)?;
-        writeln!(writer, "##XYDATA=(X++(Y..Y))").map_err(crate::Error::Io)?;
-        let chunk_size = 8usize;
-        let mut i = 0;
-        while i < n {
-            let x_prefix = record.x[i];
-            write!(writer, "{:.6}", x_prefix).map_err(crate::Error::Io)?;
-            let end = (i + chunk_size).min(n);
-            for j in i..end {
-                write!(writer, " {:.6}", record.y[j]).map_err(crate::Error::Io)?;
-            }
-            writeln!(writer).map_err(crate::Error::Io)?;
-            i = end;
+        if record.x.len() != record.y.len() {
+            return Err(crate::Error::General(format!(
+                "cannot write JCAMP-DX: {} X values but {} Y values",
+                record.x.len(),
+                record.y.len()
+            )));
         }
-        writeln!(writer, "##END=").map_err(crate::Error::Io)?;
+        let n = record.len();
+        let step = uniform_step(&record.x);
+        let io = crate::Error::Io;
+        writeln!(writer, "##TITLE={}", record.metadata.title).map_err(io)?;
+        writeln!(writer, "##JCAMP-DX=4.24").map_err(io)?;
+        writeln!(writer, "##DATA TYPE={}", record.metadata.source).map_err(io)?;
+        writeln!(writer, "##DATE={}", record.metadata.date).map_err(io)?;
+        writeln!(writer, "##INSTRUMENT={}", record.metadata.instrument).map_err(io)?;
+        writeln!(writer, "##XUNITS={}", record.metadata.x_label).map_err(io)?;
+        writeln!(writer, "##YUNITS={}", record.metadata.y_label).map_err(io)?;
+        writeln!(writer, "##NPOINTS={n}").map_err(io)?;
+        if n > 0 {
+            writeln!(writer, "##FIRSTX={:e}", record.x[0]).map_err(io)?;
+            writeln!(writer, "##LASTX={:e}", record.x[n - 1]).map_err(io)?;
+            if let Some(step) = step {
+                writeln!(writer, "##DELTAX={step:e}").map_err(io)?;
+            }
+            writeln!(writer, "##MINY={:e}", record.y_min()).map_err(io)?;
+            writeln!(writer, "##MAXY={:e}", record.y_max()).map_err(io)?;
+        }
+        writeln!(writer, "##XFACTOR=1.0").map_err(io)?;
+        writeln!(writer, "##YFACTOR=1.0").map_err(io)?;
+        if step.is_some() || n < 2 {
+            const ORDINATES_PER_LINE: usize = 8;
+            writeln!(writer, "##XYDATA=(X++(Y..Y))").map_err(io)?;
+            for (line_x, line_y) in record
+                .x
+                .chunks(ORDINATES_PER_LINE)
+                .zip(record.y.chunks(ORDINATES_PER_LINE))
+            {
+                write!(writer, "{:e}", line_x[0]).map_err(io)?;
+                for y in line_y {
+                    write!(writer, " {y:e}").map_err(io)?;
+                }
+                writeln!(writer).map_err(io)?;
+            }
+        } else {
+            const PAIRS_PER_LINE: usize = 4;
+            writeln!(writer, "##XYPOINTS=(XY..XY)").map_err(io)?;
+            for (line_x, line_y) in record
+                .x
+                .chunks(PAIRS_PER_LINE)
+                .zip(record.y.chunks(PAIRS_PER_LINE))
+            {
+                let pairs: Vec<String> = line_x
+                    .iter()
+                    .zip(line_y)
+                    .map(|(x, y)| format!("{x:e},{y:e}"))
+                    .collect();
+                writeln!(writer, "{}", pairs.join("; ")).map_err(io)?;
+            }
+        }
+        writeln!(writer, "##END=").map_err(io)?;
         Ok(())
     }
     /// Write a spectrum as plain-text (space-separated x y columns).
@@ -802,11 +864,33 @@ pub struct DatabaseEntry {
 /// Parser for JCAMP-DX spectral files (`.jdx` / `.dx`).
 ///
 /// Supports the following JCAMP-DX features:
-/// - Single-block files with `##XYDATA=(X++(Y..Y))` data records.
+/// - Single-block files with `##XYDATA=(X++(Y..Y))` data tables in the plain
+///   (AFFN) number format.
+/// - `##XYPOINTS=(XY..XY)` tables of explicit abscissa/ordinate pairs.
 /// - Multi-block compound files (multiple `##TITLE` blocks).
 /// - `##NTUPLES` sections for multi-channel data.
-/// - `##DELTAX` and `##FIRSTX` / `##LASTX` for compressed X grids.
+/// - `##FIRSTX`, `##LASTX` and `##DELTAX` for the X grid of an `X++(Y..Y)`
+///   table.
 /// - `##XFACTOR` / `##YFACTOR` scaling factors.
+///
+/// # Semantics
+///
+/// In an `X++(Y..Y)` table the first number of every line is an abscissa
+/// check value and the remaining numbers are consecutive ordinates. The
+/// abscissa of point `i` is `FIRSTX + i * DELTAX`; `FIRSTX`, `LASTX` and
+/// `DELTAX` are actual values and are **not** scaled by `XFACTOR`. When
+/// `##DELTAX` is missing it is `(LASTX - FIRSTX) / (NPOINTS - 1)`, and when
+/// `##FIRSTX` is missing the first check value times `XFACTOR` is used. Listed
+/// ordinates are multiplied by `YFACTOR` exactly once. In an `(XY..XY)` table
+/// the listed abscissae are multiplied by `XFACTOR` and the ordinates by
+/// `YFACTOR`.
+///
+/// Data that cannot be read faithfully is an error rather than silently
+/// dropped: a non-numeric token in a data table (for example the compressed
+/// SQZ/DIF/DUP forms, which are not supported), a point count that disagrees
+/// with `##NPOINTS`, or an X axis that cannot be determined make
+/// [`parse`](Self::parse) return [`crate::Error::Parse`]. Every record that is
+/// produced has as many X values as Y values.
 #[derive(Debug, Default)]
 pub struct JcampDxReader {
     /// All spectrum blocks parsed from the file.
@@ -818,215 +902,126 @@ impl JcampDxReader {
         Self::default()
     }
     /// Parse JCAMP-DX content from a `Read` source.
+    ///
+    /// A block ends at `##END=`, at the next `##TITLE` that follows data, or at
+    /// the end of the input, whichever comes first; blocks without data (such
+    /// as the header of a compound file) produce no record.
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::Io`] if reading fails and
+    /// [`crate::Error::Parse`] for the data problems listed in the type-level
+    /// documentation.
     pub fn parse<R: Read>(&mut self, reader: R) -> crate::Result<()> {
         let buf = BufReader::new(reader);
-        let mut current = SpectrumRecord::new();
-        let mut section = JdxSection::Header;
-        let mut x_factor = 1.0_f64;
-        let mut y_factor = 1.0_f64;
-        let mut firstx = f64::NAN;
-        let mut deltax = f64::NAN;
-        let mut npoints: usize = 0;
-        let mut raw_y: Vec<f64> = Vec::new();
-        let mut in_block = false;
-        let mut ntuple_x: Vec<f64> = Vec::new();
-        let mut ntuple_y: Vec<f64> = Vec::new();
-        let mut ntuple_var_names: Vec<String> = Vec::new();
-        let mut ntuple_collecting = false;
-        for line_res in buf.lines() {
+        let mut block = JdxBlock::new();
+        for (line_idx, line_res) in buf.lines().enumerate() {
+            let line_no = line_idx + 1;
             let line = line_res.map_err(crate::Error::Io)?;
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with("$$") {
                 continue;
             }
             if let Some(content) = trimmed.strip_prefix("##") {
-                let eq_pos = content.find('=');
-                let (label, value) = if let Some(pos) = eq_pos {
-                    (
+                let (label, value) = match content.find('=') {
+                    Some(pos) => (
                         content[..pos].trim().to_uppercase(),
                         content[pos + 1..].trim().to_string(),
-                    )
-                } else {
-                    (content.trim().to_uppercase(), String::new())
+                    ),
+                    None => (content.trim().to_uppercase(), String::new()),
                 };
                 match label.as_str() {
                     "TITLE" => {
-                        if in_block && !current.is_empty() {
-                            self.records.push(current.clone());
-                            current = SpectrumRecord::new();
-                            x_factor = 1.0;
-                            y_factor = 1.0;
-                            firstx = f64::NAN;
-                            deltax = f64::NAN;
-                            npoints = 0;
-                            raw_y.clear();
+                        if block.has_data() {
+                            let finished = std::mem::replace(&mut block, JdxBlock::new());
+                            self.records.extend(finished.finish()?);
                         }
-                        in_block = true;
-                        current.metadata.title = value;
-                        section = JdxSection::Header;
+                        block.record.metadata.title = value;
+                        block.section = JdxSection::Header;
                     }
                     "END" => {
-                        if !raw_y.is_empty() {
-                            Self::build_xy_from_raw(
-                                &mut current,
-                                &raw_y,
-                                firstx,
-                                deltax,
-                                x_factor,
-                                y_factor,
-                            );
-                            raw_y.clear();
-                        }
-                        if !ntuple_x.is_empty() {
-                            current.x = ntuple_x.clone();
-                            current.y = ntuple_y.clone();
-                            ntuple_x.clear();
-                            ntuple_y.clear();
-                        }
-                        if !current.is_empty() {
-                            self.records.push(current.clone());
-                        }
-                        current = SpectrumRecord::new();
-                        in_block = false;
-                        x_factor = 1.0;
-                        y_factor = 1.0;
-                        firstx = f64::NAN;
-                        deltax = f64::NAN;
-                        npoints = 0;
-                        section = JdxSection::Header;
+                        let finished = std::mem::replace(&mut block, JdxBlock::new());
+                        self.records.extend(finished.finish()?);
                     }
                     "DATA TYPE" | "DATATYPE" => {
                         let v = value.to_uppercase();
                         if v.contains("INFRARED") || v.contains("IR") {
-                            current.metadata.source = SpectrumSource::Ftir;
+                            block.record.metadata.source = SpectrumSource::Ftir;
                         } else if v.contains("RAMAN") {
-                            current.metadata.source = SpectrumSource::Raman;
+                            block.record.metadata.source = SpectrumSource::Raman;
                         } else if v.contains("UV") || v.contains("VIS") {
-                            current.metadata.source = SpectrumSource::UvVis;
+                            block.record.metadata.source = SpectrumSource::UvVis;
                         } else if v.contains("NMR") {
-                            current.metadata.source = SpectrumSource::Nmr;
+                            block.record.metadata.source = SpectrumSource::Nmr;
                         } else if v.contains("MASS") {
-                            current.metadata.source = SpectrumSource::MassSpec;
+                            block.record.metadata.source = SpectrumSource::MassSpec;
                         }
                     }
-                    "DATE" => current.metadata.date = value,
+                    "DATE" => block.record.metadata.date = value,
                     "INSTRUMENT" | "SPECTROMETER/DATA SYSTEM" => {
-                        current.metadata.instrument = value;
+                        block.record.metadata.instrument = value;
                     }
-                    "XUNITS" => current.metadata.x_label = value,
-                    "YUNITS" => current.metadata.y_label = value,
-                    "CAS REGISTRY NO" | "CASREGNO" => current.metadata.cas_number = value,
+                    "XUNITS" => block.record.metadata.x_label = value,
+                    "YUNITS" => block.record.metadata.y_label = value,
+                    "CAS REGISTRY NO" | "CASREGNO" => block.record.metadata.cas_number = value,
                     "MOLFORM" | "MOLECULAR FORMULA" => {
-                        current.metadata.molecular_formula = value;
+                        block.record.metadata.molecular_formula = value;
                     }
                     "MW" | "MOLECULAR WEIGHT" => {
-                        current.metadata.molecular_weight =
+                        block.record.metadata.molecular_weight =
                             value.parse::<f64>().unwrap_or(f64::NAN);
                     }
-                    "XFACTOR" => x_factor = value.parse::<f64>().unwrap_or(1.0),
-                    "YFACTOR" => y_factor = value.parse::<f64>().unwrap_or(1.0),
-                    "FIRSTX" => firstx = value.parse::<f64>().unwrap_or(f64::NAN),
-                    "DELTAX" => deltax = value.parse::<f64>().unwrap_or(f64::NAN),
-                    "NPOINTS" => npoints = value.parse::<usize>().unwrap_or(0),
+                    "XFACTOR" => block.x_factor = value.parse::<f64>().unwrap_or(1.0),
+                    "YFACTOR" => block.y_factor = value.parse::<f64>().unwrap_or(1.0),
+                    "FIRSTX" => block.first_x = value.parse::<f64>().ok(),
+                    "LASTX" => block.last_x = value.parse::<f64>().ok(),
+                    "DELTAX" => block.delta_x = value.parse::<f64>().ok(),
+                    "NPOINTS" => block.npoints = value.parse::<usize>().ok(),
                     "XYDATA" => {
-                        section = JdxSection::XyData;
-                        raw_y.clear();
+                        block.section = JdxSection::XyData;
+                        block.raw_y.clear();
+                        block.checkpoints.clear();
                     }
                     "XYPOINTS" => {
-                        section = JdxSection::XyData;
-                        raw_y.clear();
+                        block.section = JdxSection::XyPoints;
+                        block.points.clear();
                     }
                     "NTUPLES" => {
-                        section = JdxSection::NtupleDecl;
-                        ntuple_var_names.clear();
-                        ntuple_x.clear();
-                        ntuple_y.clear();
-                        ntuple_collecting = false;
+                        block.section = JdxSection::NtupleDecl;
+                        block.ntuple_x.clear();
+                        block.ntuple_y.clear();
+                        block.ntuple_collecting = false;
                     }
-                    "VAR_NAME" => {
-                        ntuple_var_names = value.split(',').map(|s| s.trim().to_string()).collect();
-                    }
+                    // The variable names are not needed to read the (X, Y) pairs.
+                    "VAR_NAME" => {}
                     "PAGE" => {
-                        ntuple_collecting = true;
-                        section = JdxSection::NtupleData;
+                        block.ntuple_collecting = true;
+                        block.section = JdxSection::NtupleData;
                     }
                     "END NTUPLES" => {
-                        ntuple_collecting = false;
-                        section = JdxSection::Header;
+                        block.ntuple_collecting = false;
+                        block.section = JdxSection::Header;
                     }
                     _ => {
-                        current.metadata.extra.insert(label.to_string(), value);
+                        block.record.metadata.extra.insert(label.to_string(), value);
                     }
                 }
                 continue;
             }
-            match section {
-                JdxSection::XyData => {
-                    Self::parse_xydata_line(trimmed, &mut current, &mut raw_y, x_factor, y_factor);
-                }
-                JdxSection::NtupleData if ntuple_collecting => {
-                    Self::parse_ntuple_line(trimmed, &mut ntuple_x, &mut ntuple_y);
+            // `$$` starts a comment that runs to the end of a data line.
+            let data = trimmed.split("$$").next().unwrap_or("");
+            match block.section {
+                JdxSection::XyData => block.push_xydata_line(data, line_no)?,
+                JdxSection::XyPoints => block.push_points_line(data, line_no)?,
+                JdxSection::NtupleData if block.ntuple_collecting => {
+                    Self::parse_ntuple_line(trimmed, &mut block.ntuple_x, &mut block.ntuple_y);
                 }
                 _ => {}
             }
-            let _ = npoints;
         }
-        if in_block && !current.is_empty() {
-            if !raw_y.is_empty() {
-                Self::build_xy_from_raw(&mut current, &raw_y, firstx, deltax, x_factor, y_factor);
-            }
-            if !ntuple_x.is_empty() {
-                current.x = ntuple_x;
-                current.y = ntuple_y;
-            }
-            if !current.is_empty() {
-                self.records.push(current);
-            }
+        if block.has_data() {
+            self.records.extend(block.finish()?);
         }
         Ok(())
-    }
-    /// Parse a line in `XYDATA=(X++(Y..Y))` mode.
-    fn parse_xydata_line(
-        line: &str,
-        record: &mut SpectrumRecord,
-        raw_y: &mut Vec<f64>,
-        x_factor: f64,
-        y_factor: f64,
-    ) {
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        if tokens.is_empty() {
-            return;
-        }
-        if let Ok(x_val) = tokens[0].parse::<f64>() {
-            record.x.push(x_val * x_factor);
-            for tok in &tokens[1..] {
-                if let Ok(y_val) = tok.parse::<f64>() {
-                    raw_y.push(y_val * y_factor);
-                }
-            }
-        }
-    }
-    /// Build the full X/Y arrays from compressed X++(Y..Y) raw data.
-    fn build_xy_from_raw(
-        record: &mut SpectrumRecord,
-        raw_y: &[f64],
-        firstx: f64,
-        deltax: f64,
-        x_factor: f64,
-        y_factor: f64,
-    ) {
-        if !firstx.is_nan() && !deltax.is_nan() {
-            record.x.clear();
-            record.y.clear();
-            for (i, &yv) in raw_y.iter().enumerate() {
-                record.x.push((firstx + deltax * i as f64) * x_factor);
-                record.y.push(yv * y_factor);
-            }
-        } else {
-            record.y.clear();
-            record.y.extend_from_slice(raw_y);
-            let _ = (x_factor, y_factor);
-        }
     }
     /// Parse NTUPLE data line (tab or space separated x,y pairs).
     fn parse_ntuple_line(line: &str, xs: &mut Vec<f64>, ys: &mut Vec<f64>) {
@@ -1041,6 +1036,187 @@ impl JcampDxReader {
     /// Return the number of parsed blocks.
     pub fn count(&self) -> usize {
         self.records.len()
+    }
+}
+/// Split a data line into numbers: values are separated by whitespace, commas
+/// or semicolons.
+fn jdx_tokens(line: &str) -> impl Iterator<Item = &str> {
+    line.split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .filter(|token| !token.is_empty())
+}
+/// Parse one number of a data table.
+fn parse_jdx_number(token: &str, line_no: usize) -> crate::Result<f64> {
+    token.parse::<f64>().map_err(|_| {
+        crate::Error::Parse(format!(
+            "JCAMP-DX line {line_no}: cannot read `{token}` as a number \
+             (compressed SQZ/DIF/DUP data is not supported)"
+        ))
+    })
+}
+/// Parse state of one JCAMP-DX block.
+#[derive(Debug)]
+struct JdxBlock {
+    /// Record being filled with metadata and, at the end, data.
+    record: SpectrumRecord,
+    /// Which part of the block the parser is in.
+    section: JdxSection,
+    /// `##XFACTOR`: multiplier for listed abscissae.
+    x_factor: f64,
+    /// `##YFACTOR`: multiplier for listed ordinates.
+    y_factor: f64,
+    /// `##FIRSTX`: actual abscissa of the first point.
+    first_x: Option<f64>,
+    /// `##LASTX`: actual abscissa of the last point.
+    last_x: Option<f64>,
+    /// `##DELTAX`: actual abscissa spacing.
+    delta_x: Option<f64>,
+    /// `##NPOINTS`.
+    npoints: Option<usize>,
+    /// Ordinates of the `(X++(Y..Y))` table as listed (before `YFACTOR`).
+    raw_y: Vec<f64>,
+    /// `(listed abscissa, index of the first ordinate on the line)` for every
+    /// line of the `(X++(Y..Y))` table.
+    checkpoints: Vec<(f64, usize)>,
+    /// `(X, Y)` pairs of the `(XY..XY)` table as listed.
+    points: Vec<(f64, f64)>,
+    /// Abscissae of the NTUPLES pages.
+    ntuple_x: Vec<f64>,
+    /// Ordinates of the NTUPLES pages.
+    ntuple_y: Vec<f64>,
+    /// Whether NTUPLES page data is being collected.
+    ntuple_collecting: bool,
+}
+impl JdxBlock {
+    fn new() -> Self {
+        Self {
+            record: SpectrumRecord::new(),
+            section: JdxSection::Header,
+            x_factor: 1.0,
+            y_factor: 1.0,
+            first_x: None,
+            last_x: None,
+            delta_x: None,
+            npoints: None,
+            raw_y: Vec::new(),
+            checkpoints: Vec::new(),
+            points: Vec::new(),
+            ntuple_x: Vec::new(),
+            ntuple_y: Vec::new(),
+            ntuple_collecting: false,
+        }
+    }
+    /// Whether any data table has contributed values to this block.
+    fn has_data(&self) -> bool {
+        !self.raw_y.is_empty() || !self.points.is_empty() || !self.ntuple_x.is_empty()
+    }
+    /// Read one line of an `(X++(Y..Y))` table.
+    fn push_xydata_line(&mut self, line: &str, line_no: usize) -> crate::Result<()> {
+        let mut tokens = jdx_tokens(line);
+        let Some(first) = tokens.next() else {
+            return Ok(());
+        };
+        let checkpoint = parse_jdx_number(first, line_no)?;
+        self.checkpoints.push((checkpoint, self.raw_y.len()));
+        for token in tokens {
+            self.raw_y.push(parse_jdx_number(token, line_no)?);
+        }
+        Ok(())
+    }
+    /// Read one line of an `(XY..XY)` table.
+    fn push_points_line(&mut self, line: &str, line_no: usize) -> crate::Result<()> {
+        let mut numbers = Vec::new();
+        for token in jdx_tokens(line) {
+            numbers.push(parse_jdx_number(token, line_no)?);
+        }
+        if numbers.len() % 2 != 0 {
+            return Err(crate::Error::Parse(format!(
+                "JCAMP-DX line {line_no}: XYPOINTS line holds {} numbers, expected X,Y pairs",
+                numbers.len()
+            )));
+        }
+        for pair in numbers.chunks_exact(2) {
+            self.points.push((pair[0], pair[1]));
+        }
+        Ok(())
+    }
+    /// Build the X/Y arrays and return the record, or `None` if the block
+    /// holds no data.
+    fn finish(mut self) -> crate::Result<Option<SpectrumRecord>> {
+        if !self.raw_y.is_empty() {
+            self.build_from_xydata()?;
+        } else if !self.points.is_empty() {
+            self.build_from_points()?;
+        }
+        if !self.ntuple_x.is_empty() {
+            self.record.x = std::mem::take(&mut self.ntuple_x);
+            self.record.y = std::mem::take(&mut self.ntuple_y);
+        }
+        Ok((!self.record.is_empty()).then_some(self.record))
+    }
+    /// Spacing of the `(X++(Y..Y))` abscissa grid for `n` points.
+    fn grid_step(&self, n: usize, first: Option<f64>) -> Option<f64> {
+        if n < 2 {
+            return Some(0.0);
+        }
+        if let Some(delta) = self.delta_x {
+            return Some(delta);
+        }
+        if let (Some(first), Some(last)) = (first, self.last_x) {
+            return Some((last - first) / (n - 1) as f64);
+        }
+        // Fall back to the spacing of the abscissa check values.
+        match self.checkpoints.as_slice() {
+            [(x0, i0), (x1, i1), ..] if i1 > i0 => {
+                Some((x1 - x0) * self.x_factor / (i1 - i0) as f64)
+            }
+            _ => None,
+        }
+    }
+    fn build_from_xydata(&mut self) -> crate::Result<()> {
+        let n = self.raw_y.len();
+        if let Some(expected) = self.npoints
+            && expected != n
+        {
+            return Err(crate::Error::Parse(format!(
+                "JCAMP-DX block `{}`: ##NPOINTS={expected} but the XYDATA table holds {n} values",
+                self.record.metadata.title
+            )));
+        }
+        let first = self
+            .first_x
+            .or_else(|| self.checkpoints.first().map(|&(x, _)| x * self.x_factor));
+        let (Some(first), Some(step)) = (first, self.grid_step(n, first)) else {
+            return Err(crate::Error::Parse(format!(
+                "JCAMP-DX block `{}`: cannot determine the X axis (no ##DELTAX, ##LASTX or \
+                 usable X check values)",
+                self.record.metadata.title
+            )));
+        };
+        self.record.x = (0..n).map(|i| first + step * i as f64).collect();
+        self.record.y = self.raw_y.iter().map(|&y| y * self.y_factor).collect();
+        Ok(())
+    }
+    fn build_from_points(&mut self) -> crate::Result<()> {
+        if let Some(expected) = self.npoints
+            && expected != self.points.len()
+        {
+            return Err(crate::Error::Parse(format!(
+                "JCAMP-DX block `{}`: ##NPOINTS={expected} but the XYPOINTS table holds {} pairs",
+                self.record.metadata.title,
+                self.points.len()
+            )));
+        }
+        self.record.x = self
+            .points
+            .iter()
+            .map(|&(x, _)| x * self.x_factor)
+            .collect();
+        self.record.y = self
+            .points
+            .iter()
+            .map(|&(_, y)| y * self.y_factor)
+            .collect();
+        Ok(())
     }
 }
 /// Savitzky-Golay filter window size options.
@@ -1112,6 +1288,7 @@ pub enum SpectrumSource {
 pub(super) enum JdxSection {
     Header,
     XyData,
+    XyPoints,
     NtupleDecl,
     NtupleData,
 }

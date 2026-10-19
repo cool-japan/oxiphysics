@@ -1129,6 +1129,149 @@ mod extended_rigid_tests {
             );
         }
     }
+    /// Regression: the stored contact impulse already contained the inverse
+    /// mass and `apply` multiplied it in again, so a body with inverse mass 0.5
+    /// received `0.25 J` instead of `0.5 J`.  Body A (inverse mass 0.5) moving
+    /// into a static wall along the contact normal must stop exactly.
+    #[test]
+    fn contact_batch_applies_inverse_mass_exactly_once() {
+        let positions = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let velocities = [[0.0, 1.0, 0.0], [0.0, 0.0, 0.0]];
+        let inv_masses = [0.5, 0.0];
+        // The contact lies on the line of centres, so no torque arises.
+        let contacts = [ContactPoint {
+            position: [0.0, 0.5, 0.0],
+            normal: [0.0, 1.0, 0.0],
+            depth: 0.0,
+            body_a: 0,
+            body_b: 1,
+        }];
+        let proc = ContactBatchProcessor::new(0.0, 0.0);
+        let impulses =
+            proc.process_contacts(&contacts, &positions, &velocities, &inv_masses, 2, 0.01);
+        // J = -(1 + e) v_rel / (w_a + w_b) = 1 / 0.5 = 2: a true impulse.
+        assert!((impulses[0].linear[1] + 2.0).abs() < 1e-12);
+        assert!((impulses[1].linear[1] - 2.0).abs() < 1e-12);
+
+        let mut states = [
+            RigidBodyState::at_rest(positions[0], inv_masses[0], [1.0; 3]),
+            RigidBodyState::at_rest(positions[1], inv_masses[1], [0.0; 3]),
+        ];
+        states[0].velocity = velocities[0];
+        apply_impulses(&mut states, &impulses);
+        assert!(
+            states[0].velocity[1].abs() < 1e-12,
+            "A must come to rest, v_y = {}",
+            states[0].velocity[1]
+        );
+        assert!(states[0].velocity[0].abs() < 1e-12 && states[0].velocity[2].abs() < 1e-12);
+        assert_eq!(states[1].velocity, [0.0; 3], "static wall must not move");
+    }
+    /// Two dynamic bodies: momentum is conserved and the post-contact normal
+    /// relative velocity is `-e` times the pre-contact one.
+    #[test]
+    fn contact_batch_two_bodies_conserve_momentum_and_apply_restitution() {
+        let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let velocities = [[2.0, 0.0, 0.0], [0.5, 0.0, 0.0]];
+        let (mass_a, mass_b) = (1.0, 3.0);
+        let inv_masses = [1.0 / mass_a, 1.0 / mass_b];
+        let restitution = 0.5;
+        let contacts = [ContactPoint {
+            position: [0.5, 0.0, 0.0],
+            normal: [1.0, 0.0, 0.0],
+            depth: 0.0,
+            body_a: 0,
+            body_b: 1,
+        }];
+        let proc = ContactBatchProcessor::new(restitution, 0.0);
+        let impulses =
+            proc.process_contacts(&contacts, &positions, &velocities, &inv_masses, 2, 0.01);
+        let mut states = [
+            RigidBodyState::at_rest(positions[0], inv_masses[0], [1.0; 3]),
+            RigidBodyState::at_rest(positions[1], inv_masses[1], [1.0; 3]),
+        ];
+        states[0].velocity = velocities[0];
+        states[1].velocity = velocities[1];
+        let momentum_before = mass_a * velocities[0][0] + mass_b * velocities[1][0];
+        apply_impulses(&mut states, &impulses);
+        let momentum_after = mass_a * states[0].velocity[0] + mass_b * states[1].velocity[0];
+        assert!(
+            (momentum_after - momentum_before).abs() < 1e-12,
+            "momentum {momentum_before} -> {momentum_after}"
+        );
+        let relative_before = velocities[1][0] - velocities[0][0];
+        let relative_after = states[1].velocity[0] - states[0].velocity[0];
+        assert!(
+            (relative_after + restitution * relative_before).abs() < 1e-12,
+            "relative normal velocity {relative_before} -> {relative_after}"
+        );
+    }
+    /// The angular impulse is `r x J` with the *true* impulse `J`, so the
+    /// angular velocity change is `I_w^-1 (r x J)` (no extra inverse mass).
+    #[test]
+    fn contact_batch_angular_impulse_is_cross_product_of_true_impulse() {
+        // Contact one unit off A's centre along +x, normal +y.
+        let positions = [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
+        let velocities = [[0.0, 1.0, 0.0], [0.0, 0.0, 0.0]];
+        let inv_masses = [0.5, 0.0];
+        let contacts = [ContactPoint {
+            position: [1.0, 0.5, 0.0],
+            normal: [0.0, 1.0, 0.0],
+            depth: 0.0,
+            body_a: 0,
+            body_b: 1,
+        }];
+        let proc = ContactBatchProcessor::new(0.0, 0.0);
+        let impulses =
+            proc.process_contacts(&contacts, &positions, &velocities, &inv_masses, 2, 0.01);
+        // J = 2, impulse on A = (0, -2, 0), r_a = (1, 0.5, 0):
+        // r x J = (0.5 * 0 - 0 * (-2), 0 * 0 - 1 * 0, 1 * (-2) - 0.5 * 0) = (0, 0, -2).
+        assert!((impulses[0].linear[1] + 2.0).abs() < 1e-12);
+        assert!(impulses[0].angular[0].abs() < 1e-12);
+        assert!(impulses[0].angular[1].abs() < 1e-12);
+        assert!((impulses[0].angular[2] + 2.0).abs() < 1e-12);
+
+        let mut body = RigidBodyState::at_rest(positions[0], inv_masses[0], [2.0; 3]);
+        body.velocity = velocities[0];
+        impulses[0].apply(&mut body);
+        assert!((body.velocity[1] - 0.0).abs() < 1e-12);
+        // Identity orientation: Δω = diag(2) (0, 0, -2) = (0, 0, -4).
+        assert!((body.angular_velocity[2] + 4.0).abs() < 1e-12);
+    }
+    /// The Baumgarte bias adds a separation velocity `beta * depth / dt` that
+    /// must not depend on the body's mass.
+    #[test]
+    fn contact_batch_baumgarte_velocity_bias_is_mass_independent() {
+        let (beta, depth, dt) = (0.2, 0.01, 0.01);
+        let expected_speed = beta * depth / dt;
+        for &inverse_mass in &[0.25, 1.0, 4.0] {
+            let positions = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+            let velocities = [[0.0; 3]; 2];
+            let inv_masses = [inverse_mass, 0.0];
+            let contacts = [ContactPoint {
+                position: [0.0, 0.5, 0.0],
+                normal: [0.0, 1.0, 0.0],
+                depth,
+                body_a: 0,
+                body_b: 1,
+            }];
+            let proc = ContactBatchProcessor::new(0.0, beta);
+            let impulses =
+                proc.process_contacts(&contacts, &positions, &velocities, &inv_masses, 2, dt);
+            let mut states = [
+                RigidBodyState::at_rest(positions[0], inv_masses[0], [1.0; 3]),
+                RigidBodyState::at_rest(positions[1], inv_masses[1], [0.0; 3]),
+            ];
+            apply_impulses(&mut states, &impulses);
+            // A is pushed away from B, i.e. along -y.
+            assert!(
+                (states[0].velocity[1] + expected_speed).abs() < 1e-12,
+                "inverse mass {inverse_mass}: v_y = {}, expected {}",
+                states[0].velocity[1],
+                -expected_speed
+            );
+        }
+    }
 }
 #[cfg(test)]
 mod inertia_tests {

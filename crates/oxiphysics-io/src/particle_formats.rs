@@ -8,13 +8,22 @@
 //! - **LAMMPS dump** (`ITEM: ATOMS id type x y z [vx vy vz]`)
 //! - **GROMACS GRO** (nm units, box vectors)
 //! - **Binary frame** format (compact f32 arrays with magic header)
-//! - **DCD** stub reader (header parsing + coordinate frames)
+//! - **DCD** CHARMM/NAMD/X-PLOR binary trajectories (reader with unit cells,
+//!   writer), see [`dcd`]
 //!
 //! [`ParticleTrajectory`] supports frame indexing, slicing, sub-sampling,
 //! and analysis (MSD, RMSF, centre-of-mass drift).
 
-use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+
+use crate::lammps_dump::{LammpsDumpFrame, LammpsDumpReader as LammpsFrameReader};
+
+pub mod dcd;
+#[cfg(test)]
+mod dcd_tests;
+
+pub use dcd::{DcdHeader, DcdReader, DcdTrajectory, DcdUnitCell, DcdWriter};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ParticleFrame
@@ -359,6 +368,11 @@ fn write_lammps_dump_frame<W: Write>(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Read LAMMPS dump files, handling `ITEM: ATOMS` headers and multiple timesteps.
+///
+/// The columns are found by the names in the `ITEM: ATOMS` header, scaled
+/// coordinates (`xs ys zs`, the default of `dump atom`) are converted to
+/// Cartesian ones with the box of each frame and the atoms of every frame are
+/// sorted by id.  See [`LammpsDumpReader::read_all`] for the error cases.
 #[derive(Debug, Clone)]
 pub struct LammpsDumpReader {
     /// Input path.
@@ -372,6 +386,14 @@ impl LammpsDumpReader {
     }
 
     /// Read all frames from the dump file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error of opening or reading the file, and
+    /// `io::ErrorKind::InvalidData` for a malformed frame: no complete
+    /// position columns, a missing `id` or `type` column, a row that is
+    /// shorter than the header or holds a value that is not a number, fewer
+    /// rows than `NUMBER OF ATOMS`, or an atom type above 255.
     pub fn read_all(&self) -> io::Result<Vec<ParticleFrame>> {
         let f = File::open(&self.path)?;
         let r = BufReader::new(f);
@@ -380,119 +402,123 @@ impl LammpsDumpReader {
 }
 
 /// Parse all LAMMPS dump frames from a `BufRead` source.
+///
+/// The frames are parsed by [`crate::lammps_dump::LammpsDumpReader`]: the
+/// columns of the `ITEM: ATOMS` table are located by the names in its header
+/// (any order), the position columns may be `x y z`, `xu yu zu`, `xs ys zs`
+/// (the default of `dump atom`) or `xsu ysu zsu`, and scaled coordinates are
+/// converted to Cartesian ones with the box of the frame, including the
+/// tilts of a triclinic box.  The atoms of every frame are returned sorted by
+/// their id: parallel LAMMPS runs dump the atoms in an arbitrary order that
+/// changes between frames, and trajectory analysis (MSD, RMSF, ...) compares
+/// the particle with the same index across frames.
+///
+/// # Errors
+///
+/// `io::ErrorKind::InvalidData` when a frame is malformed: no complete
+/// position columns, a missing `id` or `type` column, a row that is shorter
+/// than the header or holds a value that is not a number, fewer rows than
+/// `NUMBER OF ATOMS`, or an atom type above 255 (the type is stored in a `u8`).
+/// The frame parser reports a read error inside a frame as text, so that is
+/// `InvalidData` as well; a read error between frames keeps its kind.
 fn parse_lammps_dump_all<R: BufRead>(mut r: R) -> io::Result<Vec<ParticleFrame>> {
+    const FRAME_START: &str = "ITEM: TIMESTEP";
     let mut frames = Vec::new();
-    let mut lines = Vec::<String>::new();
-    // Collect all lines.
-    {
-        let mut line = String::new();
-        while r.read_line(&mut line)? > 0 {
-            lines.push(line.trim_end().to_string());
+    let mut line = String::new();
+    loop {
+        // Everything in front of a frame is skipped: blank lines and the
+        // `ITEM: UNITS` / `ITEM: TIME` blocks of `dump_modify units/time yes`.
+        let at_frame = loop {
             line.clear();
-        }
-    }
-
-    let mut i = 0;
-    while i < lines.len() {
-        if lines[i].starts_with("ITEM: TIMESTEP") {
-            i += 1;
-            let timestep: u64 = lines
-                .get(i)
-                .and_then(|l| l.trim().parse().ok())
-                .unwrap_or(0);
-            i += 1; // "ITEM: NUMBER OF ATOMS"
-            i += 1;
-            let n_atoms: usize = lines
-                .get(i)
-                .and_then(|l| l.trim().parse().ok())
-                .unwrap_or(0);
-            i += 1; // "ITEM: BOX BOUNDS ..."
-            i += 4; // skip 3 bound lines + the item line itself
-
-            // "ITEM: ATOMS ..."
-            let header = lines.get(i).cloned().unwrap_or_default();
-            let cols: Vec<&str> = header.split_whitespace().collect();
-            // Find column indices for id, type, x, y, z, vx, vy, vz.
-            let idx_id = col_idx(&cols, "id");
-            let idx_type = col_idx(&cols, "type");
-            let idx_x = col_idx(&cols, "x");
-            let idx_y = col_idx(&cols, "y");
-            let idx_z = col_idx(&cols, "z");
-            let idx_vx = col_idx(&cols, "vx");
-            let idx_vy = col_idx(&cols, "vy");
-            let idx_vz = col_idx(&cols, "vz");
-            let has_vel = idx_vx.is_some() && idx_vy.is_some() && idx_vz.is_some();
-            // Skip ITEM: ATOMS line — offsets start at 2 after ITEM: ATOMS header.
-            // Columns in header are offset by 2 ("ITEM:" "ATOMS" are first two).
-            let data_offset = 2usize;
-            i += 1;
-
-            let mut positions = Vec::with_capacity(n_atoms);
-            let mut types = Vec::with_capacity(n_atoms);
-            let mut velocities: Vec<[f32; 3]> = Vec::with_capacity(n_atoms);
-
-            for _ in 0..n_atoms {
-                if i >= lines.len() {
-                    break;
-                }
-                let parts: Vec<&str> = lines[i].split_whitespace().collect();
-
-                let get = |opt_col: Option<usize>| -> f32 {
-                    opt_col
-                        .and_then(|c| {
-                            let real_c = c.saturating_sub(data_offset);
-                            parts.get(real_c).and_then(|s| s.parse().ok())
-                        })
-                        .unwrap_or(0.0)
-                };
-                let get_u8 = |opt_col: Option<usize>| -> u8 {
-                    opt_col
-                        .and_then(|c| {
-                            let real_c = c.saturating_sub(data_offset);
-                            parts.get(real_c).and_then(|s| s.parse::<u8>().ok())
-                        })
-                        .unwrap_or(0)
-                };
-                let _ = idx_id; // id unused but parsed
-                let t = get_u8(idx_type);
-                let x = get(idx_x);
-                let y = get(idx_y);
-                let z = get(idx_z);
-                positions.push([x, y, z]);
-                types.push(t);
-                if has_vel {
-                    let vx = get(idx_vx);
-                    let vy = get(idx_vy);
-                    let vz = get(idx_vz);
-                    velocities.push([vx, vy, vz]);
-                }
-                i += 1;
+            if r.read_line(&mut line)? == 0 {
+                break false;
             }
-
-            let vel_opt = if has_vel && !velocities.is_empty() {
-                Some(velocities)
-            } else {
-                None
-            };
-
-            frames.push(ParticleFrame {
-                timestep,
-                n_particles: positions.len(),
-                positions,
-                velocities: vel_opt,
-                types,
-            });
-        } else {
-            i += 1;
+            if line.trim().starts_with(FRAME_START) {
+                break true;
+            }
+        };
+        if !at_frame {
+            return Ok(frames);
+        }
+        // Hand the frame parser the `ITEM: TIMESTEP` line that was just
+        // consumed in front of the rest of the stream.
+        let frame_start = io::Cursor::new(b"ITEM: TIMESTEP\n".as_slice());
+        match LammpsFrameReader::read_frame(frame_start.chain(&mut r)) {
+            Some(Ok(dump_frame)) => frames.push(particle_frame_from_dump(dump_frame)?),
+            Some(Err(message)) => {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, message));
+            }
+            None => return Ok(frames),
         }
     }
-    Ok(frames)
 }
 
-/// Find the index of a column name in the LAMMPS ITEM:ATOMS header tokens.
-/// The header starts with "ITEM:" "ATOMS", so data columns start at index 2.
-fn col_idx(cols: &[&str], name: &str) -> Option<usize> {
-    cols.iter().position(|&c| c == name)
+/// One atom of a parsed LAMMPS dump frame.
+struct DumpAtom {
+    id: u32,
+    atom_type: u32,
+    position: [f64; 3],
+    velocity: Option<[f64; 3]>,
+}
+
+/// Narrow a vector to `f32`.
+fn to_f32(v: [f64; 3]) -> [f32; 3] {
+    [v[0] as f32, v[1] as f32, v[2] as f32]
+}
+
+/// Convert a parsed LAMMPS dump frame: narrow to `f32`, store the types as
+/// `u8` and order the atoms by id (ties keep the file order).
+fn particle_frame_from_dump(frame: LammpsDumpFrame) -> io::Result<ParticleFrame> {
+    let LammpsDumpFrame {
+        timestep,
+        atom_ids,
+        types,
+        positions,
+        velocities,
+        ..
+    } = frame;
+    let has_velocities = velocities.is_some();
+    let mut velocity_iter = velocities.map(Vec::into_iter);
+    let mut atoms: Vec<DumpAtom> = Vec::with_capacity(positions.len());
+    for ((id, atom_type), position) in atom_ids.into_iter().zip(types).zip(positions) {
+        atoms.push(DumpAtom {
+            id,
+            atom_type,
+            position,
+            velocity: velocity_iter.as_mut().and_then(Iterator::next),
+        });
+    }
+    atoms.sort_by_key(|atom| atom.id);
+
+    let mut out_positions = Vec::with_capacity(atoms.len());
+    let mut out_types = Vec::with_capacity(atoms.len());
+    let mut out_velocities: Vec<[f32; 3]> = Vec::new();
+    for atom in atoms {
+        let atom_type = u8::try_from(atom.atom_type).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "LAMMPS dump: atom {} has type {}, above the maximum of {} \
+                     that a particle frame can store",
+                    atom.id,
+                    atom.atom_type,
+                    u8::MAX
+                ),
+            )
+        })?;
+        out_positions.push(to_f32(atom.position));
+        out_types.push(atom_type);
+        if has_velocities && let Some(velocity) = atom.velocity {
+            out_velocities.push(to_f32(velocity));
+        }
+    }
+    Ok(ParticleFrame {
+        timestep,
+        n_particles: out_positions.len(),
+        positions: out_positions,
+        velocities: (!out_velocities.is_empty()).then_some(out_velocities),
+        types: out_types,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -937,296 +963,6 @@ fn parse_gro_frame<R: BufRead>(r: &mut R) -> io::Result<ParticleFrame> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DcdReader / DcdWriter
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Header information parsed from a DCD file.
-#[derive(Debug, Clone, Default)]
-pub struct DcdHeader {
-    /// Number of frames stored in the file.
-    pub n_frames: u32,
-    /// First timestep number.
-    pub first_step: u32,
-    /// Number of steps between saved frames.
-    pub step_interval: u32,
-    /// Number of atoms.
-    pub n_atoms: u32,
-    /// Title strings from the header.
-    pub titles: Vec<String>,
-}
-
-/// Stub DCD binary reader: parses the header and reads coordinate frames.
-///
-/// Supports the standard CHARMM/NAMD little-endian DCD format.
-#[derive(Debug)]
-pub struct DcdReader {
-    /// Input path.
-    pub path: std::path::PathBuf,
-}
-
-impl DcdReader {
-    /// Create a new `DcdReader` for `path`.
-    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
-    /// Parse only the DCD file header.
-    pub fn read_header(&self) -> io::Result<DcdHeader> {
-        let f = File::open(&self.path)?;
-        let mut r = BufReader::new(f);
-        parse_dcd_header(&mut r)
-    }
-
-    /// Read all coordinate frames.  Returns `(header, frames)`.
-    pub fn read_all(&self) -> io::Result<(DcdHeader, Vec<ParticleFrame>)> {
-        let f = File::open(&self.path)?;
-        let mut r = BufReader::new(f);
-        let header = parse_dcd_header(&mut r)?;
-        let n = header.n_atoms as usize;
-        let mut frames = Vec::with_capacity(header.n_frames as usize);
-        for step in 0..header.n_frames {
-            match parse_dcd_frame(&mut r, n, step as u64) {
-                Ok(fr) => frames.push(fr),
-                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
-            }
-        }
-        Ok((header, frames))
-    }
-}
-
-/// Parse DCD header from a `Read + Seek` source.
-fn parse_dcd_header<R: Read + Seek>(r: &mut R) -> io::Result<DcdHeader> {
-    // Block 1: 4-byte Fortran record length, "CORD", 9 ints, delta, 10 ints.
-    let rec_len = read_u32_le(r)?;
-    if rec_len < 4 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "DCD block1 too short",
-        ));
-    }
-    let mut magic = [0u8; 4];
-    r.read_exact(&mut magic)?;
-    // Expect "CORD" or "VELO"
-    let n_frames = read_u32_le(r)?;
-    let first_step = read_u32_le(r)?;
-    let step_interval = read_u32_le(r)?;
-    // Skip remaining ints + delta + padding to end of block.
-    let remaining = rec_len as usize - 4 - 4 * 3;
-    r.seek(SeekFrom::Current(remaining as i64))?;
-    let _end_len = read_u32_le(r)?; // closing Fortran record
-
-    // Block 2: title block.
-    let title_block_len = read_u32_le(r)? as usize;
-    let n_titles = read_u32_le(r)? as usize;
-    let mut titles = Vec::new();
-    for _ in 0..n_titles {
-        let mut buf = vec![0u8; 80];
-        r.read_exact(&mut buf)?;
-        titles.push(String::from_utf8_lossy(&buf).trim_end().to_string());
-    }
-    let consumed = 4 + n_titles * 80;
-    if consumed < title_block_len {
-        r.seek(SeekFrom::Current((title_block_len - consumed) as i64))?;
-    }
-    let _end_title = read_u32_le(r)?;
-
-    // Block 3: n_atoms.
-    let _len3 = read_u32_le(r)?;
-    let n_atoms = read_u32_le(r)?;
-    let _end3 = read_u32_le(r)?;
-
-    Ok(DcdHeader {
-        n_frames,
-        first_step,
-        step_interval,
-        n_atoms,
-        titles,
-    })
-}
-
-/// Parse one DCD coordinate frame.
-fn parse_dcd_frame<R: Read>(r: &mut R, n_atoms: usize, step: u64) -> io::Result<ParticleFrame> {
-    let read_f32_block = |r: &mut R| -> io::Result<Vec<f32>> {
-        let len = read_u32_le(r)? as usize;
-        let count = len / 4;
-        let mut vals = Vec::with_capacity(count);
-        for _ in 0..count {
-            vals.push(read_f32_le(r)?);
-        }
-        let _end = read_u32_le(r)?;
-        Ok(vals)
-    };
-
-    let xs = read_f32_block(r)?;
-    let ys = read_f32_block(r)?;
-    let zs = read_f32_block(r)?;
-
-    let n = n_atoms.min(xs.len()).min(ys.len()).min(zs.len());
-    let positions: Vec<[f32; 3]> = (0..n).map(|i| [xs[i], ys[i], zs[i]]).collect();
-    let types = vec![0u8; n];
-
-    Ok(ParticleFrame {
-        timestep: step,
-        n_particles: n,
-        positions,
-        velocities: None,
-        types,
-    })
-}
-
-/// Write a slice of `f32` values as a Fortran-style binary record.
-///
-/// The record is bracketed by a leading and trailing 4-byte little-endian
-/// integer whose value equals `data.len() * 4` (the byte count of the payload).
-fn write_f32_fortran_block<W: Write>(w: &mut W, data: &[f32]) -> io::Result<()> {
-    let byte_len = (data.len() * 4) as u32;
-    w.write_all(&byte_len.to_le_bytes())?;
-    for &v in data {
-        w.write_all(&v.to_le_bytes())?;
-    }
-    w.write_all(&byte_len.to_le_bytes())?;
-    Ok(())
-}
-
-/// DCD trajectory writer — produces files in the standard CHARMM/NAMD binary
-/// DCD format that can be read by [`DcdReader`] and common molecular dynamics
-/// visualisation tools (VMD, NAMD, etc.).
-///
-/// # Usage
-///
-/// ```rust,no_run
-/// use oxiphysics_io::DcdWriter;
-///
-/// let mut w = DcdWriter::new("/tmp/traj.dcd", 10, 2.0e-3).unwrap();
-/// // write frames …
-/// w.finalize().unwrap();  // patches the frame count in the header
-/// ```
-#[derive(Debug)]
-pub struct DcdWriter {
-    /// Output path.
-    pub path: std::path::PathBuf,
-    /// Number of atoms per frame.
-    pub n_atoms: u32,
-    /// Integration time-step (ps).
-    pub delta: f32,
-    frames_written: u32,
-}
-
-impl DcdWriter {
-    /// Create a new `DcdWriter`, truncating / creating the output file and
-    /// writing an initial DCD header.
-    pub fn new(path: impl Into<std::path::PathBuf>, n_atoms: u32, delta: f32) -> io::Result<Self> {
-        let path = path.into();
-        let mut writer = Self {
-            path,
-            n_atoms,
-            delta,
-            frames_written: 0,
-        };
-        writer.write_header(0)?;
-        Ok(writer)
-    }
-
-    /// Append one coordinate frame to the DCD file.
-    ///
-    /// The frame must contain at least `n_atoms` positions; extra positions are
-    /// silently ignored, missing ones are padded with `0.0`.
-    pub fn write_frame(&mut self, frame: &ParticleFrame) -> io::Result<()> {
-        use std::io::Write as _;
-        let n = self.n_atoms as usize;
-
-        let mut xs = Vec::with_capacity(n);
-        let mut ys = Vec::with_capacity(n);
-        let mut zs = Vec::with_capacity(n);
-        for i in 0..n {
-            if i < frame.positions.len() {
-                xs.push(frame.positions[i][0]);
-                ys.push(frame.positions[i][1]);
-                zs.push(frame.positions[i][2]);
-            } else {
-                xs.push(0.0_f32);
-                ys.push(0.0_f32);
-                zs.push(0.0_f32);
-            }
-        }
-
-        let file = OpenOptions::new().append(true).open(&self.path)?;
-        let mut w = BufWriter::new(file);
-        write_f32_fortran_block(&mut w, &xs)?;
-        write_f32_fortran_block(&mut w, &ys)?;
-        write_f32_fortran_block(&mut w, &zs)?;
-        w.flush()?;
-        self.frames_written += 1;
-        Ok(())
-    }
-
-    /// Patch the frame count stored in the DCD header (byte offset 8) with the
-    /// actual number of frames written, then flush the file.
-    ///
-    /// Call this once after all frames have been written.
-    pub fn finalize(&self) -> io::Result<()> {
-        use std::io::{Seek, SeekFrom, Write as _};
-        let mut file = OpenOptions::new().write(true).open(&self.path)?;
-        // The frame count is stored at byte 8 (after the 4-byte Fortran record
-        // length and the 4-byte "CORD" magic).
-        file.seek(SeekFrom::Start(8))?;
-        file.write_all(&self.frames_written.to_le_bytes())?;
-        file.flush()
-    }
-
-    /// Write the DCD file header.
-    ///
-    /// `n_frames` is the preliminary frame count; it is updated by
-    /// [`finalize`](DcdWriter::finalize).
-    fn write_header(&mut self, n_frames: u32) -> io::Result<()> {
-        use std::io::Write as _;
-        let mut f = BufWriter::new(File::create(&self.path)?);
-
-        // ── Block 1 (84 bytes payload) ────────────────────────────────────────
-        // Fortran record: 84 bytes.
-        let block1_payload: u32 = 84;
-        f.write_all(&block1_payload.to_le_bytes())?; // leading sentinel
-        f.write_all(b"CORD")?; // magic
-        f.write_all(&n_frames.to_le_bytes())?; // nframes  (offset 8)
-        f.write_all(&0u32.to_le_bytes())?; // first step
-        f.write_all(&1u32.to_le_bytes())?; // step interval
-        f.write_all(&0u32.to_le_bytes())?; // last step (unknown)
-        f.write_all(&0u32.to_le_bytes())?; // reserved
-        f.write_all(&0u32.to_le_bytes())?; // reserved
-        f.write_all(&0u32.to_le_bytes())?; // reserved
-        f.write_all(&0u32.to_le_bytes())?; // n_free_atoms
-        f.write_all(&self.delta.to_le_bytes())?; // timestep (f32)
-        // 10 padding integers (unit-cell flag + 9 zeros)
-        for _ in 0..10u32 {
-            f.write_all(&0u32.to_le_bytes())?;
-        }
-        // 4-byte CHARMM version word
-        f.write_all(&0u32.to_le_bytes())?;
-        f.write_all(&block1_payload.to_le_bytes())?; // trailing sentinel
-
-        // ── Block 2: title block ──────────────────────────────────────────────
-        // 1 title of 80 bytes.
-        let title_payload: u32 = 4 + 80; // n_titles (u32) + 1 × 80-byte title
-        f.write_all(&title_payload.to_le_bytes())?;
-        f.write_all(&1u32.to_le_bytes())?; // n_titles = 1
-        let mut title_buf = [b' '; 80];
-        let label = b"Created by oxiphysics DcdWriter";
-        let copy_len = label.len().min(80);
-        title_buf[..copy_len].copy_from_slice(&label[..copy_len]);
-        f.write_all(&title_buf)?;
-        f.write_all(&title_payload.to_le_bytes())?;
-
-        // ── Block 3: n_atoms ─────────────────────────────────────────────────
-        f.write_all(&4u32.to_le_bytes())?; // payload = 4 bytes
-        f.write_all(&self.n_atoms.to_le_bytes())?;
-        f.write_all(&4u32.to_le_bytes())?;
-
-        f.flush()
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1433,6 +1169,303 @@ ITEM: ATOMS id type x y z\n\
         assert_eq!(frames[0].n_particles, 2);
     }
 
+    // ── LAMMPS dump: column mapping, scaled coordinates, ids (F2253) ──────────
+
+    fn parse_dump(dump: &str) -> io::Result<Vec<ParticleFrame>> {
+        parse_lammps_dump_all(BufReader::new(Cursor::new(dump.to_owned())))
+    }
+
+    /// Assert that a position equals `expected` (every value used in these
+    /// tests is exactly representable in `f32`).
+    fn assert_position(actual: [f32; 3], expected: [f32; 3]) {
+        assert_eq!(actual, expected, "position {actual:?} != {expected:?}");
+    }
+
+    #[test]
+    fn lammps_dump_atom_style_scaled_columns_are_unscaled_and_sorted_by_id() {
+        // `dump atom` writes scaled coordinates; ids arrive shuffled, as they do
+        // from a multi-process run.  The box origin is not zero.
+        let dump = "\
+ITEM: TIMESTEP
+100
+ITEM: NUMBER OF ATOMS
+3
+ITEM: BOX BOUNDS pp pp pp
+-5.0 5.0
+0.0 20.0
+10.0 14.0
+ITEM: ATOMS id type xs ys zs
+3 2 0.25 0.5 1.0
+1 1 0.0 0.0 0.0
+2 1 0.5 0.25 0.5
+";
+        let frames = parse_dump(dump).unwrap();
+        assert_eq!(frames.len(), 1);
+        let f = &frames[0];
+        assert_eq!(f.timestep, 100);
+        assert_eq!(f.n_particles, 3);
+        // id 1, 2, 3: lo + s * (hi - lo) per axis
+        assert_position(f.positions[0], [-5.0, 0.0, 10.0]);
+        assert_position(f.positions[1], [0.0, 5.0, 12.0]);
+        assert_position(f.positions[2], [-2.5, 10.0, 14.0]);
+        assert_eq!(f.types, vec![1, 1, 2]);
+        assert!(f.velocities.is_none());
+    }
+
+    #[test]
+    fn lammps_dump_unwrapped_and_scaled_unwrapped_columns_are_resolved() {
+        let unwrapped = "\
+ITEM: TIMESTEP
+0
+ITEM: NUMBER OF ATOMS
+1
+ITEM: BOX BOUNDS pp pp pp
+0.0 10.0
+0.0 10.0
+0.0 10.0
+ITEM: ATOMS id type xu yu zu
+1 1 12.5 -3.0 7.0
+";
+        let f = &parse_dump(unwrapped).unwrap()[0];
+        assert_position(f.positions[0], [12.5, -3.0, 7.0]);
+
+        // Scaled-unwrapped coordinates may leave [0, 1) (the image flag).
+        let scaled_unwrapped = "\
+ITEM: TIMESTEP
+0
+ITEM: NUMBER OF ATOMS
+1
+ITEM: BOX BOUNDS pp pp pp
+2.0 6.0
+0.0 8.0
+-1.0 1.0
+ITEM: ATOMS id type xsu ysu zsu
+1 1 1.25 -0.5 2.0
+";
+        let f = &parse_dump(scaled_unwrapped).unwrap()[0];
+        assert_position(f.positions[0], [7.0, -4.0, 3.0]);
+    }
+
+    #[test]
+    fn lammps_dump_columns_are_found_by_name_not_by_position() {
+        let dump = "\
+ITEM: TIMESTEP
+7
+ITEM: NUMBER OF ATOMS
+2
+ITEM: BOX BOUNDS pp pp pp
+0.0 10.0
+0.0 10.0
+0.0 10.0
+ITEM: ATOMS z vz y vy id x vx type
+3.0 0.3 2.0 0.2 2 1.0 0.1 5
+6.0 0.6 5.0 0.5 1 4.0 0.4 4
+";
+        let f = &parse_dump(dump).unwrap()[0];
+        assert_position(f.positions[0], [4.0, 5.0, 6.0]);
+        assert_position(f.positions[1], [1.0, 2.0, 3.0]);
+        assert_eq!(f.types, vec![4, 5]);
+        let v = f.velocities.as_ref().expect("vx vy vz are present");
+        assert_eq!(v[0], [0.4, 0.5, 0.6]);
+        assert_eq!(v[1], [0.1, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn lammps_dump_triclinic_box_unscales_with_the_tilt_factors() {
+        // Restricted triclinic box: xy = 2, xz = -1, yz = 0.5.  The bounds are
+        // those of the bounding box, so
+        //   xlo = -1 - min(0, 2, -1, 1) = 0,  xhi = 12 - max(0, 2, -1, 1) = 10,
+        //   ylo =  0 - min(0, 0.5)      = 0,  yhi = 8.5 - max(0, 0.5)     = 8.
+        let dump = "\
+ITEM: TIMESTEP
+0
+ITEM: NUMBER OF ATOMS
+2
+ITEM: BOX BOUNDS xy xz yz pp pp pp
+-1.0 12.0 2.0
+0.0 8.5 -1.0
+0.0 6.0 0.5
+ITEM: ATOMS id type xs ys zs
+2 1 1.0 1.0 1.0
+1 1 0.5 0.25 0.5
+";
+        let f = &parse_dump(dump).unwrap()[0];
+        // x = xlo + xs*lx + ys*xy + zs*xz, y = ylo + ys*ly + zs*yz, z = zlo + zs*lz
+        assert_position(f.positions[0], [5.0, 2.25, 3.0]);
+        assert_position(f.positions[1], [11.0, 8.5, 6.0]);
+    }
+
+    #[test]
+    fn lammps_dump_atoms_are_matched_by_id_across_frames() {
+        // The second frame lists the same two atoms in the opposite order.
+        let dump = "\
+ITEM: TIMESTEP
+0
+ITEM: NUMBER OF ATOMS
+2
+ITEM: BOX BOUNDS pp pp pp
+0.0 10.0
+0.0 10.0
+0.0 10.0
+ITEM: ATOMS id type x y z
+1 1 1.0 0.0 0.0
+2 2 9.0 0.0 0.0
+ITEM: TIMESTEP
+10
+ITEM: NUMBER OF ATOMS
+2
+ITEM: BOX BOUNDS pp pp pp
+0.0 10.0
+0.0 10.0
+0.0 10.0
+ITEM: ATOMS id type x y z
+2 2 8.0 0.0 0.0
+1 1 2.0 0.0 0.0
+";
+        let frames = parse_dump(dump).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[1].timestep, 10);
+        for f in &frames {
+            assert_eq!(f.types, vec![1, 2]);
+        }
+        assert_position(frames[0].positions[0], [1.0, 0.0, 0.0]);
+        assert_position(frames[1].positions[0], [2.0, 0.0, 0.0]);
+        assert_position(frames[0].positions[1], [9.0, 0.0, 0.0]);
+        assert_position(frames[1].positions[1], [8.0, 0.0, 0.0]);
+
+        let mut traj = ParticleTrajectory::new();
+        for f in frames {
+            traj.push(f);
+        }
+        // Atom 1 moves by +1, atom 2 by -1: mean squared displacement 1.
+        let msd = TrajectoryStats::compute(&traj).msd;
+        assert!((msd[1] - 1.0).abs() < 1e-9, "msd = {msd:?}");
+    }
+
+    #[test]
+    fn lammps_dump_units_and_time_items_in_front_of_a_frame_are_skipped() {
+        let dump = "\
+ITEM: UNITS
+metal
+ITEM: TIME
+0.5
+ITEM: TIMESTEP
+500
+ITEM: NUMBER OF ATOMS
+1
+ITEM: BOX BOUNDS pp pp pp
+0.0 1.0
+0.0 1.0
+0.0 1.0
+ITEM: ATOMS id type x y z
+1 1 0.5 0.5 0.5
+
+ITEM: UNITS
+metal
+ITEM: TIME
+1.0
+ITEM: TIMESTEP
+1000
+ITEM: NUMBER OF ATOMS
+1
+ITEM: BOX BOUNDS pp pp pp
+0.0 1.0
+0.0 1.0
+0.0 1.0
+ITEM: ATOMS id type x y z
+1 1 0.25 0.5 0.75
+";
+        let frames = parse_dump(dump).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].timestep, 500);
+        assert_eq!(frames[1].timestep, 1000);
+        assert_position(frames[1].positions[0], [0.25, 0.5, 0.75]);
+    }
+
+    #[test]
+    fn lammps_dump_without_position_columns_is_invalid_data() {
+        let dump = "\
+ITEM: TIMESTEP
+0
+ITEM: NUMBER OF ATOMS
+1
+ITEM: BOX BOUNDS pp pp pp
+0.0 1.0
+0.0 1.0
+0.0 1.0
+ITEM: ATOMS id type vx vy vz
+1 1 0.0 0.0 0.0
+";
+        let err = parse_dump(dump).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("position"), "{err}");
+
+        // An incomplete family (x and y but no z) is not a position either.
+        let partial = dump.replace("id type vx vy vz", "id type x y");
+        let err = parse_dump(&partial).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn lammps_dump_unparsable_value_is_invalid_data() {
+        let dump = "\
+ITEM: TIMESTEP
+0
+ITEM: NUMBER OF ATOMS
+2
+ITEM: BOX BOUNDS pp pp pp
+0.0 1.0
+0.0 1.0
+0.0 1.0
+ITEM: ATOMS id type x y z
+1 1 0.1 0.2 0.3
+2 1 0.4 abc 0.6
+";
+        let err = parse_dump(dump).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("abc"), "{err}");
+
+        // A row with fewer values than the header names columns.
+        let short = dump.replace("2 1 0.4 abc 0.6", "2 1 0.4");
+        let err = parse_dump(&short).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn lammps_dump_atom_type_above_255_is_invalid_data() {
+        let build = |atom_type: u32| {
+            format!(
+                "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n1\nITEM: BOX BOUNDS pp pp pp\n\
+                 0.0 1.0\n0.0 1.0\n0.0 1.0\nITEM: ATOMS id type x y z\n1 {atom_type} 0.5 0.5 0.5\n"
+            )
+        };
+        let f = &parse_dump(&build(255)).unwrap()[0];
+        assert_eq!(f.types, vec![255]);
+        let err = parse_dump(&build(256)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("256"), "{err}");
+    }
+
+    #[test]
+    fn lammps_dump_frame_with_fewer_rows_than_declared_is_an_error() {
+        let dump = "\
+ITEM: TIMESTEP
+0
+ITEM: NUMBER OF ATOMS
+3
+ITEM: BOX BOUNDS pp pp pp
+0.0 1.0
+0.0 1.0
+0.0 1.0
+ITEM: ATOMS id type x y z
+1 1 0.1 0.2 0.3
+2 1 0.4 0.5 0.6
+";
+        let err = parse_dump(dump).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("EOF"), "{err}");
+    }
+
     // ── ParticleTrajectory ────────────────────────────────────────────────────
 
     #[test]
@@ -1621,66 +1654,6 @@ ITEM: ATOMS id type x y z\n\
         assert_eq!(loaded.n_particles, 2);
         // GRO uses %.3f precision for coordinates
         assert!((loaded.positions[0][0] - 1.5).abs() < 0.01);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    // ── DcdWriter / DcdReader round-trip tests ────────────────────────────────
-
-    #[test]
-    fn test_dcd_writer_creates_file() {
-        let path = std::env::temp_dir().join("oxiphysics_pf_dcd_create.dcd");
-        let _ = std::fs::remove_file(&path);
-        let mut w = DcdWriter::new(&path, 3, 2.0e-3_f32).unwrap();
-        let frame = make_frame(3);
-        w.write_frame(&frame).unwrap();
-        w.finalize().unwrap();
-        assert!(path.exists());
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_dcd_roundtrip_single_frame() {
-        let path = std::env::temp_dir().join("oxiphysics_pf_dcd_rt1.dcd");
-        let _ = std::fs::remove_file(&path);
-        let frame = make_frame(4);
-        let mut w = DcdWriter::new(&path, 4, 1.0e-3_f32).unwrap();
-        w.write_frame(&frame).unwrap();
-        w.finalize().unwrap();
-
-        let (header, frames) = DcdReader::new(&path).read_all().unwrap();
-        assert_eq!(header.n_frames, 1);
-        assert_eq!(header.n_atoms, 4);
-        assert_eq!(frames.len(), 1);
-        for i in 0..4 {
-            assert!(
-                (frames[0].positions[i][0] - i as f32).abs() < 1e-5,
-                "position mismatch at atom {i}"
-            );
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_dcd_roundtrip_multi_frame() {
-        let path = std::env::temp_dir().join("oxiphysics_pf_dcd_rt3.dcd");
-        let _ = std::fs::remove_file(&path);
-        let n_atoms = 5u32;
-        let mut w = DcdWriter::new(&path, n_atoms, 2.0e-3_f32).unwrap();
-        for ts in 0..3u64 {
-            let pos: Vec<[f32; 3]> = (0..n_atoms as usize)
-                .map(|i| [ts as f32 + i as f32, 0.0, 0.0])
-                .collect();
-            let types = vec![0u8; n_atoms as usize];
-            let frame = ParticleFrame::new(ts, pos, types);
-            w.write_frame(&frame).unwrap();
-        }
-        w.finalize().unwrap();
-
-        let (header, frames) = DcdReader::new(&path).read_all().unwrap();
-        assert_eq!(header.n_frames, 3);
-        assert_eq!(frames.len(), 3);
-        // Verify frame 2, atom 0: x == 2.0
-        assert!((frames[2].positions[0][0] - 2.0).abs() < 1e-5);
         let _ = std::fs::remove_file(&path);
     }
 }

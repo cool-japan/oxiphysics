@@ -1064,6 +1064,48 @@ mod tests {
         assert_xyz(&cloud.points[0], [3, 2, 1]);
     }
 
+    #[test]
+    fn las_v1_2_with_a_real_vlr_reads_the_legacy_count_not_vlr_bytes() {
+        // A GeoKeyDirectoryTag VLR straight after the 227-byte header: a
+        // 54-byte VLR header and a 24-byte payload.  Bytes 247..255, where a
+        // LAS 1.4 file keeps its 64-bit point count, hold the VLR's record
+        // length and the first characters of its description there; the old
+        // reader took that for a count of ~2^50 points and aborted in
+        // `Vec::with_capacity`.
+        let vlr_len = 54 + 24;
+        let mut spec = Spec::new(2, 227, 1, 28).count(2, 0);
+        spec.point_data_offset = (227 + vlr_len) as u32;
+        let mut data = header_bytes(spec);
+        put_u32(&mut data, 100, 1); // number of variable length records
+        let mut vlr = vec![0u8; vlr_len];
+        vlr[2..17].copy_from_slice(b"LASF_Projection"); // user id (16 bytes)
+        vlr[18..20].copy_from_slice(&34735u16.to_le_bytes()); // record id
+        vlr[20..22].copy_from_slice(&24u16.to_le_bytes()); // record length after header
+        vlr[22..40].copy_from_slice(b"GeoKeyDirectoryTag"); // description (32 bytes)
+        data.extend(vlr);
+        for (i, raw) in [[1, 2, 3], [4, 5, 6]].into_iter().enumerate() {
+            let mut rec = record0(raw, 7, 0, 2, 0, 0, 0);
+            rec.extend_from_slice(&(1000.0 + i as f64).to_le_bytes());
+            data.extend(rec);
+        }
+        let misread = u64::from_le_bytes([
+            data[247], data[248], data[249], data[250], data[251], data[252], data[253], data[254],
+        ]);
+        assert!(
+            misread > 1 << 32,
+            "the fixture must hold VLR text at byte 247: {misread:#x}"
+        );
+
+        let cloud = read_las_binary(&data).expect("LAS 1.2 file with a VLR must parse");
+        assert_eq!(cloud.header.point_count, 2);
+        assert_eq!(cloud.header.point_data_offset, 305);
+        assert_eq!(cloud.points.len(), 2);
+        assert_xyz(&cloud.points[0], [1, 2, 3]);
+        assert_xyz(&cloud.points[1], [4, 5, 6]);
+        assert_eq!(cloud.points[0].gps_time, Some(1000.0));
+        assert_eq!(cloud.points[1].gps_time, Some(1001.0));
+    }
+
     // -- malformed input ------------------------------------------------------
 
     #[test]

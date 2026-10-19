@@ -9,6 +9,8 @@
 
 use std::collections::HashMap;
 
+use oxiphysics_core::signal::ButterworthBandpass;
+
 // ── SEG-Y Format ──────────────────────────────────────────────────────────────
 
 /// EBCDIC-encoded textual header for SEG-Y files (3200 bytes, 40 lines × 80 chars).
@@ -314,6 +316,19 @@ impl Default for SegyFile {
 
 // ── SAC Format ────────────────────────────────────────────────────────────────
 
+mod sac_layout;
+mod zero_phase;
+
+#[cfg(test)]
+mod filter_tests;
+#[cfg(test)]
+mod sac_tests;
+
+use sac_layout::{
+    SAC_HEADER_BYTES, SAC_ITIME, SAC_SUPPORTED_NVHDR, SAC_UNDEFINED_CHARS, SAC_UNDEFINED_FLOAT,
+    SAC_UNDEFINED_INT, SAC_WRITTEN_NVHDR, SacWords, write_sac_string,
+};
+
 /// SAC (Seismic Analysis Code) file header.
 ///
 /// The SAC header is 632 bytes containing float, integer, logical, enumerated,
@@ -372,7 +387,8 @@ pub struct SacHeader {
     pub nzsec: i32,
     /// Beginning time millisecond.
     pub nzmsec: i32,
-    /// SAC version number.
+    /// SAC header version (`NVHDR`) of a file that was read. Files written by
+    /// this module are always version 6, whatever this field holds.
     pub nvhdr: i32,
     /// Station name (up to 8 characters).
     pub kstnm: String,
@@ -456,17 +472,207 @@ impl SacFile {
         self.header.b as f64 + (self.header.npts - 1) as f64 * self.header.delta as f64
     }
 
-    /// Serialize the SAC header to 632 bytes (simplified).
+    /// Serialize the SAC header to its 632 bytes (little-endian).
+    ///
+    /// Every header word that [`SacHeader`] does not carry is written as
+    /// SAC's "undefined" marker (`-12345.0` for floats, `-12345` for
+    /// integers, `-12345  ` for character fields), as SAC itself does.
+    /// `IFTYPE` is `ITIME` and `LEVEN` is true: the file holds an evenly
+    /// sampled time series. `NVHDR` is always 6, the version whose layout is
+    /// written, regardless of [`SacHeader::nvhdr`].
     pub fn serialize_header(&self) -> Vec<u8> {
-        let mut buf = vec![0u8; 632];
-        write_f32_le(&mut buf, 0, self.header.delta);
-        write_f32_le(&mut buf, 4, self.header.depmin);
-        write_f32_le(&mut buf, 8, self.header.depmax);
-        write_f32_le(&mut buf, 20, self.header.b);
-        write_f32_le(&mut buf, 24, self.header.e);
-        write_i32_le(&mut buf, 316, self.header.npts);
-        write_i32_le(&mut buf, 284, self.header.nvhdr);
+        use sac_layout as at;
+        let h = &self.header;
+        let mut buf = vec![0u8; SAC_HEADER_BYTES];
+        for word in buf[..at::INT_START].chunks_exact_mut(4) {
+            word.copy_from_slice(&SAC_UNDEFINED_FLOAT.to_le_bytes());
+        }
+        for word in buf[at::INT_START..at::CHAR_START].chunks_exact_mut(4) {
+            word.copy_from_slice(&SAC_UNDEFINED_INT.to_le_bytes());
+        }
+        for (i, byte) in buf[at::CHAR_START..].iter_mut().enumerate() {
+            *byte = SAC_UNDEFINED_CHARS[i % SAC_UNDEFINED_CHARS.len()];
+        }
+        let floats = [
+            (at::DELTA, h.delta),
+            (at::DEPMIN, h.depmin),
+            (at::DEPMAX, h.depmax),
+            (at::B, h.b),
+            (at::E, h.e),
+            (at::O, h.o),
+            (at::A, h.a),
+            (at::STLA, h.stla),
+            (at::STLO, h.stlo),
+            (at::STEL, h.stel),
+            (at::EVLA, h.evla),
+            (at::EVLO, h.evlo),
+            (at::EVDP, h.evdp),
+            (at::MAG, h.mag),
+            (at::DIST, h.dist),
+            (at::AZ, h.az),
+            (at::BAZ, h.baz),
+            (at::CMPAZ, h.cmpaz),
+            (at::CMPINC, h.cmpinc),
+        ];
+        for (offset, value) in floats {
+            write_f32_le(&mut buf, offset, value);
+        }
+        let ints = [
+            (at::NZYEAR, h.nzyear),
+            (at::NZJDAY, h.nzjday),
+            (at::NZHOUR, h.nzhour),
+            (at::NZMIN, h.nzmin),
+            (at::NZSEC, h.nzsec),
+            (at::NZMSEC, h.nzmsec),
+            (at::NVHDR, SAC_WRITTEN_NVHDR),
+            (at::NPTS, h.npts),
+            (at::IFTYPE, SAC_ITIME),
+            (at::LEVEN, 1),
+        ];
+        for (offset, value) in ints {
+            write_i32_le(&mut buf, offset, value);
+        }
+        write_sac_string(&mut buf, at::KSTNM, &h.kstnm);
+        write_sac_string(&mut buf, at::KCMPNM, &h.kcmpnm);
+        write_sac_string(&mut buf, at::KNETWK, &h.knetwk);
         buf
+    }
+
+    /// Serialize the whole file: the 632-byte header followed by the samples
+    /// as little-endian `f32`.
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::General`] if `header.npts` does not equal the
+    /// number of samples, because the file could not be read back.
+    pub fn to_bytes(&self) -> crate::Result<Vec<u8>> {
+        if usize::try_from(self.header.npts).ok() != Some(self.data.len()) {
+            return Err(crate::Error::General(format!(
+                "SAC header NPTS = {} but the file holds {} samples",
+                self.header.npts,
+                self.data.len()
+            )));
+        }
+        let mut out = self.serialize_header();
+        out.reserve(self.data.len() * 4);
+        for sample in &self.data {
+            out.extend_from_slice(&sample.to_le_bytes());
+        }
+        Ok(out)
+    }
+
+    /// Parse a binary SAC file (header and evenly sampled time series).
+    ///
+    /// The byte order is detected from `NVHDR`: it is read as little- and as
+    /// big-endian, and the byte order that yields a supported header version (6
+    /// or 7) is used for the whole file.
+    /// Header words that [`SacHeader`] has no field for are skipped, and bytes
+    /// after the data section (such as the footer of a version 7 file) are
+    /// ignored.
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::Parse`] if the buffer is shorter than a header,
+    /// `NVHDR` is not 6 or 7 in either byte order, the file is not an evenly
+    /// sampled time series, `NPTS` is negative, or fewer than `NPTS` samples
+    /// follow the header.
+    pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
+        use sac_layout as at;
+        if bytes.len() < SAC_HEADER_BYTES {
+            return Err(crate::Error::Parse(format!(
+                "SAC data too short: {} bytes, a header alone is {SAC_HEADER_BYTES}",
+                bytes.len()
+            )));
+        }
+        let probe = SacWords {
+            bytes,
+            big_endian: false,
+        };
+        let nvhdr_le = probe.i32_at(at::NVHDR)?;
+        let big_endian = if SAC_SUPPORTED_NVHDR.contains(&nvhdr_le) {
+            false
+        } else {
+            let swapped = SacWords {
+                bytes,
+                big_endian: true,
+            };
+            let nvhdr_be = swapped.i32_at(at::NVHDR)?;
+            if !SAC_SUPPORTED_NVHDR.contains(&nvhdr_be) {
+                return Err(crate::Error::Parse(format!(
+                    "not a SAC file: NVHDR reads as {nvhdr_le} (little-endian) or {nvhdr_be} \
+                     (big-endian), expected 6 or 7"
+                )));
+            }
+            true
+        };
+        let words = SacWords { bytes, big_endian };
+        let iftype = words.i32_at(at::IFTYPE)?;
+        if iftype != SAC_UNDEFINED_INT && iftype != SAC_ITIME {
+            return Err(crate::Error::Parse(format!(
+                "unsupported SAC file type IFTYPE = {iftype}: only time series are supported"
+            )));
+        }
+        if words.i32_at(at::LEVEN)? == 0 {
+            return Err(crate::Error::Parse(
+                "unsupported SAC file: unevenly sampled data (LEVEN is false)".to_string(),
+            ));
+        }
+        let header = SacHeader {
+            delta: words.f32_at(at::DELTA)?,
+            depmin: words.f32_at(at::DEPMIN)?,
+            depmax: words.f32_at(at::DEPMAX)?,
+            b: words.f32_at(at::B)?,
+            e: words.f32_at(at::E)?,
+            o: words.f32_at(at::O)?,
+            a: words.f32_at(at::A)?,
+            dist: words.f32_at(at::DIST)?,
+            az: words.f32_at(at::AZ)?,
+            baz: words.f32_at(at::BAZ)?,
+            cmpaz: words.f32_at(at::CMPAZ)?,
+            cmpinc: words.f32_at(at::CMPINC)?,
+            stla: words.f32_at(at::STLA)?,
+            stlo: words.f32_at(at::STLO)?,
+            stel: words.f32_at(at::STEL)?,
+            evla: words.f32_at(at::EVLA)?,
+            evlo: words.f32_at(at::EVLO)?,
+            evdp: words.f32_at(at::EVDP)?,
+            mag: words.f32_at(at::MAG)?,
+            npts: words.i32_at(at::NPTS)?,
+            nzyear: words.i32_at(at::NZYEAR)?,
+            nzjday: words.i32_at(at::NZJDAY)?,
+            nzhour: words.i32_at(at::NZHOUR)?,
+            nzmin: words.i32_at(at::NZMIN)?,
+            nzsec: words.i32_at(at::NZSEC)?,
+            nzmsec: words.i32_at(at::NZMSEC)?,
+            nvhdr: words.i32_at(at::NVHDR)?,
+            kstnm: words.string_at(at::KSTNM)?,
+            kcmpnm: words.string_at(at::KCMPNM)?,
+            knetwk: words.string_at(at::KNETWK)?,
+        };
+        let npts = usize::try_from(header.npts).map_err(|_| {
+            crate::Error::Parse(format!("SAC header has a negative NPTS = {}", header.npts))
+        })?;
+        let data_end = npts
+            .checked_mul(4)
+            .and_then(|len| len.checked_add(SAC_HEADER_BYTES))
+            .filter(|&end| end <= bytes.len())
+            .ok_or_else(|| {
+                crate::Error::Parse(format!(
+                    "SAC data truncated: header declares {npts} samples but only {} bytes \
+                     follow the header",
+                    bytes.len() - SAC_HEADER_BYTES
+                ))
+            })?;
+        let data = bytes[SAC_HEADER_BYTES..data_end]
+            .chunks_exact(4)
+            .map(|word| {
+                let raw = [word[0], word[1], word[2], word[3]];
+                if big_endian {
+                    f32::from_be_bytes(raw)
+                } else {
+                    f32::from_le_bytes(raw)
+                }
+            })
+            .collect();
+        Ok(Self { header, data })
     }
 
     /// Deserialize npts from a SAC 632-byte header.
@@ -882,17 +1088,31 @@ impl ArrivalPicker {
 
 // ── FrequencyFilter ───────────────────────────────────────────────────────────
 
-/// Butterworth bandpass filter parameters.
+/// Largest supported filter order.
 ///
-/// The filter is specified in the frequency domain by its corner frequencies
-/// and order. For actual filtering, a recursive IIR implementation is used.
+/// Orders used in practice are 2-8; the bound only keeps a nonsensical value
+/// from allocating and iterating without limit.
+const MAX_FILTER_ORDER: usize = 64;
+
+/// Zero-phase Butterworth bandpass filter.
+///
+/// `order` is the order of the analogue low-pass prototype: the band-pass has
+/// `2 * order` poles and is realised as `order` second-order sections (see
+/// [`ButterworthBandpass`], which designs it with frequency pre-warping and
+/// the bilinear transform). `freqmin` and `freqmax` are the -3 dB corners of a
+/// single pass.
+///
+/// [`apply`](Self::apply) runs the filter forward and then backward over the
+/// record, as ObsPy's `zerophase=True` does: there is no phase lag and no
+/// time shift, the effective gain is the square of the single-pass gain (the
+/// corners become -6 dB) and the effective order doubles.
 #[derive(Debug, Clone)]
 pub struct FrequencyFilter {
     /// Lower corner frequency in Hz.
     pub freqmin: f64,
     /// Upper corner frequency in Hz.
     pub freqmax: f64,
-    /// Filter order (number of poles).
+    /// Order of the low-pass prototype (the band-pass has twice as many poles).
     pub order: usize,
     /// Sampling rate in Hz.
     pub sampling_rate: f64,
@@ -900,6 +1120,10 @@ pub struct FrequencyFilter {
 
 impl FrequencyFilter {
     /// Create a new Butterworth bandpass filter.
+    ///
+    /// The parameters are not checked here; [`apply`](Self::apply) and
+    /// [`design`](Self::design) report invalid ones. Use
+    /// [`try_bandpass`](Self::try_bandpass) to validate up front.
     pub fn bandpass(freqmin: f64, freqmax: f64, order: usize, sampling_rate: f64) -> Self {
         Self {
             freqmin,
@@ -909,7 +1133,64 @@ impl FrequencyFilter {
         }
     }
 
-    /// Check if a given frequency is in the passband (within 3 dB of unity gain).
+    /// Create a Butterworth bandpass filter, checking the parameters.
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::General`] unless `sampling_rate` is positive
+    /// and finite, `0 < freqmin < freqmax < sampling_rate / 2` and
+    /// `1 <= order <= 64`.
+    pub fn try_bandpass(
+        freqmin: f64,
+        freqmax: f64,
+        order: usize,
+        sampling_rate: f64,
+    ) -> crate::Result<Self> {
+        let filter = Self::bandpass(freqmin, freqmax, order, sampling_rate);
+        filter.validate()?;
+        Ok(filter)
+    }
+
+    /// Check that the parameters describe a realisable bandpass filter.
+    ///
+    /// # Errors
+    /// See [`try_bandpass`](Self::try_bandpass).
+    pub fn validate(&self) -> crate::Result<()> {
+        let nyquist = 0.5 * self.sampling_rate;
+        let band_ok = self.sampling_rate.is_finite()
+            && self.sampling_rate > 0.0
+            && self.freqmin.is_finite()
+            && self.freqmin > 0.0
+            && self.freqmin < self.freqmax
+            && self.freqmax < nyquist;
+        if !band_ok {
+            return Err(crate::Error::General(format!(
+                "invalid bandpass band: need 0 < freqmin < freqmax < sampling_rate / 2, \
+                 got freqmin = {}, freqmax = {}, sampling_rate = {}",
+                self.freqmin, self.freqmax, self.sampling_rate
+            )));
+        }
+        if !(1..=MAX_FILTER_ORDER).contains(&self.order) {
+            return Err(crate::Error::General(format!(
+                "invalid bandpass order {}: must be between 1 and {MAX_FILTER_ORDER}",
+                self.order
+            )));
+        }
+        Ok(())
+    }
+
+    /// Design the single-pass Butterworth band-pass cascade.
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::General`] if the parameters are invalid (see
+    /// [`try_bandpass`](Self::try_bandpass)) or the design fails numerically.
+    pub fn design(&self) -> crate::Result<ButterworthBandpass> {
+        self.validate()?;
+        ButterworthBandpass::try_new(self.order, self.freqmin, self.freqmax, self.sampling_rate)
+            .map_err(|e| crate::Error::General(format!("cannot design Butterworth band-pass: {e}")))
+    }
+
+    /// Check if a given frequency is in the passband, i.e. between the -3 dB
+    /// corners of a single pass.
     pub fn in_passband(&self, freq_hz: f64) -> bool {
         freq_hz >= self.freqmin && freq_hz <= self.freqmax
     }
@@ -917,53 +1198,48 @@ impl FrequencyFilter {
     /// Compute the idealized gain at a given frequency (rectangular approximation).
     ///
     /// Returns 1.0 in the passband, 0.0 outside. This is a simplified model
-    /// for testing the concept of passband vs. stopband.
+    /// for testing the concept of passband vs. stopband; see
+    /// [`zero_phase_gain`](Self::zero_phase_gain) for the real response.
     pub fn ideal_gain(&self, freq_hz: f64) -> f64 {
         if self.in_passband(freq_hz) { 1.0 } else { 0.0 }
     }
 
-    /// Apply a simple forward-backward (zero-phase) bandpass filter using
-    /// a windowed sinc approach (simplified for testing).
+    /// Gain of [`apply`](Self::apply) at `freq_hz`: the squared magnitude of
+    /// the single-pass response, since the record is filtered forward and
+    /// backward.
     ///
-    /// Returns filtered data of the same length.
-    pub fn apply(&self, data: &[f64]) -> Vec<f64> {
-        // Simple rectangular window in frequency domain via DFT-like approach
-        // For a real implementation, use recursive Butterworth IIR
-        // Here we use a simple moving average as a low-pass approximation
-        let n = data.len();
-        if n == 0 {
-            return Vec::new();
-        }
-        // Low-pass filter up to freqmax
-        let lp_samples = (self.sampling_rate / (2.0 * self.freqmax)).round().max(1.0) as usize;
-        // High-pass: subtract low-passed version at freqmin
-        let hp_samples = (self.sampling_rate / (2.0 * self.freqmin)).round().max(1.0) as usize;
-
-        let lp = moving_average(data, lp_samples);
-        let hp_lp = moving_average(data, hp_samples);
-        // Bandpass: LP - very_LP (removes DC and very low freqs)
-        let out: Vec<f64> = lp.iter().zip(hp_lp.iter()).map(|(&l, &h)| l - h).collect();
-        out
+    /// # Errors
+    /// See [`design`](Self::design).
+    pub fn zero_phase_gain(&self, freq_hz: f64) -> crate::Result<f64> {
+        let single_pass = self
+            .design()?
+            .magnitude_response(freq_hz, self.sampling_rate);
+        Ok(single_pass * single_pass)
     }
-}
 
-/// Compute a moving average with the given window size.
-fn moving_average(data: &[f64], window: usize) -> Vec<f64> {
-    let n = data.len();
-    let w = window.max(1);
-    let mut out = vec![0.0f64; n];
-    let mut sum = 0.0f64;
-    let mut count = 0usize;
-    for i in 0..n {
-        sum += data[i];
-        count += 1;
-        if i >= w {
-            sum -= data[i - w];
-            count -= 1;
-        }
-        out[i] = sum / count as f64;
+    /// Number of samples of odd extension used at each end of a record of
+    /// `n` samples: two periods of the lower corner frequency, but at least
+    /// three filter lengths, and always less than the record itself.
+    fn edge_padding(&self, n: usize) -> usize {
+        let settling = (2.0 * self.sampling_rate / self.freqmin).ceil() as usize;
+        let filter_lengths = 3 * (2 * self.order + 1);
+        settling.max(filter_lengths).min(n.saturating_sub(1))
     }
-    out
+
+    /// Apply the bandpass filter with zero phase (forward and backward).
+    ///
+    /// Returns filtered data of the same length. The record is extended at both
+    /// ends by an odd reflection and the filter starts in the steady state of
+    /// a constant input, so the start-up transient does not reach the data;
+    /// a constant offset (or any signal at DC) is removed exactly.
+    ///
+    /// # Errors
+    /// See [`design`](Self::design). An empty record returns an empty vector.
+    pub fn apply(&self, data: &[f64]) -> crate::Result<Vec<f64>> {
+        let mut filter = self.design()?;
+        let pad = self.edge_padding(data.len());
+        Ok(zero_phase::filtfilt(&mut filter, data, pad))
+    }
 }
 
 // ── SeismicCatalog ────────────────────────────────────────────────────────────
@@ -1524,14 +1800,14 @@ mod tests {
     fn test_bandpass_apply_preserves_length() {
         let data: Vec<f64> = (0..256).map(|i| (i as f64 * 0.1).sin()).collect();
         let filt = FrequencyFilter::bandpass(1.0, 10.0, 4, 100.0);
-        let out = filt.apply(&data);
+        let out = filt.apply(&data).unwrap();
         assert_eq!(out.len(), data.len());
     }
 
     #[test]
     fn test_bandpass_apply_empty() {
         let filt = FrequencyFilter::bandpass(1.0, 10.0, 4, 100.0);
-        let out = filt.apply(&[]);
+        let out = filt.apply(&[]).unwrap();
         assert!(out.is_empty());
     }
 

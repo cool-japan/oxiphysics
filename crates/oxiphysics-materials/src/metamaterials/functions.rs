@@ -42,75 +42,40 @@ pub fn penrose_tiling_density(phi: f64, unit_area: f64) -> f64 {
     let a_thin = unit_area * (36.0_f64.to_radians()).sin();
     (phi * a_fat + a_thin) / (phi + 1.0)
 }
-/// Generate a topology-optimised binary lattice with a target Poisson's ratio.
+/// Compute the Poisson's ratio of a (re-entrant) hexagonal honeycomb from geometry.
 ///
-/// Uses a simplified SIMP-like (Solid Isotropic Material with Penalisation)
-/// sensitivity iteration on a 2-D grid.  Each cell is either solid (`true`) or
-/// void (`false`).  The grid is square with side length `sqrt(iterations)`,
-/// clamped to a 32×32 maximum for tractability.
-///
-/// `target_poisson` is the desired effective Poisson's ratio (negative for auxetics).
-/// `iterations` controls the number of update sweeps (minimum 1 sweep is always run).
-///
-/// Returns a 2-D boolean grid (outer index = row, inner = column).
-pub fn topology_optimized_auxetic(target_poisson: f64, iterations: usize) -> Vec<Vec<bool>> {
-    let n = ((iterations as f64).sqrt() as usize).clamp(4, 32);
-    let mut grid = vec![vec![true; n]; n];
-    if iterations == 0 {
-        return grid;
-    }
-    if target_poisson < 0.0 {
-        for i in (2..n - 1).step_by(3) {
-            for j in (2..n - 1).step_by(3) {
-                grid[i][j] = false;
-            }
-        }
-    }
-    for _iter in 0..iterations.min(200) {
-        let prev = grid.clone();
-        for i in 1..n - 1 {
-            for j in 1..n - 1 {
-                let neighbors_solid = [
-                    prev[i - 1][j],
-                    prev[i + 1][j],
-                    prev[i][j - 1],
-                    prev[i][j + 1],
-                ]
-                .iter()
-                .filter(|&&v| v)
-                .count();
-                let h_solid = prev[i][j - 1] && prev[i][j + 1];
-                let v_solid = prev[i - 1][j] && prev[i + 1][j];
-                if target_poisson < 0.0 {
-                    if neighbors_solid == 2 && (h_solid || v_solid) {
-                        grid[i][j] = false;
-                    }
-                } else if neighbors_solid < 2 {
-                    grid[i][j] = false;
-                }
-            }
-        }
-    }
-    grid
-}
-/// Compute the Poisson's ratio of a re-entrant honeycomb from geometry.
-///
-/// Uses the Masters–Evans formula for the re-entrant cell:
+/// Uses the Gibson–Ashby / Masters–Evans rib-flexure result for loading
+/// **along the vertical ribs** (direction 2, parallel to `l2`):
 /// ```text
-/// ν = −sin(θ)·(h/l + sin(θ)) / cos²(θ)
+/// ν₂₁ = sin(θ)·(h/l + sin(θ)) / cos²(θ),   h/l = l2 / l1
 /// ```
-/// where `angle_deg` (θ) is the cell angle (degrees, negative for re-entrant),
-/// `l1` = inclined rib length and `l2` = vertical rib length.
+/// where `angle_deg` (θ) is the cell angle in degrees (positive for a
+/// conventional hexagon, negative for a re-entrant/auxetic cell), `l1` is the
+/// inclined rib length and `l2` the vertical rib length.
+///
+/// Reference values: a regular hexagon (θ = 30°, l1 = l2) gives ν = +1, and
+/// the re-entrant cell θ = −30°, l2/l1 = 2 gives ν = −1.
+///
+/// Returns `f64::NAN` for non-physical geometry: non-positive or non-finite rib
+/// lengths, |θ| ≥ 90°, or `h/l + sin(θ) ≤ 0` (the inclined ribs would cross
+/// over the vertical ribs, so the cell does not close).
 pub fn auxetic_poissons_from_geometry(angle_deg: f64, l1: f64, l2: f64) -> f64 {
+    if !(l1.is_finite() && l2.is_finite() && angle_deg.is_finite()) || l1 <= 0.0 || l2 <= 0.0 {
+        return f64::NAN;
+    }
     let theta = angle_deg.to_radians();
     let sin_t = theta.sin();
     let cos_t = theta.cos();
     let cos2 = cos_t * cos_t;
-    if cos2.abs() < 1e-15 {
-        return 0.0;
+    if cos_t <= 1e-12 {
+        return f64::NAN;
     }
-    let h_over_l = l2 / l1.max(1e-30);
-    -sin_t * (h_over_l + sin_t) / cos2
+    let h_over_l = l2 / l1;
+    let closure = h_over_l + sin_t;
+    if closure <= 0.0 {
+        return f64::NAN;
+    }
+    sin_t * closure / cos2
 }
 /// Compute the relative density of a regular honeycomb.
 ///
@@ -265,28 +230,29 @@ mod tests {
     }
     #[test]
     fn test_reentrant_poisson_negative() {
-        let h = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 0.3, 0.1, 1e9);
+        // Valid re-entrant cell: theta = -30 deg, h/l = 2 gives nu_xy = -1 exactly.
+        let h = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 2.0, 0.1, 1e9);
+        let nu = h.poisson_ratio_xy();
         assert!(
-            h.poisson_ratio_xy() < 0.0,
-            "Re-entrant cell with h/l=0.3 and theta=-PI/6 should have negative Poisson ratio, got {}",
-            h.poisson_ratio_xy()
+            (nu + 1.0).abs() < 1e-12,
+            "Re-entrant cell (theta = -30 deg, h/l = 2) must have nu_xy = -1, got {nu}"
         );
     }
     #[test]
     fn test_reentrant_moduli_positive() {
-        let h = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 0.3, 0.1, 1e9);
+        let h = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 2.0, 0.1, 1e9);
         assert!(h.young_modulus_x() > 0.0, "E_x must be positive");
         assert!(h.young_modulus_y() > 0.0, "E_y must be positive");
     }
     #[test]
     fn test_reentrant_shear_positive() {
-        let h = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 0.3, 0.1, 1e9);
+        let h = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 2.0, 0.1, 1e9);
         assert!(h.shear_modulus_xy() > 0.0, "G_xy must be positive");
     }
     #[test]
     fn test_reentrant_thickness_effect() {
-        let h1 = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 0.3, 0.05, 1e9);
-        let h2 = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 0.3, 0.10, 1e9);
+        let h1 = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 2.0, 0.05, 1e9);
+        let h2 = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 2.0, 0.10, 1e9);
         assert!(
             h2.young_modulus_x() > h1.young_modulus_x(),
             "Thicker ribs should give higher E_x"
@@ -447,32 +413,6 @@ mod tests {
         );
     }
     #[test]
-    fn test_topo_grid_dimensions() {
-        let grid = topology_optimized_auxetic(-0.5, 16);
-        let n = grid.len();
-        assert!(n >= 4, "Grid must have at least 4 rows");
-        assert_eq!(grid[0].len(), n, "Grid must be square");
-    }
-    #[test]
-    fn test_topo_auxetic_creates_voids() {
-        let grid = topology_optimized_auxetic(-0.5, 200);
-        let void_count: usize = grid.iter().flatten().filter(|&&v| !v).count();
-        assert!(
-            void_count > 0,
-            "Auxetic target should create at least one void cell (iterations=200)"
-        );
-    }
-    #[test]
-    fn test_topo_zero_iterations() {
-        let grid = topology_optimized_auxetic(-0.5, 0);
-        let solid_count: usize = grid.iter().flatten().filter(|&&v| v).count();
-        let total = grid.len() * grid[0].len();
-        assert_eq!(
-            solid_count, total,
-            "Zero iterations should leave all cells solid"
-        );
-    }
-    #[test]
     fn test_acoustic_mm_modulus_constant() {
         let mm = AcousticMetamaterial::new(0.01, 0.001, 100.0, 1000.0, 2e6);
         let w0 = (100.0_f64 / 0.001).sqrt();
@@ -485,15 +425,25 @@ mod tests {
     }
     #[test]
     fn test_reentrant_theta_sign() {
-        let hn = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 0.3, 0.1, 1e9);
-        let hp = ReentrantHoneycomb::new(PI / 6.0, 1.0, 0.3, 0.1, 1e9);
+        // Same rib lengths (h/l = 2): the sign of theta decides the sign of nu_xy.
+        let hn = ReentrantHoneycomb::new(-PI / 6.0, 1.0, 2.0, 0.1, 1e9);
+        let hp = ReentrantHoneycomb::new(PI / 6.0, 1.0, 2.0, 0.1, 1e9);
         let nu_n = hn.poisson_ratio_xy();
         let nu_p = hp.poisson_ratio_xy();
-        assert!(nu_n < 0.0, "nu_n should be negative: {nu_n}");
-        assert!(nu_p < 0.0, "nu_p should be negative: {nu_p}");
+        assert!(
+            nu_n < 0.0,
+            "re-entrant cell (theta < 0) must be auxetic: {nu_n}"
+        );
+        assert!(
+            nu_p > 0.0,
+            "conventional cell (theta > 0) must not be auxetic: {nu_p}"
+        );
+        // cos^2(30 deg) / ((2 -+ 0.5) (+-0.5)): +0.6 for theta = +30 deg, -1 for -30 deg.
+        assert!((nu_p - 0.6).abs() < 1e-12, "nu_p = {nu_p}");
+        assert!((nu_n + 1.0).abs() < 1e-12, "nu_n = {nu_n}");
         assert!(
             (nu_n.abs() - nu_p.abs()).abs() > 1e-9,
-            "Magnitudes of ν should differ when θ flips sign: nu_n={nu_n}, nu_p={nu_p}"
+            "Magnitudes of nu should differ when theta flips sign: nu_n={nu_n}, nu_p={nu_p}"
         );
     }
     #[test]
@@ -551,16 +501,6 @@ mod tests {
         );
     }
     #[test]
-    fn test_topo_positive_target_solid() {
-        let grid = topology_optimized_auxetic(0.3, 25);
-        let solid_count: usize = grid.iter().flatten().filter(|&&v| v).count();
-        let total = grid.len() * grid[0].len();
-        assert!(
-            solid_count > total / 2,
-            "Positive target should keep most cells solid: solid={solid_count}/{total}"
-        );
-    }
-    #[test]
     fn test_penrose_phi_one() {
         let d = penrose_tiling_density(1.0, 1.0);
         let a_fat = (72.0_f64.to_radians()).sin();
@@ -585,11 +525,28 @@ mod tests {
     }
     #[test]
     fn test_auxetic_poissons_negative_angle() {
-        let nu = auxetic_poissons_from_geometry(-30.0, 1.0, 0.3);
+        // Valid re-entrant cell: θ = −30°, h/l = 2 → ν₂₁ = −1 exactly.
+        let nu = auxetic_poissons_from_geometry(-30.0, 1.0, 2.0);
         assert!(
-            nu < 0.0,
-            "Re-entrant angle should give negative Poisson's ratio, got {nu}"
+            (nu + 1.0).abs() < 1e-12,
+            "Re-entrant cell (−30°, h/l=2) must give ν = −1, got {nu}"
         );
+    }
+    #[test]
+    fn test_auxetic_poissons_regular_hexagon_is_plus_one() {
+        // Regular hexagon: θ = 30°, h = l → Gibson–Ashby ν = +1.
+        let nu = auxetic_poissons_from_geometry(30.0, 1.0, 1.0);
+        assert!(
+            (nu - 1.0).abs() < 1e-12,
+            "Regular hexagon must give ν = +1, got {nu}"
+        );
+    }
+    #[test]
+    fn test_auxetic_poissons_nonphysical_geometry_is_nan() {
+        // h/l + sin θ = 0.3 − 0.5 < 0: the cell cannot close.
+        assert!(auxetic_poissons_from_geometry(-30.0, 1.0, 0.3).is_nan());
+        assert!(auxetic_poissons_from_geometry(30.0, 0.0, 1.0).is_nan());
+        assert!(auxetic_poissons_from_geometry(90.0, 1.0, 1.0).is_nan());
     }
     #[test]
     fn test_honeycomb_density_cap() {
@@ -708,9 +665,29 @@ mod tests {
     }
     #[test]
     fn test_elastic_meta_compute_auxetic_poisson() {
+        // rib_angle = −30°, h/l = 2 → ν = −1 (valid re-entrant cell).
         let mut m = make_elastic_meta();
+        let nu = m.compute_auxetic_poisson(2.0);
+        assert!((nu + 1.0).abs() < 1e-12, "nu={nu}");
+        assert!((m.effective_poisson + 1.0).abs() < 1e-12);
+        assert!(m.is_auxetic());
+    }
+    #[test]
+    fn test_elastic_meta_compute_poisson_regular_hexagon() {
+        let mut m = make_elastic_meta();
+        m.rib_angle = PI / 6.0;
+        let nu = m.compute_auxetic_poisson(1.0);
+        assert!((nu - 1.0).abs() < 1e-12, "nu={nu}");
+        assert!(!m.is_auxetic());
+    }
+    #[test]
+    fn test_elastic_meta_compute_poisson_nonphysical_keeps_state() {
+        // h/l + sin θ = 0.3 − 0.5 < 0 → NaN returned, stored ν untouched.
+        let mut m = make_elastic_meta();
+        let before = m.effective_poisson;
         let nu = m.compute_auxetic_poisson(0.3);
-        assert!(nu < 0.0, "nu={nu}");
+        assert!(nu.is_nan());
+        assert_eq!(m.effective_poisson, before);
     }
     fn make_srr() -> SplitRingResonator {
         SplitRingResonator::new(1e-3, 1e-4, 1e-4, 5e-3, 1e-9, 1e-12)
@@ -780,14 +757,19 @@ mod tests {
     #[test]
     fn test_cloak_shell_radial_density_in_shell() {
         let c = make_cloak_shell();
+        // rho_r = rho_0 r / (r - r_1) = 1000 * 0.075 / 0.025 = 3000 kg/m^3 at mid-shell.
         let rho = c.radial_density(0.075);
-        assert!(rho >= 0.0, "rho_r={rho}");
+        assert!((rho - 3000.0).abs() < 1e-9, "rho_r={rho}");
     }
     #[test]
     fn test_cloak_shell_radial_density_outside() {
         let c = make_cloak_shell();
-        assert_eq!(c.radial_density(0.11), 0.0);
-        assert_eq!(c.radial_density(0.04), 0.0);
+        // Outside the shell the medium is the background fluid.
+        assert_eq!(c.radial_density(0.11), c.background_density);
+        assert_eq!(c.radial_density(0.10), c.background_density);
+        // Inside the hidden core the ideal radial density is singular (r -> r_1 limit).
+        assert_eq!(c.radial_density(0.04), f64::INFINITY);
+        assert_eq!(c.radial_density(0.05), f64::INFINITY);
     }
     #[test]
     fn test_cloak_shell_angular_density_positive() {

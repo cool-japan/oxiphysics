@@ -20,28 +20,22 @@ pub fn grashof_condition(l1: f64, l2: f64, l3: f64, l4: f64) -> bool {
 }
 /// Compute `theta3` and `theta4` for a four-bar linkage at crank angle `theta2`.
 ///
-/// Returns `(theta3, theta4)` in radians, or `None` on error.
+/// `theta4` is the follower angle of [`FourBarLinkage::follower_angle`]; `theta3`
+/// is the direction of the coupler from the crank tip `A = l2·(cosθ2, sinθ2)` to
+/// the follower tip `B = (l1 + l4·cosθ4, l4·sinθ4)`, so the pair closes the loop
+/// `|B − A| = l3` exactly.
+///
+/// Returns `(theta3, theta4)` in radians, or `None` when the linkage cannot
+/// assemble at this crank angle.
 pub fn four_bar_angles(l1: f64, l2: f64, l3: f64, l4: f64, theta2: f64) -> Option<(f64, f64)> {
     let fb = FourBarLinkage::new(l1, l2, l3, l4);
     let theta4 = fb.follower_angle(theta2)?;
-    let k4 = self_k4(l1, l2, l3, l4);
-    let k5 = self_k5(l1, l2, l3, l4);
-    let d = theta2.cos() - k4 - k5 * theta2.cos();
-    let e = -2.0 * theta2.sin();
-    let f_coef = k4 - (k5 - 1.0) * theta2.cos();
-    let disc = sq(e) - 4.0 * d * f_coef;
-    if disc < 0.0 {
-        return None;
-    }
-    let t3 = (-e - disc.sqrt()) / (2.0 * d);
-    let theta3 = 2.0 * t3.atan();
+    let crank_tip_x = l2 * theta2.cos();
+    let crank_tip_y = l2 * theta2.sin();
+    let follower_tip_x = l1 + l4 * theta4.cos();
+    let follower_tip_y = l4 * theta4.sin();
+    let theta3 = (follower_tip_y - crank_tip_y).atan2(follower_tip_x - crank_tip_x);
     Some((theta3, theta4))
-}
-pub(super) fn self_k4(l1: f64, _l2: f64, l3: f64, _l4: f64) -> f64 {
-    l1 / l3
-}
-pub(super) fn self_k5(_l1: f64, l2: f64, l3: f64, _l4: f64) -> f64 {
-    (sq(l2) + sq(l3) - sq(_l1) - sq(_l4)) / (2.0 * l2 * l3)
 }
 /// Compute compound gear ratio from a series of (drive, driven) tooth counts.
 pub fn gear_ratio_compound(stages: &[(u32, u32)]) -> f64 {

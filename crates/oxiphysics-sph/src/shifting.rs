@@ -80,42 +80,43 @@ pub fn shifting_vector(
     delta
 }
 
-/// Fickian diffusion-based particle shifting.
+/// Fickian diffusion-based particle shifting (Lind et al., 2012).
 ///
-/// Computes a diffusion-type shift based on the inter-particle concentration
-/// gradient, designed to equidistribute particles:
-/// `delta_r_i = D * dt * sum_j (r_j - r_i) * W_ij * V_j`
+/// The particle is moved *down* the gradient of the particle-number
+/// concentration, which equidistributes the particles and fills voids:
 ///
-/// where `D` is the diffusion coefficient and `V_j` is the volume of neighbour `j`.
+/// `delta_r_i = -D * dt * grad C_i`,  `grad C_i = sum_j V_j * grad_i W_ij`
+///
+/// where `D` is the diffusion coefficient `[m^2/s]`, `V_j` the volume of
+/// neighbour `j` and `grad_i W_ij` the kernel gradient with respect to the
+/// position of particle `i` (it points *towards* neighbour `j`, since the
+/// kernel decreases with distance).  The result has units of length:
+/// `[m^2] * [m^3] * [m^-4] = [m]`.  A particle whose neighbours all lie on one
+/// side is therefore pushed away from them, and a particle surrounded
+/// symmetrically is not shifted at all.
 ///
 /// # Arguments
-/// * `pos_i` - position of particle i, length `dim`
-/// * `pos_j` - positions of neighbours, shape `[n_neigh][dim]`
-/// * `w_ij` - kernel values at each neighbour
+/// * `grad_w_ij` - kernel gradients `grad_i W_ij` for each neighbour, shape `[n_neigh][dim]`
 /// * `vol_j` - volumes of neighbours
 /// * `diffusion_coeff` - Fickian diffusion coefficient D
 /// * `dt` - time step
 /// * `dim` - spatial dimension
+///
+/// Returns the shift vector of length `dim`.
 pub fn fickian_shift(
-    pos_i: &[f64],
-    pos_j: &[Vec<f64>],
-    w_ij: &[f64],
+    grad_w_ij: &[Vec<f64>],
     vol_j: &[f64],
     diffusion_coeff: f64,
     dt: f64,
     dim: usize,
 ) -> Vec<f64> {
-    assert_eq!(pos_j.len(), w_ij.len());
-    assert_eq!(pos_j.len(), vol_j.len());
+    assert_eq!(grad_w_ij.len(), vol_j.len());
     let mut delta = vec![0.0f64; dim];
-    for j in 0..pos_j.len() {
-        let wv = w_ij[j] * vol_j[j];
-        for d in 0..dim {
-            delta[d] += (pos_j[j][d] - pos_i[d]) * wv;
+    let scale = diffusion_coeff * dt;
+    for (gw, &volume) in grad_w_ij.iter().zip(vol_j.iter()) {
+        for (item, &g) in delta.iter_mut().zip(gw.iter()) {
+            *item -= scale * volume * g;
         }
-    }
-    for item in delta.iter_mut().take(dim) {
-        *item *= diffusion_coeff * dt;
     }
     delta
 }
@@ -289,54 +290,119 @@ mod tests {
 
     // ── fickian_shift ──────────────────────────────────────────────────────
 
-    #[test]
-    fn test_fickian_no_neighbours() {
-        let pos_i = [0.0, 0.0];
-        let delta = fickian_shift(&pos_i, &[], &[], &[], 0.1, 0.01, 2);
-        assert!(delta[0].abs() < 1e-15);
+    /// Cubic-spline gradient `grad_i W(x_i - x_j)` of the crate kernel.
+    fn kernel_gradient(x_i: [f64; 3], x_j: [f64; 3], h: f64) -> Vec<f64> {
+        use crate::kernel::{CubicSplineKernel, SphKernel};
+        let r_ij = [x_i[0] - x_j[0], x_i[1] - x_j[1], x_i[2] - x_j[2]];
+        let r = (r_ij[0] * r_ij[0] + r_ij[1] * r_ij[1] + r_ij[2] * r_ij[2]).sqrt();
+        if r < 1e-14 {
+            return vec![0.0; 3];
+        }
+        let dw = CubicSplineKernel.grad_w(r, h);
+        r_ij.iter().map(|c| dw * c / r).collect()
     }
 
     #[test]
-    fn test_fickian_single_neighbour_positive() {
-        let pos_i = [0.0, 0.0];
-        let pos_j = vec![vec![1.0, 0.0]];
-        let w_ij = vec![1.0];
-        let vol_j = vec![1.0];
-        let delta = fickian_shift(&pos_i, &pos_j, &w_ij, &vol_j, 1.0, 1.0, 2);
-        // delta[0] = 1.0 * (1.0 - 0.0) * 1.0 * 1.0 = 1.0
-        assert!((delta[0] - 1.0).abs() < 1e-14);
+    fn test_fickian_no_neighbours() {
+        let delta = fickian_shift(&[], &[], 0.1, 0.01, 2);
+        assert_eq!(delta.len(), 2);
+        assert!(delta[0].abs() < 1e-15);
+        assert!(delta[1].abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_fickian_neighbours_on_positive_side_push_particle_negative() {
+        // grad_i W points towards the neighbour (+x); the shift goes down the
+        // concentration gradient, i.e. away from the neighbour.
+        let grad_w = vec![vec![2.0, 0.0]];
+        let delta = fickian_shift(&grad_w, &[1.0], 1.0, 1.0, 2);
+        assert!(delta[0] < 0.0, "shift must point away from the neighbour");
+        assert!((delta[0] - (-2.0)).abs() < 1e-14);
         assert!(delta[1].abs() < 1e-14);
     }
 
     #[test]
+    fn test_fickian_unit_coefficients_return_minus_gradient_sum() {
+        // D = dt = V = 1: delta = -sum_j grad_i W_ij.
+        let grad_w = vec![vec![1.0, -2.0, 0.5], vec![0.25, 4.0, -1.5]];
+        let delta = fickian_shift(&grad_w, &[1.0, 1.0], 1.0, 1.0, 3);
+        assert!((delta[0] - (-1.25)).abs() < 1e-14);
+        assert!((delta[1] - (-2.0)).abs() < 1e-14);
+        assert!((delta[2] - 1.0).abs() < 1e-14);
+    }
+
+    #[test]
     fn test_fickian_zero_dt() {
-        let pos_i = [0.0, 0.0];
-        let pos_j = vec![vec![1.0, 0.0]];
-        let w_ij = vec![1.0];
-        let vol_j = vec![1.0];
-        let delta = fickian_shift(&pos_i, &pos_j, &w_ij, &vol_j, 1.0, 0.0, 2);
+        let grad_w = vec![vec![1.0, 0.0]];
+        let delta = fickian_shift(&grad_w, &[1.0], 1.0, 0.0, 2);
         assert!(delta[0].abs() < 1e-15);
     }
 
     #[test]
-    fn test_fickian_scales_with_diffusion_coeff() {
-        let pos_i = [0.0, 0.0];
-        let pos_j = vec![vec![1.0, 0.0]];
-        let w_ij = vec![1.0];
-        let vol_j = vec![1.0];
-        let d1 = fickian_shift(&pos_i, &pos_j, &w_ij, &vol_j, 1.0, 1.0, 2);
-        let d2 = fickian_shift(&pos_i, &pos_j, &w_ij, &vol_j, 2.0, 1.0, 2);
-        assert!((d2[0] / d1[0] - 2.0).abs() < 1e-12);
+    fn test_fickian_scales_linearly_with_d_dt_and_volume() {
+        // Units: [D dt] = m^2, [V] = m^3, [grad W] = m^-4, so the shift is a length
+        // and every factor enters linearly.
+        let grad_w = vec![vec![3.0, 1.0]];
+        let base = fickian_shift(&grad_w, &[1.0], 1.0, 1.0, 2);
+        let double_d = fickian_shift(&grad_w, &[1.0], 2.0, 1.0, 2);
+        let double_dt = fickian_shift(&grad_w, &[1.0], 1.0, 2.0, 2);
+        let double_v = fickian_shift(&grad_w, &[2.0], 1.0, 1.0, 2);
+        for d in 0..2 {
+            assert!((double_d[d] / base[d] - 2.0).abs() < 1e-12);
+            assert!((double_dt[d] / base[d] - 2.0).abs() < 1e-12);
+            assert!((double_v[d] / base[d] - 2.0).abs() < 1e-12);
+        }
     }
 
     #[test]
     fn test_fickian_symmetric_neighbours_cancel() {
-        let pos_i = [0.0, 0.0];
-        let pos_j = vec![vec![1.0, 0.0], vec![-1.0, 0.0]];
-        let w_ij = vec![1.0, 1.0];
-        let vol_j = vec![1.0, 1.0];
-        let delta = fickian_shift(&pos_i, &pos_j, &w_ij, &vol_j, 1.0, 1.0, 2);
+        let grad_w = vec![vec![1.0, 0.0], vec![-1.0, 0.0]];
+        let delta = fickian_shift(&grad_w, &[1.0, 1.0], 1.0, 1.0, 2);
         assert!(delta[0].abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_fickian_spreads_a_lattice_block_outward() {
+        // 5x5x5 cube of particles, spacing dx, cubic-spline kernel with h = 1.2 dx.
+        let (n_side, dx) = (5_usize, 0.1_f64);
+        let h = 1.2 * dx;
+        let mut points = Vec::new();
+        for i in 0..n_side {
+            for j in 0..n_side {
+                for k in 0..n_side {
+                    points.push([i as f64 * dx, j as f64 * dx, k as f64 * dx]);
+                }
+            }
+        }
+        let centre = [2.0 * dx; 3];
+        let volume = dx * dx * dx;
+        let mut corner_outward = 0.0_f64;
+        for (a, xi) in points.iter().enumerate() {
+            let mut grads = Vec::new();
+            for (b, xj) in points.iter().enumerate() {
+                let r2: f64 = (0..3).map(|c| (xi[c] - xj[c]).powi(2)).sum();
+                if a != b && r2 < (2.0 * h) * (2.0 * h) {
+                    grads.push(kernel_gradient(*xi, *xj, h));
+                }
+            }
+            let vols = vec![volume; grads.len()];
+            let delta = fickian_shift(&grads, &vols, 1.0e-3, 1.0, 3);
+            let outward: f64 = (0..3).map(|c| delta[c] * (xi[c] - centre[c])).sum();
+            assert!(
+                outward >= -1e-18,
+                "particle {a} is pulled inwards: {outward}"
+            );
+            if xi[0] == 0.0 && xi[1] == 0.0 && xi[2] == 0.0 {
+                corner_outward = outward;
+            }
+            if (0..3).all(|c| xi[c] == centre[c]) {
+                assert!(
+                    delta.iter().all(|d| d.abs() < 1e-15),
+                    "centre moved: {delta:?}"
+                );
+            }
+        }
+        assert!(corner_outward > 0.0, "corner must be pushed outwards");
     }
 
     // ── tensile_correction ─────────────────────────────────────────────────

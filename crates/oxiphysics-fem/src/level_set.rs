@@ -868,6 +868,41 @@ mod tests {
         assert!(worst < 0.1, "anisotropic max ||grad| - 1| = {worst}");
     }
 
+    /// The Godunov Hamiltonian is a true gradient magnitude: a signed-distance
+    /// field gives 1 whatever the cell size, also when `dx != dy`.  Without the
+    /// division by the grid spacing it returned `dx` instead.
+    #[test]
+    fn test_godunov_grad_mag_of_signed_distance_is_one_for_any_spacing() {
+        use std::f64::consts::FRAC_1_SQRT_2;
+        for &(dx, dy) in &[(1.0, 1.0), (0.25, 0.25), (40.0, 40.0), (0.1, 0.5)] {
+            let (nx, ny) = (9usize, 9usize);
+            let (cx, cy) = (4.5 * dx, 4.5 * dy);
+            let grid = GridSpec { nx, ny, dx, dy };
+            // planes with the unit normals (1, 0), (0, 1) and (1, 1) / sqrt(2)
+            let normals = [[1.0, 0.0], [0.0, 1.0], [FRAC_1_SQRT_2, FRAC_1_SQRT_2]];
+            for normal in normals {
+                let mut phi = vec![0.0; nx * ny];
+                for i in 0..nx {
+                    for j in 0..ny {
+                        let x = (i as f64 + 0.5) * dx - cx;
+                        let y = (j as f64 + 0.5) * dy - cy;
+                        phi[i * ny + j] = normal[0] * x + normal[1] * y;
+                    }
+                }
+                for i in 1..nx - 1 {
+                    for j in 1..ny - 1 {
+                        let phi0 = phi[i * ny + j];
+                        let g = godunov_grad_mag(&phi, grid, i, j, phi0);
+                        assert!(
+                            (g - 1.0).abs() < 1e-12,
+                            "dx = {dx}, dy = {dy}, normal = {normal:?}, cell ({i}, {j}): {g}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_reinitialize_zero_iterations_is_noop() {
         let mut ls = LevelSetField::new(12, 12, 0.1, 0.1);
@@ -1004,6 +1039,41 @@ mod tests {
             }
         }
         assert!(checked > 200, "checked only {checked} interface cells");
+    }
+
+    /// Cells that are not square: the second differences and the mixed derivative
+    /// each have to use their own spacing.
+    #[test]
+    fn test_curvature_circle_on_anisotropic_grid() {
+        let (nx, ny) = (96usize, 64usize);
+        let (dx, dy) = (1.0 / nx as f64, 1.0 / ny as f64);
+        let radius = 0.3;
+        let mut ls = LevelSetField::new(nx, ny, dx, dy);
+        ls.set_circle(0.5, 0.5, radius);
+        let mut checked = 0;
+        let mut off_axis = 0;
+        for i in 2..nx - 2 {
+            for j in 2..ny - 2 {
+                let phi = ls.phi[ls.idx(i, j)];
+                if phi.abs() < 0.5 * dx.min(dy) {
+                    let r_cell = phi + radius;
+                    let kappa = ls.curvature(i, j);
+                    assert!(
+                        (kappa * r_cell - 1.0).abs() < 3e-3,
+                        "cell ({i},{j}): kappa*r = {}",
+                        kappa * r_cell
+                    );
+                    checked += 1;
+                    // phi_x * phi_y != 0 exercises the cross-derivative term
+                    let (gx, gy) = ls.gradient(i, j);
+                    if (gx * gy).abs() > 0.1 {
+                        off_axis += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 80, "only {checked} interface cells checked");
+        assert!(off_axis > 40, "only {off_axis} off-axis cells checked");
     }
 
     #[test]

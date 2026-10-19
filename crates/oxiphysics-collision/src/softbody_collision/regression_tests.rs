@@ -558,3 +558,253 @@ fn edge_edge_ccd_returns_nothing_for_far_apart_edges() {
     let scene = sweep_scene(0.5, 10.0, 8.0);
     assert!(run_ccd(&ccd, &scene).is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// CcdDeformable::edge_edge_ccd with a contact radius of zero
+// ---------------------------------------------------------------------------
+
+/// End points of edge A at the crossing time of the zero-radius scenes.
+const CROSSING_A0: [f64; 3] = [0.1, -0.2, 0.3];
+const CROSSING_A1: [f64; 3] = [1.7, 0.9, -0.4];
+/// Direction of edge B at the crossing time of the zero-radius scenes.
+const CROSSING_DIR_B: [f64; 3] = [0.3, -0.5, 0.9];
+/// Velocity of edge B in the translating scenes: mostly along the common
+/// normal of the two edges.
+const TRANSLATION: [f64; 3] = [0.84, -1.95, -0.68];
+
+/// Four points `[a0, a1, b0, b1]` that move linearly over one step: edge A joins
+/// the first two, edge B the last two.
+struct CrossingPair {
+    start: [[f64; 3]; 4],
+    end: [[f64; 3]; 4],
+}
+
+/// Build four points with the given constant velocities such that, at the
+/// normalised time `t_cross`, edge B crosses edge A at parameter `s_cross` of A
+/// (and at parameter `0.6 / 1.4` of B), all in generic, non-round positions.
+fn crossing_pair(s_cross: f64, t_cross: f64, velocities: [[f64; 3]; 4]) -> CrossingPair {
+    let crossing_point = add3(CROSSING_A0, scale3(sub3(CROSSING_A1, CROSSING_A0), s_cross));
+    let at_cross = [
+        CROSSING_A0,
+        CROSSING_A1,
+        sub3(crossing_point, scale3(CROSSING_DIR_B, 0.6)),
+        add3(crossing_point, scale3(CROSSING_DIR_B, 0.8)),
+    ];
+    let mut start = at_cross;
+    let mut end = at_cross;
+    for (k, velocity) in velocities.iter().enumerate() {
+        start[k] = sub3(at_cross[k], scale3(*velocity, t_cross));
+        end[k] = add3(at_cross[k], scale3(*velocity, 1.0 - t_cross));
+    }
+    CrossingPair { start, end }
+}
+
+/// Velocities of the four points when edge A rests and edge B translates.
+fn translating_b(velocity: [f64; 3]) -> [[f64; 3]; 4] {
+    [[0.0; 3], [0.0; 3], velocity, velocity]
+}
+
+/// The pair with every position multiplied by `factor` (the crossing time and
+/// the crossing geometry are unchanged).
+fn scaled(pair: &CrossingPair, factor: f64) -> CrossingPair {
+    CrossingPair {
+        start: pair.start.map(|p| scale3(p, factor)),
+        end: pair.end.map(|p| scale3(p, factor)),
+    }
+}
+
+fn run_crossing_pair(pair: &CrossingPair, radius: f64) -> Vec<EdgeCcdResult> {
+    CcdDeformable::new(radius, radius).edge_edge_ccd(
+        &[(0, 1)],
+        &pair.start[..2],
+        &pair.end[..2],
+        &[(0, 1)],
+        &pair.start[2..],
+        &pair.end[2..],
+    )
+}
+
+/// Unit common normal of the two edges at the crossing.
+fn crossing_normal() -> [f64; 3] {
+    normalize3(cross3(sub3(CROSSING_A1, CROSSING_A0), CROSSING_DIR_B))
+}
+
+#[test]
+fn edge_edge_ccd_with_zero_radius_detects_a_generic_exact_crossing() {
+    // B passes through A at t = 0.4. The closest-point distance of the edges at
+    // the rounded root time is about 1e-16, not 0, so a contact radius of
+    // exactly zero used to reject the root and report nothing.
+    let pair = crossing_pair(0.37, 0.4, translating_b(TRANSLATION));
+    let results = run_crossing_pair(&pair, 0.0);
+    assert_eq!(results.len(), 1, "{results:?}");
+    let r = &results[0];
+    assert_eq!((r.edge_a, r.edge_b), (0, 0));
+    assert!(approx(r.toi, 0.4, 1e-9), "toi={}", r.toi);
+    // B moves along +n through A, so it starts on the -n side of A and the
+    // normal from B towards A is +n.
+    assert!(approx(len3(r.normal), 1.0, 1e-12), "{:?}", r.normal);
+    assert!(
+        dot3(r.normal, crossing_normal()) > 1.0 - 1e-9,
+        "{:?} vs {:?}",
+        r.normal,
+        crossing_normal()
+    );
+}
+
+#[test]
+fn edge_edge_ccd_with_zero_radius_orients_the_normal_by_the_starting_side() {
+    // The reversed motion crosses at the same time but B now starts on the +n
+    // side of A, so the normal flips.
+    let reversed = scale3(TRANSLATION, -1.0);
+    let pair = crossing_pair(0.37, 0.4, translating_b(reversed));
+    let results = run_crossing_pair(&pair, 0.0);
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert!(approx(results[0].toi, 0.4, 1e-9), "toi={}", results[0].toi);
+    assert!(
+        dot3(results[0].normal, crossing_normal()) < -(1.0 - 1e-9),
+        "{:?}",
+        results[0].normal
+    );
+}
+
+#[test]
+fn edge_edge_ccd_with_zero_radius_solves_a_true_cubic() {
+    // All four end points move with different velocities, so the coplanarity
+    // condition is a genuine cubic in time rather than a linear equation.
+    let velocities = [
+        [0.30, -0.20, 0.50],
+        [-0.40, 0.60, 0.10],
+        [0.70, -1.10, -0.90],
+        [-0.50, 0.90, 1.40],
+    ];
+    let pair = crossing_pair(0.37, 0.55, velocities);
+    let results = run_crossing_pair(&pair, 0.0);
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert!(approx(results[0].toi, 0.55, 1e-9), "toi={}", results[0].toi);
+    assert!(
+        dot3(results[0].normal, crossing_normal()) > 1.0 - 1e-9,
+        "{:?}",
+        results[0].normal
+    );
+}
+
+#[test]
+fn edge_edge_ccd_with_zero_radius_misses_a_crossing_beyond_the_end_of_the_edge() {
+    // The line of B crosses the line of A 0.79 beyond A's end point, so the two
+    // segments never touch (they stay 0.78 apart at their closest).
+    let pair = crossing_pair(1.4, 0.4, translating_b(TRANSLATION));
+    assert!(run_crossing_pair(&pair, 0.0).is_empty());
+}
+
+#[test]
+fn edge_edge_ccd_with_zero_radius_does_not_depend_on_the_coordinate_scale() {
+    // The rounding floor of the radius grows with the magnitude of the
+    // coordinates, so the same crossing is found at every scale.
+    let base = crossing_pair(0.37, 0.4, translating_b(TRANSLATION));
+    for factor in [0.1, 1.0, 1e3] {
+        let results = run_crossing_pair(&scaled(&base, factor), 0.0);
+        assert_eq!(results.len(), 1, "factor {factor}: {results:?}");
+        assert!(
+            approx(results[0].toi, 0.4, 1e-9),
+            "factor {factor}: toi={}",
+            results[0].toi
+        );
+        assert!(
+            dot3(results[0].normal, crossing_normal()) > 1.0 - 1e-9,
+            "factor {factor}: {:?}",
+            results[0].normal
+        );
+    }
+}
+
+#[test]
+fn edge_edge_ccd_reports_nothing_for_a_negative_or_nan_radius() {
+    let pair = crossing_pair(0.37, 0.4, translating_b(TRANSLATION));
+    assert_eq!(run_crossing_pair(&pair, 0.0).len(), 1);
+    assert!(run_crossing_pair(&pair, -0.01).is_empty());
+    assert!(run_crossing_pair(&pair, f64::NAN).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// CcdDeformable::edge_edge_ccd does not depend on the units of the mesh
+// ---------------------------------------------------------------------------
+
+/// The scene with every position multiplied by `factor`.
+fn scaled_scene(scene: &SweepScene, factor: f64) -> SweepScene {
+    let scale_all = |points: &[[f64; 3]]| -> Vec<[f64; 3]> {
+        points.iter().map(|&p| scale3(p, factor)).collect()
+    };
+    SweepScene {
+        edges_a: scene.edges_a.clone(),
+        verts_a: scale_all(&scene.verts_a),
+        edges_b: scene.edges_b.clone(),
+        verts0_b: scale_all(&scene.verts0_b),
+        verts1_b: scale_all(&scene.verts1_b),
+    }
+}
+
+#[test]
+fn edge_edge_ccd_is_invariant_under_uniform_scaling_of_mesh_and_radius() {
+    // A crossing near the end of A, a graze of the radius shell and an initial
+    // contact, each with the expected time of impact.
+    let scenes = [
+        (sweep_scene(0.98, 1.0, -1.0), 0.5),
+        (sweep_scene(0.5, 1.0, 0.03), 0.95 / 0.97),
+        (sweep_scene(0.5, 0.03, 0.03), 0.0),
+    ];
+    for (scene, expected_toi) in &scenes {
+        for factor in [1e-4, 1e-2, 1.0, 1e2] {
+            let ccd = CcdDeformable::new(0.05 * factor, 0.05 * factor);
+            let results = run_ccd(&ccd, &scaled_scene(scene, factor));
+            assert_eq!(results.len(), 1, "factor {factor}: {results:?}");
+            assert!(
+                approx(results[0].toi, *expected_toi, 1e-6),
+                "factor {factor}: toi={} expected {expected_toi}",
+                results[0].toi
+            );
+            assert!(
+                vec_close(results[0].normal, [0.0, 0.0, -1.0], 1e-9),
+                "factor {factor}: {:?}",
+                results[0].normal
+            );
+        }
+    }
+}
+
+#[test]
+fn edge_edge_ccd_detects_a_shallow_crossing_of_short_edges() {
+    // Two edges of about 1 cm cross at an angle of one degree: B slides down
+    // through A in the plane z = 0.005 - 0.01 t and meets it at t = 0.5. The
+    // squared lengths of the edges are so small that their parallelism, judged
+    // with an absolute tolerance, would make the closest points meaningless.
+    let angle = 1.0_f64.to_radians();
+    let half = scale3([angle.cos(), angle.sin(), 0.0], 0.004);
+    let verts_a = [[0.0, 0.0, 0.0], [0.01, 0.0, 0.0]];
+    let centre0 = [0.005, 0.0, 0.005];
+    let centre1 = [0.005, 0.0, -0.005];
+    let verts0_b = [sub3(centre0, half), add3(centre0, half)];
+    let verts1_b = [sub3(centre1, half), add3(centre1, half)];
+    // On the raw coordinates the shared routine would place the closest points
+    // about 7e-5 apart at the crossing, i.e. outside both of these radii.
+    for radius in [0.0, 1e-5] {
+        let results = CcdDeformable::new(radius, radius).edge_edge_ccd(
+            &[(0, 1)],
+            &verts_a,
+            &verts_a,
+            &[(0, 1)],
+            &verts0_b,
+            &verts1_b,
+        );
+        assert_eq!(results.len(), 1, "radius {radius}: {results:?}");
+        assert!(
+            approx(results[0].toi, 0.5, 1e-9),
+            "radius {radius}: toi={}",
+            results[0].toi
+        );
+        assert!(
+            vec_close(results[0].normal, [0.0, 0.0, -1.0], 1e-9),
+            "radius {radius}: {:?}",
+            results[0].normal
+        );
+    }
+}

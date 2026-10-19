@@ -10,8 +10,8 @@
 //! - **[`ForcheimerCorrection`]**: nonlinear (inertial) drag at elevated Reynolds numbers.
 //! - **[`MultiscalePorous`]**: Representative Elementary Volume (REV) averaging and
 //!   upscaling of effective transport properties.
-//! - **[`PorousLBM`]**: D2Q9 LBM solver with porosity-modified BGK collision and
-//!   Darcy–Brinkman forcing.
+//! - **[`PorousLBM`]**: D2Q9 BGK LBM solver whose porosity-weighted Darcy drag and
+//!   external body force enter through the (mass-conserving) Guo forcing scheme.
 //! - **[`DrainageImbibition`]**: capillary pressure curves, wetting/drainage relative
 //!   permeability, and Brooks–Corey parameterization.
 
@@ -457,7 +457,19 @@ impl MultiscalePorous {
 /// LBM solver for porous media flow (D2Q9, BGK, Darcy–Brinkman forcing).
 ///
 /// The collision term includes an additional Darcy drag body force per unit
-/// volume **F** = −(μ/K) ε **u**, applied via the Guo forcing scheme.
+/// volume **F** = −(μ/K) ε **u**, applied together with the external force via
+/// the Guo forcing scheme.  Per unit mass the drag is `−d u` with the rate
+/// `d = ε ν / K` (`K` = `K_xx` of the node, `ν = cs² (1/ω − 1/2)`).
+///
+/// The macroscopic velocity is the half-step velocity of the Guo scheme,
+/// `ρ u = Σ_i f_i c_i + (ρ/2)(g − d u)`, in which the linear drag is treated
+/// implicitly (`u = (Σ_i f_i c_i / ρ + g/2) / (1 + d/2)`), so the force applied
+/// in the collision is exactly the one the velocity was solved for.  A uniform
+/// body force `g` therefore drives the flow to the Darcy balance
+/// `d u = g`, i.e. the Darcy flux `ε u = K g / ν`.  Nodes without pore space
+/// (`ε ≤ 0`) carry no flow and feel no force.  The Guo forcing term has a
+/// vanishing zeroth moment, so the total mass is conserved exactly for any
+/// force.
 pub struct PorousLBM {
     /// Grid x-size.
     pub nx: usize,
@@ -513,24 +525,36 @@ impl PorousLBM {
         self.f[n].iter().sum()
     }
 
-    /// Compute macroscopic velocity at node `n` with porosity-modified Darcy drag.
+    /// Darcy drag rate `d = ε ν / K` of node `n` (per unit time).
+    ///
+    /// The drag force per unit mass is `−d u`, i.e. `−(μ/K) ε u` per unit
+    /// volume.  `K` is the `K_xx` entry of the node's permeability tensor
+    /// (scalar approximation); nodes without a positive permeability, and nodes
+    /// without pore space, exert no drag.
+    fn drag_rate(&self, n: usize) -> f64 {
+        let k = self.geometry.permeability[n][0];
+        let eps = self.geometry.porosity[n];
+        if k > 0.0 && eps > 0.0 {
+            let nu = (1.0 / self.omega - 0.5) * CS2;
+            eps * nu / k
+        } else {
+            0.0
+        }
+    }
+
+    /// Compute macroscopic velocity at node `n`: the half-step velocity of the
+    /// Guo scheme with the Darcy drag of [`PorousLBM::drag_rate`] treated
+    /// implicitly.
+    ///
+    /// `ρ u = m + (ρ/2)(g − d u)` with `m = Σ_i f_i c_i` gives
+    /// `u = (m/ρ + g/2) / (1 + d/2)`.  A node without pore space (`ε ≤ 0`) is
+    /// at rest.
     fn node_velocity(&self, n: usize) -> (f64, f64) {
         let rho = self.node_density(n);
-        if rho == 0.0 {
+        if rho == 0.0 || self.geometry.porosity[n] <= 0.0 {
             return (0.0, 0.0);
         }
-        let ix = n % self.nx;
-        let iy = n / self.nx;
-        let eps = self.geometry.get_porosity(ix, iy);
-        let k = self.geometry.permeability[n][0]; // K_xx scalar approximation
-
-        // Darcy–Brinkman: effective velocity accounts for porosity
-        let nu = (1.0 / self.omega - 0.5) * CS2;
-        let mu = nu * rho;
-
-        // Solve: (mu/K + 0.5 F_drag) * u = momentum / ε
-        let drag_coeff = if k > 0.0 { mu / k } else { 0.0 };
-        let alpha = eps / (eps + 0.5 * drag_coeff);
+        let alpha = 1.0 / (1.0 + 0.5 * self.drag_rate(n));
 
         let mom_x: f64 = self.f[n]
             .iter()
@@ -556,18 +580,23 @@ impl PorousLBM {
         W9[i] * rho * (1.0 + cu / CS2 + 0.5 * cu * cu / (CS2 * CS2) - 0.5 * u2 / CS2)
     }
 
-    /// Guo forcing term (accounts for Darcy drag + external force).
+    /// Guo forcing term of direction `i` (Darcy drag + external force).
+    ///
+    /// `fx`, `fy` are the force per unit mass, so the force density is
+    /// `rho * (fx, fy)`, and `(ux, uy)` is the velocity of the fluid (the one
+    /// in the equilibrium):
+    ///
+    /// `G_i = (1 - omega/2) w_i rho [ (c_i - u)/cs^2 + (c_i.u) c_i/cs^4 ] . f`
+    ///
+    /// The `-u/cs^2` term makes the zeroth moment vanish for every velocity
+    /// (`sum_i G_i = 0`), so the force never creates or destroys mass; the
+    /// first moment is `(1 - omega/2) rho f`.
     fn guo_force(i: usize, rho: f64, ux: f64, uy: f64, fx: f64, fy: f64, omega: f64) -> f64 {
         let cu = CX9[i] * ux + CY9[i] * uy;
-        let u2 = ux * ux + uy * uy;
         let e_dot_f = CX9[i] * fx + CY9[i] * fy;
         let u_dot_f = ux * fx + uy * fy;
         let coeff = (1.0 - 0.5 * omega) * W9[i] / CS2;
-        coeff
-            * rho
-            * (e_dot_f - u_dot_f / CS2 + cu * e_dot_f / CS2 - cu * u_dot_f / (CS2 * CS2)
-                + 0.5 * (CX9[i] * CX9[i] - u2 / 3.0) * fx
-                + 0.5 * (CY9[i] * CY9[i] - u2 / 3.0) * fy)
+        coeff * rho * (e_dot_f - u_dot_f + cu * e_dot_f / CS2)
     }
 
     /// Perform a single LBM time step (collision + streaming).
@@ -584,16 +613,14 @@ impl PorousLBM {
                 continue;
             }
             let (ux, uy) = self.node_velocity(node);
-            let ix = node % nx;
-            let iy = node / nx;
-            let k = self.geometry.permeability[node][0];
-            let nu = (1.0 / omega - 0.5) * CS2;
-            let mu = nu * rho;
-            let drag = if k > 0.0 { mu / k } else { 0.0 };
-            // Net body force: external − Darcy drag
-            let fx_net = self.force_x - drag * ux / rho;
-            let fy_net = self.force_y - drag * uy / rho;
-            let _eps = self.geometry.get_porosity(ix, iy);
+            // Net body force per unit mass: external − Darcy drag at the
+            // half-step velocity (nodes without pore space feel no force).
+            let (fx_net, fy_net) = if self.geometry.porosity[node] > 0.0 {
+                let drag = self.drag_rate(node);
+                (self.force_x - drag * ux, self.force_y - drag * uy)
+            } else {
+                (0.0, 0.0)
+            };
 
             for i in 0..9 {
                 let feq_i = Self::feq(i, rho, ux, uy);
@@ -1041,6 +1068,137 @@ mod tests {
         let geo = PorousGeometry::uniform(5, 3, 0.5, 1e-2, 1e-2, 1.5);
         let lbm = PorousLBM::new(5, 3, 1.0, geo, 0.0, 0.0);
         assert_eq!(lbm.f.len(), 15);
+    }
+
+    #[test]
+    fn test_porous_lbm_guo_force_moments() {
+        // Guo forcing: zeroth moment 0 (no mass source, for every velocity),
+        // first moment (1 - omega/2) rho f, second moment
+        // (1 - omega/2) rho (u f + f u).
+        let cases = [
+            (1.0, 0.0, 0.0, 1e-3, 0.0, 1.0),
+            (0.9, 0.05, -0.03, 2e-3, -1e-3, 1.3),
+            (1.2, -0.08, 0.04, -5e-3, 3e-3, 0.7),
+            (1.0, 0.2, 0.1, 0.0, 0.0, 1.9),
+        ];
+        for &(rho, ux, uy, fx, fy, omega) in &cases {
+            let g: Vec<f64> = (0..9)
+                .map(|i| PorousLBM::guo_force(i, rho, ux, uy, fx, fy, omega))
+                .collect();
+            let moment = |wx: &dyn Fn(usize) -> f64| -> f64 {
+                g.iter().enumerate().map(|(i, gi)| gi * wx(i)).sum()
+            };
+            let pref = (1.0 - 0.5 * omega) * rho;
+            assert!(moment(&|_| 1.0).abs() < 1e-15, "mass source");
+            assert!((moment(&|i| CX9[i]) - pref * fx).abs() < 1e-15);
+            assert!((moment(&|i| CY9[i]) - pref * fy).abs() < 1e-15);
+            assert!((moment(&|i| CX9[i] * CX9[i]) - pref * 2.0 * ux * fx).abs() < 1e-15);
+            assert!((moment(&|i| CY9[i] * CY9[i]) - pref * 2.0 * uy * fy).abs() < 1e-15);
+            assert!((moment(&|i| CX9[i] * CY9[i]) - pref * (ux * fy + uy * fx)).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn test_porous_lbm_mass_conserved_with_body_force() {
+        let geo = PorousGeometry::uniform(8, 4, 1.0, 1e-1, 1e-1, 1.0);
+        let mut lbm = PorousLBM::new(8, 4, 1.0, geo, 1e-3, 0.0);
+        let m0 = lbm.total_mass();
+        for _ in 0..100 {
+            lbm.step();
+        }
+        let m1 = lbm.total_mass();
+        assert!((m1 - m0).abs() < 1e-12, "mass drift {}", (m1 - m0).abs());
+        // The force really accelerated the fluid.
+        assert!(lbm.velocity(3, 1).0 > 0.0);
+    }
+
+    #[test]
+    fn test_porous_lbm_mass_conserved_for_moving_heterogeneous_flow() {
+        // Non-zero velocities, both force components, omega != 1 and a
+        // heterogeneous porosity / permeability field.
+        let (nx, ny) = (10, 6);
+        let mut geo = PorousGeometry::uniform(nx, ny, 0.6, 5e-2, 5e-2, 1.2);
+        geo.set_porosity(3, 2, 0.3);
+        geo.permeability[2 * nx + 3] = [1e-2, 0.0, 0.0, 1e-2];
+        geo.set_porosity(7, 4, 0.0);
+        let mut lbm = PorousLBM::new(nx, ny, 1.4, geo, 2e-3, -1e-3);
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let x = ix as f64 / nx as f64 * 2.0 * std::f64::consts::PI;
+                let y = iy as f64 / ny as f64 * 2.0 * std::f64::consts::PI;
+                let rho = 1.0 + 0.02 * x.sin();
+                let (ux, uy) = (0.05 * y.cos(), -0.03 * x.sin());
+                for i in 0..9 {
+                    lbm.f[iy * nx + ix][i] = PorousLBM::feq(i, rho, ux, uy);
+                }
+            }
+        }
+        let m0 = lbm.total_mass();
+        for _ in 0..200 {
+            lbm.step();
+        }
+        let m1 = lbm.total_mass();
+        assert!((m1 - m0).abs() < 1e-11, "mass drift {}", (m1 - m0).abs());
+        assert!(lbm.f.iter().flatten().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_porous_lbm_uniform_force_reaches_the_darcy_balance() {
+        // Uniform body force g in a periodic medium: the steady state is the
+        // Darcy balance d u = g with d = eps nu / K, i.e. the Darcy flux
+        // eps u = K g / nu, independently of the relaxation frequency.
+        let (eps, k, g) = (0.5, 0.05, 1e-4);
+        for &omega in &[0.8, 1.0, 1.5] {
+            let geo = PorousGeometry::uniform(6, 4, eps, k, k, 1.0);
+            let mut lbm = PorousLBM::new(6, 4, omega, geo, g, 0.0);
+            for _ in 0..400 {
+                lbm.step();
+            }
+            let nu = (1.0 / omega - 0.5) / 3.0;
+            let darcy_flux = k * g / nu;
+            for iy in 0..4 {
+                for ix in 0..6 {
+                    let (ux, uy) = lbm.velocity(ix, iy);
+                    let flux = eps * ux;
+                    assert!(
+                        (flux - darcy_flux).abs() < 1e-6 * darcy_flux,
+                        "omega {omega}: Darcy flux {flux} vs {darcy_flux}"
+                    );
+                    assert!(uy.abs() < 1e-14);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_porous_lbm_force_balance_in_both_directions() {
+        // The same balance holds along y (K_xx is used as the scalar
+        // permeability) and for a force of arbitrary direction.
+        let (eps, k) = (0.8, 0.02);
+        let geo = PorousGeometry::uniform(5, 5, eps, k, k, 1.0);
+        let mut lbm = PorousLBM::new(5, 5, 1.2, geo, 3e-5, -4e-5);
+        for _ in 0..500 {
+            lbm.step();
+        }
+        let nu = (1.0 / 1.2 - 0.5) / 3.0;
+        let d = eps * nu / k;
+        let (ux, uy) = lbm.velocity(2, 2);
+        assert!((ux - 3e-5 / d).abs() < 1e-9, "ux {ux}");
+        assert!((uy + 4e-5 / d).abs() < 1e-9, "uy {uy}");
+    }
+
+    #[test]
+    fn test_porous_lbm_solid_nodes_are_at_rest_and_unforced() {
+        let mut geo = PorousGeometry::uniform(6, 4, 0.7, 0.05, 0.05, 1.0);
+        geo.set_porosity(2, 1, 0.0);
+        let mut lbm = PorousLBM::new(6, 4, 1.0, geo, 1e-3, 0.0);
+        for _ in 0..50 {
+            lbm.step();
+        }
+        let (ux, uy) = lbm.velocity(2, 1);
+        assert_eq!((ux, uy), (0.0, 0.0));
+        assert!(lbm.velocity(0, 0).0 > 0.0);
+        assert!(lbm.f.iter().flatten().all(|v| v.is_finite()));
     }
 
     // ── DrainageImbibition ────────────────────────────────────────────────

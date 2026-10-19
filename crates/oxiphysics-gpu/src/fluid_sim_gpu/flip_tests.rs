@@ -113,12 +113,11 @@ fn staggered_interpolators_reproduce_affine_fields() {
             grid.interp_v(x, y, z),
             grid.interp_w(x, y, z),
         ];
-        for c in 0..3 {
+        for (c, &value) in got.iter().enumerate() {
             let expected = field(c, x, y, z);
             assert!(
-                (got[c] - expected).abs() < 1e-12,
-                "component {c} at ({x}, {y}, {z}): {} vs {expected}",
-                got[c]
+                (value - expected).abs() < 1e-12,
+                "component {c} at ({x}, {y}, {z}): {value} vs {expected}"
             );
         }
     }
@@ -201,12 +200,11 @@ fn g2p_blends_pic_and_flip_on_all_three_axes() {
         let mut particles = vec![FlipParticle::new([0.4, 0.4, 0.4])];
         particles[0].velocity = v0;
         g2p_transfer(&mut particles, &grid_new, &grid_old, ratio, 0.01);
-        for c in 0..3 {
+        for (c, &want) in expected.iter().enumerate() {
             assert!(
-                (particles[0].velocity[c] - expected[c]).abs() < 1e-12,
-                "flip_ratio {ratio}, component {c}: {} vs {}",
-                particles[0].velocity[c],
-                expected[c]
+                (particles[0].velocity[c] - want).abs() < 1e-12,
+                "flip_ratio {ratio}, component {c}: {} vs {want}",
+                particles[0].velocity[c]
             );
         }
         // The sampled grid velocity is recorded on the particle.
@@ -222,12 +220,11 @@ fn g2p_advects_by_dt_not_by_dx() {
     let dt = 0.02;
     g2p_transfer(&mut particles, &grid, &zero, 0.0, dt);
     let expected = [0.4 + 1.0 * dt, 0.4 - 2.0 * dt, 0.4 + 0.5 * dt];
-    for c in 0..3 {
+    for (c, &want) in expected.iter().enumerate() {
         assert!(
-            (particles[0].position[c] - expected[c]).abs() < 1e-12,
-            "component {c}: {} vs {}",
-            particles[0].position[c],
-            expected[c]
+            (particles[0].position[c] - want).abs() < 1e-12,
+            "component {c}: {} vs {want}",
+            particles[0].position[c]
         );
     }
 }
@@ -255,8 +252,9 @@ fn g2p_keeps_particles_inside_the_domain() {
 fn mark_fluid_cells_flags_cells_containing_particles() {
     let mut grid = MacGrid::new(4, 4, 4, 1.0);
     grid.p.fill(5.0);
+    let idx = |i: usize, j: usize, k: usize| i + 4 * (j + 4 * k);
     // A solid cell keeps its flag even when a particle sits in it.
-    let solid_idx = 1 + 4 * (1 + 4 * 1);
+    let solid_idx = idx(1, 1, 1);
     grid.flags[solid_idx] = CELL_SOLID;
     // A stale fluid flag with no particle becomes air.
     grid.flags[0] = CELL_FLUID;
@@ -267,7 +265,6 @@ fn mark_fluid_cells_flags_cells_containing_particles() {
     ];
     grid.mark_fluid_cells(&particles);
 
-    let idx = |i: usize, j: usize, k: usize| i + 4 * (j + 4 * k);
     assert_eq!(grid.flags[idx(3, 1, 2)], CELL_FLUID);
     assert_eq!(
         grid.flags[idx(0, 3, 3)],
@@ -587,7 +584,9 @@ fn solid_boundaries_zero_normal_velocity_on_walls_and_solids() {
     grid.u.fill(1.0);
     grid.v.fill(2.0);
     grid.w.fill(3.0);
-    grid.flags[1 + 3 * (1 + 3 * 1)] = CELL_SOLID; // centre cell
+    // Centre cell (1, 1, 1): index 1 + 3 * 1 + 9 * 1.
+    let centre = 1 + 3 + 9;
+    grid.flags[centre] = CELL_SOLID;
     grid.enforce_solid_boundaries();
     // Domain walls.
     assert_eq!(grid.get_u(0, 1, 1), 0.0);
@@ -633,4 +632,30 @@ fn copy_velocities_rejects_mismatched_grids() {
     assert_eq!(a.u, c.u);
     assert_eq!(a.v, c.v);
     assert_eq!(a.w, c.w);
+}
+
+/// `FluidSimConfig::surface_tension` is documented as not read by
+/// `FluidSimulation::step`: two simulations that differ only in that
+/// coefficient stay bit-identical.
+#[test]
+fn flip_step_does_not_read_the_surface_tension_coefficient() {
+    let run = |surface_tension: f64| -> Vec<([f64; 3], [f64; 3])> {
+        let cfg = FluidSimConfig {
+            surface_tension,
+            ..config([8, 8, 8], 0.01, [0.0, -9.81, 0.0])
+        };
+        let mut sim = FluidSimulation::new(cfg);
+        sim.particles = lattice_particles([2, 0, 2], [5, 3, 5], 0.1);
+        for _ in 0..3 {
+            sim.step();
+        }
+        sim.particles
+            .iter()
+            .map(|p| (p.position, p.velocity))
+            .collect()
+    };
+    let without = run(0.0);
+    let with = run(25.0);
+    assert!(!without.is_empty());
+    assert_eq!(without, with);
 }

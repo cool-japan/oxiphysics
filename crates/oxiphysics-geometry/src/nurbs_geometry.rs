@@ -11,11 +11,13 @@
 //! - [`NurbsCurve`]: NURBS curve evaluation, derivatives, curvature, arc length.
 //! - [`NurbsSurface`]: Bi-variate NURBS surface, normals, curvatures.
 //! - [`KnotInsertion`]: Boehm's knot insertion algorithm.
-//! - [`DegreeElevation`]: Degree elevation for NURBS curves.
-//! - [`BezierDecomposition`]: Decompose a NURBS curve into Bézier segments.
+//! - [`DegreeElevation`]: Geometry-preserving degree elevation of Bézier segments and
+//!   NURBS curves (A5.9), rational curves included.
+//! - [`BezierDecomposition`]: Decompose a NURBS curve into Bézier segments (A5.6).
 //! - [`RuledSurface`]: Ruled surface between two NURBS curves.
 //! - [`SweptSurface`]: Swept surface from profile curve and path.
-//! - [`NurbsTrimming`]: Trimmed NURBS surface with trim curves.
+//! - [`NurbsTrimming`]: Trimmed NURBS surface with trim curves; points are classified
+//!   with the winding number of the trim loops ([`TrimLoops`]).
 //! - [`IgaElement`]: Isogeometric analysis element (basis function + quadrature).
 //! - [`SurfaceSurfaceIntersector`]: Iterative NURBS surface-surface intersection.
 //!
@@ -259,7 +261,8 @@ impl NurbsBasis {
 
     /// Evaluate basis functions up to order `d` (all derivatives 0..=d).
     ///
-    /// Returns a `(d+1) × (p+1)` matrix: `ders[k][j]` = k-th derivative of N_{span-p+j,p}.
+    /// Piegl & Tiller, Algorithm A2.3. Returns a `(d+1) × (p+1)` matrix:
+    /// `ders[k][j]` = k-th derivative of N_{span-p+j,p}; `d` is capped at `p`.
     pub fn evaluate_all_derivs(
         knots: &NurbsKnotVector,
         t: f64,
@@ -298,43 +301,46 @@ impl NurbsBasis {
             ders[0][j] = ndu[j][p];
         }
 
+        // Knot differences that vanish (repeated knots) only multiply basis
+        // functions that vanish as well, so a tiny stand-in keeps the quotients
+        // finite without changing the result.
+        let guarded = |difference: f64| difference.abs().max(1.0e-15).copysign(difference);
         let mut a = vec![vec![0.0_f64; p + 1]; 2];
         for r in 0..=p {
             let mut s1 = 0usize;
             let mut s2 = 1usize;
             a[s1][0] = 1.0;
             for k in 1..=d {
-                let mut fac = 0.0_f64;
+                let mut derivative = 0.0_f64;
                 let rk = r as isize - k as isize;
                 let pk = p as isize - k as isize;
-                if r as isize >= k as isize {
-                    a[s2][0] = a[s1][0]
-                        / (ndu[(pk + 1) as usize][rk as usize]
-                            .abs()
-                            .max(1.0e-15)
-                            .copysign(ndu[(pk + 1) as usize][rk as usize]));
-                    fac = a[s2][0];
+                if rk >= 0 {
+                    a[s2][0] = a[s1][0] / guarded(ndu[(pk + 1) as usize][rk as usize]);
+                    derivative = a[s2][0] * ndu[rk as usize][pk as usize];
                 }
-                let j1 = if rk >= -1 { 1 } else { (-rk - 1) as usize };
+                let j1 = if rk >= -1 { 1 } else { (-rk) as usize };
                 let j2 = if (r as isize - 1) <= pk { k - 1 } else { p - r };
                 for j in j1..=j2 {
-                    a[s2][j] = (a[s1][j] - a[s1][j - 1])
-                        / (ndu[(pk + 1) as usize][(rk + j as isize) as usize]
-                            .abs()
-                            .max(1.0e-15)
-                            .copysign(ndu[(pk + 1) as usize][(rk + j as isize) as usize]));
+                    let column = (rk + j as isize) as usize;
+                    a[s2][j] = (a[s1][j] - a[s1][j - 1]) / guarded(ndu[(pk + 1) as usize][column]);
+                    derivative += a[s2][j] * ndu[column][pk as usize];
                 }
                 if (r as isize) <= pk {
-                    a[s2][k] = -a[s1][k - 1]
-                        / (ndu[(pk + 1) as usize][r]
-                            .abs()
-                            .max(1.0e-15)
-                            .copysign(ndu[(pk + 1) as usize][r]));
-                    fac += a[s2][k];
+                    a[s2][k] = -a[s1][k - 1] / guarded(ndu[(pk + 1) as usize][r]);
+                    derivative += a[s2][k] * ndu[r][pk as usize];
                 }
-                ders[k][r] = fac;
+                ders[k][r] = derivative;
                 std::mem::swap(&mut s1, &mut s2);
             }
+        }
+
+        // Multiply through by p!/(p-k)! (Piegl & Tiller, Eq. 2.9).
+        let mut factor = p as f64;
+        for (k, row) in ders.iter_mut().enumerate().skip(1) {
+            for value in row.iter_mut() {
+                *value *= factor;
+            }
+            factor *= (p - k) as f64;
         }
         ders
     }
@@ -855,125 +861,11 @@ impl KnotInsertion {
 }
 
 // ---------------------------------------------------------------------------
-// Degree elevation
+// Degree elevation and Bézier decomposition
 // ---------------------------------------------------------------------------
 
-/// Degree elevation for a NURBS curve (simplified Bézier-based).
-///
-/// Raises the degree of the curve by one while preserving the geometry.
-pub struct DegreeElevation;
-
-impl DegreeElevation {
-    /// Elevate degree of a set of control points (treating as one Bézier segment).
-    ///
-    /// Returns `p+2` new control points.
-    pub fn elevate_bezier(pts: &[NurbsControlPoint]) -> Vec<NurbsControlPoint> {
-        let n = pts.len();
-        let p = n - 1;
-        let mut new_pts = Vec::with_capacity(n + 1);
-        // First point unchanged
-        new_pts.push(pts[0]);
-        for i in 1..=p {
-            let alpha = i as f64 / (p + 1) as f64;
-            let prev = pts[i - 1];
-            let curr = pts[i];
-            let w_new = (1.0 - alpha) * prev.weight + alpha * curr.weight;
-            let pn = [
-                ((1.0 - alpha) * prev.weight * prev.point[0] + alpha * curr.weight * curr.point[0])
-                    / w_new.max(1e-15),
-                ((1.0 - alpha) * prev.weight * prev.point[1] + alpha * curr.weight * curr.point[1])
-                    / w_new.max(1e-15),
-                ((1.0 - alpha) * prev.weight * prev.point[2] + alpha * curr.weight * curr.point[2])
-                    / w_new.max(1e-15),
-            ];
-            new_pts.push(NurbsControlPoint {
-                point: pn,
-                weight: w_new,
-            });
-        }
-        new_pts.push(pts[p]);
-        new_pts
-    }
-
-    /// Elevate a NURBS curve's degree by 1.
-    ///
-    /// Uses Bézier decomposition + elevation + recomposition (simplified).
-    pub fn elevate_curve(curve: &NurbsCurve) -> NurbsCurve {
-        // Simplified: elevate each segment of the Bézier decomposition
-        let beziers = BezierDecomposition::decompose(curve);
-        let elevated: Vec<Vec<NurbsControlPoint>> = beziers
-            .iter()
-            .map(|seg| DegreeElevation::elevate_bezier(seg))
-            .collect();
-        // Recompose into a NURBS curve (simplified: use all elevated points)
-        let new_degree = curve.degree + 1;
-        let mut all_pts: Vec<NurbsControlPoint> = Vec::new();
-        for (k, seg) in elevated.iter().enumerate() {
-            if k == 0 {
-                for pt in seg.iter() {
-                    all_pts.push(*pt);
-                }
-            } else {
-                for pt in seg.iter().skip(1) {
-                    all_pts.push(*pt);
-                }
-            }
-        }
-        let n_ctrl = all_pts.len();
-        let new_knots = NurbsKnotVector::clamped_uniform(n_ctrl, new_degree);
-        NurbsCurve::new(new_knots, all_pts, new_degree)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Bézier decomposition
-// ---------------------------------------------------------------------------
-
-/// Decompose a NURBS curve into Bézier segments.
-pub struct BezierDecomposition;
-
-impl BezierDecomposition {
-    /// Extract Bézier control points from a NURBS curve.
-    ///
-    /// Returns a `Vec` of segments, each containing `degree+1` control points.
-    pub fn decompose(curve: &NurbsCurve) -> Vec<Vec<NurbsControlPoint>> {
-        let p = curve.degree;
-        let n = curve.n_ctrl();
-        let kv = &curve.knots.knots;
-        let mut segments: Vec<Vec<NurbsControlPoint>> = Vec::new();
-
-        // Find unique interior knots
-        let t_start = curve.knots.domain_start(p);
-        let t_end = curve.knots.domain_end(p, n);
-        let n_pts = 16usize.max(n);
-        let dt = (t_end - t_start) / n_pts as f64;
-
-        // Collect unique knot spans
-        let mut breaks: Vec<f64> = vec![t_start];
-        for &k in kv.iter() {
-            if k > *breaks.last().expect("collection should not be empty") + 1.0e-12
-                && k < t_end - 1.0e-12
-            {
-                breaks.push(k);
-            }
-        }
-        breaks.push(t_end);
-        let _ = dt;
-
-        for w in breaks.windows(2) {
-            let ta = w[0];
-            let tb = w[1];
-            let mut seg = Vec::with_capacity(p + 1);
-            for j in 0..=(p) {
-                let t_j = ta + (tb - ta) * (j as f64 / p as f64);
-                let pt = curve.evaluate(t_j);
-                seg.push(NurbsControlPoint::unweighted(pt[0], pt[1], pt[2]));
-            }
-            segments.push(seg);
-        }
-        segments
-    }
-}
+mod elevation;
+pub use elevation::{BezierDecomposition, BezierSegment, DegreeElevation};
 
 // ---------------------------------------------------------------------------
 // Ruled surface
@@ -1070,100 +962,8 @@ impl SweptSurface {
 // NURBS trimming
 // ---------------------------------------------------------------------------
 
-/// A trim curve in the (u, v) parameter space of a NURBS surface.
-#[derive(Debug, Clone)]
-pub struct NurbsTrimCurve {
-    /// Parameter-space control points \[u, v, 0\] with weights.
-    pub control_points: Vec<NurbsControlPoint>,
-    /// Knot vector for the trim curve.
-    pub knots: NurbsKnotVector,
-    /// Degree.
-    pub degree: usize,
-}
-
-impl NurbsTrimCurve {
-    /// Create a trim curve in parameter space.
-    pub fn new(
-        control_points: Vec<NurbsControlPoint>,
-        knots: NurbsKnotVector,
-        degree: usize,
-    ) -> Self {
-        Self {
-            control_points,
-            knots,
-            degree,
-        }
-    }
-
-    /// Evaluate trim curve at parameter `t`, returning (u, v).
-    pub fn evaluate(&self, t: f64) -> [f64; 2] {
-        let n = self.control_points.len();
-        let p = self.degree;
-        let basis = NurbsBasis::evaluate(&self.knots, t, p, n);
-        let span = self.knots.find_span(t, p, n);
-        let mut w_sum = 0.0_f64;
-        let mut uv = [0.0_f64; 2];
-        for (i, b_i) in basis.iter().enumerate() {
-            let idx = span - p + i;
-            if idx < n {
-                let cp = &self.control_points[idx];
-                let wn = b_i * cp.weight;
-                w_sum += wn;
-                uv[0] += wn * cp.point[0];
-                uv[1] += wn * cp.point[1];
-            }
-        }
-        if w_sum.abs() > 1.0e-15 {
-            uv[0] /= w_sum;
-            uv[1] /= w_sum;
-        }
-        uv
-    }
-}
-
-/// Trimmed NURBS surface with one or more trim curves.
-#[derive(Debug, Clone)]
-pub struct NurbsTrimming {
-    /// The underlying NURBS surface.
-    pub surface: NurbsSurface,
-    /// Trim curves defining the trimmed boundary.
-    pub trim_curves: Vec<NurbsTrimCurve>,
-}
-
-impl NurbsTrimming {
-    /// Create a trimmed NURBS surface.
-    pub fn new(surface: NurbsSurface) -> Self {
-        Self {
-            surface,
-            trim_curves: Vec::new(),
-        }
-    }
-
-    /// Add a trim curve.
-    pub fn add_trim_curve(&mut self, trim: NurbsTrimCurve) {
-        self.trim_curves.push(trim);
-    }
-
-    /// Check if a parameter-space point (u, v) is inside all trim boundaries.
-    ///
-    /// Uses a simplified winding number test.
-    pub fn is_inside(&self, _u: f64, _v: f64) -> bool {
-        if self.trim_curves.is_empty() {
-            return true;
-        }
-        // Simplified: always inside outer boundary
-        true
-    }
-
-    /// Evaluate the surface at (u, v), returning None if trimmed out.
-    pub fn evaluate(&self, u: f64, v: f64) -> Option<[f64; 3]> {
-        if self.is_inside(u, v) {
-            Some(self.surface.evaluate(u, v))
-        } else {
-            None
-        }
-    }
-}
+mod trimming;
+pub use trimming::{NurbsTrimCurve, NurbsTrimming, TrimLoops};
 
 // ---------------------------------------------------------------------------
 // Isogeometric analysis element
@@ -1723,3 +1523,12 @@ mod tests {
         assert!((pi - std::f64::consts::PI).abs() < 1e-15);
     }
 }
+
+#[cfg(test)]
+mod elevation_tests;
+
+#[cfg(test)]
+mod trimming_tests;
+
+#[cfg(test)]
+mod derivative_tests;

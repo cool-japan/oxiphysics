@@ -2,10 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::bounded::bounded_voronoi_cells;
 use super::functions::{bowyer_watson, is_delaunay};
 use super::functions::{
-    circumcircle, circumsphere_3d, clip_polygon_to_bounds, delaunay_to_voronoi,
-    flip_edge_if_needed, lloyd_relaxation, nearest_site, polygon_area_pt2d, polygon_centroid_pt2d,
+    circumcircle, circumsphere_3d, flip_edge_if_needed, lloyd_relaxation, nearest_site,
+    polygon_area_pt2d, polygon_centroid_pt2d,
 };
 
 /// A Delaunay triangulation in the new OO-style API.
@@ -120,8 +121,10 @@ pub struct VoronoiDiagram {
 impl VoronoiDiagram {
     /// Build a Voronoi diagram from a set of points and a bounding box.
     ///
-    /// Uses the Bowyer-Watson algorithm + dual graph construction, with
-    /// Sutherland-Hodgman clipping to the bounding box.
+    /// Every cell is the bounding box cut by the bisector half-plane of each
+    /// other site (see [`bounded_voronoi_cells`]), so the cells of sites on the
+    /// convex hull are closed by the box and the cell areas add up to the area
+    /// of the box.
     ///
     /// # Parameters
     /// * `pts` – array of `[x, y]` positions.
@@ -139,14 +142,11 @@ impl VoronoiDiagram {
                 bbox,
             };
         }
-        let triangles = bowyer_watson(pts);
-        let legacy_cells = delaunay_to_voronoi(pts, &triangles);
-        let cells: Vec<VoronoiCell> = legacy_cells
-            .iter()
+        let cells: Vec<VoronoiCell> = bounded_voronoi_cells(pts, bbox)
+            .into_iter()
             .enumerate()
-            .map(|(i, lc)| {
-                let clipped = clip_polygon_to_bounds(&lc.vertices, bbox);
-                let verts: Vec<Point2D> = clipped.iter().map(|&v| Point2D::from_array(v)).collect();
+            .map(|(i, polygon)| {
+                let verts: Vec<Point2D> = polygon.iter().map(|&v| Point2D::from_array(v)).collect();
                 VoronoiCell::new(i, verts)
             })
             .collect();

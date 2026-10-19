@@ -434,8 +434,8 @@ impl NeuralPressureSolver {
                         data.vel[j][k] += scale * m_i * g[k];
                     }
                 }
-                for k in 0..3 {
-                    data.vel[i][k] -= scale * gradient_sum[k];
+                for (v, g) in data.vel[i].iter_mut().zip(gradient_sum.iter()) {
+                    *v -= scale * g;
                 }
                 pressure[i] += delta_p;
             }

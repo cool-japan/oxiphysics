@@ -610,7 +610,9 @@ impl UmbrellaSampling {
     ///
     /// # Returns
     /// `(bin_centers, pmf_values)`.  Both are empty if there are no finite
-    /// samples, `n_bins` is zero or `k_t` is not positive and finite.
+    /// samples, `n_bins` is zero or `k_t` is not positive and finite.  If all
+    /// finite samples coincide there is no range to histogram: a single bin at
+    /// that value with PMF 0 is returned.
     pub fn compute_pmf(&self, n_bins: usize, k_t: f64) -> (Vec<f64>, Vec<f64>) {
         if n_bins == 0 || !(k_t > 0.0 && k_t.is_finite()) {
             return (vec![], vec![]);
@@ -1166,6 +1168,9 @@ impl SimulatedAnnealingSchedule {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+mod regression_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1455,29 +1460,73 @@ mod tests {
 
     #[test]
     fn test_umbrella_sampling_compute_pmf_minimum_at_highest_density() {
-        // Single window at xi0=1.0 with many samples near center
+        // One window (k = 200) centred on the minimum of the harmonic well
+        // U(xi) = a/2 (xi - 1)^2 with a = 60.  The biased density
+        // exp(-(U + V)/kT) is Gaussian and peaks at 1.0, and unbiasing the
+        // histogram must give back U, whose minimum is the well centre.
+        //
+        // (A histogram that is merely flat under the stiff bias unbiases to a PMF
+        // that FALLS away from the window centre; the unbiasing itself is pinned in
+        // `regression_tests`.)
+        use crate::gaussian_noise::standard_normal;
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        let k_t: f64 = 2.479;
+        let (window_k, well_a): (f64, f64) = (200.0, 60.0);
+        let sigma = (k_t / (window_k + well_a)).sqrt();
+        let mut rng = StdRng::seed_from_u64(1216);
         let mut us = UmbrellaSampling::new();
-        us.add_window(1.0, 200.0);
-        // Add samples tightly around center
-        for j in 0..100 {
-            us.windows[0].add_sample(1.0 + (j as f64 - 50.0) * 0.01);
+        us.add_window(1.0, window_k);
+        for _ in 0..4000 {
+            us.windows[0].add_sample(1.0 + sigma * standard_normal(&mut rng));
         }
-        let (bin_centers, pmf) = us.compute_pmf(20, 2.479);
+        let (bin_centers, pmf) = us.compute_pmf(20, k_t);
 
-        // Find the finite minimum
-        let min_idx = pmf
+        // The outermost bins hold only a handful of samples (the histogram range
+        // is set by the extreme samples), so their PMF is too noisy to rank; look
+        // for the minimum in the well-sampled core |xi - 1| < 0.25.
+        let (min_idx, min_value) = bin_centers
             .iter()
+            .zip(&pmf)
             .enumerate()
-            .filter(|&(_, &v)| v.is_finite())
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .map(|(i, _)| i)
-            .expect("Should find finite minimum in PMF");
-
+            .filter(|&(_, (&x, &f))| (x - 1.0).abs() < 0.25 && f.is_finite())
+            .map(|(i, (_, &f))| (i, f))
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .expect("Should find a finite minimum in the PMF core");
         let min_pos = bin_centers[min_idx];
         assert!(
-            (min_pos - 1.0).abs() < 0.3,
-            "PMF minimum at {min_pos} should be near window center 1.0"
+            (min_pos - 1.0).abs() < 0.15,
+            "PMF minimum at {min_pos} should be near the well centre 1.0"
         );
+
+        // U(+-0.2) = a/2 * 0.04 = 1.2 kJ/mol: the PMF rises on both sides of the core.
+        let value_near = |target: f64| {
+            bin_centers
+                .iter()
+                .zip(&pmf)
+                .min_by(|a, b| (a.0 - target).abs().total_cmp(&(b.0 - target).abs()))
+                .map(|(_, &f)| f)
+                .expect("bins")
+        };
+        assert!(
+            value_near(0.8) > min_value + 0.3,
+            "left flank {}",
+            value_near(0.8)
+        );
+        assert!(
+            value_near(1.2) > min_value + 0.3,
+            "right flank {}",
+            value_near(1.2)
+        );
+
+        // The PMF is shifted so that its global minimum is exactly zero.
+        let global_min = pmf
+            .iter()
+            .copied()
+            .filter(|v| v.is_finite())
+            .fold(f64::INFINITY, f64::min);
+        assert_eq!(global_min, 0.0);
     }
 
     #[test]

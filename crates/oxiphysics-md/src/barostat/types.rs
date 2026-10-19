@@ -396,15 +396,48 @@ impl BoxTensor {
         (p_tensor[0][0] + p_tensor[1][1] + p_tensor[2][2]) / 3.0
     }
 }
+/// Natural logarithm of the Metropolis acceptance ratio of an isotropic volume
+/// move `V_old → V_new` that was proposed uniformly in `ln V`:
+///
+/// `ln(acc) = −β·(ΔU + P₀·(V_new − V_old)) + (N + 1)·ln(V_new/V_old)`
+///
+/// with `β = 1/kt`.  Returns `−∞` (always reject) if either volume is not
+/// positive and finite, or if `kt` is not positive and finite.
+fn volume_move_log_acceptance(
+    target_pressure: f64,
+    delta_energy: f64,
+    v_old: f64,
+    v_new: f64,
+    n_atoms: usize,
+    kt: f64,
+) -> f64 {
+    let valid_volumes = v_old.is_finite() && v_new.is_finite() && v_old > 0.0 && v_new > 0.0;
+    let valid_thermal_energy = kt.is_finite() && kt > 0.0;
+    if !(valid_volumes && valid_thermal_energy) {
+        return f64::NEG_INFINITY;
+    }
+    let beta = 1.0 / kt;
+    -beta * (delta_energy + target_pressure * (v_new - v_old))
+        + (n_atoms as f64 + 1.0) * (v_new / v_old).ln()
+}
 /// Extended Monte Carlo barostat with an internal LCG random number generator.
 ///
-/// Can be used directly in a simulation loop without an external RNG,
-/// via the `try_volume_move` method.
+/// Can be used directly in a simulation loop without an external RNG.  A move
+/// consists of three steps that the caller can drive separately:
+///
+/// 1. [`McBarostatRng::propose_volume`] draws the trial volume `V'`;
+/// 2. the caller rescales its configuration to `V'` and evaluates the
+///    potential-energy change `ΔU = U(V') − U(V)` **at that volume**;
+/// 3. [`McBarostatRng::accept`] applies the Metropolis rule.
+///
+/// [`McBarostatRng::try_volume_move`] runs the three steps in one call, taking
+/// the energy evaluation as a closure of the proposed volume.
 #[derive(Debug, Clone)]
 pub struct McBarostatRng {
     /// Target pressure P₀.
     pub target_pressure: f64,
-    /// Relative move size.
+    /// Width of the uniform proposal for `ln V`: the trial volume is
+    /// `V·exp(δ)` with `δ` uniform in `[−move_size/2, +move_size/2)`.
     pub move_size: f64,
     /// Accepted move counter.
     pub n_accepted: u64,
@@ -448,40 +481,93 @@ impl McBarostatRng {
         }
         self.n_accepted as f64 / self.n_attempted as f64
     }
-    /// Propose a volume move and decide acceptance.
+    /// Draw a trial volume `V' = V·exp((ξ − ½)·move_size)` with `ξ` uniform in
+    /// `[0, 1)`.
+    ///
+    /// The proposal is symmetric in `ln V` (not in `V`), which is why the
+    /// acceptance rule of [`McBarostatRng::accept`] carries `N + 1` in its
+    /// volume Jacobian.  Consumes one random number.  The caller must evaluate
+    /// the energy change of the returned volume before calling `accept`.
+    pub fn propose_volume(&mut self, current_volume: f64) -> f64 {
+        let xi = self.next_uniform();
+        current_volume * ((xi - 0.5) * self.move_size).exp()
+    }
+    /// Metropolis decision for the volume move `v_old → v_new`.
+    ///
+    /// Accepts with probability `min(1, exp(ln_acc))` where
+    ///
+    /// `ln_acc = −(ΔU + P₀·(V' − V))/kt + (N + 1)·ln(V'/V)`.
+    ///
+    /// # Arguments
+    /// * `v_old`        – volume `V` before the move.
+    /// * `v_new`        – proposed volume `V'` (from [`McBarostatRng::propose_volume`]).
+    /// * `delta_energy` – potential-energy change `ΔU = U(V') − U(V)` of the
+    ///   configuration rescaled to `V'`.
+    /// * `n_atoms`      – number of atoms `N`.
+    /// * `kt`           – thermal energy `k_B·T` in the units of `delta_energy`.
+    ///
+    /// A move with a non-positive or non-finite volume, a non-positive `kt` or
+    /// a NaN energy change is rejected.  Updates the attempt and acceptance
+    /// counters and consumes one random number.
+    pub fn accept(
+        &mut self,
+        v_old: f64,
+        v_new: f64,
+        delta_energy: f64,
+        n_atoms: usize,
+        kt: f64,
+    ) -> bool {
+        self.n_attempted += 1;
+        let log_acc = volume_move_log_acceptance(
+            self.target_pressure,
+            delta_energy,
+            v_old,
+            v_new,
+            n_atoms,
+            kt,
+        );
+        let threshold = self.next_uniform();
+        // `log_acc` is NaN for a NaN energy change; both comparisons are then
+        // false and the move is rejected.
+        let accepted = log_acc >= 0.0 || threshold < log_acc.exp();
+        if accepted {
+            self.n_accepted += 1;
+        }
+        accepted
+    }
+    /// Propose a volume move, evaluate its energy cost and decide acceptance.
     ///
     /// Returns `Some(new_volume)` if accepted, `None` if rejected.
     ///
+    /// `energy_change` is called once with the **proposed** volume `V'` and
+    /// must return the potential-energy change `ΔU = U(V') − U(V)` of the
+    /// configuration rescaled from the current volume to `V'`.  It is not
+    /// called when the current or the proposed volume is not positive and
+    /// finite; such a move is rejected and counted as an attempt.
+    ///
     /// # Arguments
     /// * `current_volume` – current box volume.
-    /// * `delta_energy`   – potential energy change for the proposed volume.
+    /// * `energy_change`  – closure returning `ΔU` for a trial volume.
     /// * `n_atoms`        – number of atoms in the system.
     /// * `temp`           – temperature T.
     /// * `kb`             – Boltzmann constant.
     pub fn try_volume_move(
         &mut self,
         current_volume: f64,
-        delta_energy: f64,
+        mut energy_change: impl FnMut(f64) -> f64,
         n_atoms: usize,
         temp: f64,
         kb: f64,
     ) -> Option<f64> {
-        let xi = self.next_uniform();
-        let new_volume = current_volume * ((xi - 0.5) * self.move_size).exp();
-        let delta_volume = new_volume - current_volume;
-        let beta = 1.0 / (kb * temp);
-        // The proposal is uniform in ln V, so the Jacobian carries N + 1 (see
-        // `MonteCarloBarostat::acceptance_log_prob`).
-        let log_acc = -beta * (delta_energy + self.target_pressure * delta_volume)
-            + (n_atoms as f64 + 1.0) * (new_volume / current_volume).ln();
-        self.n_attempted += 1;
-        let accept_prob = log_acc.exp().min(1.0);
-        if self.next_uniform() < accept_prob {
-            self.n_accepted += 1;
-            Some(new_volume)
-        } else {
-            None
+        let new_volume = self.propose_volume(current_volume);
+        let usable = |volume: f64| volume.is_finite() && volume > 0.0;
+        if !usable(current_volume) || !usable(new_volume) {
+            self.n_attempted += 1;
+            return None;
         }
+        let delta_energy = energy_change(new_volume);
+        self.accept(current_volume, new_volume, delta_energy, n_atoms, kb * temp)
+            .then_some(new_volume)
     }
     /// Reset acceptance statistics.
     pub fn reset_statistics(&mut self) {
@@ -906,7 +992,8 @@ impl MonteCarloBarostat {
     /// then `p(V) ∝ V^N·exp(−β·P₀·V)`.
     ///
     /// Returns `-∞` (always reject) if either volume is not positive and
-    /// finite, because `ln(V_new/V_old)` does not exist.
+    /// finite, because `ln(V_new/V_old)` does not exist, or if `k_B·T` is not
+    /// positive and finite.
     ///
     /// # Arguments
     /// * `delta_energy`  – potential-energy change ΔE = E_new − E_old.
@@ -924,13 +1011,14 @@ impl MonteCarloBarostat {
         temp: f64,
         kb: f64,
     ) -> f64 {
-        if !(v_old.is_finite() && v_new.is_finite() && v_old > 0.0 && v_new > 0.0) {
-            return f64::NEG_INFINITY;
-        }
-        let beta = 1.0 / (kb * temp);
-        let delta_volume = v_new - v_old;
-        -beta * (delta_energy + self.target_pressure * delta_volume)
-            + (n_atoms as f64 + 1.0) * (v_new / v_old).ln()
+        volume_move_log_acceptance(
+            self.target_pressure,
+            delta_energy,
+            v_old,
+            v_new,
+            n_atoms,
+            kb * temp,
+        )
     }
     /// Compute the change in potential energy due to a volume move.
     ///

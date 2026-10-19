@@ -53,6 +53,16 @@ pub fn imperfection_sensitivity(load_factor: f64, imperfection_amplitude: f64) -
     pub(super) const C: f64 = 0.5;
     load_factor * (1.0 - C * imperfection_amplitude.abs().sqrt())
 }
+/// Lowest positive buckling load factor of `problem`, or `NaN` when it has
+/// none (the structure does not buckle under the reference load) or cannot be
+/// solved (`K` is not positive definite).
+fn lowest_load_factor(problem: &BucklingProblem) -> f64 {
+    problem
+        .solve_buckling_load_factors(1)
+        .ok()
+        .and_then(|factors| factors.into_iter().next())
+        .unwrap_or(f64::NAN)
+}
 /// Assemble beam K and Kg for a pinned-pinned Euler-Bernoulli column and return
 /// the lowest buckling load multiplier.
 ///
@@ -61,6 +71,9 @@ pub fn imperfection_sensitivity(load_factor: f64, imperfection_amplitude: f64) -
 /// * `I`          – second moment of area
 /// * `L`          – total column length
 /// * `P`          – reference axial load (Kg is assembled for this load)
+///
+/// Returns `NaN` when the problem has no positive load multiplier or cannot be
+/// solved (see [`BucklingProblem::solve_buckling_load_factors`]).
 pub fn column_fem_buckling(n_elements: usize, e: f64, i_mom: f64, l: f64, p: f64) -> f64 {
     let le = l / n_elements as f64;
     let n_nodes = n_elements + 1;
@@ -131,53 +144,7 @@ pub fn column_fem_buckling(n_elements: usize, e: f64, i_mom: f64, l: f64, p: f64
             prob.set_kg(ia, ib, kg_red[ia * nf + ib]);
         }
     }
-    let factors = prob.solve_buckling_load_factors(1);
-    factors.into_iter().next().unwrap_or(f64::NAN)
-}
-pub(super) fn gaussian_solve(a: &[f64], b: &[f64], n: usize) -> Option<Vec<f64>> {
-    let mut mat = vec![0.0f64; n * (n + 1)];
-    for i in 0..n {
-        for j in 0..n {
-            mat[i * (n + 1) + j] = a[i * n + j];
-        }
-        mat[i * (n + 1) + n] = b[i];
-    }
-    for col in 0..n {
-        let mut max_row = col;
-        let mut max_val = mat[col * (n + 1) + col].abs();
-        for row in (col + 1)..n {
-            let v = mat[row * (n + 1) + col].abs();
-            if v > max_val {
-                max_val = v;
-                max_row = row;
-            }
-        }
-        if max_val < 1e-300 {
-            return None;
-        }
-        if max_row != col {
-            for k in 0..=(n) {
-                mat.swap(col * (n + 1) + k, max_row * (n + 1) + k);
-            }
-        }
-        let pivot = mat[col * (n + 1) + col];
-        for row in (col + 1)..n {
-            let factor = mat[row * (n + 1) + col] / pivot;
-            for k in col..=(n) {
-                let val = mat[col * (n + 1) + k] * factor;
-                mat[row * (n + 1) + k] -= val;
-            }
-        }
-    }
-    let mut x = vec![0.0f64; n];
-    for i in (0..n).rev() {
-        let mut s = mat[i * (n + 1) + n];
-        for j in (i + 1)..n {
-            s -= mat[i * (n + 1) + j] * x[j];
-        }
-        x[i] = s / mat[i * (n + 1) + i];
-    }
-    Some(x)
+    lowest_load_factor(&prob)
 }
 /// Assemble a simple truss geometric stiffness matrix for `n_elements`
 /// bar elements of length `le` carrying axial load `p`.
@@ -373,6 +340,9 @@ pub fn beam_geometric_stiffness(n_elements: usize, le: f64, p: f64) -> Vec<f64> 
 ///
 /// Uses FEM with Euler-Bernoulli elements and fixed-free boundary conditions.
 /// The analytical solution is P_cr = pi^2*EI/(4*L^2).
+///
+/// Returns `NaN` when the problem has no positive load multiplier or cannot be
+/// solved (see [`BucklingProblem::solve_buckling_load_factors`]).
 pub fn cantilever_fem_buckling(n_elements: usize, e: f64, i_mom: f64, l: f64, p: f64) -> f64 {
     let le = l / n_elements as f64;
     let n_nodes = n_elements + 1;
@@ -443,8 +413,7 @@ pub fn cantilever_fem_buckling(n_elements: usize, e: f64, i_mom: f64, l: f64, p:
             prob.set_kg(ia, ib, kg_red[ia * nf + ib]);
         }
     }
-    let factors = prob.solve_buckling_load_factors(1);
-    factors.into_iter().next().unwrap_or(f64::NAN)
+    lowest_load_factor(&prob)
 }
 /// Consistent geometric stiffness matrix for an Euler-Bernoulli beam element.
 ///

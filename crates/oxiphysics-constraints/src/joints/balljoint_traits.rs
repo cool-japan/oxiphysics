@@ -12,7 +12,8 @@ use crate::traits::Constraint;
 use oxiphysics_core::BodyHandle;
 use oxiphysics_rigid::RigidBodySet;
 
-use super::functions::{JOINT_BAUMGARTE, apply_pair_impulse, read_body};
+use super::constraint_math::solve_point_velocity;
+use super::functions::{JOINT_BAUMGARTE, read_body};
 use super::types::BallJoint;
 
 impl Constraint for BallJoint {
@@ -25,30 +26,7 @@ impl Constraint for BallJoint {
         }
     }
     fn solve_velocity(&mut self, bodies: &mut RigidBodySet, _dt: f64) {
-        let a = match read_body(bodies, self.body_a) {
-            Some(p) => p,
-            None => return,
-        };
-        let b = match read_body(bodies, self.body_b) {
-            Some(p) => p,
-            None => return,
-        };
-        let va = a.vel + a.ang_vel.cross(&self.r_a);
-        let vb = b.vel + b.ang_vel.cross(&self.r_b);
-        let dv = va - vb;
-        let k = a.inv_mass + b.inv_mass;
-        if k < 1e-12 {
-            return;
-        }
-        let impulse = -dv / k;
-        apply_pair_impulse(
-            bodies,
-            self.body_a,
-            self.body_b,
-            impulse,
-            &self.r_a,
-            &self.r_b,
-        );
+        solve_point_velocity(bodies, self.body_a, self.body_b, &self.r_a, &self.r_b);
     }
     fn solve_position(&mut self, bodies: &mut RigidBodySet, _dt: f64) {
         let a = match read_body(bodies, self.body_a) {

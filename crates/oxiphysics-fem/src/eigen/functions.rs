@@ -2,6 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::inverse_subspace::inverse_subspace_iteration;
 use super::types::ModalAnalysis;
 
 /// Find the dominant eigenvalue and eigenvector of a dense n x n matrix
@@ -230,12 +231,30 @@ pub fn consistent_mass_matrix_bar(length: f64, rho: f64, area: f64) -> [[f64; 4]
         [0.0, 1.0 * scale, 0.0, 2.0 * scale],
     ]
 }
-/// Subspace iteration for finding the `p` smallest eigenpairs of a
-/// dense symmetric matrix.
+/// Subspace (simultaneous inverse) iteration for the `num_modes` eigenpairs of a dense
+/// symmetric matrix that are smallest in magnitude.
 ///
-/// Starts with `p` random initial vectors and iteratively refines them.
-/// Returns up to `p` converged `(eigenvalue, eigenvector)` pairs sorted
-/// in ascending order.
+/// For a symmetric positive (semi-)definite matrix such as a stiffness matrix these are the
+/// `num_modes` smallest eigenpairs; for an indefinite matrix they are the ones closest to
+/// zero.  (A forward iteration with `A` would converge to the *largest* eigenpairs instead.)
+///
+/// A block of start vectors, `min(n, p + clamp(p, 4, 8))` of them for `p = num_modes`, is
+/// multiplied by `A^-1` in every sweep (one LU factorisation with partial pivoting is reused for
+/// all solves), orthonormalised with modified Gram-Schmidt, and rotated onto the Ritz basis of
+/// the projected matrix `Y^T A Y` (Rayleigh-Ritz, solved with [`jacobi_eigen_dense`]).  The
+/// guard vectors beyond `p` accelerate convergence of the wanted pairs.  Iteration stops when
+/// every returned pair satisfies `||A x - lambda x|| <= tol * |lambda|` (plus a rounding-level
+/// absolute term, so that zero eigenvalues can converge) or after `max_iter` sweeps; in the
+/// latter case the current Ritz pairs are returned and [`super::eigenpair_residuals`] tells how
+/// accurate they are.
+///
+/// A singular `A` (for instance a stiffness matrix with rigid-body modes) is handled by taking
+/// the factorisation at an infinitesimally shifted matrix; the Rayleigh-Ritz step still uses
+/// `A` itself, so the zero eigenpairs are returned with eigenvalues equal to zero to rounding.
+///
+/// `a` is treated through its symmetric part.  Returns up to `num_modes` pairs sorted in
+/// ascending order of eigenvalue with unit eigenvectors, or an empty vector when `num_modes`
+/// or `n` is zero, when `a` is smaller than `n x n`, or when `a` has non-finite entries.
 pub fn subspace_iteration(
     a: &[Vec<f64>],
     n: usize,
@@ -243,66 +262,9 @@ pub fn subspace_iteration(
     max_iter: usize,
     tol: f64,
 ) -> Vec<(f64, Vec<f64>)> {
-    let p = num_modes.min(n);
-    if p == 0 || n == 0 {
-        return Vec::new();
-    }
-    let mut q: Vec<Vec<f64>> = (0..p)
-        .map(|k| {
-            let mut v = vec![0.0; n];
-            for (i, vi) in v.iter_mut().enumerate() {
-                let seed = ((i + 1) * (k + 1) * 73 + 17) % 1000;
-                *vi = (seed as f64) / 1000.0 - 0.5;
-            }
-            v
-        })
-        .collect();
-    gram_schmidt(&mut q, n);
-    let mut eigenvalues = vec![0.0; p];
-    for _iter in 0..max_iter {
-        let mut y: Vec<Vec<f64>> = Vec::with_capacity(p);
-        for qk in q.iter().take(p) {
-            y.push(matvec_dense(a, qk, n));
-        }
-        let mut b_reduced: Vec<Vec<f64>> = vec![vec![0.0; p]; p];
-        for i in 0..p {
-            for j in 0..p {
-                let dot: f64 = q[i].iter().zip(y[j].iter()).map(|(a, b)| a * b).sum();
-                b_reduced[i][j] = dot;
-            }
-        }
-        let (evals, evecs) = jacobi_eigen_dense(&b_reduced, p);
-        let mut converged = true;
-        for k in 0..p {
-            let change = (evals[k] - eigenvalues[k]).abs();
-            let rel = change / (evals[k].abs() + 1e-60);
-            if rel > tol {
-                converged = false;
-            }
-        }
-        eigenvalues = evals.clone();
-        let mut q_new: Vec<Vec<f64>> = vec![vec![0.0; n]; p];
-        for k in 0..p {
-            for i in 0..n {
-                for j in 0..p {
-                    q_new[k][i] += y[j][i] * evecs[k][j];
-                }
-            }
-        }
-        for qk in q_new.iter_mut().take(p) {
-            let norm = vec_norm(qk);
-            if norm > 1e-60 {
-                for x in qk.iter_mut() {
-                    *x /= norm;
-                }
-            }
-        }
-        q = q_new;
-        if converged && _iter > 0 {
-            break;
-        }
-    }
-    eigenvalues.into_iter().zip(q).collect()
+    let mut pairs = inverse_subspace_iteration(a, n, 0.0, num_modes, max_iter, tol);
+    pairs.sort_by(|x, y| x.0.total_cmp(&y.0));
+    pairs
 }
 /// Lanczos algorithm for finding eigenvalues of a symmetric matrix.
 ///
@@ -390,12 +352,30 @@ pub fn lanczos(
     }
     result
 }
-/// Solve the shifted eigenvalue problem `(A - sigma*I)^{-1} * x = mu * x`
-/// where eigenvalues of A near sigma correspond to large `mu = 1/(lambda - sigma)`.
+/// Eigenpairs of a dense symmetric matrix nearest to the shift `sigma` (shift-and-invert
+/// subspace iteration).
 ///
-/// This is useful for finding interior eigenvalues near a specified shift.
+/// `(A - sigma*I)^{-1}` has the eigenvalues `mu = 1/(lambda - sigma)`, so the eigenvalues of `A`
+/// closest to `sigma` dominate it.  The `num_modes` wanted vectors (plus a few guard vectors) are
+/// iterated *together* as a block that is re-orthonormalised in every sweep and rotated onto the
+/// Ritz basis of the projected matrix `Y^T A Y`.  Distinct eigenpairs are therefore returned,
+/// mutually orthonormal and with eigenvalues obtained from `A` itself.  (Iterating every mode
+/// separately from nearly identical start vectors with a single factorisation, as an earlier
+/// version did, returns `num_modes` copies of the one eigenpair nearest to `sigma`.)
 ///
-/// Returns eigenpairs sorted by proximity to `sigma`.
+/// A single LU factorisation with partial pivoting of `A - sigma*I` is reused for every solve.
+/// If `sigma` coincides with an eigenvalue so that the matrix is singular to working precision,
+/// the factorisation is taken at a shift moved by about `sqrt(eps) * max|a_ij|`; this only
+/// changes the filter of the iteration, not the Ritz values, so the eigenpair at `sigma` is found.
+///
+/// Iteration stops when every returned pair satisfies `||A x - lambda x|| <= tol * |lambda|`
+/// (plus a rounding-level absolute term) or after `max_iter` sweeps, in which case the current
+/// Ritz pairs are returned; [`super::eigenpair_residuals`] tells how accurate they are.  `a` is treated
+/// through its symmetric part.
+///
+/// Returns up to `num_modes` pairs with unit eigenvectors sorted by proximity of the eigenvalue
+/// to `sigma` (nearest first), or an empty vector when `num_modes` or `n` is zero, when `a` is
+/// smaller than `n x n`, or when `a` or `sigma` is not finite.
 pub fn shift_invert_power(
     a: &[Vec<f64>],
     n: usize,
@@ -404,62 +384,7 @@ pub fn shift_invert_power(
     max_iter: usize,
     tol: f64,
 ) -> Vec<(f64, Vec<f64>)> {
-    if n == 0 || num_modes == 0 {
-        return Vec::new();
-    }
-    let mut a_shifted: Vec<Vec<f64>> = a.to_vec();
-    for (i, row) in a_shifted.iter_mut().enumerate().take(n) {
-        row[i] -= sigma;
-    }
-    let lu = lu_decompose(&a_shifted, n);
-    let mut results: Vec<(f64, Vec<f64>)> = Vec::new();
-    let mut a_work = a.to_vec();
-    for _mode in 0..num_modes {
-        let mut v: Vec<f64> = (0..n)
-            .map(|i| 1.0 + 0.02 * (i as f64) + 0.01 * (_mode as f64))
-            .collect();
-        normalize(&mut v);
-        let mut mu = 0.0_f64;
-        for iter in 0..max_iter {
-            let w = lu_solve(&lu, &v, n);
-            let vw: f64 = v.iter().zip(w.iter()).map(|(a, b)| a * b).sum();
-            let ww: f64 = w.iter().map(|x| x * x).sum();
-            let mu_new = if vw.abs() < 1e-60 { 0.0 } else { ww / vw };
-            let mut v_new = w;
-            let norm = vec_norm(&v_new);
-            if norm < 1e-60 {
-                break;
-            }
-            for x in v_new.iter_mut() {
-                *x /= norm;
-            }
-            let dot: f64 = v.iter().zip(v_new.iter()).map(|(a, b)| a * b).sum();
-            if dot < 0.0 {
-                for x in v_new.iter_mut() {
-                    *x = -*x;
-                }
-            }
-            let rel_change = (mu_new - mu).abs() / (mu_new.abs() + 1e-60);
-            v = v_new;
-            mu = mu_new;
-            if rel_change < tol && iter > 0 {
-                break;
-            }
-        }
-        let lambda = if mu.abs() > 1e-60 {
-            sigma + 1.0 / mu
-        } else {
-            sigma
-        };
-        results.push((lambda, v.clone()));
-        deflate(&mut a_work, lambda, &v);
-    }
-    results.sort_by(|a, b| {
-        let da = (a.0 - sigma).abs();
-        let db = (b.0 - sigma).abs();
-        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    results
+    inverse_subspace_iteration(a, n, sigma, num_modes, max_iter, tol)
 }
 /// Sort eigenvalues by magnitude (ascending).
 pub fn sort_eigenvalues_ascending(
@@ -587,29 +512,6 @@ pub(super) fn normalize(v: &mut [f64]) {
     if norm > 1e-60 {
         for x in v.iter_mut() {
             *x /= norm;
-        }
-    }
-}
-/// Gram-Schmidt orthogonalization of a set of vectors.
-pub(super) fn gram_schmidt(vectors: &mut [Vec<f64>], n: usize) {
-    let p = vectors.len();
-    for i in 0..p {
-        for j in 0..i {
-            let dot: f64 = vectors[i]
-                .iter()
-                .zip(vectors[j].iter())
-                .map(|(a, b)| a * b)
-                .sum();
-            let (left, right) = vectors.split_at_mut(i);
-            for (vi_k, &vj_k) in right[0].iter_mut().take(n).zip(left[j].iter().take(n)) {
-                *vi_k -= dot * vj_k;
-            }
-        }
-        let norm = vec_norm(&vectors[i]);
-        if norm > 1e-60 {
-            for x in vectors[i].iter_mut() {
-                *x /= norm;
-            }
         }
     }
 }
@@ -945,26 +847,6 @@ mod tests {
             emm.abs() < 1e-12,
             "should be 0 for orthogonal direction, got {emm}"
         );
-    }
-    /// Gram-Schmidt should produce orthonormal vectors.
-    #[test]
-    fn test_gram_schmidt() {
-        let mut vecs = vec![
-            vec![1.0, 1.0, 0.0],
-            vec![1.0, 0.0, 1.0],
-            vec![0.0, 1.0, 1.0],
-        ];
-        gram_schmidt(&mut vecs, 3);
-        for i in 0..3 {
-            for j in 0..3 {
-                let dot: f64 = vecs[i].iter().zip(vecs[j].iter()).map(|(a, b)| a * b).sum();
-                let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (dot - expected).abs() < 1e-10,
-                    "dot(v{i}, v{j}) = {dot}, expected {expected}"
-                );
-            }
-        }
     }
     /// LU decomposition and solve should recover the solution.
     #[test]

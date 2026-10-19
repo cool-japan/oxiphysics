@@ -735,6 +735,16 @@ impl PoincareSection {
     }
 }
 
+/// Relative length of the central-difference perturbation used for the
+/// Jacobian–vector products of the variational equation, `ε^(1/3)` for the
+/// machine epsilon `ε`: it balances truncation (`h²`) against rounding (`ε/h`).
+const JVP_STEP: f64 = 6.0e-6;
+
+/// `base + h · direction`, componentwise.
+fn shifted(base: &[f64], h: f64, direction: &[f64]) -> Vec<f64> {
+    base.iter().zip(direction).map(|(b, v)| b + h * v).collect()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FlowMap
 // ─────────────────────────────────────────────────────────────────────────────
@@ -803,11 +813,24 @@ impl FlowMap {
         samples
     }
 
-    /// Compute the fundamental solution matrix (monodromy-like) by
-    /// propagating `dim` perturbation vectors alongside the trajectory.
+    /// Fundamental solution matrix `Φ(T) = ∂x(T)/∂x(0)` of the flow after
+    /// `n_steps` steps, i.e. the solution at `t = n_steps · dt` of the
+    /// variational equation `Φ' = J(x(t)) Φ`, `Φ(0) = I`, along the trajectory
+    /// starting at `init`.
     ///
-    /// Returns a `dim × dim` matrix in row-major order (each row is a
-    /// transported unit vector).
+    /// The trajectory and the `dim` columns of `Φ` are advanced together with the
+    /// same four classical RK4 stages as [`advance`](Self::advance), with the
+    /// Jacobian–vector products `J(x) φ` of every stage taken as central
+    /// differences `(f(x + h φ) − f(x − h φ)) / 2h` of `f`.  `Φ` is therefore the
+    /// derivative of the discrete flow map (up to the finite-difference error,
+    /// about 1e-10) and no analytic Jacobian is needed.
+    ///
+    /// Returns the `dim × dim` matrix in row-major order with
+    /// `Φ[i][j] = ∂x_i(T)/∂x_j(0)`: column `j` is the unit vector `e_j`
+    /// transported along the flow.  For `n_steps = 0` this is the identity.
+    ///
+    /// Returns an empty matrix if `init.len() != dim` or `f` does not map
+    /// `dim`-vectors to `dim`-vectors.
     pub fn fundamental_solution_matrix<F>(
         &self,
         init: &[f64],
@@ -817,40 +840,87 @@ impl FlowMap {
     where
         F: Fn(&[f64]) -> Vec<f64>,
     {
+        self.try_fundamental_solution_matrix(init, n_steps, f)
+            .unwrap_or_default()
+    }
+
+    /// [`fundamental_solution_matrix`](Self::fundamental_solution_matrix) with
+    /// `None` standing for inconsistent dimensions.
+    fn try_fundamental_solution_matrix<F>(
+        &self,
+        init: &[f64],
+        n_steps: usize,
+        f: &F,
+    ) -> Option<Vec<Vec<f64>>>
+    where
+        F: Fn(&[f64]) -> Vec<f64>,
+    {
         let d = self.dim;
-        // Initialise perturbation vectors as identity matrix
-        let mut pert: Vec<Vec<f64>> = (0..d)
-            .map(|i| {
-                let mut v = vec![0.0; d];
-                v[i] = 1.0;
-                v
-            })
-            .collect();
+        if init.len() != d {
+            return None;
+        }
+        let dt = self.dt;
+        let field = |x: &[f64]| -> Option<Vec<f64>> {
+            let value = f(x);
+            (value.len() == d).then_some(value)
+        };
+        // J(x) φ by a central difference whose perturbation has the length
+        // `JVP_STEP · max(1, |x|∞)`.
+        let jvp = |x: &[f64], phi: &[f64]| -> Option<Vec<f64>> {
+            let norm = phi.iter().map(|a| a * a).sum::<f64>().sqrt();
+            if norm == 0.0 {
+                return Some(vec![0.0; d]);
+            }
+            let scale = x.iter().fold(1.0_f64, |m, a| m.max(a.abs()));
+            let h = JVP_STEP * scale / norm;
+            let plus = shifted(x, h, phi);
+            let minus = shifted(x, -h, phi);
+            let f_plus = field(&plus)?;
+            let f_minus = field(&minus)?;
+            Some(
+                f_plus
+                    .iter()
+                    .zip(&f_minus)
+                    .map(|(a, b)| (a - b) / (2.0 * h))
+                    .collect(),
+            )
+        };
 
         let mut state = init.to_vec();
-        let eps = 1e-6;
-
+        // columns[c] is the transported unit vector e_c.
+        let mut columns: Vec<Vec<f64>> = (0..d)
+            .map(|c| {
+                let mut e = vec![0.0; d];
+                e[c] = 1.0;
+                e
+            })
+            .collect();
         for _ in 0..n_steps {
-            // Advance reference trajectory
-            let next_state = self.rk4_step(&state, f);
-            // Advance each perturbation vector using finite-difference Jacobian
-            let mut next_pert = vec![vec![0.0f64; d]; d];
-            for (col, pv) in pert.iter().enumerate() {
-                let state_plus: Vec<f64> = state
-                    .iter()
-                    .zip(pv.iter())
-                    .map(|(s, p)| s + eps * p)
-                    .collect();
-                let f_plus = f(&state_plus);
-                let f_ref = f(&state);
-                for row in 0..d {
-                    next_pert[row][col] = pv[row] + self.dt * (f_plus[row] - f_ref[row]) / eps;
+            let k1 = field(&state)?;
+            let s2 = shifted(&state, 0.5 * dt, &k1);
+            let k2 = field(&s2)?;
+            let s3 = shifted(&state, 0.5 * dt, &k2);
+            let k3 = field(&s3)?;
+            let s4 = shifted(&state, dt, &k3);
+            let k4 = field(&s4)?;
+            for phi in &mut columns {
+                let v1 = jvp(&state, phi)?;
+                let v2 = jvp(&s2, &shifted(phi, 0.5 * dt, &v1))?;
+                let v3 = jvp(&s3, &shifted(phi, 0.5 * dt, &v2))?;
+                let v4 = jvp(&s4, &shifted(phi, dt, &v3))?;
+                for (i, p) in phi.iter_mut().enumerate() {
+                    *p += dt / 6.0 * (v1[i] + 2.0 * v2[i] + 2.0 * v3[i] + v4[i]);
                 }
             }
-            state = next_state;
-            pert = next_pert;
+            for (i, x) in state.iter_mut().enumerate() {
+                *x += dt / 6.0 * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]);
+            }
         }
-        pert
+        Some(
+            (0..d)
+                .map(|i| columns.iter().map(|column| column[i]).collect())
+                .collect(),
+        )
     }
 
     fn rk4_step<F>(&self, state: &[f64], f: &F) -> Vec<f64>
@@ -1539,6 +1609,134 @@ mod tests {
         let fsm = flow.fundamental_solution_matrix(&[1.0, 0.0], 10, &f);
         assert_eq!(fsm.len(), 2);
         assert_eq!(fsm[0].len(), 2);
+    }
+
+    fn assert_matrix_close(got: &[Vec<f64>], want: &[[f64; 2]; 2], tol: f64) {
+        assert_eq!(got.len(), 2);
+        for (i, row) in got.iter().enumerate() {
+            assert_eq!(row.len(), 2);
+            for (j, &value) in row.iter().enumerate() {
+                assert!(
+                    (value - want[i][j]).abs() < tol,
+                    "Φ = {got:?}, expected {want:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_fundamental_solution_matrix_harmonic_oscillator_is_a_rotation() {
+        // f = (y, -x): Φ(t) = [[cos t, sin t], [-sin t, cos t]].  Use dt = 2π/6000
+        // so that 6000 steps are exactly one period and 1500 exactly a quarter
+        // (dt = 1e-3 would miss 2π by 1.9e-4).
+        let f = |s: &[f64]| vec![s[1], -s[0]];
+        let flow = FlowMap::new(2, 2.0 * std::f64::consts::PI / 6000.0);
+        let start = [0.7, -0.3];
+        let period = flow.fundamental_solution_matrix(&start, 6000, &f);
+        assert_matrix_close(&period, &[[1.0, 0.0], [0.0, 1.0]], 1e-6);
+        let quarter = flow.fundamental_solution_matrix(&start, 1500, &f);
+        assert_matrix_close(&quarter, &[[0.0, 1.0], [-1.0, 0.0]], 1e-6);
+        let half = flow.fundamental_solution_matrix(&start, 3000, &f);
+        assert_matrix_close(&half, &[[-1.0, 0.0], [0.0, -1.0]], 1e-6);
+    }
+
+    #[test]
+    fn test_fundamental_solution_matrix_of_a_nilpotent_system_is_not_transposed() {
+        // f = (y, 0): Φ(t) = exp(A t) = [[1, t], [0, 1]] with a non-symmetric A.
+        // The old code read perturbation vectors by row but wrote them by column, so
+        // it transposed Φ at every step and produced A·Φᵀ instead of the exponential.
+        let f = |s: &[f64]| vec![s[1], 0.0];
+        let flow = FlowMap::new(2, 1e-3);
+        let phi = flow.fundamental_solution_matrix(&[0.4, 0.9], 1000, &f);
+        assert_matrix_close(&phi, &[[1.0, 1.0], [0.0, 1.0]], 1e-9);
+    }
+
+    #[test]
+    fn test_fundamental_solution_matrix_matches_the_matrix_exponential() {
+        // Linear system with the non-symmetric matrix A = [[0, -2], [1, -3]]
+        // (eigenvalues -1 and -2): Φ(T) = exp(A T).
+        let f = |s: &[f64]| vec![-2.0 * s[1], s[0] - 3.0 * s[1]];
+        let steps = 700;
+        let flow = FlowMap::new(2, 1e-3);
+        let phi = flow.fundamental_solution_matrix(&[1.0, 2.0], steps, &f);
+        let exact = (nalgebra::Matrix2::new(0.0, -2.0, 1.0, -3.0) * (steps as f64 * 1e-3)).exp();
+        assert_matrix_close(
+            &phi,
+            &[
+                [exact[(0, 0)], exact[(0, 1)]],
+                [exact[(1, 0)], exact[(1, 1)]],
+            ],
+            1e-9,
+        );
+    }
+
+    #[test]
+    fn test_fundamental_solution_matrix_is_the_derivative_of_the_flow_map() {
+        // Van der Pol (μ = 1.5): compare Φ with central differences of the RK4 flow
+        // with respect to the initial condition.
+        let f = |s: &[f64]| vec![s[1], 1.5 * (1.0 - s[0] * s[0]) * s[1] - s[0]];
+        let flow = FlowMap::new(2, 1e-3);
+        let start = [0.8, -0.4];
+        let steps = 1000;
+        let phi = flow.fundamental_solution_matrix(&start, steps, &f);
+        let h = 1e-6;
+        for j in 0..2 {
+            let mut plus = start;
+            let mut minus = start;
+            plus[j] += h;
+            minus[j] -= h;
+            let x_plus = flow.advance(&plus, steps, &f);
+            let x_minus = flow.advance(&minus, steps, &f);
+            for i in 0..2 {
+                let numeric = (x_plus[i] - x_minus[i]) / (2.0 * h);
+                assert!(
+                    (phi[i][j] - numeric).abs() < 1e-6 * (1.0 + numeric.abs()),
+                    "Φ[{i}][{j}] = {} vs finite difference {numeric}",
+                    phi[i][j]
+                );
+            }
+        }
+        // The columns are not the rows: Φ is not symmetric for this flow.
+        assert!((phi[0][1] - phi[1][0]).abs() > 1e-3);
+    }
+
+    #[test]
+    fn test_fundamental_solution_matrix_obeys_liouville_for_the_lorenz_flow() {
+        // det Φ(T) = exp(∫ tr J dt) and tr J = -(σ + 1 + β) is constant.
+        let (sigma, rho, beta) = (10.0, 28.0, 8.0 / 3.0);
+        let f = move |s: &[f64]| {
+            vec![
+                sigma * (s[1] - s[0]),
+                s[0] * (rho - s[2]) - s[1],
+                s[0] * s[1] - beta * s[2],
+            ]
+        };
+        let flow = FlowMap::new(3, 1e-3);
+        let steps = 500;
+        let phi = flow.fundamental_solution_matrix(&[1.0, 1.0, 20.0], steps, &f);
+        let m = nalgebra::Matrix3::from_fn(|i, j| phi[i][j]);
+        let expected = (-(sigma + 1.0 + beta) * steps as f64 * 1e-3).exp();
+        assert!(
+            (m.determinant() - expected).abs() < 1e-6 * expected,
+            "det Φ = {}, expected {expected}",
+            m.determinant()
+        );
+    }
+
+    #[test]
+    fn test_fundamental_solution_matrix_identity_and_invalid_input() {
+        let f = |s: &[f64]| vec![s[1], -s[0]];
+        let flow = FlowMap::new(2, 0.01);
+        let identity = flow.fundamental_solution_matrix(&[1.0, 0.0], 0, &f);
+        assert_eq!(identity, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+        // Initial condition of the wrong size.
+        assert!(flow.fundamental_solution_matrix(&[1.0], 5, &f).is_empty());
+        // A vector field of the wrong size must not index out of bounds.
+        let short = |_: &[f64]| vec![0.0];
+        assert!(
+            flow.fundamental_solution_matrix(&[1.0, 0.0], 5, &short)
+                .is_empty()
+        );
     }
 
     // ── SynchronizationAnalysis ────────────────────────────────────────────────

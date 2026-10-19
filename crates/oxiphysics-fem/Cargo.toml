@@ -27,3 +27,7 @@ harness = false
 [[bench]]
 name = "amg_elasticity"
 harness = false
+
+[[bench]]
+name = "iga_assembly"
+harness = false

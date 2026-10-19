@@ -347,6 +347,95 @@ pub(super) fn solve3x3(a: &[f64; 9], b: &[f64; 3]) -> Option<[f64; 3]> {
             + b[0] * (a[3] * a[7] - a[4] * a[6]));
     Some([x0, x1, x2])
 }
+/// Wrap an angle to `[-pi, pi)`.
+pub(super) fn wrap_angle(angle: f64) -> f64 {
+    let two_pi = std::f64::consts::TAU;
+    angle - two_pi * ((angle + std::f64::consts::PI) / two_pi).floor()
+}
+/// Row-major 2x2 matrix product `a * b`.
+pub(super) fn mat2_mul(a: &[f64; 4], b: &[f64; 4]) -> [f64; 4] {
+    [
+        a[0] * b[0] + a[1] * b[2],
+        a[0] * b[1] + a[1] * b[3],
+        a[2] * b[0] + a[3] * b[2],
+        a[2] * b[1] + a[3] * b[3],
+    ]
+}
+/// Row-major 2x2 matrix transpose.
+pub(super) fn mat2_transpose(a: &[f64; 4]) -> [f64; 4] {
+    [a[0], a[2], a[1], a[3]]
+}
+/// Row-major 2x2 matrix sum.
+pub(super) fn mat2_add(a: &[f64; 4], b: &[f64; 4]) -> [f64; 4] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]]
+}
+/// Determinant and inverse of a row-major 2x2 matrix.
+///
+/// Returns `None` if the matrix is singular or not finite.
+pub(super) fn mat2_det_inverse(m: &[f64; 4]) -> Option<(f64, [f64; 4])> {
+    let det = m[0] * m[3] - m[1] * m[2];
+    if !det.is_finite() || det.abs() < 1e-300 {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    Some((
+        det,
+        [
+            m[3] * inv_det,
+            -m[1] * inv_det,
+            -m[2] * inv_det,
+            m[0] * inv_det,
+        ],
+    ))
+}
+/// Lower-triangular Cholesky factor `L` (row-major, `A = L L^T`) of a
+/// symmetric positive semi-definite 3x3 matrix (only its lower triangle is
+/// read).
+///
+/// A (numerically) zero pivot, as produced by a state without uncertainty in
+/// some direction, yields a zero column.  Returns `None` for non-finite
+/// entries and for matrices that are not positive semi-definite (a pivot
+/// that is negative beyond roundoff, or a zero pivot with non-zero coupling).
+pub(super) fn cholesky3_psd(a: &[f64; 9]) -> Option<[f64; 9]> {
+    if a.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let scale = a[0].abs().max(a[4].abs()).max(a[8].abs());
+    let pivot_tol = 1e-12 * scale;
+    let coupling_tol = 1e-6 * scale;
+    let mut l = [0.0f64; 9];
+    for j in 0..3 {
+        let mut diag = a[j * 3 + j];
+        for k in 0..j {
+            diag -= l[j * 3 + k] * l[j * 3 + k];
+        }
+        if diag < -pivot_tol {
+            return None;
+        }
+        let pivot = if diag > pivot_tol { diag.sqrt() } else { 0.0 };
+        l[j * 3 + j] = pivot;
+        for i in (j + 1)..3 {
+            let mut off = a[i * 3 + j];
+            for k in 0..j {
+                off -= l[i * 3 + k] * l[j * 3 + k];
+            }
+            if pivot > 0.0 {
+                l[i * 3 + j] = off / pivot;
+            } else if off.abs() > coupling_tol {
+                return None;
+            }
+        }
+    }
+    Some(l)
+}
+/// Accumulate `acc += weight * a b^T` for row-major 3x3 `acc`.
+pub(super) fn add_scaled_outer3(acc: &mut [f64; 9], weight: f64, a: &[f64; 3], b: &[f64; 3]) {
+    for (row, a_r) in acc.chunks_exact_mut(3).zip(a.iter()) {
+        for (cell, b_c) in row.iter_mut().zip(b.iter()) {
+            *cell += weight * a_r * b_c;
+        }
+    }
+}
 /// Simplified traffic sign recognition via template matching on 2-D pixel descriptors.
 ///
 /// `descriptors`: each entry is a feature vector of length 8 (HOG-like, normalised).
@@ -737,7 +826,7 @@ mod tests {
     #[test]
     fn test_ukf_sigma_mean() {
         let ukf = UkfState::new();
-        let pts = ukf.sigma_points();
+        let pts = ukf.sigma_points().expect("identity covariance is valid");
         assert!((pts[0][0] - ukf.mean[0]).abs() < EPS);
         assert!((pts[0][1] - ukf.mean[1]).abs() < EPS);
         assert!((pts[0][2] - ukf.mean[2]).abs() < EPS);
@@ -746,7 +835,8 @@ mod tests {
     fn test_ukf_predict_covariance() {
         let mut ukf = UkfState::new();
         let c0 = ukf.cov[0];
-        ukf.predict(0.1, 0.01);
+        ukf.predict(0.1, 0.0, 0.0, [0.01, 0.01, 0.01])
+            .expect("valid prediction");
         assert!(
             ukf.cov[0] > c0,
             "Covariance should grow after predict: {} > {}",

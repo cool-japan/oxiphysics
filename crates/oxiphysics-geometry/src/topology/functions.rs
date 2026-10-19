@@ -2,11 +2,11 @@
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use super::types::{
-    CurveSkeleton, HalfEdgeMesh, MedialAxisPoint, MorseCriticalType, MorseVertex, NonManifoldEdge,
-    NonManifoldVertex, PersistenceDiagram, SimplicialComplex,
+    CurveSkeleton, HalfEdgeMesh, MorseCriticalType, MorseVertex, NonManifoldEdge,
+    NonManifoldVertex, PersistenceDiagram,
 };
 
 /// Add two 3-vectors.
@@ -129,19 +129,6 @@ pub fn euler_characteristic_vef(v: usize, e: usize, f: usize) -> i64 {
 pub fn genus_from_euler(chi: i64) -> i64 {
     (2 - chi) / 2
 }
-/// Compute all Betti numbers for a simplicial complex (b0, b1, b2).
-///
-/// Uses the relation: χ = b0 - b1 + b2 and the counts of simplices.
-pub fn betti_numbers_approx(sc: &SimplicialComplex) -> (usize, usize, usize) {
-    let chi = sc.euler_characteristic();
-    let c0 = sc.count(0) as i64;
-    let c1 = sc.count(1) as i64;
-    let _c2 = sc.count(2) as i64;
-    let b0 = 1_i64.max(c0 - c1 + chi);
-    let b2 = if chi < 0 { 0_i64 } else { 1_i64 };
-    let b1 = (b0 + b2 - chi).max(0);
-    (b0.max(0) as usize, b1 as usize, b2 as usize)
-}
 /// Classify critical points of a Morse function on a triangle mesh.
 pub fn classify_morse_critical_points(mesh: &HalfEdgeMesh, values: &[f64]) -> Vec<MorseVertex> {
     let n = mesh.num_vertices();
@@ -259,54 +246,6 @@ pub fn extract_curve_skeleton(
     }
     skeleton
 }
-/// Compute an approximate medial axis from a point cloud.
-///
-/// Uses the Voronoi-based approach: poles of Voronoi cells are medial axis candidates.
-/// This simplified version uses a brute-force approach.
-pub fn compute_medial_axis_approx(
-    surface_vertices: &[[f64; 3]],
-    num_candidates: usize,
-) -> Vec<MedialAxisPoint> {
-    let n = surface_vertices.len();
-    if n < 4 {
-        return Vec::new();
-    }
-    let mut candidates = Vec::new();
-    let step = (n / num_candidates.max(1)).max(1);
-    let mut i = 0;
-    while i < n && candidates.len() < num_candidates {
-        let j = (i + step) % n;
-        let k = (i + 2 * step) % n;
-        if i == j || j == k || i == k {
-            i += 1;
-            continue;
-        }
-        let a = surface_vertices[i];
-        let b = surface_vertices[j];
-        let c = surface_vertices[k];
-        let ab = sub3(b, a);
-        let ac = sub3(c, a);
-        let ab_len2 = dot3(ab, ab);
-        let ac_len2 = dot3(ac, ac);
-        let ab_ac = dot3(ab, ac);
-        let denom = 2.0 * (ab_len2 * ac_len2 - ab_ac * ab_ac);
-        if denom.abs() < 1e-12 {
-            i += 1;
-            continue;
-        }
-        let s = (ab_len2 * ac_len2 - ab_ac * dot3(ab, ac)) / denom;
-        let t = (ac_len2 * ab_len2 - ab_ac * dot3(ac, ab)) / denom;
-        let center = add3(a, add3(scale3(ab, s), scale3(ac, t)));
-        let r = len3(sub3(center, a));
-        candidates.push(MedialAxisPoint {
-            position: center,
-            radius: r,
-            closest_verts: [i, j],
-        });
-        i += 1;
-    }
-    candidates
-}
 /// Detect non-manifold edges in a half-edge mesh.
 pub fn detect_non_manifold_edges(mesh: &HalfEdgeMesh) -> Vec<NonManifoldEdge> {
     let mut edge_count: HashMap<(usize, usize), usize> = HashMap::new();
@@ -380,16 +319,14 @@ pub fn detect_non_manifold_vertices(mesh: &HalfEdgeMesh) -> Vec<NonManifoldVerte
 }
 /// Extract boundary loops from a half-edge mesh.
 ///
-/// Returns each boundary loop as an ordered list of vertex indices.
+/// Returns each boundary loop as an ordered list of vertex indices. The result
+/// is deterministic: loops are ordered by their lowest boundary half-edge index
+/// and each loop starts at the origin of that half-edge.
 pub fn extract_boundary_loops(mesh: &HalfEdgeMesh) -> Vec<Vec<usize>> {
     let boundary_hes = mesh.boundary_half_edges();
-    let mut remaining: HashSet<usize> = boundary_hes.iter().copied().collect();
+    let mut remaining: BTreeSet<usize> = boundary_hes.iter().copied().collect();
     let mut loops = Vec::new();
-    while !remaining.is_empty() {
-        let &start_he = remaining
-            .iter()
-            .next()
-            .expect("iterator should have elements");
+    while let Some(&start_he) = remaining.first() {
         let mut loop_verts = Vec::new();
         let mut cur = start_he;
         loop {
@@ -496,7 +433,7 @@ mod tests {
     use crate::topology::PolygonOffset;
     use crate::topology::QuadEdgeMesh;
     use crate::topology::Simplex;
-    use crate::topology::TopologicalSurgery;
+    use crate::topology::SimplicialComplex;
     use crate::topology::WingedEdgeMesh;
     /// Build a simple tetrahedron mesh for testing.
     fn make_tet_mesh() -> HalfEdgeMesh {
@@ -715,30 +652,6 @@ mod tests {
         assert_eq!(genus_from_euler(0), 1);
     }
     #[test]
-    fn test_edge_collapse() {
-        let mut m = make_tet_mesh();
-        let mut surgery = TopologicalSurgery::new(&mut m);
-        assert!(surgery.edge_collapse(0));
-    }
-    #[test]
-    fn test_edge_split() {
-        let mut m = make_triangle_mesh();
-        let orig_nv = m.num_vertices();
-        let new_v = {
-            let mut surgery = TopologicalSurgery::new(&mut m);
-            surgery.edge_split(0)
-        };
-        assert_ne!(new_v, usize::MAX);
-        assert_eq!(m.num_vertices(), orig_nv + 1);
-    }
-    #[test]
-    fn test_attach_handle_needs_boundary() {
-        let mut m = make_triangle_mesh();
-        let mut surgery = TopologicalSurgery::new(&mut m);
-        let result = surgery.attach_handle(0, 1);
-        assert!(result);
-    }
-    #[test]
     fn test_morse_critical_classification() {
         let m = make_tet_mesh();
         let values = [0.0, 1.0, 2.0, 3.0];
@@ -768,17 +681,6 @@ mod tests {
         let b = skel.add_node([1.0, 0.0, 0.0]);
         skel.add_edge(a, b);
         assert!((skel.total_length() - 1.0).abs() < 1e-8);
-    }
-    #[test]
-    fn test_medial_axis_approx_returns_candidates() {
-        let verts: Vec<[f64; 3]> = (0..16)
-            .map(|i| {
-                let t = i as f64 / 16.0 * std::f64::consts::TAU;
-                [t.cos(), t.sin(), 0.0]
-            })
-            .collect();
-        let ma = compute_medial_axis_approx(&verts, 4);
-        assert!(!ma.is_empty());
     }
     #[test]
     fn test_no_non_manifold_edges_in_tet() {

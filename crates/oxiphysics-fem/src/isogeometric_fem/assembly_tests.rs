@@ -784,3 +784,133 @@ fn quarter_annulus_with_rational_arc_has_expected_area() {
         "area {area_local}, expected {expected}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// B-matrix: physical gradients use J^-T
+// ---------------------------------------------------------------------------
+
+/// Strain `(eps_xx, eps_yy, gamma_xy) = B u_e` of the nodal displacement field
+/// `nodal` (layout `2 * control_point + component`) at `(u, v)` of `elem`.
+fn element_strain(
+    surface: &NurbsSurface,
+    elem: &IgaElement,
+    u: f64,
+    v: f64,
+    nodal: &[f64],
+) -> ([f64; 3], f64) {
+    let (b, det_j) = elem.b_matrix(surface, u, v).expect("valid element");
+    let ndof = 2 * elem.basis_indices.len();
+    assert_eq!(b.len(), 3 * ndof);
+    let mut local = Vec::with_capacity(ndof);
+    for &g in &elem.basis_indices {
+        local.push(nodal[2 * g]);
+        local.push(nodal[2 * g + 1]);
+    }
+    let mut strain = [0.0; 3];
+    for (row, e) in strain.iter_mut().enumerate() {
+        *e = (0..ndof).map(|c| b[row * ndof + c] * local[c]).sum();
+    }
+    (strain, det_j)
+}
+
+/// Displacement fields `u = G x` with their exact constant strains.
+fn linear_fields(surface: &NurbsSurface) -> Vec<(&'static str, Vec<f64>, [f64; 3])> {
+    let affine = |g: [[f64; 2]; 2]| {
+        nodal_field(surface, move |x, y| {
+            [g[0][0] * x + g[0][1] * y, g[1][0] * x + g[1][1] * y]
+        })
+    };
+    vec![
+        // u_x = x: eps = [1, 0, 0]
+        ("stretch", affine([[1.0, 0.0], [0.0, 0.0]]), [1.0, 0.0, 0.0]),
+        // u_x = y: gamma_xy = 1
+        ("shear", affine([[0.0, 1.0], [0.0, 0.0]]), [0.0, 0.0, 1.0]),
+        // rigid rotation u = (-y, x): no strain at all
+        ("rotation", affine([[0.0, -1.0], [1.0, 0.0]]), [0.0; 3]),
+        // general affine field
+        (
+            "affine",
+            affine([[0.3, -0.2], [0.1, 0.4]]),
+            [0.3, 0.4, -0.2 + 0.1],
+        ),
+    ]
+}
+
+/// Parallelogram `x = s + 0.5 t, y = t`: `x_v = 0.5 != y_u = 0`, so `J^-1` and
+/// `J^-T` differ.  The stretch `u_x = x` must give `eps = [1, 0, 0]` and a rigid
+/// rotation no strain at all; with the former `J^-1` formula both are wrong.
+#[test]
+fn b_matrix_reproduces_constant_strain_on_a_sheared_parallelogram() {
+    let surf = mapped_surface(5, 4, (2, 2), |s, t| [s + 0.5 * t, t], |_, _| 1.0);
+    let assembler = IgaAssembler::new(20, material(), 3);
+    let fields = linear_fields(&surf);
+    let (gp, gw) = gauss_legendre(3);
+    let mut area = 0.0;
+    let mut points = 0;
+    for elem in assembler.create_elements(&surf) {
+        let (gu, wu) = gauss_map(&gp, &gw, elem.param_domain[0], elem.param_domain[1]);
+        let (gv, wv) = gauss_map(&gp, &gw, elem.param_domain[2], elem.param_domain[3]);
+        for (u, w_u) in gu.iter().zip(wu.iter()) {
+            for (v, w_v) in gv.iter().zip(wv.iter()) {
+                let mut det_at_point = 0.0;
+                for (name, nodal, exact) in &fields {
+                    let (strain, det_j) = element_strain(&surf, &elem, *u, *v, nodal);
+                    assert!(det_j > 0.0, "det J = {det_j}");
+                    det_at_point = det_j;
+                    for (e, x) in strain.iter().zip(exact.iter()) {
+                        assert!(
+                            (e - x).abs() < 1e-10,
+                            "{name}: strain {strain:?}, expected {exact:?} at ({u}, {v})"
+                        );
+                    }
+                }
+                area += w_u * w_v * det_at_point;
+                points += 1;
+            }
+        }
+    }
+    // uniform_open(5, 2) has 3 knot spans, uniform_open(4, 2) has 2; 3 x 3 Gauss points
+    assert_eq!(points, 3 * 2 * 9);
+    // shearing a unit square does not change its area
+    assert!((area - 1.0).abs() < 1e-12, "area {area}");
+}
+
+#[test]
+fn b_matrix_reproduces_constant_strain_on_a_distorted_rational_surface() {
+    let surf = distorted_rational_surface();
+    let assembler = IgaAssembler::new(30, material(), 4);
+    let fields = linear_fields(&surf);
+    let (gp, gw) = gauss_legendre(4);
+    for elem in assembler.create_elements(&surf) {
+        let (gu, _) = gauss_map(&gp, &gw, elem.param_domain[0], elem.param_domain[1]);
+        let (gv, _) = gauss_map(&gp, &gw, elem.param_domain[2], elem.param_domain[3]);
+        for u in &gu {
+            for v in &gv {
+                for (name, nodal, exact) in &fields {
+                    let (strain, _) = element_strain(&surf, &elem, *u, *v, nodal);
+                    for (e, x) in strain.iter().zip(exact.iter()) {
+                        assert!(
+                            (e - x).abs() < 1e-9,
+                            "{name}: strain {strain:?}, expected {exact:?} at ({u}, {v})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The B-matrix of a degenerate (collapsed) Jacobian is zero instead of NaN.
+#[test]
+fn b_matrix_of_a_collapsed_element_is_zero() {
+    // all control points on one line: det J = 0 everywhere
+    let surf = mapped_surface(4, 4, (2, 2), |s, t| [s + t, s + t], |_, _| 1.0);
+    let assembler = IgaAssembler::new(16, material(), 2);
+    let elem = assembler.create_elements(&surf).remove(0);
+    let (b, det_j) = elem.b_matrix(&surf, 0.2, 0.3).expect("valid element");
+    assert!(det_j.abs() < 1e-12, "det J = {det_j}");
+    assert_eq!(b.len(), 3 * 2 * 9);
+    assert!(b.iter().all(|x| *x == 0.0));
+    let k = elem.stiffness_matrix(&surf, &material()).expect("valid");
+    assert!(k.iter().all(|x| *x == 0.0));
+}

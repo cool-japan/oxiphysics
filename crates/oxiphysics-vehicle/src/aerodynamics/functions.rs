@@ -769,6 +769,108 @@ mod tests_aero_new {
             "positive alpha → positive total Cl: {cl_total}"
         );
     }
+    /// Finite-wing lift coefficient `2 pi alpha / (1 + 2 / (AR e))`.
+    fn finite_wing_cl(aspect_ratio: f64, oswald: f64, alpha_deg: f64) -> f64 {
+        2.0 * std::f64::consts::PI * alpha_deg.to_radians() / (1.0 + 2.0 / (aspect_ratio * oswald))
+    }
+    #[test]
+    fn test_vlm_total_cl_matches_finite_wing_formula() {
+        // 400 panels resolve the elliptic load to well below 1 %.
+        let surf = AeroSurface::new(2.0, 0.3, 400, 5.0, 0.85);
+        let expected = finite_wing_cl(surf.aspect_ratio(), 0.85, 5.0);
+        let cl = surf.total_lift_coefficient(50.0);
+        assert!(
+            (cl - expected).abs() < 0.01 * expected,
+            "CL = {cl}, finite-wing formula = {expected}"
+        );
+    }
+    #[test]
+    fn test_vlm_total_cl_is_dimensionless_across_aspect_ratios() {
+        // Before the fix CL was divided by the chord (units 1/m), so halving
+        // the chord at fixed span doubled the result instead of following the
+        // aspect-ratio law.
+        for chord in [0.1_f64, 0.2, 0.4, 0.8] {
+            let surf = AeroSurface::new(2.0, chord, 400, 4.0, 0.9);
+            let expected = finite_wing_cl(2.0 / chord, 0.9, 4.0);
+            let cl = surf.total_lift_coefficient(30.0);
+            assert!(
+                (cl - expected).abs() < 0.01 * expected,
+                "chord {chord}: CL = {cl}, expected {expected}"
+            );
+        }
+    }
+    #[test]
+    fn test_vlm_total_cl_independent_of_chord_at_fixed_ar() {
+        // Scale span and chord together: the aspect ratio (5) is unchanged, so
+        // the lift coefficient must not change either.
+        let reference = AeroSurface::new(2.0, 0.4, 64, 6.0, 0.85).total_lift_coefficient(40.0);
+        assert!(reference > 0.0);
+        for scale in [0.25_f64, 0.5, 3.0, 10.0] {
+            let surf = AeroSurface::new(2.0 * scale, 0.4 * scale, 64, 6.0, 0.85);
+            let cl = surf.total_lift_coefficient(40.0);
+            assert!(
+                (cl - reference).abs() < 1e-12 * reference.abs().max(1.0),
+                "scale {scale}: CL = {cl}, reference = {reference}"
+            );
+        }
+    }
+    #[test]
+    fn test_vlm_span_mean_of_sectional_cl_equals_whole_wing_cl() {
+        let surf = AeroSurface::new(3.0, 0.5, 400, 7.0, 0.8);
+        let dist = surf.vortex_lattice_method(25.0);
+        let mean: f64 = dist.iter().map(|&(_, cl)| cl).sum::<f64>() / dist.len() as f64;
+        let cl = surf.total_lift_coefficient(25.0);
+        assert!((mean - cl).abs() < 1e-12, "mean {mean} vs CL {cl}");
+        // The planform integral of cl(y) * c over S = b * c is the same number.
+        let dy = surf.span / dist.len() as f64;
+        let lift_over_q: f64 = dist.iter().map(|&(_, cl_y)| cl_y * surf.chord * dy).sum();
+        assert!(
+            (lift_over_q / surf.planform_area() - cl).abs() < 1e-12,
+            "planform-integrated CL differs from total_lift_coefficient"
+        );
+    }
+    #[test]
+    fn test_vlm_sectional_cl_is_elliptic_with_peak_four_over_pi_times_cl() {
+        let surf = AeroSurface::new(2.0, 0.25, 401, 5.0, 0.85);
+        let dist = surf.vortex_lattice_method(60.0);
+        let cl_total = surf.total_lift_coefficient(60.0);
+        // Odd panel count: the middle panel sits on the centre line.
+        let (y_mid, cl_mid) = dist[200];
+        assert!(y_mid.abs() < 1e-12);
+        let peak = 4.0 / std::f64::consts::PI * cl_total;
+        assert!(
+            (cl_mid - peak).abs() < 1e-3 * peak,
+            "centre-line cl = {cl_mid}, expected 4/pi * CL = {peak}"
+        );
+        // cl(y) / cl(0) = sqrt(1 - (2y/b)^2) on every panel.
+        for &(y, cl_y) in &dist {
+            let eta = 2.0 * y / surf.span;
+            let expected = cl_mid * (1.0 - eta * eta).sqrt();
+            assert!(
+                (cl_y - expected).abs() < 1e-3 * peak,
+                "y = {y}: cl = {cl_y}, elliptic = {expected}"
+            );
+        }
+    }
+    #[test]
+    fn test_vlm_total_cl_odd_in_alpha_and_zero_at_zero_alpha() {
+        let pos = AeroSurface::new(1.5, 0.3, 50, 4.0, 0.85).total_lift_coefficient(20.0);
+        let neg = AeroSurface::new(1.5, 0.3, 50, -4.0, 0.85).total_lift_coefficient(20.0);
+        let zero = AeroSurface::new(1.5, 0.3, 50, 0.0, 0.85).total_lift_coefficient(20.0);
+        assert!(pos > 0.0 && neg < 0.0);
+        assert!((pos + neg).abs() < 1e-12, "CL(+a) = {pos}, CL(-a) = {neg}");
+        assert_eq!(zero, 0.0);
+    }
+    #[test]
+    fn test_vlm_zero_freestream_carries_no_load() {
+        let surf = AeroSurface::new(2.0, 0.3, 12, 5.0, 0.85);
+        assert!(
+            surf.vortex_lattice_method(0.0)
+                .iter()
+                .all(|&(_, cl)| cl == 0.0)
+        );
+        assert_eq!(surf.total_lift_coefficient(0.0), 0.0);
+    }
     #[test]
     fn test_aero_db_exact_lookup() {
         let alphas = vec![-5.0, 0.0, 5.0, 10.0];

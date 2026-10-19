@@ -128,7 +128,11 @@ pub fn compute_slope(dem: &Dem) -> Vec<f64> {
 
 /// Terrain aspect in radians at every grid cell.
 ///
-/// Aspect is measured clockwise from north (0 = north, π/2 = east).
+/// Aspect is the compass direction the slope faces (the downslope direction),
+/// measured clockwise from north in `[0, 2π)`: 0 = north, π/2 = east,
+/// π = south, 3π/2 = west. A surface that rises towards the south therefore
+/// faces north (aspect 0), and one that rises towards the east faces west
+/// (aspect 3π/2).
 /// Flat areas (slope ≈ 0) are assigned aspect = -1.
 pub fn compute_aspect(dem: &Dem) -> Vec<f64> {
     let mut aspect = vec![-1.0f64; dem.rows * dem.cols];
@@ -141,16 +145,19 @@ pub fn compute_aspect(dem: &Dem) -> Vec<f64> {
             let dzdy = ((w[2][0] + 2.0 * w[2][1] + w[2][2]) - (w[0][0] + 2.0 * w[0][1] + w[0][2]))
                 / (8.0 * cs);
             if dzdx.abs() > 1e-15 || dzdy.abs() > 1e-15 {
-                // atan2 measured from north, clockwise
-                let a = 180.0 - dzdy.atan2(dzdx).to_degrees() + 90.0;
-                let a = if a < 0.0 {
-                    a + 360.0
-                } else if a >= 360.0 {
-                    a - 360.0
-                } else {
-                    a
-                };
-                aspect[r * dem.cols + c] = a.to_radians();
+                // `dzdx` rises towards the east; `dzdy` rises towards the south
+                // (rows increase southward). The downslope vector in (east,
+                // north) is therefore (-dzdx, +dzdy), and the compass bearing
+                // clockwise from north is atan2(east, north).
+                let mut a = (-dzdx).atan2(dzdy);
+                if a < 0.0 {
+                    a += 2.0 * PI;
+                }
+                if a >= 2.0 * PI {
+                    a -= 2.0 * PI;
+                }
+                // `+ 0.0` turns a negative zero into +0.0.
+                aspect[r * dem.cols + c] = a + 0.0;
             }
         }
     }
@@ -290,64 +297,145 @@ pub fn flow_direction_d8(dem: &Dem) -> Vec<D8Code> {
     fdir
 }
 
+/// One of the eight triangular facets around a cell used by
+/// [`flow_direction_dinf`] (Tarboton 1997, Table 1).
+#[derive(Clone, Copy)]
+struct DinfFacet {
+    /// `(row, col)` offset of the facet's cardinal neighbour.
+    cardinal: (i64, i64),
+    /// `(row, col)` offset of the facet's diagonal neighbour.
+    diagonal: (i64, i64),
+    /// Multiple of π/2 added to the in-facet angle (`a_c` in the paper).
+    ac: f64,
+    /// Sign of the in-facet angle (`a_f` in the paper): `+1` when the angle is
+    /// measured anticlockwise from the cardinal direction, `-1` otherwise.
+    af: f64,
+}
+
 /// D-infinity flow direction (Tarboton 1997).
 ///
-/// Returns a `Vec`f64` of flow angles (radians, 0 = east, anticlockwise) for
-/// each cell.  The angle encodes which of the eight triangular facets receives
-/// flow, and how it is partitioned between the two bounding neighbours.
+/// Returns the steepest-descent angle of every cell in radians, measured
+/// anticlockwise from east (0 = east, π/2 = north, π = west, 3π/2 = south)
+/// with rows increasing southward, in `[0, 2π)`.
+///
+/// For each of the eight triangular facets formed by the cell and two adjacent
+/// neighbours (a cardinal one `C` and a diagonal one `D`) the plane through the
+/// three points gives the slope components `s1 = (z0 - zC) / L` along the
+/// cardinal edge and `s2 = (zC - zD) / L` across it. The steepest direction in
+/// the facet is `r = atan2(s2, s1)` with slope `s = hypot(s1, s2)`. If `r`
+/// falls outside the facet (`r < 0` or `r > π/4`) it is clamped to the facet
+/// edge, and the slope becomes that of the cardinal edge (`s1`) or of the
+/// diagonal edge (`(z0 - zD) / (L√2)`) respectively. The facet with the largest
+/// slope wins and its angle is `a_f * r + a_c * π/2`.
+///
+/// Facets that reach outside the grid are skipped. Cells with no downslope
+/// facet (pits, flats, and cells whose every facet is skipped) are assigned the
+/// sentinel `-1.0`.
 pub fn flow_direction_dinf(dem: &Dem) -> Vec<f64> {
-    // Eight triangular facets: each defined by two neighbouring cells.
-    // Facet ordering: anti-clockwise from east.
-    // (dr1,dc1) is the "cardinal" neighbour; (dr2,dc2) is the diagonal.
-    const FACETS: [(i64, i64, i64, i64); 8] = [
-        (0, 1, -1, 1),
-        (-1, 1, -1, 0),
-        (-1, 0, -1, -1),
-        (-1, -1, 0, -1),
-        (0, -1, 1, -1),
-        (1, -1, 1, 0),
-        (1, 0, 1, 1),
-        (1, 1, 0, 1),
+    // Facets in anticlockwise order from east; rows increase southward, so a
+    // row offset of -1 points north.
+    const FACETS: [DinfFacet; 8] = [
+        DinfFacet {
+            cardinal: (0, 1),
+            diagonal: (-1, 1),
+            ac: 0.0,
+            af: 1.0,
+        },
+        DinfFacet {
+            cardinal: (-1, 0),
+            diagonal: (-1, 1),
+            ac: 1.0,
+            af: -1.0,
+        },
+        DinfFacet {
+            cardinal: (-1, 0),
+            diagonal: (-1, -1),
+            ac: 1.0,
+            af: 1.0,
+        },
+        DinfFacet {
+            cardinal: (0, -1),
+            diagonal: (-1, -1),
+            ac: 2.0,
+            af: -1.0,
+        },
+        DinfFacet {
+            cardinal: (0, -1),
+            diagonal: (1, -1),
+            ac: 2.0,
+            af: 1.0,
+        },
+        DinfFacet {
+            cardinal: (1, 0),
+            diagonal: (1, -1),
+            ac: 3.0,
+            af: -1.0,
+        },
+        DinfFacet {
+            cardinal: (1, 0),
+            diagonal: (1, 1),
+            ac: 3.0,
+            af: 1.0,
+        },
+        DinfFacet {
+            cardinal: (0, 1),
+            diagonal: (1, 1),
+            ac: 4.0,
+            af: -1.0,
+        },
     ];
-    let mut fdir = vec![0.0f64; dem.rows * dem.cols];
+    let l = dem.cell_size;
+    let mut fdir = vec![-1.0f64; dem.rows * dem.cols];
     for r in 0..dem.rows {
         for c in 0..dem.cols {
             let z0 = dem.heights[r * dem.cols + c];
-            let l = dem.cell_size;
-            let mut max_slope = f64::NEG_INFINITY;
-            let mut best_angle = 0.0f64;
-            for (fi, &(dr1, dc1, dr2, dc2)) in FACETS.iter().enumerate() {
-                let facet_angle_base = fi as f64 * PI / 4.0;
-                let r1 = r as i64 + dr1;
-                let c1 = c as i64 + dc1;
-                let r2 = r as i64 + dr2;
-                let c2 = c as i64 + dc2;
-                if r1 < 0 || r1 >= dem.rows as i64 || c1 < 0 || c1 >= dem.cols as i64 {
+            let mut max_slope = 0.0f64;
+            let mut best_angle: Option<f64> = None;
+            for facet in &FACETS {
+                let (Some(zc), Some(zd)) = (
+                    neighbour_height(dem, r, c, facet.cardinal),
+                    neighbour_height(dem, r, c, facet.diagonal),
+                ) else {
                     continue;
-                }
-                if r2 < 0 || r2 >= dem.rows as i64 || c2 < 0 || c2 >= dem.cols as i64 {
-                    continue;
-                }
-                let z1 = dem.heights[r1 as usize * dem.cols + c1 as usize];
-                let z2 = dem.heights[r2 as usize * dem.cols + c2 as usize];
-                let e1 = (z0 - z1) / l;
-                let e2 = (z1 - z2) / l;
-                // Optimal angle within facet [0, π/4]
-                let alpha = if e2.abs() < 1e-15 {
-                    0.0
-                } else {
-                    (e1 / e2).atan().clamp(0.0, PI / 4.0)
                 };
-                let s = (e1 * e1 + e2 * e2 - 2.0 * alpha.cos() * e1 * e2).sqrt();
-                if s > max_slope {
-                    max_slope = s;
-                    best_angle = facet_angle_base + alpha;
+                let s1 = (z0 - zc) / l;
+                let s2 = (zc - zd) / l;
+                let mut angle_in_facet = s2.atan2(s1);
+                let mut slope = s1.hypot(s2);
+                if angle_in_facet < 0.0 {
+                    angle_in_facet = 0.0;
+                    slope = s1;
+                } else if angle_in_facet > PI / 4.0 {
+                    angle_in_facet = PI / 4.0;
+                    slope = (z0 - zd) / (l * std::f64::consts::SQRT_2);
+                }
+                if slope > max_slope {
+                    max_slope = slope;
+                    best_angle = Some(facet.af * angle_in_facet + facet.ac * PI / 2.0);
                 }
             }
-            fdir[r * dem.cols + c] = best_angle;
+            if let Some(angle) = best_angle {
+                // Facet 8 at r = 0 gives 2π, which is the same direction as 0.
+                fdir[r * dem.cols + c] = if angle >= 2.0 * PI {
+                    angle - 2.0 * PI
+                } else {
+                    angle
+                };
+            }
         }
     }
     fdir
+}
+
+/// Elevation of the neighbour of `(row, col)` at the `(row, col)` offset
+/// `offset`, or `None` if it lies outside the grid.
+fn neighbour_height(dem: &Dem, row: usize, col: usize, offset: (i64, i64)) -> Option<f64> {
+    let nr = row as i64 + offset.0;
+    let nc = col as i64 + offset.1;
+    if nr < 0 || nc < 0 {
+        return None;
+    }
+    dem.get(nr as usize, nc as usize)
 }
 
 // ---------------------------------------------------------------------------
@@ -498,13 +586,17 @@ pub fn strahler_order(dem: &Dem, fdir: &[D8Code], streams: &[bool]) -> Vec<u8> {
     });
     for idx in topo_order {
         let ups: Vec<u8> = upstream[idx].iter().map(|&u| order[u]).collect();
-        if ups.is_empty() {
-            order[idx] = 1;
-        } else {
-            let max_ord = *ups.iter().max().expect("iterator should not be empty");
-            let count_max = ups.iter().filter(|&&o| o == max_ord).count();
-            order[idx] = if count_max >= 2 { max_ord + 1 } else { max_ord };
-        }
+        order[idx] = match ups.iter().max().copied() {
+            None => 1,
+            Some(max_ord) => {
+                let count_max = ups.iter().filter(|&&o| o == max_ord).count();
+                if count_max >= 2 {
+                    max_ord.saturating_add(1)
+                } else {
+                    max_ord
+                }
+            }
+        };
     }
     order
 }
@@ -1119,7 +1211,7 @@ mod tests {
     use super::*;
 
     /// Build a small synthetic DEM: a cone with peak at the centre.
-    fn cone_dem(rows: usize, cols: usize, cell_size: f64) -> Dem {
+    pub(super) fn cone_dem(rows: usize, cols: usize, cell_size: f64) -> Dem {
         let cx = (cols as f64 - 1.0) / 2.0;
         let cy = (rows as f64 - 1.0) / 2.0;
         let heights: Vec<f64> = (0..rows)
@@ -1135,7 +1227,7 @@ mod tests {
     }
 
     /// Build a flat DEM.
-    fn flat_dem(rows: usize, cols: usize, elevation: f64) -> Dem {
+    pub(super) fn flat_dem(rows: usize, cols: usize, elevation: f64) -> Dem {
         Dem::new(vec![elevation; rows * cols], rows, cols, 10.0)
     }
 
@@ -1514,6 +1606,59 @@ mod tests {
     }
 
     #[test]
+    fn test_strahler_order_confluence_rules() {
+        // Two first-order headwaters (rows 0 and 2) merge at (1, 2) into a
+        // second-order channel that runs east; a third first-order tributary
+        // joins it from the north at (0, 3) -> (1, 3).
+        //
+        //   50 40  .  35  .        row 0
+        //    .  . 30  20 10        row 1
+        //   51 41  .   .  .        row 2
+        let heights = vec![
+            50.0, 40.0, 5.0, 35.0, 5.0, //
+            5.0, 5.0, 30.0, 20.0, 10.0, //
+            51.0, 41.0, 5.0, 5.0, 5.0,
+        ];
+        let dem = Dem::new(heights, 3, 5, 10.0);
+        let mut fdir = vec![0 as D8Code; 15];
+        let mut streams = vec![false; 15];
+        let channel = [
+            (0usize, 0usize, 1 as D8Code), // E  -> (0, 1)
+            (0, 1, 2),                     // SE -> (1, 2)
+            (2, 0, 1),                     // E  -> (2, 1)
+            (2, 1, 128),                   // NE -> (1, 2)
+            (1, 2, 1),                     // E  -> (1, 3)
+            (0, 3, 4),                     // S  -> (1, 3)
+            (1, 3, 1),                     // E  -> (1, 4)
+            (1, 4, 0),                     // outlet
+        ];
+        for &(r, c, code) in &channel {
+            fdir[r * 5 + c] = code;
+            streams[r * 5 + c] = true;
+        }
+        let order = strahler_order(&dem, &fdir, &streams);
+        let expected = [
+            (0usize, 0usize, 1u8),
+            (0, 1, 1),
+            (2, 0, 1),
+            (2, 1, 1),
+            (0, 3, 1),
+            (1, 2, 2),
+            (1, 3, 2),
+            (1, 4, 2),
+        ];
+        for &(r, c, want) in &expected {
+            assert_eq!(order[r * 5 + c], want, "stream order at ({r}, {c})");
+        }
+        let stream_cells = order.iter().filter(|&&o| o > 0).count();
+        assert_eq!(
+            stream_cells,
+            expected.len(),
+            "only stream cells get an order"
+        );
+    }
+
+    #[test]
     fn test_extract_contours_levels() {
         let dem = cone_dem(9, 9, 5.0);
         let levels = vec![80.0, 85.0, 90.0];
@@ -1539,12 +1684,17 @@ mod tests {
     fn test_dinf_flow_direction_range() {
         let dem = cone_dem(7, 7, 5.0);
         let fdir = flow_direction_dinf(&dem);
-        for &a in &fdir {
+        for (i, &a) in fdir.iter().enumerate() {
+            // Either the "no downslope facet" sentinel or an angle in [0, 2π).
             assert!(
-                (0.0..=2.0 * PI + 0.01).contains(&a),
-                "D-inf angle out of range: {}",
-                a
+                a == -1.0 || (0.0..2.0 * PI).contains(&a),
+                "cell {i}: D-inf angle out of range: {a}"
             );
+        }
+        // The four corners of the cone are local minima within the grid.
+        let last = 6;
+        for &(r, c) in &[(0, 0), (0, last), (last, 0), (last, last)] {
+            assert_eq!(fdir[r * 7 + c], -1.0, "corner ({r}, {c}) is a pit");
         }
     }
 
@@ -1583,3 +1733,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod direction_tests;

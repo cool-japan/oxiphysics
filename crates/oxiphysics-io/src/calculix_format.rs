@@ -156,6 +156,19 @@ impl CalculixWriter {
             }
         }
 
+        // --- Model-level boundary conditions (outside any step) ---
+        if !mesh.global_bcs.is_empty() {
+            writeln!(buf, "*BOUNDARY").map_err(|e| IoError::General(format!("fmt error: {e}")))?;
+            for bc in &mesh.global_bcs {
+                writeln!(
+                    buf,
+                    "{}, {}, {}, {:.15e}",
+                    bc.node_id, bc.dof, bc.dof, bc.value
+                )
+                .map_err(|e| IoError::General(format!("fmt error: {e}")))?;
+            }
+        }
+
         // --- Steps ---
         for step in &mesh.steps {
             writeln!(buf, "*STEP").map_err(|e| IoError::General(format!("fmt error: {e}")))?;
@@ -235,6 +248,31 @@ enum CcxBlock {
 }
 
 /// Parses CalculiX `.inp` files into an [`FeMesh`].
+///
+/// # Boundary conditions and loads
+///
+/// A `*BOUNDARY` data line is `node|set, first_dof[, last_dof[, value]]`:
+///
+/// - the first field is a node number or the name of a node set (names are
+///   case-insensitive, and the set may be defined later in the file),
+/// - every DOF from `first_dof` to `last_dof` gets its own
+///   [`DirichletBc`] (`5,1,3` clamps the three translations of node 5), a
+///   missing or blank `last_dof` means `first_dof`, and the value defaults to
+///   zero,
+/// - inside a `*STEP` the conditions go to that step's `bcs`; outside any step
+///   they are model-level conditions and go to [`FeMesh::global_bcs`].
+///
+/// A `*CLOAD` data line is `node|set, dof, magnitude`, and a set yields one
+/// [`NodalForce`] per member.  `*CLOAD` is only valid inside a `*STEP`.
+///
+/// Sets are expanded in the order of the file, node by node.
+///
+/// # Errors
+///
+/// [`IoError::Parse`] is returned for a malformed `*BOUNDARY` or `*CLOAD`
+/// data line, for one that names a node set that is never defined, and for a
+/// `*CLOAD` outside a step; such a condition would otherwise silently vanish
+/// and leave the model under-constrained.
 #[derive(Debug, Clone, Default)]
 pub struct CalculixReader;
 
@@ -271,6 +309,12 @@ impl CalculixReader {
         let mut mat_data: MatData = HashMap::new();
         // Track whether we are inside a *STEP
         let mut in_step = false;
+        // Boundary conditions and loads are kept as written (a node number or
+        // a node-set name) until the whole file has been read, because a set
+        // may be defined after the data line that uses it.
+        let mut pending_global_bcs: Vec<BoundaryRecord> = Vec::new();
+        let mut pending_step_bcs: Vec<Vec<BoundaryRecord>> = Vec::new();
+        let mut pending_step_loads: Vec<Vec<LoadRecord>> = Vec::new();
 
         for raw_line in lines {
             let line = raw_line.trim();
@@ -360,6 +404,8 @@ impl CalculixReader {
                     in_step = true;
                     let name = extract_param(line, "NAME").unwrap_or_else(|| "Step-1".to_string());
                     mesh.steps.push(AnalysisStep::new(name));
+                    pending_step_bcs.push(Vec::new());
+                    pending_step_loads.push(Vec::new());
                     block = CcxBlock::None;
                     continue;
                 }
@@ -425,20 +471,25 @@ impl CalculixReader {
                     block = CcxBlock::None;
                 }
                 CcxBlock::Boundary => {
-                    if let Some(bc) = parse_boundary_line(line)
-                        && in_step
-                        && let Some(step) = mesh.steps.last_mut()
-                    {
-                        step.bcs.push(bc);
+                    let record = parse_boundary_record(line).ok_or_else(|| {
+                        IoError::Parse(format!("*BOUNDARY: malformed data line `{line}`"))
+                    })?;
+                    match (in_step, pending_step_bcs.last_mut()) {
+                        (true, Some(records)) => records.push(record),
+                        _ => pending_global_bcs.push(record),
                     }
-                    // If outside step, we could store globally; for now skip.
                 }
                 CcxBlock::Cload => {
-                    if let Some(force) = parse_cload_line(line)
-                        && in_step
-                        && let Some(step) = mesh.steps.last_mut()
-                    {
-                        step.forces.push(force);
+                    let record = parse_cload_record(line).ok_or_else(|| {
+                        IoError::Parse(format!("*CLOAD: malformed data line `{line}`"))
+                    })?;
+                    match (in_step, pending_step_loads.last_mut()) {
+                        (true, Some(records)) => records.push(record),
+                        _ => {
+                            return Err(IoError::Parse(format!(
+                                "*CLOAD data line `{line}` is outside a *STEP"
+                            )));
+                        }
                     }
                 }
                 CcxBlock::Static => {
@@ -476,6 +527,23 @@ impl CalculixReader {
             }
         }
 
+        // Expand node numbers and node sets now that every set is known.
+        for record in &pending_global_bcs {
+            expand_boundary_record(record, &mesh.node_sets, &mut mesh.global_bcs)?;
+        }
+        for (step, (bc_records, load_records)) in mesh
+            .steps
+            .iter_mut()
+            .zip(pending_step_bcs.iter().zip(&pending_step_loads))
+        {
+            for record in bc_records {
+                expand_boundary_record(record, &mesh.node_sets, &mut step.bcs)?;
+            }
+            for record in load_records {
+                expand_load_record(record, &mesh.node_sets, &mut step.forces)?;
+            }
+        }
+
         // Assemble materials from partial data
         for (mat_id, (name, (young, poisson, density))) in (1usize..).zip(mat_data.iter()) {
             let e = young.unwrap_or(0.0);
@@ -495,8 +563,10 @@ impl CalculixReader {
 
 /// Extract `KEY=VALUE` from a keyword line (case-insensitive key search).
 fn extract_param(line: &str, key: &str) -> Option<String> {
-    let upper = line.to_uppercase();
-    let key_eq = format!("{}=", key.to_uppercase());
+    // Only ASCII letters are folded, so a byte offset found in `upper` is also
+    // valid in `line`, whatever other characters the line contains.
+    let upper = line.to_ascii_uppercase();
+    let key_eq = format!("{}=", key.to_ascii_uppercase());
     let pos = upper.find(&key_eq)?;
     let rest = &line[pos + key_eq.len()..];
     let end = rest.find(',').unwrap_or(rest.len());
@@ -538,95 +608,191 @@ fn parse_element_line(line: &str, etype: FeElementType) -> Option<FeElement> {
     Some(FeElement::new(id, etype, connectivity))
 }
 
-/// Parse a `*BOUNDARY` data line: `node_id, dof_start, dof_end, value`.
+/// Target of a `*BOUNDARY` or `*CLOAD` data line: one node or a node set.
+#[derive(Debug, Clone, PartialEq)]
+enum NodeTarget {
+    /// A node given by its number.
+    Node(usize),
+    /// A node set given by its name; expanded once the whole file is read.
+    Set(String),
+}
+
+/// One `*BOUNDARY` data line, as written in the file.
+#[derive(Debug, Clone, PartialEq)]
+struct BoundaryRecord {
+    target: NodeTarget,
+    first_dof: u8,
+    last_dof: u8,
+    value: f64,
+}
+
+/// One `*CLOAD` data line, as written in the file.
+#[derive(Debug, Clone, PartialEq)]
+struct LoadRecord {
+    target: NodeTarget,
+    dof: u8,
+    magnitude: f64,
+}
+
+/// Parse the first field of a `*BOUNDARY` / `*CLOAD` data line: a node number,
+/// or else the name of a node set.
+fn parse_node_target(field: &str) -> Option<NodeTarget> {
+    let field = field.trim();
+    if field.is_empty() {
+        return None;
+    }
+    Some(match field.parse::<usize>() {
+        Ok(id) => NodeTarget::Node(id),
+        Err(_) => NodeTarget::Set(field.to_string()),
+    })
+}
+
+/// Parse a degree-of-freedom number; DOFs are numbered from 1.
+fn parse_dof(field: &str) -> Option<u8> {
+    field.trim().parse::<u8>().ok().filter(|dof| *dof >= 1)
+}
+
+/// Parse a `*BOUNDARY` data line: `node|set, first_dof[, last_dof[, value]]`.
 ///
-/// CalculiX boundary lines can be:
-/// - `node_id, dof_start, dof_end`          (value = 0)
-/// - `node_id, dof_start, dof_end, value`
-fn parse_boundary_line(line: &str) -> Option<DirichletBc> {
-    let parts: Vec<&str> = line.split(',').collect();
-    if parts.len() < 3 {
+/// - `last_dof` defaults to `first_dof` when it is omitted or blank
+///   (`5, 2` and `5, 2, , 0.1` constrain DOF 2 only),
+/// - `value` defaults to zero when it is omitted or blank.
+///
+/// Returns `None` for a line that does not have this shape, for example one
+/// with a non-numeric degree of freedom or value.
+fn parse_boundary_record(line: &str) -> Option<BoundaryRecord> {
+    let parts: Vec<&str> = line.split(',').map(str::trim).collect();
+    if parts.len() < 2 {
         return None;
     }
-    let node_id: usize = parts[0].trim().parse().ok()?;
-    let dof_start: u8 = parts[1].trim().parse().ok()?;
-    let dof_end: u8 = parts[2].trim().parse().ok()?;
-    let value: f64 = if parts.len() >= 4 {
-        parts[3].trim().parse().unwrap_or(0.0)
-    } else {
-        0.0
+    let target = parse_node_target(parts[0])?;
+    let first_dof = parse_dof(parts[1])?;
+    // A field that is missing or blank takes its default.
+    let given = |index: usize| parts.get(index).copied().filter(|field| !field.is_empty());
+    let last_dof = match given(2) {
+        None => first_dof,
+        Some(field) => parse_dof(field)?,
     };
-
-    // Expand range: create one BC per DOF in [dof_start, dof_end].
-    // For simplicity we return only the first; callers needing the full range
-    // should use `parse_boundary_lines`.  However, the typical round-trip
-    // writes dof_start == dof_end, so this is fine for most cases.
-    // To handle the range properly, we return the first DOF and note that
-    // the writer always emits dof_start == dof_end.
-    if dof_start == dof_end {
-        Some(DirichletBc {
-            node_id,
-            dof: dof_start,
-            value,
-        })
-    } else {
-        // Return just the first DOF of the range
-        Some(DirichletBc {
-            node_id,
-            dof: dof_start,
-            value,
-        })
-    }
+    let value = match given(3) {
+        None => 0.0,
+        Some(field) => field.parse::<f64>().ok()?,
+    };
+    Some(BoundaryRecord {
+        target,
+        first_dof,
+        last_dof,
+        value,
+    })
 }
 
-/// Parse a full `*BOUNDARY` data line into potentially multiple BCs
-/// (when `dof_start != dof_end`, one [`DirichletBc`] per DOF in the range).
+/// The degrees of freedom `first_dof..=last_dof` (the bounds may be given in
+/// either order).
+fn dofs_of_range(first_dof: u8, last_dof: u8) -> std::ops::RangeInclusive<u8> {
+    first_dof.min(last_dof)..=first_dof.max(last_dof)
+}
+
+/// Parse a `*BOUNDARY` data line that names a node number into one
+/// [`DirichletBc`] per degree of freedom of its DOF range.
+///
+/// Accepted forms are `node, dof`, `node, first, last` and
+/// `node, first, last, value` (`last` may be blank, meaning `first`).  A line
+/// that names a node *set* is not expanded here, because only the reader knows
+/// the members of the set; it yields an empty vector, like a malformed line.
 pub fn parse_boundary_line_expanded(line: &str) -> Vec<DirichletBc> {
-    let parts: Vec<&str> = line.split(',').collect();
-    if parts.len() < 3 {
-        return Vec::new();
-    }
-    let node_id = match parts[0].trim().parse::<usize>() {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    let dof_start = match parts[1].trim().parse::<u8>() {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    let dof_end = match parts[2].trim().parse::<u8>() {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    let value: f64 = if parts.len() >= 4 {
-        parts[3].trim().parse().unwrap_or(0.0)
-    } else {
-        0.0
-    };
-
-    let mut bcs = Vec::new();
-    let lo = dof_start.min(dof_end);
-    let hi = dof_start.max(dof_end);
-    for dof in lo..=hi {
-        bcs.push(DirichletBc {
-            node_id,
-            dof,
+    match parse_boundary_record(line) {
+        Some(BoundaryRecord {
+            target: NodeTarget::Node(node_id),
+            first_dof,
+            last_dof,
             value,
-        });
+        }) => dofs_of_range(first_dof, last_dof)
+            .map(|dof| DirichletBc {
+                node_id,
+                dof,
+                value,
+            })
+            .collect(),
+        _ => Vec::new(),
     }
-    bcs
 }
 
-/// Parse a `*CLOAD` data line: `node_id, dof, magnitude`.
-fn parse_cload_line(line: &str) -> Option<NodalForce> {
-    let parts: Vec<&str> = line.split(',').collect();
+/// Parse a `*CLOAD` data line: `node|set, dof, magnitude`.
+fn parse_cload_record(line: &str) -> Option<LoadRecord> {
+    let parts: Vec<&str> = line.split(',').map(str::trim).collect();
     if parts.len() < 3 {
         return None;
     }
-    let node_id: usize = parts[0].trim().parse().ok()?;
-    let dof: u8 = parts[1].trim().parse().ok()?;
-    let magnitude: f64 = parts[2].trim().parse().ok()?;
-    Some(NodalForce::new(node_id, dof, magnitude))
+    Some(LoadRecord {
+        target: parse_node_target(parts[0])?,
+        dof: parse_dof(parts[1])?,
+        magnitude: parts[2].parse::<f64>().ok()?,
+    })
+}
+
+/// Look up a node set by name.
+///
+/// CalculiX names are case-insensitive: an exact match wins, otherwise the
+/// case-insensitive match with the smallest name is used.
+fn find_node_set<'a>(sets: &'a HashMap<String, Vec<usize>>, name: &str) -> Option<&'a [usize]> {
+    if let Some(ids) = sets.get(name) {
+        return Some(ids.as_slice());
+    }
+    sets.iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+        .min_by(|a, b| a.0.cmp(b.0))
+        .map(|(_, ids)| ids.as_slice())
+}
+
+/// Nodes designated by `target`: the node itself, or the members of its set.
+///
+/// # Errors
+///
+/// Returns [`IoError::Parse`] when `target` names a node set that does not
+/// exist; `keyword` only labels the message.
+fn nodes_of_target(
+    target: &NodeTarget,
+    node_sets: &HashMap<String, Vec<usize>>,
+    keyword: &str,
+) -> Result<Vec<usize>, IoError> {
+    match target {
+        NodeTarget::Node(id) => Ok(vec![*id]),
+        NodeTarget::Set(name) => find_node_set(node_sets, name)
+            .map(<[usize]>::to_vec)
+            .ok_or_else(|| {
+                IoError::Parse(format!("{keyword} refers to undefined node set `{name}`"))
+            }),
+    }
+}
+
+/// Append the [`DirichletBc`]s of `record` (every node of its target times
+/// every DOF of its range, nodes first) to `out`.
+fn expand_boundary_record(
+    record: &BoundaryRecord,
+    node_sets: &HashMap<String, Vec<usize>>,
+    out: &mut Vec<DirichletBc>,
+) -> Result<(), IoError> {
+    for node_id in nodes_of_target(&record.target, node_sets, "*BOUNDARY")? {
+        for dof in dofs_of_range(record.first_dof, record.last_dof) {
+            out.push(DirichletBc {
+                node_id,
+                dof,
+                value: record.value,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Append the [`NodalForce`]s of `record` (one per node of its target) to `out`.
+fn expand_load_record(
+    record: &LoadRecord,
+    node_sets: &HashMap<String, Vec<usize>>,
+    out: &mut Vec<NodalForce>,
+) -> Result<(), IoError> {
+    for node_id in nodes_of_target(&record.target, node_sets, "*CLOAD")? {
+        out.push(NodalForce::new(node_id, record.dof, record.magnitude));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -772,29 +938,77 @@ mod tests {
 
     // ----- Boundary condition parsing -----
 
-    #[test]
-    fn test_parse_boundary_line_with_value() {
-        let bc = parse_boundary_line("5, 1, 1, 0.01");
-        assert!(bc.is_some());
-        let bc = bc.expect("should parse");
-        assert_eq!(bc.node_id, 5);
-        assert_eq!(bc.dof, 1);
-        assert!((bc.value - 0.01).abs() < 1e-15);
+    fn node_record(
+        node_id: usize,
+        first_dof: u8,
+        last_dof: u8,
+        value: f64,
+    ) -> Option<BoundaryRecord> {
+        Some(BoundaryRecord {
+            target: NodeTarget::Node(node_id),
+            first_dof,
+            last_dof,
+            value,
+        })
     }
 
     #[test]
-    fn test_parse_boundary_line_zero_value() {
-        let bc = parse_boundary_line("10, 2, 2");
-        assert!(bc.is_some());
-        let bc = bc.expect("should parse");
-        assert_eq!(bc.node_id, 10);
-        assert_eq!(bc.dof, 2);
-        assert!((bc.value).abs() < 1e-15);
+    fn test_parse_boundary_record_with_value() {
+        assert_eq!(
+            parse_boundary_record("5, 1, 1, 0.01"),
+            node_record(5, 1, 1, 0.01)
+        );
     }
 
     #[test]
-    fn test_parse_boundary_line_invalid() {
-        assert!(parse_boundary_line("bad, data").is_none());
+    fn test_parse_boundary_record_zero_value() {
+        assert_eq!(
+            parse_boundary_record("10, 2, 2"),
+            node_record(10, 2, 2, 0.0)
+        );
+    }
+
+    #[test]
+    fn test_parse_boundary_record_two_field_form_constrains_one_dof() {
+        assert_eq!(parse_boundary_record("5, 2"), node_record(5, 2, 2, 0.0));
+    }
+
+    #[test]
+    fn test_parse_boundary_record_blank_last_dof_means_first_dof() {
+        assert_eq!(
+            parse_boundary_record("1, 1, , 0.5"),
+            node_record(1, 1, 1, 0.5)
+        );
+        assert_eq!(parse_boundary_record("1, 3,"), node_record(1, 3, 3, 0.0));
+    }
+
+    #[test]
+    fn test_parse_boundary_record_node_set_name() {
+        assert_eq!(
+            parse_boundary_record("FIX, 1, 3"),
+            Some(BoundaryRecord {
+                target: NodeTarget::Set("FIX".to_string()),
+                first_dof: 1,
+                last_dof: 3,
+                value: 0.0,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_boundary_record_rejects_malformed_lines() {
+        for line in [
+            "bad, data",
+            "5",
+            "",
+            "5, 0, 1",
+            "5, 1, 3, abc",
+            "5, x",
+            "5, 1, 300",
+            ", 1, 1",
+        ] {
+            assert_eq!(parse_boundary_record(line), None, "line {line:?}");
+        }
     }
 
     #[test]
@@ -806,21 +1020,71 @@ mod tests {
         assert_eq!(bcs[2].dof, 3);
     }
 
-    // ----- CLOAD parsing -----
-
     #[test]
-    fn test_parse_cload_line_valid() {
-        let f = parse_cload_line("7, 2, -1000.0");
-        assert!(f.is_some());
-        let f = f.expect("should parse");
-        assert_eq!(f.node_id, 7);
-        assert_eq!(f.dof, 2);
-        assert!((f.magnitude - (-1000.0)).abs() < 1e-10);
+    fn test_parse_boundary_line_expanded_clamp_without_spaces() {
+        let bcs = parse_boundary_line_expanded("5,1,3");
+        assert_eq!(
+            bcs,
+            vec![
+                DirichletBc::fixed(5, 1),
+                DirichletBc::fixed(5, 2),
+                DirichletBc::fixed(5, 3),
+            ]
+        );
     }
 
     #[test]
-    fn test_parse_cload_line_invalid() {
-        assert!(parse_cload_line("7, 2").is_none());
+    fn test_parse_boundary_line_expanded_forms() {
+        assert_eq!(
+            parse_boundary_line_expanded("7, 2"),
+            vec![DirichletBc::fixed(7, 2)]
+        );
+        assert_eq!(
+            parse_boundary_line_expanded("7, 2, , 0.25"),
+            vec![DirichletBc::prescribed(7, 2, 0.25)]
+        );
+        // The bounds of a range may be given in either order.
+        assert_eq!(
+            parse_boundary_line_expanded("7, 3, 1").len(),
+            3,
+            "reversed range"
+        );
+        // A node set cannot be expanded without the reader; malformed lines too.
+        assert!(parse_boundary_line_expanded("FIX, 1, 3").is_empty());
+        assert!(parse_boundary_line_expanded("bad, data").is_empty());
+    }
+
+    // ----- CLOAD parsing -----
+
+    #[test]
+    fn test_parse_cload_record_valid() {
+        assert_eq!(
+            parse_cload_record("7, 2, -1000.0"),
+            Some(LoadRecord {
+                target: NodeTarget::Node(7),
+                dof: 2,
+                magnitude: -1000.0,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_cload_record_node_set_name() {
+        assert_eq!(
+            parse_cload_record("TOP, 3, 2.5"),
+            Some(LoadRecord {
+                target: NodeTarget::Set("TOP".to_string()),
+                dof: 3,
+                magnitude: 2.5,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_cload_record_invalid() {
+        for line in ["7, 2", "7, 0, 1.0", "7, 2, x", ""] {
+            assert_eq!(parse_cload_record(line), None, "line {line:?}");
+        }
     }
 
     // ----- Round-trip: write -> read -> compare -----
@@ -1180,5 +1444,252 @@ mod tests {
         assert_eq!(mesh.steps[0].bcs[0].node_id, 1);
         assert_eq!(mesh.steps[0].bcs[0].dof, 1);
         assert!((mesh.steps[0].bcs[0].value - 0.05).abs() < 1e-15);
+    }
+
+    // ----- *BOUNDARY / *CLOAD in files -----
+
+    fn parse_inp(inp: &str) -> FeMesh {
+        CalculixReader::new().parse_string(inp).expect("parse")
+    }
+
+    fn parse_error(inp: &str) -> String {
+        match CalculixReader::new().parse_string(inp) {
+            Ok(_) => panic!("the model must be rejected:\n{inp}"),
+            Err(IoError::Parse(message)) => message,
+            Err(other) => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_clamped_support_with_dof_range_keeps_every_dof() {
+        let mesh = parse_inp(
+            "*NODE\n5, 0.0, 0.0, 0.0\n*STEP\n*STATIC\n0.1, 1.0\n*BOUNDARY\n5,1,3\n*END STEP\n",
+        );
+        assert_eq!(
+            mesh.steps[0].bcs,
+            vec![
+                DirichletBc::fixed(5, 1),
+                DirichletBc::fixed(5, 2),
+                DirichletBc::fixed(5, 3),
+            ]
+        );
+        assert!(mesh.global_bcs.is_empty());
+    }
+
+    #[test]
+    fn test_boundary_forms_with_one_dof_blank_dof_and_value() {
+        let mesh = parse_inp(
+            "*NODE\n1, 0, 0, 0\n*STEP\n*BOUNDARY\n1, 2\n1, 1, , 0.5\n1, 3, 3, -0.25\n*END STEP\n",
+        );
+        assert_eq!(
+            mesh.steps[0].bcs,
+            vec![
+                DirichletBc::fixed(1, 2),
+                DirichletBc::prescribed(1, 1, 0.5),
+                DirichletBc::prescribed(1, 3, -0.25),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_boundary_before_the_first_step_is_kept_as_a_model_condition() {
+        let mesh = parse_inp(
+            "*NODE\n1, 0, 0, 0\n2, 1, 0, 0\n*BOUNDARY\n1, 1, 3\n*STEP\n*STATIC\n0.1, 1.0\n*BOUNDARY\n2, 2, 2, 0.5\n*END STEP\n",
+        );
+        assert_eq!(
+            mesh.global_bcs,
+            vec![
+                DirichletBc::fixed(1, 1),
+                DirichletBc::fixed(1, 2),
+                DirichletBc::fixed(1, 3),
+            ]
+        );
+        assert_eq!(mesh.steps.len(), 1);
+        assert_eq!(mesh.steps[0].bcs, vec![DirichletBc::prescribed(2, 2, 0.5)]);
+    }
+
+    #[test]
+    fn test_model_without_any_step_still_yields_its_supports() {
+        let mesh = parse_inp("*NODE\n1, 0, 0, 0\n*BOUNDARY\n1, 1, 3\n");
+        assert!(mesh.steps.is_empty());
+        assert_eq!(mesh.global_bcs.len(), 3);
+    }
+
+    #[test]
+    fn test_boundary_after_a_step_belongs_to_the_model_again() {
+        let mesh =
+            parse_inp("*NODE\n1, 0, 0, 0\n*STEP\n*BOUNDARY\n1, 1\n*END STEP\n*BOUNDARY\n1, 2\n");
+        assert_eq!(mesh.steps[0].bcs, vec![DirichletBc::fixed(1, 1)]);
+        assert_eq!(mesh.global_bcs, vec![DirichletBc::fixed(1, 2)]);
+    }
+
+    #[test]
+    fn test_boundary_on_a_node_set_expands_over_its_members() {
+        let mesh = parse_inp(
+            "*NODE\n1, 0, 0, 0\n2, 1, 0, 0\n3, 2, 0, 0\n*NSET, NSET=FIX\n1, 2, 3\n*STEP\n*BOUNDARY\nFIX,1,3\n*END STEP\n",
+        );
+        let bcs = &mesh.steps[0].bcs;
+        assert_eq!(bcs.len(), 9);
+        // Node by node, every DOF of the range for each.
+        let order: Vec<(usize, u8)> = bcs.iter().map(|bc| (bc.node_id, bc.dof)).collect();
+        assert_eq!(
+            order,
+            vec![
+                (1, 1),
+                (1, 2),
+                (1, 3),
+                (2, 1),
+                (2, 2),
+                (2, 3),
+                (3, 1),
+                (3, 2),
+                (3, 3),
+            ]
+        );
+        assert!(bcs.iter().all(|bc| bc.value == 0.0));
+    }
+
+    #[test]
+    fn test_node_set_defined_after_its_use_is_resolved() {
+        let mesh = parse_inp(
+            "*NODE\n1, 0, 0, 0\n2, 1, 0, 0\n*BOUNDARY\nLATE, 2, 2, 0.25\n*NSET, NSET=LATE\n2\n1\n",
+        );
+        assert_eq!(
+            mesh.global_bcs,
+            vec![
+                DirichletBc::prescribed(2, 2, 0.25),
+                DirichletBc::prescribed(1, 2, 0.25),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_keyword_parameters_survive_characters_that_change_length_when_uppercased() {
+        // U+0149 uppercases to two characters (three bytes instead of two) and
+        // U+FB01 to two ASCII letters (two bytes instead of three).
+        for decoration in ["\u{149}", "\u{fb01}", "\u{149}\u{fb01}\u{149}"] {
+            let line = format!("*NSET, GENERATE={decoration}, nset=Top");
+            assert_eq!(
+                extract_param(&line, "NSET"),
+                Some("Top".to_string()),
+                "{line}"
+            );
+        }
+        assert_eq!(extract_param("*NSET, \u{149} nset=", "NSET"), None);
+        assert_eq!(extract_param("*NSET, \u{149}", "NSET"), None);
+    }
+
+    #[test]
+    fn test_node_set_defined_on_a_keyword_line_with_non_ascii_text() {
+        let mesh = parse_inp(
+            "*NODE\n1, 0, 0, 0\n*NSET, \u{149}\u{149}, NSET=Fixed\n1\n*BOUNDARY\nFixed, 1\n",
+        );
+        assert_eq!(mesh.global_bcs, vec![DirichletBc::fixed(1, 1)]);
+    }
+
+    #[test]
+    fn test_node_set_names_are_case_insensitive() {
+        let mesh = parse_inp("*NODE\n1, 0, 0, 0\n*NSET, NSET=Fixed\n1\n*BOUNDARY\nFIXED, 1\n");
+        assert_eq!(mesh.global_bcs, vec![DirichletBc::fixed(1, 1)]);
+    }
+
+    #[test]
+    fn test_boundary_expansion_keeps_file_order_of_the_data_lines() {
+        let mesh = parse_inp(
+            "*NODE\n1, 0, 0, 0\n2, 0, 0, 0\n3, 0, 0, 0\n*NSET, NSET=S\n2, 3\n*STEP\n*BOUNDARY\n1, 1\nS, 2\n3, 3\n*END STEP\n",
+        );
+        let order: Vec<(usize, u8)> = mesh.steps[0]
+            .bcs
+            .iter()
+            .map(|bc| (bc.node_id, bc.dof))
+            .collect();
+        assert_eq!(order, vec![(1, 1), (2, 2), (3, 2), (3, 3)]);
+    }
+
+    #[test]
+    fn test_boundary_on_an_unknown_node_set_is_a_parse_error() {
+        let message =
+            parse_error("*NODE\n1, 0, 0, 0\n*STEP\n*BOUNDARY\nMISSING, 1, 3\n*END STEP\n");
+        assert!(message.contains("MISSING"), "{message}");
+        assert!(message.contains("*BOUNDARY"), "{message}");
+    }
+
+    #[test]
+    fn test_malformed_boundary_and_cload_lines_are_parse_errors() {
+        let message = parse_error("*NODE\n1, 0, 0, 0\n*STEP\n*BOUNDARY\n1, one, 3\n*END STEP\n");
+        assert!(
+            message.contains("*BOUNDARY") && message.contains("1, one, 3"),
+            "{message}"
+        );
+        let message = parse_error("*NODE\n1, 0, 0, 0\n*STEP\n*CLOAD\n1, 2\n*END STEP\n");
+        assert!(message.contains("*CLOAD"), "{message}");
+    }
+
+    #[test]
+    fn test_cload_on_a_node_set_expands_over_its_members() {
+        let mesh = parse_inp(
+            "*NODE\n4, 0, 0, 0\n5, 1, 0, 0\n*NSET, NSET=TOP\n4, 5\n*STEP\n*CLOAD\nTOP, 2, -10.0\n5, 1, 3.5\n*END STEP\n",
+        );
+        assert_eq!(
+            mesh.steps[0].forces,
+            vec![
+                NodalForce::new(4, 2, -10.0),
+                NodalForce::new(5, 2, -10.0),
+                NodalForce::new(5, 1, 3.5),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cload_on_an_unknown_node_set_is_a_parse_error() {
+        let message = parse_error("*STEP\n*CLOAD\nNOPE, 2, 1.0\n*END STEP\n");
+        assert!(
+            message.contains("NOPE") && message.contains("*CLOAD"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn test_cload_outside_a_step_is_a_parse_error() {
+        let message = parse_error("*NODE\n1, 0, 0, 0\n*CLOAD\n1, 2, 1.0\n");
+        assert!(message.contains("outside"), "{message}");
+    }
+
+    #[test]
+    fn test_each_step_keeps_its_own_conditions() {
+        let mesh = parse_inp(
+            "*NODE\n1, 0, 0, 0\n*NSET, NSET=A\n1\n*STEP, NAME=first\n*BOUNDARY\nA, 1\n*CLOAD\nA, 2, 1.0\n*END STEP\n*STEP, NAME=second\n*BOUNDARY\n1, 3\n*END STEP\n",
+        );
+        assert_eq!(mesh.steps.len(), 2);
+        assert_eq!(mesh.steps[0].bcs, vec![DirichletBc::fixed(1, 1)]);
+        assert_eq!(mesh.steps[0].forces, vec![NodalForce::new(1, 2, 1.0)]);
+        assert_eq!(mesh.steps[1].bcs, vec![DirichletBc::fixed(1, 3)]);
+        assert!(mesh.steps[1].forces.is_empty());
+    }
+
+    #[test]
+    fn test_model_level_conditions_round_trip_through_the_writer() {
+        let mut mesh = sample_mesh();
+        mesh.global_bcs = vec![
+            DirichletBc::fixed(2, 1),
+            DirichletBc::fixed(2, 2),
+            DirichletBc::prescribed(3, 3, 0.125),
+        ];
+        let text = CalculixWriter::new().write_string(&mesh).expect("write");
+        let first_boundary = text.find("*BOUNDARY").expect("model-level *BOUNDARY");
+        let first_step = text.find("*STEP").expect("*STEP");
+        assert!(first_boundary < first_step, "{text}");
+        let parsed = CalculixReader::new().parse_string(&text).expect("parse");
+        assert_eq!(parsed.global_bcs, mesh.global_bcs);
+        assert_eq!(parsed.steps[0].bcs, mesh.steps[0].bcs);
+        assert_eq!(parsed.steps[0].forces, mesh.steps[0].forces);
+    }
+
+    #[test]
+    fn test_mesh_without_model_level_conditions_writes_no_extra_boundary_block() {
+        let text = CalculixWriter::new()
+            .write_string(&sample_mesh())
+            .expect("write");
+        assert_eq!(text.matches("*BOUNDARY").count(), 1, "{text}");
     }
 }

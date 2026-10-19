@@ -7,9 +7,21 @@
 //! stability than the single-relaxation-time BGK scheme, especially at high
 //! Reynolds numbers.
 //!
+//! Besides MRT the module provides the two-relaxation-time scheme
+//! ([`TrtCollision2D`]), the cascaded central-moment scheme
+//! ([`CascadedCollision2D`]) and the regularised BGK scheme
+//! ([`RegularisedBgk2D`]) for D2Q9.
+//!
 //! Reference: d'Humières et al. (2002), Phil. Trans. R. Soc. Lond. A 360, 437–451.
 
+use crate::collision::TRT_MAGIC;
 use crate::grid::LbmGrid2D;
+
+pub mod cascaded;
+#[cfg(test)]
+mod regression_tests;
+
+pub use cascaded::CascadedCollision2D;
 
 // ---------------------------------------------------------------------------
 // D2Q9 transformation matrix M (row-major, 9×9)
@@ -219,12 +231,12 @@ pub(crate) fn d2q9_equilibrium(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
 // D3Q19 MRT — transformation matrix, inverse, relaxation, and simulation
 // ---------------------------------------------------------------------------
 //
-// Velocity ordering (same as d3q19_full.rs):
+// Velocity ordering (identical to `crate::lattice::D3Q19_VELOCITIES` and d3q19_full.rs):
 //   i=0:  ( 0, 0, 0)   rest
 //   i=1:  ( 1, 0, 0)   i=2:  (-1, 0, 0)
 //   i=3:  ( 0, 1, 0)   i=4:  ( 0,-1, 0)
 //   i=5:  ( 0, 0, 1)   i=6:  ( 0, 0,-1)
-//   i=7:  ( 1, 1, 0)   i=8:  (-1, 1, 0)   (note: ey>0 first to keep opp pairs)
+//   i=7:  ( 1, 1, 0)   i=8:  (-1, 1, 0)
 //   i=9:  ( 1,-1, 0)   i=10: (-1,-1, 0)
 //   i=11: ( 1, 0, 1)   i=12: (-1, 0, 1)
 //   i=13: ( 1, 0,-1)   i=14: (-1, 0,-1)
@@ -232,114 +244,56 @@ pub(crate) fn d2q9_equilibrium(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
 //   i=17: ( 0, 1,-1)   i=18: ( 0,-1,-1)
 //
 // Reference: d'Humières et al. (2002), Phil. Trans. R. Soc. Lond. A 360, 437–451.
-// The 19 moment basis:
-//   0: ρ            density
-//   1: e            energy     = -30ρ + 19(jx²+jy²+jz²) / ρ  (kinetic part)
-//   2: ε            energy²
-//   3: jx           x-momentum
-//   4: qx           x-heat-flux
-//   5: jy           y-momentum
-//   6: qy           y-heat-flux
-//   7: jz           z-momentum
-//   8: qz           z-heat-flux
-//   9: 3pxx         normal stress difference (3p_xx)
-//  10: 3πxx         ghost (3π_xx)
-//  11: pww = pyy-pzz  normal stress difference
-//  12: πww           ghost
-//  13: pxy
-//  14: pxz
-//  15: pyz
-//  16: mx           cubic term
-//  17: my           cubic term
-//  18: mz           cubic term
+// The 19 moments, in the row order of `mrt_transform_matrix` (the polynomial of
+// every row is listed in the documentation of that function):
+//   0: ρ     1: e      2: ε      3: jx     4: qx     5: jy     6: qy     7: jz     8: qz
+//   9: 3pxx  10: 3πxx  11: pww   12: πww   13: pxy   14: pxz   15: pyz
+//  16: mx    17: my    18: mz
+//
+// `crate::mrt3d` follows the original paper and lists pyz before pxz, so the two
+// shear-stress rows 14 and 15 are exchanged between that module and this one.
 
 /// Compute the 19×19 D3Q19 MRT transformation matrix M.
 ///
-/// Row `k` of M is the k-th moment basis vector evaluated at all 19 velocities.
-/// The row order follows d'Humières et al. (2002) Table 1 with the velocity
-/// ordering used throughout this crate.
+/// Row `k` of `M` is the `k`-th moment basis vector evaluated at the 19
+/// lattice velocities `c = (x, y, z)` (ordering in the table above), with
+/// `r² = x² + y² + z²`:
+///
+/// | row | moment | polynomial |
+/// |-----|--------|------------|
+/// | 0 | ρ | `1` |
+/// | 1 | e | `19 r² − 30` |
+/// | 2 | ε | `(21 r⁴ − 53 r² + 24) / 2` |
+/// | 3, 5, 7 | j_x, j_y, j_z | `x`, `y`, `z` |
+/// | 4, 6, 8 | q_x, q_y, q_z | `(5 r² − 9) x`, `(5 r² − 9) y`, `(5 r² − 9) z` |
+/// | 9 | 3 p_xx | `3 x² − r²` |
+/// | 10 | 3 π_xx | `(3 r² − 5)(3 x² − r²)` |
+/// | 11 | p_ww | `y² − z²` |
+/// | 12 | π_ww | `(3 r² − 5)(y² − z²)` |
+/// | 13 | p_xy | `x y` |
+/// | 14 | p_xz | `x z` |
+/// | 15 | p_yz | `y z` |
+/// | 16, 17, 18 | m_x, m_y, m_z | `(y² − z²) x`, `(z² − x²) y`, `(x² − y²) z` |
+///
+/// The nineteen rows are mutually orthogonal (squared norms 19, 2394, 252,
+/// 10, 40, 10, 40, 10, 40, 36, 72, 12, 24, 4, 4, 4, 8, 8, 8), so the matrix is
+/// invertible and `M⁻¹ = Mᵀ diag(1/‖row‖²)`.
+///
+/// The matrix is [`crate::mrt3d::M`] with its rows 14 and 15 exchanged:
+/// [`crate::mrt3d`] lists `p_yz` before `p_xz` as in the original paper,
+/// while [`MrtRelaxation`] lists `p_xz` before `p_yz`.
 pub fn mrt_transform_matrix() -> [[f64; 19]; 19] {
-    // Velocity components (same ordering as D3Q19_EX/EY/EZ in d3q19_full.rs)
-    let ex: [i32; 19] = [0, 1, -1, 0, 0, 0, 0, 1, -1, 1, -1, 1, -1, 1, -1, 0, 0, 0, 0];
-    let ey: [i32; 19] = [0, 0, 0, 1, -1, 0, 0, 1, 1, -1, -1, 0, 0, 0, 0, 1, -1, 1, -1];
-    let ez: [i32; 19] = [0, 0, 0, 0, 0, 1, -1, 0, 0, 0, 0, 1, 1, -1, -1, 1, 1, -1, -1];
-
-    let mut m = [[0.0_f64; 19]; 19];
-
-    for i in 0..19 {
-        let x = ex[i] as f64;
-        let y = ey[i] as f64;
-        let z = ez[i] as f64;
-        let r2 = x * x + y * y + z * z; // 0, 1, or 2
-
-        // Row 0: ρ  — all ones
-        m[0][i] = 1.0;
-
-        // Row 1: e = -30 + 19*r²  (up to a normalisation; exact integer coefficients)
-        m[1][i] = -30.0 + 19.0 * r2;
-
-        // Row 2: ε = 12 - (21/2)*r²  ← matches d'Humières Table 1 col 3
-        // The exact form: 12 - 21/2*r²  = 12,  21/2*(−1) for face, 21/2*(−2) for edge
-        // yields 12, 12-21/2 = 1.5, 12-21 = -9  ✓ matches literature
-        m[2][i] = 12.0 - (21.0 / 2.0) * r2;
-
-        // Row 3: jx = x
-        m[3][i] = x;
-
-        // Row 4: qx = (-4 + 3*r²)*x
-        m[4][i] = (-4.0 + 3.0 * r2) * x;
-
-        // Row 5: jy = y
-        m[5][i] = y;
-
-        // Row 6: qy = (-4 + 3*r²)*y
-        m[6][i] = (-4.0 + 3.0 * r2) * y;
-
-        // Row 7: jz = z
-        m[7][i] = z;
-
-        // Row 8: qz = (-4 + 3*r²)*z
-        m[8][i] = (-4.0 + 3.0 * r2) * z;
-
-        // Row 9: 3pxx = 3x² - r²
-        m[9][i] = 3.0 * x * x - r2;
-
-        // Row 10: 3πxx = (3*r² - 5) * (3x² - r²) / 2
-        m[10][i] = (3.0 * r2 - 5.0) * (3.0 * x * x - r2) / 2.0;
-
-        // Row 11: pww = y² - z²
-        m[11][i] = y * y - z * z;
-
-        // Row 12: πww = (3r² - 5)(y² - z²) / 2
-        m[12][i] = (3.0 * r2 - 5.0) * (y * y - z * z) / 2.0;
-
-        // Row 13: pxy = xy
-        m[13][i] = x * y;
-
-        // Row 14: pxz = xz
-        m[14][i] = x * z;
-
-        // Row 15: pyz = yz
-        m[15][i] = y * z;
-
-        // Row 16: mx = (y² - z²)*x
-        m[16][i] = (y * y - z * z) * x;
-
-        // Row 17: my = (z² - x²)*y  (antisymmetric cubic)
-        m[17][i] = (z * z - x * x) * y;
-
-        // Row 18: mz = (x² - y²)*z
-        m[18][i] = (x * x - y * y) * z;
-    }
-
+    let mut m = crate::mrt3d::M;
+    m.swap(14, 15);
     m
 }
 
 /// Compute the 19×19 D3Q19 MRT inverse transformation matrix M^{-1}.
 ///
-/// The matrix is computed by Gaussian elimination on `[M | I]` in f64 arithmetic.
-/// Since M is known to be exactly invertible (orthogonal basis after weighting),
-/// the result is accurate to machine precision.
+/// The matrix is computed by Gauss–Jordan elimination with partial pivoting on
+/// `[M | I]` in f64 arithmetic, where `M` is [`mrt_transform_matrix`].  `M` has
+/// 19 mutually orthogonal rows, so it is invertible and the product `M · M⁻¹`
+/// equals the identity to about 1e-15.
 pub fn mrt_inverse_matrix() -> [[f64; 19]; 19] {
     let m = mrt_transform_matrix();
     // Build augmented matrix [M | I].
@@ -394,7 +348,7 @@ pub fn mrt_inverse_matrix() -> [[f64; 19]; 19] {
 
 /// Relaxation rates for the 19 D3Q19 MRT moment modes.
 ///
-/// Index mapping (d'Humières D3Q19):
+/// Index mapping (row order of [`mrt_transform_matrix`]):
 /// - `[0]`  s_ρ   : density (conserved → 0)
 /// - `[1]`  s_e   : energy
 /// - `[2]`  s_ε   : energy²
@@ -414,42 +368,59 @@ pub fn mrt_inverse_matrix() -> [[f64; 19]; 19] {
 /// - `[16]` s_mx  : cubic ghost
 /// - `[17]` s_my  : cubic ghost
 /// - `[18]` s_mz  : cubic ghost
+///
+/// This ordering lists `p_xz` (14) before `p_yz` (15); the rates used by
+/// [`crate::mrt3d`] ([`crate::mrt3d::MrtRelaxationParams`]) follow the original
+/// paper with `p_yz` before `p_xz`.  [`MrtRelaxation::to_mrt3d_order`]
+/// converts between the two.  An isotropic shear viscosity needs
+/// `s[9] = s[11] = s[13] = s[14] = s[15]`.
 pub struct MrtRelaxation {
     /// Relaxation rates for each of the 19 moment modes.
     pub s: [f64; 19],
 }
 
 impl MrtRelaxation {
-    /// Build relaxation rates equivalent to BGK with kinematic viscosity `nu`.
+    /// Build relaxation rates with the shear viscosity of a BGK scheme with
+    /// kinematic viscosity `nu`.
     ///
-    /// All five stress modes (pxx, pww, pxy, pxz, pyz) are set to
-    /// `s_ν = 1 / (3*nu + 0.5)`.  Conserved-mode rates are 0.  All other
-    /// (bulk/ghost) modes are set to 1.0 for maximal ghost-mode dissipation.
+    /// All five stress modes (3pxx, pww, pxy, pxz, pyz) are set to
+    /// `s_ν = 1 / (3*nu + 0.5)`.  The conserved-mode rates (density and the
+    /// three momentum components) are 0, so a collision conserves mass and
+    /// momentum for any `(rho, u)` it is given.  All other (energy/ghost)
+    /// modes are set to 1.0 for maximal ghost-mode dissipation.
     pub fn bgk_equivalent(nu: f64) -> Self {
         let s_nu = 1.0 / (3.0 * nu + 0.5);
         Self {
             s: [
-                1.0,  // [0]  ρ        (bulk/other → 1.0)
-                1.0,  // [1]  e        (bulk/other → 1.0)
-                1.0,  // [2]  ε        (bulk/other → 1.0)
-                1.0,  // [3]  jx       (bulk/other → 1.0)
-                1.0,  // [4]  qx       (bulk/other → 1.0)
-                1.0,  // [5]  jy       (bulk/other → 1.0)
-                1.0,  // [6]  qy       (bulk/other → 1.0)
-                1.0,  // [7]  jz       (bulk/other → 1.0)
-                1.0,  // [8]  qz       (bulk/other → 1.0)
+                0.0,  // [0]  ρ        (conserved)
+                1.0,  // [1]  e        (energy → 1.0)
+                1.0,  // [2]  ε        (energy² → 1.0)
+                0.0,  // [3]  jx       (conserved)
+                1.0,  // [4]  qx       (heat flux ghost → 1.0)
+                0.0,  // [5]  jy       (conserved)
+                1.0,  // [6]  qy       (heat flux ghost → 1.0)
+                0.0,  // [7]  jz       (conserved)
+                1.0,  // [8]  qz       (heat flux ghost → 1.0)
                 s_nu, // [9]  3pxx     (shear viscosity)
-                1.0,  // [10] 3πxx     (bulk/other → 1.0)
+                1.0,  // [10] 3πxx     (ghost → 1.0)
                 s_nu, // [11] pww      (shear viscosity)
-                1.0,  // [12] πww      (bulk/other → 1.0)
+                1.0,  // [12] πww      (ghost → 1.0)
                 s_nu, // [13] pxy      (shear viscosity)
                 s_nu, // [14] pxz      (shear viscosity)
                 s_nu, // [15] pyz      (shear viscosity)
-                1.0,  // [16] mx       (bulk/other → 1.0)
-                1.0,  // [17] my       (bulk/other → 1.0)
-                1.0,  // [18] mz       (bulk/other → 1.0)
+                1.0,  // [16] mx       (cubic ghost → 1.0)
+                1.0,  // [17] my       (cubic ghost → 1.0)
+                1.0,  // [18] mz       (cubic ghost → 1.0)
             ],
         }
+    }
+
+    /// The rates in the row order of [`crate::mrt3d::M`] (`p_yz` at index 14,
+    /// `p_xz` at index 15), i.e. with entries 14 and 15 exchanged.
+    pub fn to_mrt3d_order(&self) -> [f64; 19] {
+        let mut s = self.s;
+        s.swap(14, 15);
+        s
     }
 }
 
@@ -604,21 +575,28 @@ impl MrtD3Q19 {
         }
     }
 
-    /// Apply simplified MRT collision to a single cell.
+    /// Apply the d'Humières MRT collision operator to a single cell.
     ///
-    /// Uses a BGK-style approach in velocity space: each population relaxes
-    /// toward equilibrium using the mean shear relaxation rate from `self.relax`.
-    /// The `MrtRelaxation` struct infrastructure is preserved for API compatibility.
-    /// The effective relaxation rate is taken from the first stress mode `s[9]`.
+    /// The populations are mapped to the 19 moments `m = M f`
+    /// ([`mrt_transform_matrix`]), every moment relaxes toward its equilibrium
+    /// `m_eq(ρ, u) = M f_eq(ρ, u)` at its own rate `s_k` from `self.relax`, and
+    /// the result is mapped back:
+    ///
+    /// ```text
+    /// f* = f − M⁻¹ S (M f − m_eq)
+    /// ```
+    ///
+    /// The work is done by [`crate::mrt3d::collide_mrt`] after exchanging the
+    /// rates `s[14]` and `s[15]` (see [`MrtRelaxation`]).  Within the collision
+    /// every moment relaxes independently, so the ghost and energy rates never
+    /// change the post-collision shear-stress moments that set the viscosity.
+    ///
+    /// Mass and momentum are conserved exactly when the conserved-mode rates
+    /// (`s[0]`, `s[3]`, `s[5]`, `s[7]`) are zero, as in
+    /// [`MrtRelaxation::bgk_equivalent`], whatever `rho` and `u` are passed.
+    /// When `rho` and `u` are the moments of `f` those rates have no effect.
     pub fn collide_cell(&self, f: [f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
-        let feq = Self::equilibrium(rho, u);
-        // Use the shear relaxation rate (s[9] = 3pxx) as the BGK omega.
-        let omega = self.relax.s[9];
-        let mut f_star = f;
-        for i in 0..19 {
-            f_star[i] = f[i] - omega * (f[i] - feq[i]);
-        }
-        f_star
+        crate::mrt3d::collide_mrt(&f, rho, u, &self.relax.to_mrt3d_order())
     }
 
     /// Apply MRT collision to every cell in the domain.
@@ -1117,33 +1095,83 @@ mod tests {
 /// Two-Relaxation-Time (TRT) collision operator for D2Q9.
 ///
 /// TRT splits the distribution into symmetric (even) and antisymmetric (odd)
-/// parts and relaxes each at a distinct rate.  The "magic" relationship
-/// Λ = τ⁺ * τ⁻ = 3/16 eliminates parasitic currents near curved boundaries.
+/// parts and relaxes each at its own rate: `s⁺ = 1/τ⁺` for the even part, which
+/// carries the viscous stress (so `τ⁺ = 3ν + ½` fixes the kinematic
+/// viscosity), and `s⁻ = 1/τ⁻` for the odd part.
+///
+/// The two relaxation times are tied together by the "magic" parameter
+///
+/// ```text
+/// Λ = (τ⁺ − ½)(τ⁻ − ½)
+/// ```
+///
+/// `Λ = 3/16` makes the effective position of a bounce-back wall in a straight
+/// channel independent of the viscosity.  Stability needs `0 < s⁻ < 2`, i.e.
+/// `τ⁻ > ½`, which holds precisely when `Λ > 0`.
 ///
 /// Reference: Ginzburg, Verhaeghe & d'Humières (2008), Commun. Comput. Phys. 3, 427–478.
 #[derive(Debug, Clone, Copy)]
 pub struct TrtCollision2D {
-    /// Relaxation rate for symmetric part: τ⁺ = 1/(2τ) controls viscosity.
+    /// Relaxation time of the symmetric (even) part, `τ⁺ = 3ν + ½`; the
+    /// corresponding rate is `s⁺ = 1/τ⁺`.  It controls the viscosity.
     pub tau_plus: f64,
-    /// Relaxation rate for antisymmetric part: τ⁻ chosen via magic number.
+    /// Relaxation time of the antisymmetric (odd) part; the corresponding
+    /// rate is `s⁻ = 1/τ⁻`.  The constructors derive it from the magic
+    /// parameter, `τ⁻ = ½ + Λ / (τ⁺ − ½)`.
     pub tau_minus: f64,
 }
 
 impl TrtCollision2D {
-    /// Construct TRT from kinematic viscosity `nu`.
+    /// Construct TRT from kinematic viscosity `nu` with the magic parameter
+    /// `Λ = 3/16` ([`TRT_MAGIC`]).
     ///
-    /// Sets `τ⁺ = 3ν + 0.5` and `τ⁻ = 3/(16τ⁺ - 1/2)` (magic Λ = 3/16).
+    /// Sets `τ⁺ = 3ν + ½` and `τ⁻ = ½ + (3/16) / (τ⁺ − ½)`, so that
+    /// `(τ⁺ − ½)(τ⁻ − ½) = 3/16` and `0 < 1/τ⁻ < 2` for every `ν > 0`.
+    ///
+    /// No stable operator exists for `ν <= 0` or a NaN viscosity.  `τ⁻` is then
+    /// NaN, so that every [`TrtCollision2D::collide`] returns NaN populations
+    /// instead of silently unstable values.  [`TrtCollision2D::try_new`]
+    /// reports such input as an error instead.
     pub fn new(nu: f64) -> Self {
+        Self::with_magic_parameter(nu, TRT_MAGIC)
+    }
+
+    /// Construct TRT from kinematic viscosity `nu` and the magic parameter
+    /// `lambda`: `τ⁺ = 3ν + ½`, `τ⁻ = ½ + Λ / (τ⁺ − ½)`.
+    ///
+    /// `τ⁻` is NaN (see [`TrtCollision2D::new`]) unless `nu` and `lambda` are
+    /// finite and positive.
+    pub fn with_magic_parameter(nu: f64, lambda: f64) -> Self {
         let tau_plus = 3.0 * nu + 0.5;
-        // magic number Λ = τ⁺ · τ⁻ = 3/16  →  τ⁻ = 3/(16·τ⁺)
-        let tau_minus = 3.0 / (16.0 * tau_plus);
+        // `3ν` is `τ⁺ − ½` without the cancellation of the subtraction.
+        let excess = 3.0 * nu;
+        let tau_minus = if excess.is_finite() && excess > 0.0 && lambda.is_finite() && lambda > 0.0
+        {
+            0.5 + lambda / excess
+        } else {
+            f64::NAN
+        };
         Self {
             tau_plus,
             tau_minus,
         }
     }
 
-    /// Construct TRT with explicit relaxation rates.
+    /// Fallible variant of [`TrtCollision2D::new`]: rejects `nu <= 0` and
+    /// non-finite viscosities.
+    pub fn try_new(nu: f64) -> crate::error::Result<Self> {
+        Self::try_with_magic_parameter(nu, TRT_MAGIC)
+    }
+
+    /// Fallible variant of [`TrtCollision2D::with_magic_parameter`]: rejects a
+    /// non-positive or non-finite `nu` or `lambda`.
+    pub fn try_with_magic_parameter(nu: f64, lambda: f64) -> crate::error::Result<Self> {
+        crate::error::Error::check_range(nu, f64::MIN_POSITIVE, f64::MAX, "nu")?;
+        crate::error::Error::check_range(lambda, f64::MIN_POSITIVE, f64::MAX, "lambda")?;
+        Ok(Self::with_magic_parameter(nu, lambda))
+    }
+
+    /// Construct TRT with explicit relaxation times `τ⁺` and `τ⁻`.
     pub fn with_rates(tau_plus: f64, tau_minus: f64) -> Self {
         Self {
             tau_plus,
@@ -1156,9 +1184,9 @@ impl TrtCollision2D {
         (self.tau_plus - 0.5) / 3.0
     }
 
-    /// Magic parameter Λ = τ⁺ · τ⁻.
+    /// Magic parameter `Λ = (τ⁺ − ½)(τ⁻ − ½)`.
     pub fn lambda(&self) -> f64 {
-        self.tau_plus * self.tau_minus
+        (self.tau_plus - 0.5) * (self.tau_minus - 0.5)
     }
 
     /// Split distribution into symmetric (even) part f⁺ = (fᵢ + f̄ᵢ)/2
@@ -1227,135 +1255,6 @@ fn d2q9_equilibrium_trt(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
         feq[i] = W[i] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * u2);
     }
     feq
-}
-
-// ---------------------------------------------------------------------------
-// Cascaded LBM (CLBM) for D2Q9 — central-moment collision
-// ---------------------------------------------------------------------------
-
-/// Cascaded Lattice Boltzmann (CLBM) collision for D2Q9.
-///
-/// Performs relaxation in the frame of central moments (co-moving with fluid),
-/// which provides enhanced Galilean invariance and improved stability at high
-/// Mach/Reynolds numbers.
-///
-/// Reference: Geier, Greiner & Korvink (2006), Phys. Rev. E 73, 066705.
-#[derive(Debug, Clone)]
-pub struct CascadedCollision2D {
-    /// Kinematic viscosity in lattice units.
-    pub nu: f64,
-    /// Relaxation rates for the 9 central-moment orders.
-    pub rates: [f64; 9],
-}
-
-impl CascadedCollision2D {
-    /// Construct CLBM from kinematic viscosity.
-    pub fn new(nu: f64) -> Self {
-        let s_nu = 1.0 / (3.0 * nu + 0.5);
-        // Conserved modes relax at 0; ghost modes at 1.
-        let rates = [0.0, 0.0, 0.0, s_nu, s_nu, 1.0, 1.0, 1.0, 1.0];
-        Self { nu, rates }
-    }
-
-    /// Kinematic viscosity from current rates.
-    pub fn viscosity(&self) -> f64 {
-        self.nu
-    }
-
-    /// Compute central moments of order (p,q): κ_{pq} = Σ fᵢ (cix-ux)^p (ciy-uy)^q
-    pub fn central_moments(f: &[f64; 9], ux: f64, uy: f64) -> [f64; 9] {
-        const CX: [f64; 9] = [0.0, 1.0, 0.0, -1.0, 0.0, 1.0, -1.0, -1.0, 1.0];
-        const CY: [f64; 9] = [0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 1.0, -1.0, -1.0];
-        let mut kappa = [0.0f64; 9];
-        for i in 0..9 {
-            let dx = CX[i] - ux;
-            let dy = CY[i] - uy;
-            // Mapping: [κ00, κ10, κ01, κ20, κ02, κ11, κ21, κ12, κ22]
-            kappa[0] += f[i]; // κ00
-            kappa[1] += f[i] * dx; // κ10
-            kappa[2] += f[i] * dy; // κ01
-            kappa[3] += f[i] * dx * dx; // κ20
-            kappa[4] += f[i] * dy * dy; // κ02
-            kappa[5] += f[i] * dx * dy; // κ11
-            kappa[6] += f[i] * dx * dx * dy; // κ21
-            kappa[7] += f[i] * dx * dy * dy; // κ12
-            kappa[8] += f[i] * dx * dx * dy * dy; // κ22
-        }
-        kappa
-    }
-
-    /// Equilibrium central moments for D2Q9.
-    fn equilibrium_central_moments(rho: f64) -> [f64; 9] {
-        // In the central-moment frame the equilibrium takes simple form:
-        // κ00=ρ, κ10=κ01=0, κ20=κ02=ρ/3, κ11=0, κ21=κ12=0, κ22=ρ/9
-        [
-            rho,
-            0.0,
-            0.0,
-            rho / 3.0,
-            rho / 3.0,
-            0.0,
-            0.0,
-            0.0,
-            rho / 9.0,
-        ]
-    }
-
-    /// Perform a CLBM collision step for a single cell.
-    ///
-    /// Returns post-collision distributions.
-    pub fn collide(&self, f: &[f64; 9], rho: f64, ux: f64, uy: f64) -> [f64; 9] {
-        let mut kappa = Self::central_moments(f, ux, uy);
-        let kappa_eq = Self::equilibrium_central_moments(rho);
-
-        // Relax each central moment toward equilibrium
-        for m in 0..9 {
-            kappa[m] -= self.rates[m] * (kappa[m] - kappa_eq[m]);
-        }
-
-        // Back-transform: reconstruct f from relaxed central moments
-        // For D2Q9 this is the raw-moment back-transform plus shift by (ux,uy)
-        // We use the direct reconstruction via the analytical inverse
-        const CX: [f64; 9] = [0.0, 1.0, 0.0, -1.0, 0.0, 1.0, -1.0, -1.0, 1.0];
-        const CY: [f64; 9] = [0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 1.0, -1.0, -1.0];
-        const W: [f64; 9] = [
-            4.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 9.0,
-            1.0 / 36.0,
-            1.0 / 36.0,
-            1.0 / 36.0,
-            1.0 / 36.0,
-        ];
-        let mut f_out = [0.0f64; 9];
-        for i in 0..9 {
-            let dx = CX[i] - ux;
-            let dy = CY[i] - uy;
-            // Re-expand using central moments (truncated at order 2 for LBM accuracy)
-            f_out[i] = W[i]
-                * (kappa[0]
-                    + kappa[1] * CX[i] / (1.0 / 3.0)
-                    + kappa[2] * CY[i] / (1.0 / 3.0)
-                    + 0.5 * kappa[3] * (dx * dx - 1.0 / 3.0) / (1.0 / 9.0)
-                    + 0.5 * kappa[4] * (dy * dy - 1.0 / 3.0) / (1.0 / 9.0)
-                    + kappa[5] * dx * dy / (1.0 / 9.0));
-            // Clamp to avoid negative distributions in extreme cases
-            if f_out[i] < 0.0 {
-                f_out[i] = 0.0;
-            }
-        }
-        // Rescale to conserve mass
-        let sum: f64 = f_out.iter().sum();
-        if sum > 1e-15 {
-            let scale = rho / sum;
-            for fi in &mut f_out {
-                *fi *= scale;
-            }
-        }
-        f_out
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1501,12 +1400,30 @@ mod trt_tests {
         assert!((nu_back - nu).abs() < 1e-14, "nu={nu}, back={nu_back}");
     }
 
-    /// TRT: magic parameter Λ = τ⁺·τ⁻ ≈ 3/16 for default constructor.
+    /// TRT: the default constructor realises the magic parameter
+    /// Λ = (τ⁺ − ½)(τ⁻ − ½) = 3/16 (not the product τ⁺τ⁻) and keeps the
+    /// antisymmetric rate s⁻ = 1/τ⁻ inside the stable interval (0, 2).
     #[test]
     fn test_trt_magic_number() {
+        for &nu in &[0.01_f64, 1.0 / 6.0, 0.5] {
+            let trt = TrtCollision2D::new(nu);
+            let lambda = (trt.tau_plus - 0.5) * (trt.tau_minus - 0.5);
+            assert!((lambda - 3.0 / 16.0).abs() < 1e-14, "ν={nu}: Λ = {lambda}");
+            assert!(
+                (trt.lambda() - 3.0 / 16.0).abs() < 1e-14,
+                "ν={nu}: lambda() = {}",
+                trt.lambda()
+            );
+            let s_minus = 1.0 / trt.tau_minus;
+            assert!(
+                s_minus > 0.0 && s_minus < 2.0,
+                "ν={nu}: s⁻ = {s_minus} outside (0, 2)"
+            );
+        }
+        // ν = 1/6 gives τ⁺ = 1 and τ⁻ = ½ + (3/16)/(1/2) = 7/8.
         let trt = TrtCollision2D::new(1.0 / 6.0);
-        let lambda = trt.lambda();
-        assert!((lambda - 3.0 / 16.0).abs() < 1e-14, "Λ = {lambda}");
+        assert!((trt.tau_plus - 1.0).abs() < 1e-14);
+        assert!((trt.tau_minus - 0.875).abs() < 1e-14);
     }
 
     /// TRT: symmetric part sums to rho, antisymmetric sums to 0.

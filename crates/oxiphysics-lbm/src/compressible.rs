@@ -3,35 +3,31 @@
 
 //! Compressible flow LBM.
 //!
-//! Provides high-Mach LBM with extended equilibrium, Euler equations via LBM,
-//! shock capturing, compressible Navier-Stokes, and detonation wave simulation.
+//! Provides a Mach-corrected double-distribution compressible LBM, a
+//! nearly-inviscid Euler LBM, shock capturing, compressible Navier-Stokes,
+//! a Rayleigh-Taylor two-population LBM and a 1-D reactive-Euler detonation
+//! solver.
+//!
+//! All D2Q9 solvers in this module run at the lattice sound speed
+//! `cs² = 1/3` ([`LATTICE_CS2`]); the D2Q9 weights only reproduce the
+//! Hermite moments for that value.  Thermodynamics with an arbitrary
+//! adiabatic exponent γ is carried by a separate total-energy population and
+//! a pressure-correction force (see [`energy_equilibrium`]).
 
-/// High-Mach LBM simulation with extended equilibrium.
-///
-/// Uses higher-order equilibrium to capture compressible effects.
-#[derive(Debug, Clone)]
-pub struct CompressibleLbm {
-    /// Grid width.
-    pub nx: usize,
-    /// Grid height.
-    pub ny: usize,
-    /// Relaxation parameter omega.
-    pub omega: f64,
-    /// Distribution functions f\[y\]\[x\]\[q\].
-    pub f: Vec<Vec<Vec<f64>>>,
-    /// Density field rho\[y\]\[x\].
-    pub rho: Vec<Vec<f64>>,
-    /// Velocity field u\[y\]\[x\]\[2\].
-    pub u: Vec<Vec<[f64; 2]>>,
-    /// Temperature field T\[y\]\[x\].
-    pub temp: Vec<Vec<f64>>,
-    /// Speed of sound cs = sqrt(gamma*R*T).
-    pub cs: f64,
-    /// Adiabatic exponent gamma.
-    pub gamma: f64,
-    /// Mach number correction order.
-    pub ma_order: usize,
-}
+mod ddf;
+#[cfg(test)]
+mod ddf_tests;
+mod detonation;
+mod rayleigh_taylor;
+
+pub use ddf::energy_equilibrium;
+pub use detonation::DetonationLbm;
+pub use rayleigh_taylor::{RayleighTaylorConfig, RayleighTaylorLbm};
+
+use ddf::{DdfParams, DdfState};
+
+/// Lattice (isothermal) speed of sound squared of the D2Q9 lattice, `1/3`.
+pub const LATTICE_CS2: f64 = 1.0 / 3.0;
 
 /// D2Q9 weights.
 const W9: [f64; 9] = [
@@ -50,21 +46,31 @@ const EX9: [i32; 9] = [0, 1, 0, -1, 0, 1, -1, -1, 1];
 /// D2Q9 velocity ey.
 const EY9: [i32; 9] = [0, 0, 1, 0, -1, 1, 1, -1, -1];
 
-/// Compute standard D2Q9 equilibrium with compressible correction.
+/// Third-order Hermite D2Q9 equilibrium.
+///
+/// `f_eq_i = w_i ρ [1 + c·u/cs² + ((c·u)² − cs²|u|²)/(2cs⁴)
+///                + ((c·u)³ − 3cs²(c·u)|u|²)/(6cs⁶)]`.
+///
+/// The D2Q9 weights are only consistent with `cs2 = 1/3` ([`LATTICE_CS2`]);
+/// for that value `Σ f_eq = ρ`, `Σ f_eq c = ρu`, `Σ f_eq cc = ρ(cs² I + uu)`
+/// and the lattice-supported third moments `Σ f_eq c_x c_y² = ρ(cs² u_x +
+/// u_x u_y²)` (and the x↔y mirror) hold exactly.  Other `cs2` values do not
+/// conserve mass or momentum on D2Q9.
 pub fn equilibrium_compressible(rho: f64, ux: f64, uy: f64, cs2: f64) -> [f64; 9] {
     let mut feq = [0.0f64; 9];
     let usq = ux * ux + uy * uy;
     let inv_cs2 = 1.0 / cs2;
     let inv_cs4 = inv_cs2 * inv_cs2;
+    let inv_cs6 = inv_cs4 * inv_cs2;
     for q in 0..9 {
-        let eu = EX9[q] as f64 * ux + EY9[q] as f64 * uy;
-        // Extended equilibrium (second-order Ma)
+        let eu = f64::from(EX9[q]) * ux + f64::from(EY9[q]) * uy;
+        // Third-order Hermite expansion (Ma³).
         feq[q] = W9[q]
             * rho
             * (1.0
                 + eu * inv_cs2
                 + 0.5 * (eu * eu * inv_cs4 - usq * inv_cs2)
-                + eu * eu * eu * inv_cs4 / 6.0
+                + eu * eu * eu * inv_cs6 / 6.0
                 - eu * usq * inv_cs4 / 2.0);
     }
     feq
@@ -78,6 +84,21 @@ pub fn local_mach(ux: f64, uy: f64, cs: f64) -> f64 {
     u_mag / cs
 }
 
+/// Local Mach number with respect to the adiabatic sound speed `sqrt(γT)`.
+///
+/// Returns 0 for a fluid at rest and `+∞` for a moving fluid at `T ≤ 0`.
+fn adiabatic_mach(u: [f64; 2], gamma: f64, temp: f64) -> f64 {
+    let u_mag = (u[0] * u[0] + u[1] * u[1]).sqrt();
+    let sound = (gamma * temp.max(0.0)).sqrt();
+    if sound > 0.0 {
+        u_mag / sound
+    } else if u_mag > 0.0 {
+        f64::INFINITY
+    } else {
+        0.0
+    }
+}
+
 /// Compute entropy generation rate.
 ///
 /// Returns sigma = rho * T * Ds/Dt estimate.
@@ -86,23 +107,64 @@ pub fn entropy_generation(rho: f64, temp: f64, du_dx: f64, dv_dy: f64, mu: f64) 
     phi_visc / (rho * temp + 1e-30)
 }
 
+/// High-Mach compressible LBM with a Mach-corrected equilibrium and an
+/// energy double distribution.
+///
+/// * `f` (density/momentum) relaxes towards the D2Q9 Hermite equilibrium of
+///   order `ma_order` (2 = standard, ≥3 adds the lattice-supported cubic
+///   terms, see [`MaCorrection`]) at the lattice sound speed `cs² = 1/3`.
+/// * `g` evolves the total energy `ρE = ρ(|u|²/2 + T/(γ−1))` with the
+///   equilibrium [`energy_equilibrium`].
+/// * The ideal-gas pressure `p = ρT` (`R = 1`, lattice units) is imposed via a
+///   Guo pressure-correction force `F = −∇(ρT − ρcs²)`, so γ controls the
+///   thermodynamics while the lattice stays at `cs² = 1/3`.
+///
+/// Both populations relax with `omega` (unit Prandtl number); use
+/// [`NsCompressibleLbm`] for an independent thermal relaxation rate.  The
+/// shear viscosity is `ν = cs²(1/ω − 1/2)`.  The domain is periodic.
+#[derive(Debug, Clone)]
+pub struct CompressibleLbm {
+    /// Grid width.
+    pub nx: usize,
+    /// Grid height.
+    pub ny: usize,
+    /// Relaxation parameter omega (both populations).
+    pub omega: f64,
+    /// Density/momentum distribution functions f\[y\]\[x\]\[q\].
+    pub f: Vec<Vec<Vec<f64>>>,
+    /// Total-energy distribution functions g\[y\]\[x\]\[q\].
+    pub g: Vec<Vec<Vec<f64>>>,
+    /// Density field rho\[y\]\[x\].
+    pub rho: Vec<Vec<f64>>,
+    /// Velocity field u\[y\]\[x\]\[2\] (Guo-corrected).
+    pub u: Vec<Vec<[f64; 2]>>,
+    /// Temperature field T\[y\]\[x\] (`p = ρT`, lattice units).
+    pub temp: Vec<Vec<f64>>,
+    /// Pressure-correction force field F\[y\]\[x\] used in the last collision.
+    pub force: Vec<Vec<[f64; 2]>>,
+    /// Lattice (isothermal) speed of sound `sqrt(1/3)`.
+    pub cs: f64,
+    /// Adiabatic exponent gamma.
+    pub gamma: f64,
+    /// Hermite order of the `f` equilibrium (2 or 3).
+    pub ma_order: usize,
+}
+
 impl CompressibleLbm {
-    /// Create a new compressible LBM simulation.
+    /// Create a new compressible LBM simulation at rest with `ρ = 1` and the
+    /// reference temperature `T = cs² = 1/3`.
     pub fn new(nx: usize, ny: usize, omega: f64, gamma: f64, ma_order: usize) -> Self {
-        let cs = (gamma / 3.0).sqrt();
-        let f = vec![vec![vec![0.0f64; 9]; nx]; ny];
-        let rho = vec![vec![1.0f64; nx]; ny];
-        let u = vec![vec![[0.0f64; 2]; nx]; ny];
-        let temp = vec![vec![1.0f64; nx]; ny];
         let mut sim = Self {
             nx,
             ny,
             omega,
-            f,
-            rho,
-            u,
-            temp,
-            cs,
+            f: vec![vec![vec![0.0f64; 9]; nx]; ny],
+            g: vec![vec![vec![0.0f64; 9]; nx]; ny],
+            rho: vec![vec![1.0f64; nx]; ny],
+            u: vec![vec![[0.0f64; 2]; nx]; ny],
+            temp: vec![vec![LATTICE_CS2; nx]; ny],
+            force: vec![vec![[0.0f64; 2]; nx]; ny],
+            cs: LATTICE_CS2.sqrt(),
             gamma,
             ma_order,
         };
@@ -110,69 +172,51 @@ impl CompressibleLbm {
         sim
     }
 
-    /// Initialize equilibrium distributions.
+    fn params(&self) -> DdfParams {
+        DdfParams {
+            omega_f: self.omega,
+            omega_g: self.omega,
+            gamma: self.gamma,
+            ma_order: self.ma_order,
+        }
+    }
+
+    fn state(&mut self) -> DdfState<'_> {
+        DdfState {
+            nx: self.nx,
+            ny: self.ny,
+            f: &mut self.f,
+            g: &mut self.g,
+            rho: &mut self.rho,
+            u: &mut self.u,
+            temp: &mut self.temp,
+            force: &mut self.force,
+        }
+    }
+
+    /// Initialize `f` and `g` at equilibrium from the current `rho`, `u` and
+    /// `temp` fields.
     pub fn initialize(&mut self) {
-        let cs2 = self.cs * self.cs;
-        for y in 0..self.ny {
-            for x in 0..self.nx {
-                let feq = equilibrium_compressible(1.0, 0.0, 0.0, cs2);
-                self.f[y][x] = feq.to_vec();
-            }
-        }
+        let params = self.params();
+        ddf::initialize(&mut self.state(), params);
     }
 
-    /// BGK collision step.
+    /// BGK collision of both populations (Guo-forced for `f`).
     pub fn collide(&mut self) {
-        let cs2 = self.cs * self.cs;
-        for y in 0..self.ny {
-            for x in 0..self.nx {
-                let rho = self.rho[y][x];
-                let [ux, uy] = self.u[y][x];
-                let feq = equilibrium_compressible(rho, ux, uy, cs2);
-                for (q, &fq) in feq.iter().enumerate() {
-                    self.f[y][x][q] = self.f[y][x][q] * (1.0 - self.omega) + self.omega * fq;
-                }
-            }
-        }
+        let params = self.params();
+        ddf::collide(&mut self.state(), params);
     }
 
-    /// Streaming step.
+    /// Periodic streaming step of both populations.
     pub fn stream(&mut self) {
-        let nx = self.nx;
-        let ny = self.ny;
-        let mut f_new = vec![vec![vec![0.0f64; 9]; nx]; ny];
-        for y in 0..ny {
-            for x in 0..nx {
-                for q in 0..9 {
-                    let xn = (x as i32 + EX9[q]).rem_euclid(nx as i32) as usize;
-                    let yn = (y as i32 + EY9[q]).rem_euclid(ny as i32) as usize;
-                    f_new[yn][xn][q] = self.f[y][x][q];
-                }
-            }
-        }
-        self.f = f_new;
+        ddf::stream_periodic(&mut self.f, self.nx, self.ny);
+        ddf::stream_periodic(&mut self.g, self.nx, self.ny);
     }
 
-    /// Update macroscopic variables.
+    /// Update `ρ`, `u`, `T` and the pressure-correction force.
     pub fn update_macros(&mut self) {
-        for y in 0..self.ny {
-            for x in 0..self.nx {
-                let mut rho = 0.0;
-                let mut ux = 0.0;
-                let mut uy = 0.0;
-                for q in 0..9 {
-                    rho += self.f[y][x][q];
-                    ux += EX9[q] as f64 * self.f[y][x][q];
-                    uy += EY9[q] as f64 * self.f[y][x][q];
-                }
-                self.rho[y][x] = rho.max(1e-10);
-                if rho > 1e-10 {
-                    self.u[y][x] = [ux / rho, uy / rho];
-                }
-                // Temperature from equation of state: p = rho*cs2
-                self.temp[y][x] = rho * self.cs * self.cs / (self.gamma - 1.0 + 1e-30);
-            }
-        }
+        let gamma = self.gamma;
+        ddf::update_macros(&mut self.state(), gamma);
     }
 
     /// Full time step.
@@ -182,10 +226,15 @@ impl CompressibleLbm {
         self.update_macros();
     }
 
-    /// Local Mach number at (x, y).
+    /// Pressure `p = ρT` at (x, y).
+    pub fn pressure_at(&self, x: usize, y: usize) -> f64 {
+        self.rho[y][x] * self.temp[y][x]
+    }
+
+    /// Local Mach number at (x, y) with respect to the adiabatic sound speed
+    /// `sqrt(γT)`.
     pub fn mach_at(&self, x: usize, y: usize) -> f64 {
-        let [ux, uy] = self.u[y][x];
-        local_mach(ux, uy, self.cs)
+        adiabatic_mach(self.u[y][x], self.gamma, self.temp[y][x])
     }
 
     /// Maximum Mach number in the domain.
@@ -198,115 +247,143 @@ impl CompressibleLbm {
         }
         ma_max
     }
+
+    /// Conserved totals `(mass, momentum, total energy)` over the domain.
+    pub fn conserved_totals(&self) -> (f64, [f64; 2], f64) {
+        ddf::totals(&self.f, &self.g, &self.rho, &self.u)
+    }
 }
 
-/// Euler equations via LBM (inviscid compressible flow).
+/// Nearly-inviscid compressible Euler LBM (double distribution).
 ///
-/// Uses zero viscosity limit of LBM (omega=2) for Euler equations.
+/// Same double-distribution model as [`CompressibleLbm`] with a third-order
+/// equilibrium and a relaxation frequency close to 2: the shear viscosity is
+/// `ν = cs²(1/ω − 1/2)` (≈ 8.4·10⁻⁴ at the default `ω = 1.99`).  `ω = 2`
+/// exactly is the formally inviscid but neutrally unstable limit, so
+/// `omega` must lie in `(0, 2)`.  The energy population `g` is collided and
+/// streamed alongside `f`, and the pressure `p = ρT` enters through the
+/// pressure-correction force.  The domain is periodic.
 #[derive(Debug, Clone)]
 pub struct EulerLbm {
     /// Grid width.
     pub nx: usize,
     /// Grid height.
     pub ny: usize,
-    /// Distribution functions.
+    /// Density/momentum distribution functions.
     pub f: Vec<Vec<Vec<f64>>>,
-    /// Energy distribution functions g.
+    /// Total-energy distribution functions g.
     pub g: Vec<Vec<Vec<f64>>>,
     /// Density.
     pub rho: Vec<Vec<f64>>,
-    /// Velocity.
+    /// Velocity (Guo-corrected).
     pub u: Vec<Vec<[f64; 2]>>,
-    /// Energy density.
+    /// Total energy density `ρE = Σ g`.
     pub energy: Vec<Vec<f64>>,
-    /// Speed of sound.
+    /// Temperature (`p = ρT`).
+    pub temp: Vec<Vec<f64>>,
+    /// Pressure-correction force used in the last collision.
+    pub force: Vec<Vec<[f64; 2]>>,
+    /// Lattice (isothermal) speed of sound `sqrt(1/3)`.
     pub cs: f64,
+    /// Relaxation frequency (both populations), in `(0, 2)`.
+    pub omega: f64,
+    /// Adiabatic exponent γ.
+    pub gamma: f64,
 }
 
 impl EulerLbm {
-    /// Create a new Euler LBM.
-    pub fn new(nx: usize, ny: usize, cs: f64) -> Self {
-        let f = vec![vec![vec![0.0f64; 9]; nx]; ny];
-        let g = vec![vec![vec![0.0f64; 9]; nx]; ny];
-        let rho = vec![vec![1.0f64; nx]; ny];
-        let u = vec![vec![[0.0f64; 2]; nx]; ny];
-        let energy = vec![vec![1.5f64; nx]; ny];
+    /// Default near-inviscid relaxation frequency.
+    pub const DEFAULT_OMEGA: f64 = 1.99;
+
+    /// Hermite order of the `f` equilibrium used by the Euler solver.
+    const MA_ORDER: usize = 3;
+
+    /// Create a new Euler LBM at rest with `ρ = 1`, `T = 1/3`.
+    pub fn new(nx: usize, ny: usize, omega: f64, gamma: f64) -> Self {
+        let energy0 = LATTICE_CS2 / (gamma - 1.0);
         let mut sim = Self {
             nx,
             ny,
-            f,
-            g,
-            rho,
-            u,
-            energy,
-            cs,
+            f: vec![vec![vec![0.0f64; 9]; nx]; ny],
+            g: vec![vec![vec![0.0f64; 9]; nx]; ny],
+            rho: vec![vec![1.0f64; nx]; ny],
+            u: vec![vec![[0.0f64; 2]; nx]; ny],
+            energy: vec![vec![energy0; nx]; ny],
+            temp: vec![vec![LATTICE_CS2; nx]; ny],
+            force: vec![vec![[0.0f64; 2]; nx]; ny],
+            cs: LATTICE_CS2.sqrt(),
+            omega,
+            gamma,
         };
         sim.initialize();
         sim
     }
 
-    /// Initialize distributions.
+    /// Create a new Euler LBM with [`Self::DEFAULT_OMEGA`].
+    pub fn with_default_omega(nx: usize, ny: usize, gamma: f64) -> Self {
+        Self::new(nx, ny, Self::DEFAULT_OMEGA, gamma)
+    }
+
+    /// Kinematic shear viscosity `ν = cs²(1/ω − 1/2)` of the scheme.
+    pub fn viscosity(&self) -> f64 {
+        LATTICE_CS2 * (1.0 / self.omega - 0.5)
+    }
+
+    fn params(&self) -> DdfParams {
+        DdfParams {
+            omega_f: self.omega,
+            omega_g: self.omega,
+            gamma: self.gamma,
+            ma_order: Self::MA_ORDER,
+        }
+    }
+
+    fn state(&mut self) -> DdfState<'_> {
+        DdfState {
+            nx: self.nx,
+            ny: self.ny,
+            f: &mut self.f,
+            g: &mut self.g,
+            rho: &mut self.rho,
+            u: &mut self.u,
+            temp: &mut self.temp,
+            force: &mut self.force,
+        }
+    }
+
+    fn refresh_energy(&mut self) {
+        self.energy = self
+            .g
+            .iter()
+            .map(|row| row.iter().map(|cell| cell.iter().sum()).collect())
+            .collect();
+    }
+
+    /// Initialize `f` and `g` at equilibrium from the current `rho`, `u` and
+    /// `temp` fields.
     pub fn initialize(&mut self) {
-        let cs2 = self.cs * self.cs;
-        for y in 0..self.ny {
-            for x in 0..self.nx {
-                let feq = equilibrium_compressible(1.0, 0.0, 0.0, cs2);
-                self.f[y][x] = feq.to_vec();
-                self.g[y][x] = feq.to_vec(); // simple energy init
-            }
-        }
+        let params = self.params();
+        ddf::initialize(&mut self.state(), params);
+        self.refresh_energy();
     }
 
-    /// Collision (omega=2 for inviscid Euler).
+    /// BGK collision `f ← f − ω(f − f_eq) + S_F`, `g ← g − ω(g − g_eq)`.
     pub fn collide(&mut self) {
-        let cs2 = self.cs * self.cs;
-        for y in 0..self.ny {
-            for x in 0..self.nx {
-                let rho = self.rho[y][x];
-                let [ux, uy] = self.u[y][x];
-                let feq = equilibrium_compressible(rho, ux, uy, cs2);
-                self.f[y][x].copy_from_slice(&feq); // omega = 2: full relaxation
-            }
-        }
+        let params = self.params();
+        ddf::collide(&mut self.state(), params);
     }
 
-    /// Streaming step.
+    /// Periodic streaming of both populations.
     pub fn stream(&mut self) {
-        let nx = self.nx;
-        let ny = self.ny;
-        let mut f_new = vec![vec![vec![0.0f64; 9]; nx]; ny];
-        for y in 0..ny {
-            for x in 0..nx {
-                for q in 0..9 {
-                    let xn = (x as i32 + EX9[q]).rem_euclid(nx as i32) as usize;
-                    let yn = (y as i32 + EY9[q]).rem_euclid(ny as i32) as usize;
-                    f_new[yn][xn][q] = self.f[y][x][q];
-                }
-            }
-        }
-        self.f = f_new;
+        ddf::stream_periodic(&mut self.f, self.nx, self.ny);
+        ddf::stream_periodic(&mut self.g, self.nx, self.ny);
     }
 
-    /// Update macroscopic variables.
+    /// Update `ρ`, `u`, `T`, `ρE` and the pressure-correction force.
     pub fn update_macros(&mut self) {
-        for y in 0..self.ny {
-            for x in 0..self.nx {
-                let mut rho = 0.0;
-                let mut ux = 0.0;
-                let mut uy = 0.0;
-                for q in 0..9 {
-                    rho += self.f[y][x][q];
-                    ux += EX9[q] as f64 * self.f[y][x][q];
-                    uy += EY9[q] as f64 * self.f[y][x][q];
-                }
-                self.rho[y][x] = rho.max(1e-10);
-                if rho > 1e-10 {
-                    self.u[y][x] = [ux / rho, uy / rho];
-                    let ke = 0.5 * rho * (ux * ux + uy * uy) / (rho * rho);
-                    self.energy[y][x] = rho * self.cs * self.cs + ke;
-                }
-            }
-        }
+        let gamma = self.gamma;
+        ddf::update_macros(&mut self.state(), gamma);
+        self.refresh_energy();
     }
 
     /// Full Euler step.
@@ -314,6 +391,11 @@ impl EulerLbm {
         self.collide();
         self.stream();
         self.update_macros();
+    }
+
+    /// Conserved totals `(mass, momentum, total energy)` over the domain.
+    pub fn conserved_totals(&self) -> (f64, [f64; 2], f64) {
+        ddf::totals(&self.f, &self.g, &self.rho, &self.u)
     }
 
     /// Compute Roe flux at interface between left and right states.
@@ -417,7 +499,16 @@ impl ShockCaptureLbm {
 
 /// Compressible Navier-Stokes via double distribution (density + energy).
 ///
-/// Uses separate f (density/momentum) and g (energy) distributions.
+/// Uses the same double-distribution model as [`CompressibleLbm`] (third
+/// order `f` equilibrium at `cs² = 1/3`, total-energy population `g`,
+/// pressure-correction force `F = −∇(ρT − ρcs²)`) with independent
+/// relaxation frequencies for momentum (`omega_f`) and energy (`omega_g`).
+/// The temperature is recovered as `T = (γ−1)(Σg/ρ − |u|²/2)`.  The domain is
+/// periodic.
+///
+/// Stability note: the adiabatic sound speed `sqrt(γT)` must stay well below
+/// one lattice cell per step, so temperatures should remain of the order of
+/// the reference value `T = cs² = 1/3`.
 #[derive(Debug, Clone)]
 pub struct NsCompressibleLbm {
     /// Grid width.
@@ -426,7 +517,7 @@ pub struct NsCompressibleLbm {
     pub ny: usize,
     /// Density/momentum distribution f.
     pub f: Vec<Vec<Vec<f64>>>,
-    /// Energy distribution g.
+    /// Total-energy distribution g.
     pub g: Vec<Vec<Vec<f64>>>,
     /// Relaxation for f.
     pub omega_f: f64,
@@ -434,34 +525,38 @@ pub struct NsCompressibleLbm {
     pub omega_g: f64,
     /// Density field.
     pub rho: Vec<Vec<f64>>,
-    /// Velocity field.
+    /// Velocity field (Guo-corrected).
     pub u: Vec<Vec<[f64; 2]>>,
-    /// Temperature field.
+    /// Temperature field (`p = ρT`).
     pub temp: Vec<Vec<f64>>,
-    /// Prandtl number.
+    /// Pressure-correction force used in the last collision.
+    pub force: Vec<Vec<[f64; 2]>>,
+    /// Nominal Prandtl number supplied by the caller.  It is stored for
+    /// reference only: the transport coefficients of the scheme are set by
+    /// `omega_f` (viscosity) and `omega_g` (energy diffusion).
     pub pr: f64,
     /// Gamma.
     pub gamma: f64,
 }
 
 impl NsCompressibleLbm {
-    /// Create a new NS compressible LBM.
+    /// Hermite order of the `f` equilibrium.
+    const MA_ORDER: usize = 3;
+
+    /// Create a new NS compressible LBM at rest with `ρ = 1` and the
+    /// reference temperature `T = cs² = 1/3`.
     pub fn new(nx: usize, ny: usize, omega_f: f64, omega_g: f64, pr: f64, gamma: f64) -> Self {
-        let f = vec![vec![vec![0.0f64; 9]; nx]; ny];
-        let g = vec![vec![vec![0.0f64; 9]; nx]; ny];
-        let rho = vec![vec![1.0f64; nx]; ny];
-        let u = vec![vec![[0.0f64; 2]; nx]; ny];
-        let temp = vec![vec![1.0f64; nx]; ny];
         let mut sim = Self {
             nx,
             ny,
-            f,
-            g,
+            f: vec![vec![vec![0.0f64; 9]; nx]; ny],
+            g: vec![vec![vec![0.0f64; 9]; nx]; ny],
             omega_f,
             omega_g,
-            rho,
-            u,
-            temp,
+            rho: vec![vec![1.0f64; nx]; ny],
+            u: vec![vec![[0.0f64; 2]; nx]; ny],
+            temp: vec![vec![LATTICE_CS2; nx]; ny],
+            force: vec![vec![[0.0f64; 2]; nx]; ny],
             pr,
             gamma,
         };
@@ -469,91 +564,51 @@ impl NsCompressibleLbm {
         sim
     }
 
-    /// Initialize distributions.
+    fn params(&self) -> DdfParams {
+        DdfParams {
+            omega_f: self.omega_f,
+            omega_g: self.omega_g,
+            gamma: self.gamma,
+            ma_order: Self::MA_ORDER,
+        }
+    }
+
+    fn state(&mut self) -> DdfState<'_> {
+        DdfState {
+            nx: self.nx,
+            ny: self.ny,
+            f: &mut self.f,
+            g: &mut self.g,
+            rho: &mut self.rho,
+            u: &mut self.u,
+            temp: &mut self.temp,
+            force: &mut self.force,
+        }
+    }
+
+    /// Initialize `f` and `g` at equilibrium from the current `rho`, `u` and
+    /// `temp` fields.
     pub fn initialize(&mut self) {
-        let cs2 = 1.0 / 3.0;
-        for y in 0..self.ny {
-            for x in 0..self.nx {
-                let feq = equilibrium_compressible(1.0, 0.0, 0.0, cs2);
-                self.f[y][x] = feq.to_vec();
-                // Energy distribution: g_eq = (cs2 + 0.5*u^2) * feq + internal energy correction
-                let geq: Vec<f64> = feq.iter().map(|&fq| fq * 1.5 * cs2).collect();
-                self.g[y][x] = geq;
-            }
-        }
+        let params = self.params();
+        ddf::initialize(&mut self.state(), params);
     }
 
-    /// Collision step for both f and g.
+    /// Collision step for both f (Guo-forced) and g.
     pub fn collide(&mut self) {
-        let cs2 = 1.0 / 3.0;
-        for y in 0..self.ny {
-            for x in 0..self.nx {
-                let rho = self.rho[y][x];
-                let [ux, uy] = self.u[y][x];
-                let t = self.temp[y][x];
-                let feq = equilibrium_compressible(rho, ux, uy, cs2);
-                let e_tot = 0.5 * (ux * ux + uy * uy) + t * cs2 / (self.gamma - 1.0);
-                let geq: Vec<f64> = feq
-                    .iter()
-                    .enumerate()
-                    .map(|(q, &fq)| {
-                        let eu = EX9[q] as f64 * ux + EY9[q] as f64 * uy;
-                        fq * (e_tot + eu)
-                    })
-                    .collect();
-                for q in 0..9 {
-                    self.f[y][x][q] =
-                        self.f[y][x][q] * (1.0 - self.omega_f) + self.omega_f * feq[q];
-                    self.g[y][x][q] =
-                        self.g[y][x][q] * (1.0 - self.omega_g) + self.omega_g * geq[q];
-                }
-            }
-        }
+        let params = self.params();
+        ddf::collide(&mut self.state(), params);
     }
 
-    /// Streaming step.
+    /// Periodic streaming step.
     pub fn stream(&mut self) {
-        let nx = self.nx;
-        let ny = self.ny;
-        let mut f_new = vec![vec![vec![0.0f64; 9]; nx]; ny];
-        let mut g_new = vec![vec![vec![0.0f64; 9]; nx]; ny];
-        for y in 0..ny {
-            for x in 0..nx {
-                for q in 0..9 {
-                    let xn = (x as i32 + EX9[q]).rem_euclid(nx as i32) as usize;
-                    let yn = (y as i32 + EY9[q]).rem_euclid(ny as i32) as usize;
-                    f_new[yn][xn][q] = self.f[y][x][q];
-                    g_new[yn][xn][q] = self.g[y][x][q];
-                }
-            }
-        }
-        self.f = f_new;
-        self.g = g_new;
+        ddf::stream_periodic(&mut self.f, self.nx, self.ny);
+        ddf::stream_periodic(&mut self.g, self.nx, self.ny);
     }
 
-    /// Update macroscopic variables.
+    /// Update `ρ`, `u`, `T` and the pressure-correction force.
     pub fn update_macros(&mut self) {
-        for y in 0..self.ny {
-            for x in 0..self.nx {
-                let mut rho = 0.0;
-                let mut ux = 0.0;
-                let mut uy = 0.0;
-                let mut energy = 0.0;
-                for q in 0..9 {
-                    rho += self.f[y][x][q];
-                    ux += EX9[q] as f64 * self.f[y][x][q];
-                    uy += EY9[q] as f64 * self.f[y][x][q];
-                    energy += self.g[y][x][q];
-                }
-                self.rho[y][x] = rho.max(1e-10);
-                if rho > 1e-10 {
-                    self.u[y][x] = [ux / rho, uy / rho];
-                    let ke = 0.5 * (ux * ux + uy * uy) / rho;
-                    let internal = (energy - ke).max(0.0);
-                    self.temp[y][x] = internal * (self.gamma - 1.0) / rho;
-                }
-            }
-        }
+        let gamma = self.gamma;
+        ddf::update_macros(&mut self.state(), gamma);
     }
 
     /// Full NS compressible step.
@@ -562,11 +617,22 @@ impl NsCompressibleLbm {
         self.stream();
         self.update_macros();
     }
+
+    /// Conserved totals `(mass, momentum, total energy)` over the domain.
+    pub fn conserved_totals(&self) -> (f64, [f64; 2], f64) {
+        ddf::totals(&self.f, &self.g, &self.rho, &self.u)
+    }
 }
 
 /// Mach number correction for extended equilibrium.
 ///
-/// Provides higher-order terms for compressible equilibrium.
+/// `order = 2` gives the standard second-order Hermite D2Q9 equilibrium;
+/// `order >= 3` adds the third-order Hermite terms
+/// `((c·u)³ − 3cs²(c·u)|u|²)/(6cs⁶)`, which on D2Q9 at `cs² = 1/3` restore
+/// the lattice-supported third moments `Σ f_eq c_x c_y² = ρ(cs² u_x +
+/// u_x u_y²)` without changing mass, momentum or the pressure tensor.
+/// `cs` must be the lattice sound speed `sqrt(1/3)` for the D2Q9 weights to be
+/// consistent.
 #[derive(Debug, Clone)]
 pub struct MaCorrection {
     /// Maximum Mach number order (2 or 3).
@@ -587,7 +653,7 @@ impl MaCorrection {
         let mut feq = [0.0f64; 9];
         let usq = ux * ux + uy * uy;
         for q in 0..9 {
-            let eu = EX9[q] as f64 * ux + EY9[q] as f64 * uy;
+            let eu = f64::from(EX9[q]) * ux + f64::from(EY9[q]) * uy;
             let base = 1.0 + eu / cs2 + 0.5 * (eu * eu / (cs2 * cs2) - usq / cs2);
             let correction = if self.order >= 3 {
                 eu * eu * eu / (6.0 * cs2 * cs2 * cs2) - eu * usq / (2.0 * cs2 * cs2)
@@ -756,95 +822,6 @@ impl ShockWave1D {
     }
 }
 
-/// Rayleigh-Taylor instability in compressible regime.
-///
-/// Simulates gravitational instability between dense and light fluids.
-#[derive(Debug, Clone)]
-pub struct RayleighTaylorLbm {
-    /// Grid width.
-    pub nx: usize,
-    /// Grid height.
-    pub ny: usize,
-    /// Density field (two-fluid mixture).
-    pub rho: Vec<Vec<f64>>,
-    /// Phase field (0 = light, 1 = heavy).
-    pub phase: Vec<Vec<f64>>,
-    /// Velocity field.
-    pub u: Vec<Vec<[f64; 2]>>,
-    /// Atwood number At = (rho2-rho1)/(rho2+rho1).
-    pub atwood: f64,
-    /// Gravity.
-    pub gravity: f64,
-    /// Time.
-    pub time: f64,
-    /// Time step.
-    pub dt: f64,
-}
-
-impl RayleighTaylorLbm {
-    /// Create a new Rayleigh-Taylor simulation.
-    pub fn new(nx: usize, ny: usize, atwood: f64, gravity: f64, dt: f64) -> Self {
-        let rho_heavy = 1.0 + atwood;
-        let rho_light = 1.0 - atwood;
-        let mut rho = vec![vec![0.0f64; nx]; ny];
-        let mut phase = vec![vec![0.0f64; nx]; ny];
-        for y in 0..ny {
-            for x in 0..nx {
-                let perturbation = 0.05 * (2.0 * std::f64::consts::PI * x as f64 / nx as f64).cos();
-                let interface = ny as f64 / 2.0 + perturbation * ny as f64 * 0.1;
-                if (y as f64) < interface {
-                    rho[y][x] = rho_heavy;
-                    phase[y][x] = 1.0;
-                } else {
-                    rho[y][x] = rho_light;
-                    phase[y][x] = 0.0;
-                }
-            }
-        }
-        let u = vec![vec![[0.0f64; 2]; nx]; ny];
-        Self {
-            nx,
-            ny,
-            rho,
-            phase,
-            u,
-            atwood,
-            gravity,
-            time: 0.0,
-            dt,
-        }
-    }
-
-    /// Compute growth rate of RT instability.
-    pub fn growth_rate(&self, k: f64) -> f64 {
-        // gamma = sqrt(At * g * k)
-        (self.atwood * self.gravity * k).sqrt()
-    }
-
-    /// Compute bubble rise velocity (scaled).
-    pub fn bubble_velocity(&self) -> f64 {
-        // V_b = sqrt(At*g*L/(1+At)) where L = domain height
-        let l = self.ny as f64;
-        (self.atwood * self.gravity * l / (1.0 + self.atwood)).sqrt()
-    }
-
-    /// Advance one step (simple density diffusion model).
-    pub fn step(&mut self) {
-        let dt = self.dt;
-        let g = self.gravity;
-        for y in 1..self.ny - 1 {
-            for x in 0..self.nx {
-                let rho_below = self.rho[y - 1][x];
-                let rho_above = self.rho[y + 1][x];
-                // Buoyancy: dense fluid sinks
-                let f_buoy = (rho_below - rho_above) * g * 0.5;
-                self.u[y][x][1] += f_buoy * dt / self.rho[y][x];
-            }
-        }
-        self.time += dt;
-    }
-}
-
 /// Supersonic inlet boundary condition.
 ///
 /// Specifies inflow Mach number, angle of attack, density, and pressure.
@@ -884,13 +861,20 @@ impl SupersonicInlet {
         [u_mag * self.angle.cos(), u_mag * self.angle.sin()]
     }
 
-    /// Apply inlet BC to distribution functions at column x=0.
+    /// Apply inlet BC to the D2Q9 density/momentum populations at column x=0.
+    ///
+    /// The populations are set to the third-order equilibrium at the lattice
+    /// sound speed `cs² = 1/3` (the only value consistent with the D2Q9
+    /// weights), so they carry exactly `ρ_in` and `ρ_in u_in`.  The inflow
+    /// pressure/temperature is imposed through the energy population of the
+    /// double-distribution solvers, not through `f`.
     pub fn apply(&self, f: &mut [Vec<Vec<f64>>], ny: usize) {
-        let cs2 = self.cs * self.cs;
         let [ux, uy] = self.velocity();
-        let feq = equilibrium_compressible(self.rho_in, ux, uy, cs2);
+        let feq = equilibrium_compressible(self.rho_in, ux, uy, LATTICE_CS2);
         for row in f.iter_mut().take(ny) {
-            row[0] = feq.to_vec();
+            if let Some(cell) = row.first_mut() {
+                *cell = feq.to_vec();
+            }
         }
     }
 
@@ -1000,128 +984,6 @@ impl CompressibleStats {
     }
 }
 
-/// Detonation wave LBM simulation.
-///
-/// Models detonation wave with Chapman-Jouguet conditions and ZND structure.
-#[derive(Debug, Clone)]
-pub struct DetonationLbm {
-    /// Number of cells.
-    pub n: usize,
-    /// Density profile.
-    pub rho: Vec<f64>,
-    /// Velocity profile.
-    pub vel: Vec<f64>,
-    /// Pressure profile.
-    pub pressure: Vec<f64>,
-    /// Reaction progress variable (0=unburnt, 1=burnt).
-    pub progress: Vec<f64>,
-    /// Heat release Q.
-    pub heat_release: f64,
-    /// Activation energy Ea.
-    pub activation_energy: f64,
-    /// Pre-exponential factor A.
-    pub reaction_rate_a: f64,
-    /// Gamma.
-    pub gamma: f64,
-    /// CJ detonation velocity.
-    pub dcj: f64,
-    /// Grid spacing.
-    pub dx: f64,
-    /// Time step.
-    pub dt: f64,
-}
-
-impl DetonationLbm {
-    /// Create a new detonation simulation.
-    pub fn new(
-        n: usize,
-        dx: f64,
-        dt: f64,
-        gamma: f64,
-        heat_release: f64,
-        activation_energy: f64,
-        reaction_rate_a: f64,
-    ) -> Self {
-        let rho = vec![1.0f64; n];
-        let vel = vec![0.0f64; n];
-        let pressure = vec![1.0f64; n];
-        let mut progress = vec![0.0f64; n];
-        // Initiate detonation at left boundary
-        progress[0] = 1.0;
-        progress[1] = 0.8;
-        let dcj = Self::cj_velocity(gamma, heat_release);
-        Self {
-            n,
-            rho,
-            vel,
-            pressure,
-            progress,
-            heat_release,
-            activation_energy,
-            reaction_rate_a,
-            gamma,
-            dcj,
-            dx,
-            dt,
-        }
-    }
-
-    /// Chapman-Jouguet detonation velocity.
-    pub fn cj_velocity(gamma: f64, q: f64) -> f64 {
-        // DCJ = sqrt(2*(gamma^2-1)*Q) approximately
-        (2.0 * (gamma * gamma - 1.0) * q).sqrt()
-    }
-
-    /// CJ pressure ratio.
-    pub fn cj_pressure_ratio(gamma: f64) -> f64 {
-        // p2/p1 = (2*gamma*M_cj^2 - (gamma-1)) / (gamma+1)
-        (2.0 * gamma - (gamma - 1.0)) / (gamma + 1.0)
-    }
-
-    /// Arrhenius reaction rate.
-    pub fn reaction_rate(&self, temp: f64, progress: f64) -> f64 {
-        if progress >= 1.0 {
-            return 0.0;
-        }
-        self.reaction_rate_a * (-self.activation_energy / temp.max(0.01)).exp() * (1.0 - progress)
-    }
-
-    /// Advance detonation one time step.
-    pub fn step(&mut self) {
-        let dt = self.dt;
-        let dx = self.dx;
-        let g = self.gamma;
-        let q = self.heat_release;
-
-        // Update reaction progress
-        for i in 0..self.n {
-            let temp = self.pressure[i] / (self.rho[i] + 1e-10) * g;
-            let rate = self.reaction_rate(temp, self.progress[i]);
-            self.progress[i] = (self.progress[i] + rate * dt).min(1.0);
-        }
-
-        // Simple advection of detonation front
-        let vel_det = self.dcj;
-        for i in 1..self.n {
-            let rho_l = self.rho[i - 1];
-            let p_l = self.pressure[i - 1];
-            let flux = rho_l * vel_det;
-            let heat = q * (self.progress[i - 1] - self.progress[i]).max(0.0);
-            self.rho[i] = (self.rho[i] - dt / dx * (flux - rho_l * vel_det)).max(0.1);
-            self.pressure[i] = (self.pressure[i] + heat * (g - 1.0) * dt).max(0.0);
-            let _ = p_l;
-        }
-    }
-
-    /// Induction zone length estimate.
-    pub fn induction_length(&self) -> f64 {
-        let dcj = self.dcj;
-        let ea = self.activation_energy;
-        let a = self.reaction_rate_a;
-        dcj / (a * (-ea).exp())
-    }
-}
-
 /// Roe flux splitting for Euler equations.
 ///
 /// Returns approximate Riemann flux \[F_rho, F_rhou, F_rhov, F_E\].
@@ -1227,13 +1089,13 @@ mod tests {
 
     #[test]
     fn test_euler_lbm_creation() {
-        let sim = EulerLbm::new(8, 8, 1.0 / 3.0_f64.sqrt());
+        let sim = EulerLbm::new(8, 8, EulerLbm::DEFAULT_OMEGA, 1.4);
         assert_eq!(sim.nx, 8);
     }
 
     #[test]
     fn test_euler_lbm_step() {
-        let mut sim = EulerLbm::new(8, 8, 1.0 / 3.0_f64.sqrt());
+        let mut sim = EulerLbm::new(8, 8, EulerLbm::DEFAULT_OMEGA, 1.4);
         sim.step();
         for y in 0..sim.ny {
             for x in 0..sim.nx {
@@ -1302,13 +1164,13 @@ mod tests {
 
     #[test]
     fn test_rayleigh_taylor_creation() {
-        let rt = RayleighTaylorLbm::new(16, 32, 0.1, 9.81, 0.001);
+        let rt = RayleighTaylorLbm::new(16, 32, 0.1, 1e-4).expect("valid parameters");
         assert_eq!(rt.nx, 16);
     }
 
     #[test]
     fn test_rayleigh_taylor_growth_rate() {
-        let rt = RayleighTaylorLbm::new(16, 32, 0.1, 9.81, 0.001);
+        let rt = RayleighTaylorLbm::new(16, 32, 0.1, 1e-4).expect("valid parameters");
         let gr = rt.growth_rate(1.0);
         assert!(gr > 0.0);
     }
@@ -1375,7 +1237,7 @@ mod tests {
 
     #[test]
     fn test_rt_bubble_velocity() {
-        let rt = RayleighTaylorLbm::new(16, 32, 0.1, 9.81, 0.001);
+        let rt = RayleighTaylorLbm::new(16, 32, 0.1, 1e-4).expect("valid parameters");
         let vb = rt.bubble_velocity();
         assert!(vb > 0.0);
     }

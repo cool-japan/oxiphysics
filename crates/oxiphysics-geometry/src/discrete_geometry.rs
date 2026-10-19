@@ -8,18 +8,73 @@
 //! Crane and colleagues:
 //!
 //! - [`DiscreteMesh`]: half-edge adjacency, vertex normals.
+//! - Mixed Voronoi vertex areas (Meyer et al. 2003).
 //! - Cotangent-weight Laplace-Beltrami operator.
 //! - Angle-defect Gaussian curvature.
 //! - Discrete mean curvature via the cotangent formula.
 //! - Discrete geodesics: Dijkstra edge graph + Heat Method (Crane 2013).
 //! - Parallel transport and holonomy on meshes.
 //! - Discrete minimal surfaces (mean-curvature flow).
-//! - Discrete vector fields and Hodge decomposition on meshes.
+//! - Discrete vector fields and the Helmholtz-Hodge decomposition on meshes
+//!   ([`hodge_decompose`], [`hodge_decompose_faces`]).
+//! - Discrete conformal metrics and Ricci flow ([`ricci_flow`], [`ricci_flow_step`],
+//!   [`ricci_curvature`]).
+//!
+//! # Discrete conformal metrics and Ricci flow
+//!
+//! The metric of a triangulated surface is its set of edge lengths.  A *discrete
+//! conformal* deformation (Luo 2004; Gu, Luo, Sun & Wu 2018) scales the lengths of
+//! the mesh with one factor per vertex `u_i`,
+//!
+//! ```text
+//! l_ij = |p_i - p_j| exp((u_i + u_j) / 2),
+//! ```
+//!
+//! so `u = 0` is the metric of the mesh itself.  The curvature of the deformed metric
+//! is the angle defect of its triangles (the corner angles follow from the law of
+//! cosines),
+//!
+//! ```text
+//! K_i = 2 pi - sum of the corner angles at i      (interior vertex),
+//! K_i =   pi - sum of the corner angles at i      (boundary vertex),
+//! ```
+//!
+//! the *integrated* curvature: a sum over all vertices gives `2 pi chi` by the
+//! Gauss-Bonnet theorem, whatever `u` is.  The Ricci flow `du_i/dt = Kbar_i - K_i`
+//! drives the curvature to a prescribed target `Kbar` (for example the uniform
+//! `2 pi chi / n` of a closed surface); its steady states are the solutions of
+//! `K(u) = Kbar`.  The Jacobian of the curvature is the cotangent Laplacian of the
+//! deformed metric, `dK_i/du_j = -(cot a + cot b) / 2` for neighbours `i`, `j` and
+//! zero row sums.  It is positive semi-definite, so the energy whose gradient is
+//! `K - Kbar` is locally convex, and [`ricci_flow`] solves the steady-state
+//! equations with a damped Newton iteration on exactly that matrix.
+//!
+//! A deformed triangle can violate the triangle inequality; its angles are then
+//! taken as `pi` opposite the longest side and zero elsewhere (the continuous
+//! extension of Luo), so the curvature stays defined and the angles of every
+//! triangle still add up to `pi`.
 
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::f64::consts::PI;
 
 use crate::heat_method;
+
+#[cfg(test)]
+mod curvature_tests;
+mod hodge;
+mod ricci;
+mod support;
+#[cfg(test)]
+mod test_support;
+
+pub use hodge::{HodgeDecomposition, hodge_decompose, hodge_decompose_faces};
+pub use ricci::{
+    RicciFlowSummary, conformal_edge_lengths, ricci_curvature, ricci_flow, ricci_flow_step,
+};
+
+/// Smallest vertex area returned by the Voronoi-area functions, so that the areas
+/// can always be used as divisors.
+const MIN_VORONOI_AREA: f64 = 1e-15;
 
 // ---------------------------------------------------------------------------
 // Vector math helpers (no nalgebra)
@@ -101,6 +156,17 @@ pub fn cotan_at(p0: [f64; 3], p_opp: [f64; 3], p1: [f64; 3]) -> f64 {
     let c = dot3(u, v);
     let s = len3(cross3(u, v));
     if s.abs() < 1e-14 { 0.0 } else { c / s }
+}
+
+/// Interior angle of a triangle at `apex` between the sides towards `a` and `b`,
+/// in `[0, pi]`.  `atan2` of the cross and dot products stays accurate for tiny and
+/// for nearly straight angles, where an `acos` of the normalised dot product loses
+/// all digits.
+#[inline]
+fn corner_angle(apex: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
+    let u = sub3(a, apex);
+    let v = sub3(b, apex);
+    len3(cross3(u, v)).atan2(dot3(u, v))
 }
 
 // ---------------------------------------------------------------------------
@@ -186,40 +252,85 @@ impl DiscreteMesh {
         normalize3(cross3(sub3(p1, p0), sub3(p2, p0)))
     }
 
-    /// Voronoi area of vertex `v` (mixed Voronoi / barycentric area).
+    /// Mixed Voronoi area of every vertex (Meyer, Desbrun, Schroeder & Barr 2003),
+    /// computed in a single pass over the triangles.
     ///
-    /// Uses the formulation of Meyer et al. (2003).
+    /// Every triangle distributes its area over its three corners:
+    ///
+    /// * a triangle without an obtuse angle gives corner `i` its Voronoi region,
+    ///   `1/8 (|p_i - p_j|^2 cot(theta_k) + |p_i - p_k|^2 cot(theta_j))`, where
+    ///   `theta_k` is the angle at the vertex *opposite* the edge `(i, j)`;
+    /// * a triangle with an obtuse angle gives half of its area to the obtuse
+    ///   corner and a quarter to each of the other two.
+    ///
+    /// The three corner areas of a triangle always add up to its area, so the
+    /// vertex areas of a mesh add up to its surface area.  Each value is at least
+    /// `1e-15` (a vertex in no triangle carries no area), which keeps it usable as
+    /// a divisor.  Triangles must reference existing vertices.
+    pub fn mixed_voronoi_areas(&self) -> Vec<f64> {
+        let mut area = vec![0.0_f64; self.num_vertices()];
+        for t in &self.triangles {
+            let corner = self.mixed_corner_areas(t);
+            for (&v, a) in t.iter().zip(corner.iter()) {
+                area[v] += a;
+            }
+        }
+        for a in &mut area {
+            *a = a.max(MIN_VORONOI_AREA);
+        }
+        area
+    }
+
+    /// Mixed Voronoi area of vertex `v` (Meyer et al. 2003); it equals
+    /// `mixed_voronoi_areas()[v]` and is at least `1e-15`.
+    ///
+    /// This scans every triangle; use [`mixed_voronoi_areas`](Self::mixed_voronoi_areas)
+    /// when the areas of many vertices are needed.
     pub fn voronoi_area(&self, v: usize) -> f64 {
         let mut area = 0.0_f64;
         for t in &self.triangles {
             if !t.contains(&v) {
                 continue;
             }
-            // Identify local indices
-            let (i, j, k) = if t[0] == v {
-                (0, 1, 2)
-            } else if t[1] == v {
-                (1, 2, 0)
-            } else {
-                (2, 0, 1)
-            };
-            let pi = self.vertices[t[i]];
-            let pj = self.vertices[t[j]];
-            let pk = self.vertices[t[k]];
-            // 1/8 * (cot_j * |e_k|^2 + cot_k * |e_j|^2)
-            let cot_j = cotan_at(pi, pj, pk);
-            let cot_k = cotan_at(pi, pk, pj);
-            let ek_sq = {
-                let d = sub3(pi, pj);
-                dot3(d, d)
-            };
-            let ej_sq = {
-                let d = sub3(pi, pk);
-                dot3(d, d)
-            };
-            area += 0.125 * (cot_j * ek_sq + cot_k * ej_sq);
+            let corner = self.mixed_corner_areas(t);
+            for (&w, a) in t.iter().zip(corner.iter()) {
+                if w == v {
+                    area += a;
+                }
+            }
         }
-        area.max(1e-15)
+        area.max(MIN_VORONOI_AREA)
+    }
+
+    /// The part of the area of triangle `t` that belongs to each of its corners
+    /// (see [`mixed_voronoi_areas`](Self::mixed_voronoi_areas)).
+    fn mixed_corner_areas(&self, t: &[usize; 3]) -> [f64; 3] {
+        let p = [
+            self.vertices[t[0]],
+            self.vertices[t[1]],
+            self.vertices[t[2]],
+        ];
+        // Edges leaving corner c towards corner c + 1 and towards corner c + 2.
+        let to_next = [sub3(p[1], p[0]), sub3(p[2], p[1]), sub3(p[0], p[2])];
+        let to_prev = [sub3(p[2], p[0]), sub3(p[0], p[1]), sub3(p[1], p[2])];
+        let twice_area = len3(cross3(to_next[0], to_prev[0]));
+        let corner_dot: [f64; 3] = std::array::from_fn(|c| dot3(to_next[c], to_prev[c]));
+        if let Some(obtuse) = corner_dot.iter().position(|&d| d < 0.0) {
+            let area = 0.5 * twice_area;
+            return std::array::from_fn(|c| if c == obtuse { 0.5 * area } else { 0.25 * area });
+        }
+        if twice_area <= 0.0 {
+            return [0.0; 3];
+        }
+        let cot: [f64; 3] = std::array::from_fn(|c| corner_dot[c] / twice_area);
+        // The edge corner c -> c + 1 is opposite corner c + 2, the edge c -> c + 2 is
+        // opposite corner c + 1; each squared length pairs with the cotangent of the
+        // angle at the opposite corner.
+        std::array::from_fn(|c| {
+            0.125
+                * (dot3(to_next[c], to_next[c]) * cot[(c + 2) % 3]
+                    + dot3(to_prev[c], to_prev[c]) * cot[(c + 1) % 3])
+        })
     }
 
     /// Build the sparse cotangent-weight Laplace-Beltrami matrix as a list of
@@ -229,8 +340,9 @@ impl DiscreteMesh {
     /// adjacent vertices `i`, `j`, and `L[i][i] = -sum_j L[i][j]`.
     pub fn cotan_laplacian(&self) -> Vec<(usize, usize, f64)> {
         let n = self.num_vertices();
-        // accumulate off-diagonal cotangent weights
-        let mut offdiag: HashMap<(usize, usize), f64> = HashMap::new();
+        // accumulate off-diagonal cotangent weights (an ordered map keeps the
+        // summation order of the row sums, hence the result, deterministic)
+        let mut offdiag: BTreeMap<(usize, usize), f64> = BTreeMap::new();
         for t in &self.triangles {
             let [i, j, k] = *t;
             let pi = self.vertices[i];
@@ -274,57 +386,51 @@ impl DiscreteMesh {
 
     /// Discrete Gaussian curvature (angle defect) at each vertex.
     ///
-    /// `K[v] = (2*pi - sum_angles) / A_v` where `A_v` is the Voronoi area.
+    /// `K[v] = (2*pi - sum_angles) / A_v` where `A_v` is the mixed Voronoi area
+    /// ([`mixed_voronoi_areas`](Self::mixed_voronoi_areas)).  This is the formula for
+    /// an interior vertex; on the boundary of an open mesh it measures the angle
+    /// deficit against a full turn and is not a curvature.
     pub fn gaussian_curvature(&self) -> Vec<f64> {
-        let n = self.num_vertices();
-        let mut angle_sum = vec![0.0f64; n];
+        let mut angle_sum = vec![0.0_f64; self.num_vertices()];
         for t in &self.triangles {
-            let [i, j, k] = *t;
-            let pi = self.vertices[i];
-            let pj = self.vertices[j];
-            let pk = self.vertices[k];
-            // Angle at i
-            let u = normalize3(sub3(pj, pi));
-            let v = normalize3(sub3(pk, pi));
-            let ang_i = dot3(u, v).clamp(-1.0, 1.0).acos();
-            // Angle at j
-            let u2 = normalize3(sub3(pi, pj));
-            let v2 = normalize3(sub3(pk, pj));
-            let ang_j = dot3(u2, v2).clamp(-1.0, 1.0).acos();
-            // Angle at k
-            let u3 = normalize3(sub3(pi, pk));
-            let v3 = normalize3(sub3(pj, pk));
-            let ang_k = dot3(u3, v3).clamp(-1.0, 1.0).acos();
-            angle_sum[i] += ang_i;
-            angle_sum[j] += ang_j;
-            angle_sum[k] += ang_k;
+            let p = [
+                self.vertices[t[0]],
+                self.vertices[t[1]],
+                self.vertices[t[2]],
+            ];
+            for (c, &v) in t.iter().enumerate() {
+                angle_sum[v] += corner_angle(p[c], p[(c + 1) % 3], p[(c + 2) % 3]);
+            }
         }
-        (0..n)
-            .map(|v| {
-                let a = self.voronoi_area(v);
-                (2.0 * PI - angle_sum[v]) / a
-            })
+        let areas = self.mixed_voronoi_areas();
+        angle_sum
+            .iter()
+            .zip(areas.iter())
+            .map(|(sum, area)| (2.0 * PI - sum) / area)
             .collect()
     }
 
     /// Discrete mean curvature at each vertex using the cotangent formula.
     ///
     /// Returns the mean curvature `H[v]` (scalar) at each vertex.
-    /// `H[v] = |Lx[v]| / (2 * A_v)` where `Lx` is the Laplacian of position.
+    /// `H[v] = |Lx[v]| / (2 * A_v)` where `Lx` is the Laplacian of position and
+    /// `A_v` the mixed Voronoi area ([`mixed_voronoi_areas`](Self::mixed_voronoi_areas)).
     pub fn mean_curvature(&self) -> Vec<f64> {
-        let n = self.num_vertices();
-        let fx: Vec<f64> = self.vertices.iter().map(|p| p[0]).collect();
-        let fy: Vec<f64> = self.vertices.iter().map(|p| p[1]).collect();
-        let fz: Vec<f64> = self.vertices.iter().map(|p| p[2]).collect();
-        let lx = self.apply_laplacian(&fx);
-        let ly = self.apply_laplacian(&fy);
-        let lz = self.apply_laplacian(&fz);
-        (0..n)
-            .map(|v| {
-                let a = self.voronoi_area(v);
-                let hv = [lx[v], ly[v], lz[v]];
-                len3(hv) / (2.0 * a)
-            })
+        // The Laplacian of the three coordinate functions from one matrix assembly.
+        let mut laplacian_of_position = vec![[0.0_f64; 3]; self.num_vertices()];
+        for (i, j, w) in self.cotan_laplacian() {
+            for (acc, coordinate) in laplacian_of_position[i]
+                .iter_mut()
+                .zip(self.vertices[j].iter())
+            {
+                *acc += w * coordinate;
+            }
+        }
+        let areas = self.mixed_voronoi_areas();
+        laplacian_of_position
+            .iter()
+            .zip(areas.iter())
+            .map(|(l, area)| len3(*l) / (2.0 * area))
             .collect()
     }
 
@@ -779,145 +885,10 @@ impl VertexVectorField {
 // ---------------------------------------------------------------------------
 // Hodge Decomposition
 // ---------------------------------------------------------------------------
-
-/// Result of Hodge decomposition of a vertex vector field `X = grad(f) + curl(g) + harm`.
-///
-/// The decomposition is: X = ∇f + *d(g) + H where H is the harmonic part.
-#[derive(Debug, Clone)]
-pub struct HodgeDecomposition {
-    /// Exact (gradient) component scalar potential, per vertex.
-    pub scalar_potential: Vec<f64>,
-    /// Co-exact (curl) component stream function, per vertex.
-    pub stream_function: Vec<f64>,
-    /// Harmonic residual vector field (per vertex).
-    pub harmonic: Vec<[f64; 3]>,
-}
-
-/// Perform a Hodge decomposition of a vertex vector field.
-///
-/// This computes an approximate decomposition via:
-/// 1. Solve `L f = div(X)` → scalar potential.
-/// 2. Reconstruct gradient component and subtract.
-/// 3. Compute curl of remainder → stream function.
-/// 4. Harmonic part = remainder after subtracting both.
-pub fn hodge_decompose(mesh: &DiscreteMesh, field: &VertexVectorField) -> HodgeDecomposition {
-    let n = mesh.num_vertices();
-    let laplacian = mesh.cotan_laplacian();
-    let div = field.divergence(mesh);
-
-    // Build diagonal of laplacian
-    let mut diag = vec![0.0f64; n];
-    for &(i, j, w) in &laplacian {
-        if i == j {
-            diag[i] = w;
-        }
-    }
-
-    // Gauss-Seidel solve: L f = div
-    let mut f = vec![0.0f64; n];
-    for _ in 0..300 {
-        for vi in 0..n {
-            if diag[vi].abs() < 1e-14 {
-                continue;
-            }
-            let mut s = div[vi];
-            for &(ri, rj, rw) in &laplacian {
-                if ri == vi && rj != vi {
-                    s -= rw * f[rj];
-                }
-            }
-            f[vi] = s / diag[vi];
-        }
-    }
-
-    // Gradient of f per vertex: average of face gradients
-    let mut grad_f = vec![[0.0f64; 3]; n];
-    let mut weight = vec![0.0f64; n];
-    for t in &mesh.triangles {
-        let [i, j, k] = *t;
-        let pi = mesh.vertices[i];
-        let pj = mesh.vertices[j];
-        let pk = mesh.vertices[k];
-        let area = tri_area(pi, pj, pk).max(1e-14);
-        let fn_ = normalize3(cross3(sub3(pj, pi), sub3(pk, pi)));
-        // Face gradient
-        let gi = scale3(cross3(fn_, sub3(pk, pj)), f[i] / (2.0 * area));
-        let gj = scale3(cross3(fn_, sub3(pi, pk)), f[j] / (2.0 * area));
-        let gk = scale3(cross3(fn_, sub3(pj, pi)), f[k] / (2.0 * area));
-        let face_grad = add3(add3(gi, gj), gk);
-        for &vi in &[i, j, k] {
-            grad_f[vi] = add3(grad_f[vi], scale3(face_grad, area));
-            weight[vi] += area;
-        }
-    }
-    for vi in 0..n {
-        if weight[vi] > 1e-14 {
-            grad_f[vi] = scale3(grad_f[vi], 1.0 / weight[vi]);
-        }
-    }
-
-    // Curl-free residual
-    let mut residual: Vec<[f64; 3]> = (0..n)
-        .map(|vi| sub3(field.vectors[vi], grad_f[vi]))
-        .collect();
-
-    // Stream function g from curl of residual (Gauss-Seidel solve L g = curl)
-    let residual_field = VertexVectorField {
-        num_vertices: n,
-        vectors: residual.clone(),
-    };
-    let curl_on_faces = residual_field.curl_on_faces(mesh);
-
-    // Average curl to vertices as div proxy
-    let mut curl_div = vec![0.0f64; n];
-    let mut curl_wt = vec![0.0f64; n];
-    for (fi, t) in mesh.triangles.iter().enumerate() {
-        let area = tri_area(
-            mesh.vertices[t[0]],
-            mesh.vertices[t[1]],
-            mesh.vertices[t[2]],
-        )
-        .max(1e-14);
-        for &vi in t {
-            curl_div[vi] += curl_on_faces[fi] * area;
-            curl_wt[vi] += area;
-        }
-    }
-    for vi in 0..n {
-        if curl_wt[vi] > 1e-14 {
-            curl_div[vi] /= curl_wt[vi];
-        }
-    }
-
-    let mut g = vec![0.0f64; n];
-    for _ in 0..300 {
-        for vi in 0..n {
-            if diag[vi].abs() < 1e-14 {
-                continue;
-            }
-            let mut s = curl_div[vi];
-            for &(ri, rj, rw) in &laplacian {
-                if ri == vi && rj != vi {
-                    s -= rw * g[rj];
-                }
-            }
-            g[vi] = s / diag[vi];
-        }
-    }
-
-    // Subtract co-exact part from residual to get harmonic
-    for vi in 0..n {
-        // Approximate co-exact gradient
-        let co = scale3(mesh.vertex_normal(vi), g[vi]);
-        residual[vi] = sub3(residual[vi], co);
-    }
-
-    HodgeDecomposition {
-        scalar_potential: f,
-        stream_function: g,
-        harmonic: residual,
-    }
-}
+//
+// The decomposition of tangent vector fields into exact, co-exact and harmonic
+// parts lives in the `hodge` submodule; see `hodge_decompose` and
+// `hodge_decompose_faces`.
 
 // ---------------------------------------------------------------------------
 // Discrete Minimal Surfaces (Mean Curvature Flow)
@@ -1250,20 +1221,11 @@ pub fn vertex_curvature_tensor(mesh: &DiscreteMesh, v: usize) -> [f64; 9] {
 }
 
 // ---------------------------------------------------------------------------
-// Discrete Ricci Flow (simplified)
+// Discrete Ricci Flow
 // ---------------------------------------------------------------------------
-
-/// Perform one step of discrete Ricci flow on vertex conformal factors.
-///
-/// Updates the conformal factor `u[v]` proportional to `K[v] - K_target`,
-/// where `K` is Gaussian curvature and `K_target` is the target curvature.
-pub fn ricci_flow_step(mesh: &DiscreteMesh, u: &mut [f64], k_target: &[f64], step_size: f64) {
-    let k_current = mesh.gaussian_curvature();
-    for (i, ui) in u.iter_mut().enumerate() {
-        let kt = if i < k_target.len() { k_target[i] } else { 0.0 };
-        *ui += step_size * (k_current[i] - kt);
-    }
-}
+//
+// The conformal deformation of the metric of a mesh lives in the `ricci`
+// submodule; see `ricci_flow_step`, `ricci_flow` and `ricci_curvature`.
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1645,6 +1607,33 @@ mod tests {
         assert!(solver.compute(&[]).iter().all(|x| x.is_infinite()));
     }
 
+    #[test]
+    fn test_heat_method_zero_steps_behaves_like_one_step() {
+        let m = mesh_from(crate::test_meshes::icosphere(2));
+        let one = HeatMethodSolver::new(m.clone(), -1.0, 1).compute(&[3]);
+        let zero = HeatMethodSolver::new(m, -1.0, 0).compute(&[3]);
+        assert_eq!(one, zero);
+    }
+
+    #[test]
+    fn test_heat_method_replaces_an_unusable_diffusion_time() {
+        let m = mesh_from(crate::test_meshes::icosphere(2));
+        let reference = HeatMethodSolver::new(m.clone(), -1.0, 1).compute(&[3]);
+        for bad in [0.0, -2.0, f64::NAN, f64::INFINITY] {
+            let mut solver = HeatMethodSolver::new(m.clone(), -1.0, 1);
+            solver.diffusion_time = bad;
+            let d = solver
+                .try_compute(&[3])
+                .expect("the squared mean edge length is used instead");
+            for (v, (a, b)) in d.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() < 1e-9 * (1.0 + b.abs()),
+                    "diffusion_time = {bad}, vertex {v}: {a} vs {b}"
+                );
+            }
+        }
+    }
+
     // --- Euler characteristic ---
 
     #[test]
@@ -1752,24 +1741,6 @@ mod tests {
         for ar in triangle_aspect_ratios(&m) {
             assert!(ar > 0.0);
         }
-    }
-
-    // --- Hodge decomposition ---
-
-    #[test]
-    fn test_hodge_decompose_harmonic_length() {
-        let m = ico();
-        let vf = VertexVectorField::zeros(m.num_vertices());
-        let hd = hodge_decompose(&m, &vf);
-        assert_eq!(hd.harmonic.len(), m.num_vertices());
-    }
-
-    #[test]
-    fn test_hodge_decompose_scalar_potential_length() {
-        let m = ico();
-        let vf = VertexVectorField::zeros(m.num_vertices());
-        let hd = hodge_decompose(&m, &vf);
-        assert_eq!(hd.scalar_potential.len(), m.num_vertices());
     }
 
     // --- Curvature tensor ---

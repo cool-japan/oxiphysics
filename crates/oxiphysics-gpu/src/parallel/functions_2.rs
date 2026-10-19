@@ -795,4 +795,118 @@ mod tests {
         let merged = merge_two_sorted(&a, &b);
         assert_eq!(merged, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
+    /// Sequential exclusive prefix sum used as the reference for the parallel
+    /// scans.
+    fn sequential_exclusive_scan(data: &[f64]) -> Vec<f64> {
+        let mut acc = 0.0;
+        data.iter()
+            .map(|&v| {
+                let before = acc;
+                acc += v;
+                before
+            })
+            .collect()
+    }
+    /// Sequential inclusive prefix sum.
+    fn sequential_inclusive_scan(data: &[f64]) -> Vec<f64> {
+        let mut acc = 0.0;
+        data.iter()
+            .map(|&v| {
+                acc += v;
+                acc
+            })
+            .collect()
+    }
+    #[test]
+    fn test_parallel_scans_known_values() {
+        let data = [1.0, 2.0, 3.0, 4.0];
+        assert_eq!(parallel_exclusive_scan(&data), vec![0.0, 1.0, 3.0, 6.0]);
+        assert_eq!(parallel_inclusive_scan(&data), vec![1.0, 3.0, 6.0, 10.0]);
+        assert!(parallel_exclusive_scan(&[]).is_empty());
+        assert!(parallel_inclusive_scan(&[]).is_empty());
+        assert_eq!(parallel_exclusive_scan(&[7.5]), vec![0.0]);
+        assert_eq!(parallel_inclusive_scan(&[7.5]), vec![7.5]);
+    }
+    /// Small integers keep every partial sum exactly representable, so the
+    /// chunked scans must agree bit for bit with the sequential scan whatever
+    /// the chunking — including lengths around the 64-element chunk minimum.
+    #[test]
+    fn test_parallel_scans_match_sequential_scan_exactly() {
+        for &n in &[
+            0usize, 1, 2, 63, 64, 65, 127, 128, 129, 1000, 10_000, 10_001,
+        ] {
+            let data: Vec<f64> = (0..n).map(|i| ((i * 7 + 3) % 11) as f64).collect();
+            assert_eq!(
+                parallel_exclusive_scan(&data),
+                sequential_exclusive_scan(&data),
+                "exclusive scan, n = {n}"
+            );
+            assert_eq!(
+                parallel_inclusive_scan(&data),
+                sequential_inclusive_scan(&data),
+                "inclusive scan, n = {n}"
+            );
+        }
+    }
+    /// Run on an explicit 4-thread pool so `n = 10_000` is split into four
+    /// 2500-element chunks even on a single-core host: this exercises the
+    /// chunk-offset propagation across chunk boundaries.
+    #[test]
+    fn test_parallel_scans_multi_chunk_on_four_thread_pool() {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("rayon thread pool");
+        let n = 10_000;
+        let data: Vec<f64> = (0..n).map(|i| ((i * 13 + 5) % 17) as f64 - 8.0).collect();
+        let (exclusive, inclusive) = pool.install(|| {
+            assert_eq!(rayon::current_num_threads(), 4);
+            (
+                parallel_exclusive_scan(&data),
+                parallel_inclusive_scan(&data),
+            )
+        });
+        assert_eq!(exclusive, sequential_exclusive_scan(&data));
+        assert_eq!(inclusive, sequential_inclusive_scan(&data));
+        // Values straddling the first chunk boundary (index 2500).
+        assert_eq!(inclusive[2499] + data[2500], inclusive[2500]);
+        assert_eq!(exclusive[2500], inclusive[2499]);
+    }
+    /// Non-integer data: chunking reorders the additions, so the scans agree
+    /// with the sequential scan up to rounding.
+    #[test]
+    fn test_parallel_scans_match_sequential_scan_within_rounding() {
+        let data: Vec<f64> = (0..10_000).map(|i| (i as f64 * 0.37).sin() + 0.1).collect();
+        let exclusive = parallel_exclusive_scan(&data);
+        let inclusive = parallel_inclusive_scan(&data);
+        let want_exclusive = sequential_exclusive_scan(&data);
+        let want_inclusive = sequential_inclusive_scan(&data);
+        for i in 0..data.len() {
+            assert!(
+                (exclusive[i] - want_exclusive[i]).abs() <= 1e-9 * (1.0 + want_exclusive[i].abs()),
+                "exclusive[{i}] = {} vs {}",
+                exclusive[i],
+                want_exclusive[i]
+            );
+            assert!(
+                (inclusive[i] - want_inclusive[i]).abs() <= 1e-9 * (1.0 + want_inclusive[i].abs()),
+                "inclusive[{i}] = {} vs {}",
+                inclusive[i],
+                want_inclusive[i]
+            );
+        }
+    }
+    /// `inclusive[i] = exclusive[i] + data[i]` and the last inclusive value is
+    /// the total sum.
+    #[test]
+    fn test_parallel_inclusive_scan_is_exclusive_plus_data() {
+        let data: Vec<f64> = (0..5000).map(|i| ((i * 3) % 10) as f64).collect();
+        let exclusive = parallel_exclusive_scan(&data);
+        let inclusive = parallel_inclusive_scan(&data);
+        for i in 0..data.len() {
+            assert_eq!(inclusive[i], exclusive[i] + data[i], "index {i}");
+        }
+        assert_eq!(inclusive[data.len() - 1], data.iter().sum::<f64>());
+        assert_eq!(exclusive[0], 0.0);
+    }
 }

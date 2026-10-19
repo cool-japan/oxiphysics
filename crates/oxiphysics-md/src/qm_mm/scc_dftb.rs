@@ -9,23 +9,32 @@
 //! formula for the γ_AB coulomb kernel.  Repulsion is handled via simple
 //! exponential pair potentials tuned to the mio-0-1 parameter set.
 //!
+//! ## Electrostatic embedding
+//!
+//! External point charges Q_J (from [`QmRegion::external_charges`]) create the
+//! potential φ_A = Σ_J Q_J / R_AJ at every nucleus.  Following the standard
+//! QM/MM-SCC-DFTB coupling (Cui et al. 2001) the energy gains
+//! E_ext = Σ_A (q⁰_A − q_A) φ_A and the Hamiltonian the Mulliken-form shift
+//! −½ S_μν (φ_A + φ_B).
+//!
 //! ## Reference
 //! - Elstner, M. et al. (1998). *Phys. Rev. B* 58, 7260-7268.
+//! - Cui, Q. et al. (2001). *J. Phys. Chem. B* 105, 569-585.
 //! - Mataga, N., Nishimoto, K. (1957). *Z. Phys. Chem.* 13, 140.
 
 use super::QmRegion;
-use crate::quantum_chemistry::BasisFunction;
+use super::embedding::{
+    ANG_TO_BOHR, HARTREE_TO_KCAL, begin_run, external_potential, finite_difference_forces,
+    forces_from_potential_derivatives,
+};
+use super::error::QmError;
+use super::sp_overlap::{OrbType, build_overlap};
+use crate::quantum_chemistry::{BasisFunction, CartesianAxis};
 use oxiphysics_core::numerical_methods::generalized_symmetric_eigen_n;
 
 // ---------------------------------------------------------------------------
-// Physical constants
+// Numerical constants
 // ---------------------------------------------------------------------------
-
-/// Ångström → Bohr conversion factor.
-const ANG_TO_BOHR: f64 = 1.889_725_989;
-
-/// Hartree → kcal/mol conversion factor.
-const HARTREE_TO_KCAL: f64 = 627.509_4;
 
 /// Wolfsberg–Helmholtz constant for the Extended-Hückel off-diagonal elements.
 const K_EHT: f64 = 1.75;
@@ -34,62 +43,13 @@ const K_EHT: f64 = 1.75;
 const GRAD_STEP_ANG: f64 = 0.001;
 
 /// Maximum SCC iterations.
-const MAX_ITER: usize = 200;
+const MAX_ITER: usize = 500;
 
-/// SCC mixing coefficient (linear DIIS damping).
-const DIIS_MIX: f64 = 0.30;
+/// SCC linear charge-mixing coefficient.
+const CHARGE_MIX: f64 = 0.30;
 
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
-/// Errors that can occur during an SCC-DFTB calculation.
-#[derive(Debug)]
-pub enum DftbError {
-    /// One or more atoms have an element not covered by the mio-0-1 parameter set.
-    UnsupportedElement(u32),
-    /// Open-shell (multiplicity > 1) calculations are not yet supported.
-    OpenShellNotSupported,
-    /// The generalised eigenvalue solver failed (e.g. overlap matrix not positive definite).
-    EigensolverFailed,
-    /// The SCC cycle did not converge within the maximum number of iterations.
-    SccNotConverged,
-    /// The QM region contains no atoms.
-    EmptyRegion,
-}
-
-impl std::fmt::Display for DftbError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DftbError::UnsupportedElement(z) => {
-                write!(
-                    f,
-                    "SCC-DFTB: element Z={z} is not in the mio-0-1 parameter set"
-                )
-            }
-            DftbError::OpenShellNotSupported => {
-                write!(
-                    f,
-                    "SCC-DFTB: open-shell (multiplicity > 1) is not implemented"
-                )
-            }
-            DftbError::EigensolverFailed => {
-                write!(
-                    f,
-                    "SCC-DFTB: generalised eigensolver failed (overlap not PD?)"
-                )
-            }
-            DftbError::SccNotConverged => {
-                write!(f, "SCC-DFTB: charge self-consistency did not converge")
-            }
-            DftbError::EmptyRegion => {
-                write!(f, "SCC-DFTB: QM region is empty")
-            }
-        }
-    }
-}
-
-impl std::error::Error for DftbError {}
+/// Convergence threshold on the Mulliken charges (e).
+const CHARGE_TOL: f64 = 1e-9;
 
 // ---------------------------------------------------------------------------
 // Atom parameters
@@ -195,33 +155,22 @@ pub(crate) fn gamma_ab(r_bohr: f64, u_a: f64, u_b: f64) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
-// SCC results container
-// ---------------------------------------------------------------------------
-
-struct SccResult {
-    /// Total band-structure energy Σ ε_i (Hartree).
-    e_band: f64,
-    /// SCC coulomb correction (Hartree).
-    e_coulomb: f64,
-}
-
-// ---------------------------------------------------------------------------
 // Basis construction helpers
 // ---------------------------------------------------------------------------
 
 /// Build the DFTB minimal basis for all atoms.
 ///
 /// H  → [1s]
-/// Heavy atoms → [1s, 2px, 2py, 2pz]
+/// Heavy atoms → [s, px, py, pz]
 ///
-/// Returns `(basis, atom_of_basis, orbital_type_of_basis)`.
-/// `orbital_type_of_basis[i]` is `'s'` or `'p'`.
+/// Returns `(basis, orbital types, atom_of_basis)`.
 fn build_basis(
     atomic_numbers: &[u32],
     positions_ang: &[[f64; 3]],
     params: &[DftbAtomParams],
-) -> (Vec<BasisFunction>, Vec<usize>) {
+) -> (Vec<BasisFunction>, Vec<OrbType>, Vec<usize>) {
     let mut basis: Vec<BasisFunction> = Vec::new();
+    let mut orb_types: Vec<OrbType> = Vec::new();
     let mut atom_of_basis: Vec<usize> = Vec::new();
 
     for (a, (&z, pos)) in atomic_numbers.iter().zip(positions_ang.iter()).enumerate() {
@@ -233,60 +182,51 @@ fn build_basis(
         ];
         let p = &params[a];
 
-        // 1s orbital.
         basis.push(BasisFunction::sto3g_s(c, p.zeta_s));
+        orb_types.push(OrbType::S);
         atom_of_basis.push(a);
 
-        // 2p orbitals for heavy atoms (Z ≥ 2).
+        // Directional p orbitals for heavy atoms (Z ≥ 2).
         if z >= 2 {
-            // px, py, pz — they all share the same exponents; we use a single
-            // contracted p-function here (the p-type BasisFunction in
-            // quantum_chemistry represents one directional component; three are
-            // needed for a complete sp valence shell).
-            for _ in 0..3 {
-                basis.push(BasisFunction::sto3g_p(c, p.zeta_p));
+            for (ot, axis) in OrbType::P_SHELL.into_iter().zip(CartesianAxis::ALL) {
+                basis.push(BasisFunction::sto3g_p(c, p.zeta_p, axis));
+                orb_types.push(ot);
                 atom_of_basis.push(a);
             }
         }
     }
 
-    (basis, atom_of_basis)
+    (basis, orb_types, atom_of_basis)
 }
 
 // ---------------------------------------------------------------------------
 // H⁰ matrix
 // ---------------------------------------------------------------------------
 
-/// Return the on-site energy for basis function `i`.
-fn orbital_energy(
-    bf_idx: usize,
-    atom_of_basis: &[usize],
-    params: &[DftbAtomParams],
-    basis: &[BasisFunction],
-) -> f64 {
-    let a = atom_of_basis[bf_idx];
-    if basis[bf_idx].angular_momentum == 0 {
-        params[a].eps_s
-    } else {
-        params[a].eps_p
+/// Return the on-site energy (Hartree) of an orbital of type `ot` on an atom
+/// with parameters `p`.
+fn orbital_energy(ot: OrbType, p: &DftbAtomParams) -> f64 {
+    match ot {
+        OrbType::S => p.eps_s,
+        OrbType::Px | OrbType::Py | OrbType::Pz => p.eps_p,
     }
 }
 
 /// Build the zeroth-order Hamiltonian H⁰ using the Extended-Hückel formula.
 fn build_h0(
-    basis: &[BasisFunction],
+    orb_types: &[OrbType],
     overlap: &[Vec<f64>],
     atom_of_basis: &[usize],
     params: &[DftbAtomParams],
 ) -> Vec<Vec<f64>> {
-    let nbas = basis.len();
+    let nbas = orb_types.len();
     let mut h0 = vec![vec![0.0_f64; nbas]; nbas];
 
     for i in 0..nbas {
-        let eps_i = orbital_energy(i, atom_of_basis, params, basis);
+        let eps_i = orbital_energy(orb_types[i], &params[atom_of_basis[i]]);
         h0[i][i] = eps_i;
         for j in (i + 1)..nbas {
-            let eps_j = orbital_energy(j, atom_of_basis, params, basis);
+            let eps_j = orbital_energy(orb_types[j], &params[atom_of_basis[j]]);
             let h_ij = K_EHT * (eps_i + eps_j) / 2.0 * overlap[i][j];
             h0[i][j] = h_ij;
             h0[j][i] = h_ij;
@@ -327,105 +267,110 @@ fn build_gamma(
 // SCC loop
 // ---------------------------------------------------------------------------
 
+/// Converged SCC state.
+struct SccState {
+    /// Converged density matrix P_μν (including the factor 2 of double occupation).
+    density: Vec<Vec<f64>>,
+    /// Mulliken charge fluctuations Δq_A = q_A − q⁰_A (electron population minus
+    /// neutral valence count).
+    dq: Vec<f64>,
+    /// Number of SCC iterations used (inspected by the convergence tests).
+    #[cfg(test)]
+    iterations: usize,
+}
+
+/// Mulliken electron populations q_A = Σ_{μ∈A} Σ_ν P_μν S_νμ.
+fn mulliken_populations(
+    density: &[Vec<f64>],
+    overlap: &[Vec<f64>],
+    atom_of_basis: &[usize],
+    n_atoms: usize,
+) -> Vec<f64> {
+    let mut pop = vec![0.0_f64; n_atoms];
+    for (mu, &a) in atom_of_basis.iter().enumerate() {
+        for (nu, p_row) in density[mu].iter().enumerate() {
+            pop[a] += p_row * overlap[nu][mu];
+        }
+    }
+    pop
+}
+
+/// Self-consistent-charge cycle.
+///
+/// H_μν = H⁰_μν + ½ S_μν (V_A + V_B) − ½ S_μν (φ_A + φ_B),
+/// V_A = Σ_C γ_AC Δq_C,  Δq_C = q_C − q⁰_C,
+///
+/// so that an electron-rich atom (Δq > 0) raises its own orbital energies
+/// (Elstner 1998, Eq. 14).
 fn scc_loop(
     h0: &[Vec<f64>],
     overlap: &[Vec<f64>],
     gamma: &[Vec<f64>],
     atom_of_basis: &[usize],
-    n_val_per_atom: &[usize],
+    q0: &[f64],
     n_occ: usize,
-) -> Result<SccResult, DftbError> {
+    phi: &[f64],
+) -> Result<SccState, QmError> {
     let nbas = h0.len();
     let n_atoms = gamma.len();
 
-    // Reference charges q⁰_A = n_val_A (neutral atom).
-    let q0: Vec<f64> = n_val_per_atom.iter().map(|&v| v as f64).collect();
-
-    // Initialise Mulliken charges to neutral.
     let mut dq: Vec<f64> = vec![0.0_f64; n_atoms];
 
-    // Density matrix (zero initially).
-    let mut density = vec![vec![0.0_f64; nbas]; nbas];
-
-    let mut e_band_prev = 0.0_f64;
-
-    for _iter in 0..MAX_ITER {
-        // 1. Build H^SCC = H^0 + ΔH^SCC.
+    let mut iterations = 0_usize;
+    while iterations < MAX_ITER {
+        iterations += 1;
+        // 1. Build H^SCC.
+        let v: Vec<f64> = (0..n_atoms)
+            .map(|a| (0..n_atoms).map(|c| gamma[a][c] * dq[c]).sum::<f64>() - phi[a])
+            .collect();
         let mut h_scc = h0.to_vec();
         for i in 0..nbas {
-            let atom_i = atom_of_basis[i];
+            let a = atom_of_basis[i];
             for j in 0..nbas {
-                let atom_j = atom_of_basis[j];
-                // SCC shift: ½ S_μν Σ_C (γ_AC + γ_BC) Δq_C
-                let mut shift = 0.0_f64;
-                for c in 0..n_atoms {
-                    shift += (gamma[atom_i][c] + gamma[atom_j][c]) * dq[c];
-                }
-                h_scc[i][j] += 0.5 * overlap[i][j] * shift;
+                let b = atom_of_basis[j];
+                h_scc[i][j] += 0.5 * overlap[i][j] * (v[a] + v[b]);
             }
         }
 
         // 2. Solve H^SCC C = ε S C.
-        let (evals, evecs) =
-            generalized_symmetric_eigen_n(&h_scc, overlap).ok_or(DftbError::EigensolverFailed)?;
+        let (_evals, evecs) =
+            generalized_symmetric_eigen_n(&h_scc, overlap).ok_or(QmError::EigensolverFailed)?;
 
-        // 3. Build density matrix P_μν = 2 Σ_{i=0}^{n_occ-1} C_μi * C_νi.
-        //    evecs[i] = i-th eigenvector; evecs[i][μ] = C_μi.
-        for mu in 0..nbas {
-            for nu in 0..nbas {
-                let mut p = 0.0_f64;
-                for evec in evecs.iter().take(n_occ) {
-                    p += evec[mu] * evec[nu];
+        // 3. Density matrix P_μν = 2 Σ_{i<n_occ} C_μi C_νi (evecs[i][μ] = C_μi).
+        let mut density = vec![vec![0.0_f64; nbas]; nbas];
+        for evec in evecs.iter().take(n_occ) {
+            for mu in 0..nbas {
+                for nu in 0..nbas {
+                    density[mu][nu] += 2.0 * evec[mu] * evec[nu];
                 }
-                density[mu][nu] = 2.0 * p;
             }
         }
 
-        // 4. Mulliken charges q_A = n_val_A - Σ_{μ∈A} Σ_ν P_μν S_νμ.
-        let mut q_new = vec![0.0_f64; n_atoms];
-        for mu in 0..nbas {
-            let a = atom_of_basis[mu];
-            for nu in 0..nbas {
-                q_new[a] += density[mu][nu] * overlap[nu][mu];
-            }
-        }
-        // q_new currently holds the population; convert to Mulliken charge.
-        // The "Mulliken charge" here tracks the electron count at each atom.
-        // dq_A = q0_A - q_new_A  (charge deviation from neutral).
-        let dq_new: Vec<f64> = (0..n_atoms).map(|a| q0[a] - q_new[a]).collect();
+        // 4. New charge fluctuations.
+        let pop = mulliken_populations(&density, overlap, atom_of_basis, n_atoms);
+        let dq_out: Vec<f64> = pop.iter().zip(q0.iter()).map(|(p, q)| p - q).collect();
 
-        // 5. Band energy — sum of occupied orbital eigenvalues (Hartree).
-        // The density matrix already accounts for 2-fold occupation; eigenvalues
-        // are single-particle energies so we sum without an extra factor of 2.
-        let e_band: f64 = evals.iter().take(n_occ).sum::<f64>();
-
-        // 6. Convergence check.
-        let max_dq_change: f64 = (0..n_atoms)
-            .map(|a| (dq_new[a] - dq[a]).abs())
+        let max_change = dq_out
+            .iter()
+            .zip(dq.iter())
+            .map(|(o, i)| (o - i).abs())
             .fold(0.0_f64, f64::max);
-        let de = (e_band - e_band_prev).abs();
-
-        // 7. DIIS linear mixing.
-        for a in 0..n_atoms {
-            dq[a] = DIIS_MIX * dq_new[a] + (1.0 - DIIS_MIX) * dq[a];
+        if max_change < CHARGE_TOL {
+            return Ok(SccState {
+                density,
+                dq: dq_out,
+                #[cfg(test)]
+                iterations,
+            });
         }
-        e_band_prev = e_band;
 
-        if max_dq_change < 1e-6 && de < 1e-8 {
-            // Converged — compute final coulomb correction.
-            let e_coulomb: f64 = (0..n_atoms)
-                .map(|a| {
-                    (0..n_atoms)
-                        .map(|b| 0.5 * gamma[a][b] * dq[a] * dq[b])
-                        .sum::<f64>()
-                })
-                .sum();
-
-            return Ok(SccResult { e_band, e_coulomb });
+        // 5. Linear charge mixing.
+        for (d, o) in dq.iter_mut().zip(dq_out.iter()) {
+            *d = CHARGE_MIX * o + (1.0 - CHARGE_MIX) * *d;
         }
     }
 
-    Err(DftbError::SccNotConverged)
+    Err(QmError::ScfNotConverged)
 }
 
 // ---------------------------------------------------------------------------
@@ -452,166 +397,164 @@ fn repulsive_energy(atomic_numbers: &[u32], positions_ang: &[[f64; 3]]) -> f64 {
 // Core energy evaluation (in Hartree)
 // ---------------------------------------------------------------------------
 
-fn compute_energy_hartree(
-    atomic_numbers: &[u32],
-    positions_ang: &[[f64; 3]],
-    n_electrons: usize,
-    n_occ: usize,
-) -> Result<f64, DftbError> {
-    if atomic_numbers.is_empty() {
-        return Err(DftbError::EmptyRegion);
-    }
-    let n_atoms = atomic_numbers.len();
-
-    // Collect per-atom parameters.
-    let mut params: Vec<DftbAtomParams> = Vec::with_capacity(n_atoms);
-    for &z in atomic_numbers {
-        params.push(dftb_params(z).ok_or(DftbError::UnsupportedElement(z))?);
-    }
-    let _ = n_electrons; // used only for validation below
-
-    // Build basis.
-    let (basis, atom_of_basis) = build_basis(atomic_numbers, positions_ang, &params);
-    let nbas = basis.len();
-
-    // Overlap matrix S.
-    let mut overlap = vec![vec![0.0_f64; nbas]; nbas];
-    for i in 0..nbas {
-        for j in 0..nbas {
-            overlap[i][j] = basis[i].overlap_with(&basis[j]);
-        }
-    }
-    // Regularise diagonal to avoid near-singular overlaps at zero distance.
-    for (i, row) in overlap.iter_mut().enumerate() {
-        if row[i] < 1e-10 {
-            row[i] = 1.0;
-        }
-    }
-
-    // H⁰.
-    let h0 = build_h0(&basis, &overlap, &atom_of_basis, &params);
-
-    // γ matrix.
-    let gamma = build_gamma(atomic_numbers, positions_ang, &params);
-
-    // Valence electrons per atom.
-    let n_val_per_atom: Vec<usize> = params.iter().map(|p| p.n_val).collect();
-
-    // SCC loop.
-    let scc = scc_loop(
-        &h0,
-        &overlap,
-        &gamma,
-        &atom_of_basis,
-        &n_val_per_atom,
-        n_occ,
-    )?;
-
-    // Total energy (Elstner 1998, eqs. 14–17):
-    // E_total = E_band - E_coulomb + E_rep
-    // (E_band already double-counts the charge-charge term once; subtracting
-    // E_coulomb corrects the double-counting.)
-    let e_rep = repulsive_energy(atomic_numbers, positions_ang);
-    let e_total = scc.e_band - scc.e_coulomb + e_rep;
-
-    Ok(e_total)
+/// Result of a single SCC-DFTB calculation.
+struct DftbPoint {
+    /// Total energy including the embedding interaction (Hartree).
+    energy: f64,
+    /// Electrostatic interaction with the external charges (Hartree).
+    embedding: f64,
+    /// Mulliken net atomic charges q⁰_A − q_A (e).
+    net_charges: Vec<f64>,
+    /// SCC iterations used (inspected by the convergence tests).
+    #[cfg(test)]
+    iterations: usize,
 }
 
-// ---------------------------------------------------------------------------
-// Numerical gradient
-// ---------------------------------------------------------------------------
-
-fn numerical_forces(
+/// SCC-DFTB energy for the given geometry, total charge, multiplicity and
+/// external potential φ_A (Hartree/e).
+///
+/// E = Tr(P H⁰) + ½ Σ_AB γ_AB Δq_A Δq_B − Σ_A Δq_A φ_A + E_rep
+fn compute_point(
     atomic_numbers: &[u32],
     positions_ang: &[[f64; 3]],
-    n_electrons: usize,
-    n_occ: usize,
-) -> Vec<[f64; 3]> {
-    let n = atomic_numbers.len();
-    let mut forces = vec![[0.0_f64; 3]; n];
-
-    for a in 0..n {
-        for k in 0..3 {
-            // Forward displacement.
-            let mut pos_fwd = positions_ang.to_vec();
-            pos_fwd[a][k] += GRAD_STEP_ANG;
-            let e_fwd =
-                compute_energy_hartree(atomic_numbers, &pos_fwd, n_electrons, n_occ).unwrap_or(0.0);
-
-            // Backward displacement.
-            let mut pos_bwd = positions_ang.to_vec();
-            pos_bwd[a][k] -= GRAD_STEP_ANG;
-            let e_bwd =
-                compute_energy_hartree(atomic_numbers, &pos_bwd, n_electrons, n_occ).unwrap_or(0.0);
-
-            // Central difference: F = -dE/dx (Hartree/Å), then convert to kcal/mol/Å.
-            forces[a][k] = -(e_fwd - e_bwd) / (2.0 * GRAD_STEP_ANG) * HARTREE_TO_KCAL;
-        }
+    charge: i32,
+    multiplicity: u32,
+    phi: &[f64],
+) -> Result<DftbPoint, QmError> {
+    if atomic_numbers.is_empty() {
+        return Err(QmError::EmptyRegion);
     }
-    forces
+    let n_atoms = atomic_numbers.len();
+    if positions_ang.len() != n_atoms || phi.len() != n_atoms {
+        return Err(QmError::DimensionMismatch {
+            what: "SCC-DFTB positions / external potential vs atomic numbers",
+            expected: n_atoms,
+            found: positions_ang.len().min(phi.len()),
+        });
+    }
+
+    let params: Vec<DftbAtomParams> = atomic_numbers
+        .iter()
+        .map(|&z| dftb_params(z).ok_or(QmError::UnsupportedElement(z)))
+        .collect::<Result<_, _>>()?;
+    if multiplicity != 1 {
+        return Err(QmError::OpenShellNotSupported);
+    }
+
+    let (basis, orb_types, atom_of_basis) = build_basis(atomic_numbers, positions_ang, &params);
+    let nbas = basis.len();
+
+    // Electron count (signed so that a large positive charge cannot wrap).
+    let total_val: i64 = params.iter().map(|p| p.n_val as i64).sum();
+    let n_electrons = total_val - i64::from(charge);
+    if n_electrons < 0 || n_electrons > 2 * nbas as i64 {
+        return Err(QmError::InvalidElectronCount {
+            electrons: n_electrons,
+            n_basis: nbas,
+        });
+    }
+    if n_electrons % 2 != 0 {
+        return Err(QmError::OpenShellNotSupported);
+    }
+    let n_occ = (n_electrons / 2) as usize;
+
+    let overlap = build_overlap(&basis, &orb_types);
+    let h0 = build_h0(&orb_types, &overlap, &atom_of_basis, &params);
+    let gamma = build_gamma(atomic_numbers, positions_ang, &params);
+    let q0: Vec<f64> = params.iter().map(|p| p.n_val as f64).collect();
+
+    let scc = scc_loop(&h0, &overlap, &gamma, &atom_of_basis, &q0, n_occ, phi)?;
+
+    let e_h0: f64 = scc
+        .density
+        .iter()
+        .zip(h0.iter())
+        .map(|(p_row, h_row)| {
+            p_row
+                .iter()
+                .zip(h_row.iter())
+                .map(|(p, h)| p * h)
+                .sum::<f64>()
+        })
+        .sum();
+    let e_coulomb: f64 = gamma
+        .iter()
+        .zip(scc.dq.iter())
+        .map(|(g_row, dq_a)| {
+            0.5 * dq_a
+                * g_row
+                    .iter()
+                    .zip(scc.dq.iter())
+                    .map(|(g, dq_b)| g * dq_b)
+                    .sum::<f64>()
+        })
+        .sum();
+    let net_charges: Vec<f64> = scc.dq.iter().map(|d| -d).collect();
+    let embedding: f64 = net_charges.iter().zip(phi.iter()).map(|(q, f)| q * f).sum();
+    let e_rep = repulsive_energy(atomic_numbers, positions_ang);
+
+    Ok(DftbPoint {
+        energy: e_h0 + e_coulomb + embedding + e_rep,
+        embedding,
+        net_charges,
+        #[cfg(test)]
+        iterations: scc.iterations,
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Public entry points
 // ---------------------------------------------------------------------------
 
-/// Run an SCC-DFTB calculation, storing energy (kcal/mol) and forces (kcal/mol/Å)
-/// in `region`.
+/// Run an SCC-DFTB calculation, storing energy and embedding energy (kcal/mol),
+/// forces on the QM atoms and on the external charges (kcal/mol/Å) and Mulliken
+/// charges in `region`.
 ///
-/// Based on Elstner et al. (1998), *Phys. Rev. B* 58, 7260, with analytical
-/// Extended-Hückel H⁰ and Mataga–Nishimoto γ_AB.  If the calculation fails for
-/// any reason (unsupported element, eigensolver failure, non-convergence) the
-/// energy and forces remain at zero without panicking.
-pub fn run_scc_dftb(region: &mut QmRegion) {
-    if let Err(_e) = try_run_scc_dftb(region) {
-        // energy/forces stay at 0 — non-panicking failure
-    }
-}
-
-fn try_run_scc_dftb(region: &mut QmRegion) -> Result<(), DftbError> {
-    if region.atomic_numbers.is_empty() {
-        return Err(DftbError::EmptyRegion);
-    }
-    if region.multiplicity != 1 {
-        return Err(DftbError::OpenShellNotSupported);
-    }
-
-    let n_atoms = region.atomic_numbers.len();
-
-    // Collect per-atom parameters (validate first).
-    let mut params_check: Vec<DftbAtomParams> = Vec::with_capacity(n_atoms);
-    for &z in &region.atomic_numbers {
-        params_check.push(dftb_params(z).ok_or(DftbError::UnsupportedElement(z))?);
-    }
-
-    // Total valence electrons accounting for charge.
-    let total_val: usize = params_check.iter().map(|p| p.n_val).sum();
-    let total_val_i = total_val as i32 - region.charge;
-    if total_val_i <= 0 {
-        return Err(DftbError::UnsupportedElement(0));
-    }
-    let n_electrons = total_val_i as usize;
-    if !n_electrons.is_multiple_of(2) {
-        return Err(DftbError::OpenShellNotSupported);
-    }
-    let n_occ = n_electrons / 2;
-
-    let e_hartree = compute_energy_hartree(
+/// Based on Elstner et al. (1998), *Phys. Rev. B* 58, 7260, with an
+/// Extended-Hückel H⁰ and Mataga–Nishimoto γ_AB.  Nuclear forces are central
+/// finite differences (±0.001 Å) of the total energy in the field of the
+/// external charges.  The SCC energy is variational in the MO coefficients, so
+/// the forces on the external charges follow from the Hellmann–Feynman theorem:
+/// ∂E/∂φ_A = q⁰_A − q_A.
+///
+/// # Errors
+/// Any failure (empty region, unsupported element, open shell, invalid electron
+/// count, invalid external charge, eigensolver failure or SCC non-convergence,
+/// including at a displaced geometry) is returned; the outputs of `region` are
+/// then left cleared.
+pub fn run_scc_dftb(region: &mut QmRegion) -> Result<(), QmError> {
+    let phi = begin_run(region)?;
+    let point = compute_point(
         &region.atomic_numbers,
         &region.positions,
-        n_electrons,
-        n_occ,
+        region.charge,
+        region.multiplicity,
+        &phi,
     )?;
 
-    region.energy = e_hartree * HARTREE_TO_KCAL;
+    let forces = finite_difference_forces(&region.positions, GRAD_STEP_ANG, |pos| {
+        let phi_disp = external_potential(pos, &region.external_charges)?;
+        compute_point(
+            &region.atomic_numbers,
+            pos,
+            region.charge,
+            region.multiplicity,
+            &phi_disp,
+        )
+        .map(|p| p.energy)
+    })?;
 
-    region.forces = numerical_forces(
-        &region.atomic_numbers,
+    let external_forces = forces_from_potential_derivatives(
         &region.positions,
-        n_electrons,
-        n_occ,
+        &region.external_charges,
+        &point.net_charges,
     );
 
+    region.energy = (point.energy - point.embedding) * HARTREE_TO_KCAL;
+    region.embedding_energy = point.embedding * HARTREE_TO_KCAL;
+    region.forces = forces;
+    region.partial_charges = point.net_charges;
+    region.external_charge_forces = external_forces;
     Ok(())
 }
 
@@ -624,31 +567,14 @@ mod tests {
     use super::*;
     use crate::qm_mm::{QmMethod, QmRegion};
 
-    #[test]
-    fn h2_dftb_energy_negative() {
+    fn h2() -> QmRegion {
         let mut r = QmRegion::new(vec![0, 1], QmMethod::SccDftb, 0, 1);
         r.atomic_numbers = vec![1, 1];
         r.set_positions(vec![[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]]);
-        run_scc_dftb(&mut r);
-        assert!(
-            r.energy < 0.0,
-            "H2 DFTB energy should be negative: {}",
-            r.energy
-        );
+        r
     }
 
-    #[test]
-    fn h2_forces_sum_to_zero() {
-        let mut r = QmRegion::new(vec![0, 1], QmMethod::SccDftb, 0, 1);
-        r.atomic_numbers = vec![1, 1];
-        r.set_positions(vec![[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]]);
-        run_scc_dftb(&mut r);
-        let f_sum: f64 = r.forces.iter().map(|f| f[0]).sum();
-        assert!(f_sum.abs() < 2.0, "force sum not zero: {f_sum}");
-    }
-
-    #[test]
-    fn h2o_dftb_finite_energy() {
+    fn water() -> QmRegion {
         let mut r = QmRegion::new(vec![0, 1, 2], QmMethod::SccDftb, 0, 1);
         r.atomic_numbers = vec![8, 1, 1];
         r.set_positions(vec![
@@ -656,16 +582,88 @@ mod tests {
             [0.0, 0.757, 0.586],
             [0.0, -0.757, 0.586],
         ]);
-        run_scc_dftb(&mut r);
-        assert!(r.energy.is_finite(), "water DFTB energy finite");
+        r
     }
 
     #[test]
-    fn unsupported_element_no_panic() {
+    fn h2_dftb_energy_negative() {
+        let mut r = h2();
+        run_scc_dftb(&mut r).expect("DFTB H2");
+        assert!(
+            r.energy < 0.0,
+            "H2 DFTB energy should be negative: {}",
+            r.energy
+        );
+        // Homonuclear: no charge transfer.
+        assert!(r.partial_charges.iter().all(|q| q.abs() < 1e-8));
+    }
+
+    #[test]
+    fn h2_forces_sum_to_zero() {
+        let mut r = h2();
+        run_scc_dftb(&mut r).expect("DFTB H2");
+        let f_sum: f64 = r.forces.iter().map(|f| f[0]).sum();
+        assert!(f_sum.abs() < 1e-4, "force sum not zero: {f_sum}");
+        assert!((r.forces[0][0] + r.forces[1][0]).abs() < 1e-4);
+    }
+
+    #[test]
+    fn h2o_dftb_charges_have_correct_sign_and_converge_fast() {
+        let r = water();
+        let phi = vec![0.0; 3];
+        let point =
+            compute_point(&r.atomic_numbers, &r.positions, 0, 1, &phi).expect("water SCC-DFTB");
+        let q = &point.net_charges;
+        assert!(q[0] < 0.0 && q[0] > -1.0, "O charge {q:?}");
+        assert!(q[1] > 0.0 && (q[1] - q[2]).abs() < 1e-8, "H charges {q:?}");
+        assert!(q.iter().sum::<f64>().abs() < 1e-8);
+        assert!(point.iterations < 50, "SCC iterations {}", point.iterations);
+        assert!(point.energy.is_finite());
+    }
+
+    #[test]
+    fn h2o_dftb_run_succeeds() {
+        let mut r = water();
+        run_scc_dftb(&mut r).expect("water DFTB");
+        assert!(r.energy.is_finite() && r.energy != 0.0);
+        // Symmetric hydrogens feel mirror-image forces.
+        assert!((r.forces[1][1] + r.forces[2][1]).abs() < 1e-3);
+        assert!((r.forces[1][2] - r.forces[2][2]).abs() < 1e-3);
+    }
+
+    #[test]
+    fn unsupported_element_returns_error() {
         let mut r = QmRegion::new(vec![0], QmMethod::SccDftb, 0, 1);
         r.atomic_numbers = vec![10]; // Ne — unsupported
         r.set_positions(vec![[0.0, 0.0, 0.0]]);
-        run_scc_dftb(&mut r); // must not panic
+        assert_eq!(run_scc_dftb(&mut r), Err(QmError::UnsupportedElement(10)));
+        assert_eq!(r.energy, 0.0);
+    }
+
+    #[test]
+    fn open_shell_and_bad_charges_are_errors() {
+        let mut r = QmRegion::new(vec![0], QmMethod::SccDftb, 0, 1);
+        r.atomic_numbers = vec![1];
+        r.set_positions(vec![[0.0, 0.0, 0.0]]);
+        assert_eq!(run_scc_dftb(&mut r), Err(QmError::OpenShellNotSupported));
+
+        let mut r = h2();
+        r.charge = -4;
+        assert_eq!(
+            run_scc_dftb(&mut r),
+            Err(QmError::InvalidElectronCount {
+                electrons: 6,
+                n_basis: 2
+            })
+        );
+        r.charge = 4;
+        assert_eq!(
+            run_scc_dftb(&mut r),
+            Err(QmError::InvalidElectronCount {
+                electrons: -2,
+                n_basis: 2
+            })
+        );
     }
 
     #[test]
@@ -674,5 +672,105 @@ mod tests {
         let u_c = 0.364_7_f64;
         let g = gamma_ab(0.0, u_c, u_c);
         assert!((g - u_c).abs() < 0.01, "γ_AA ≈ U_A: {g} vs {u_c}");
+    }
+
+    #[test]
+    fn zero_external_charge_reproduces_vacuum() {
+        let mut vac = water();
+        run_scc_dftb(&mut vac).expect("vacuum");
+        let mut emb = water();
+        emb.external_charges = vec![([0.5, 0.0, -3.0], 0.0)];
+        run_scc_dftb(&mut emb).expect("embedded");
+        assert!((vac.energy - emb.energy).abs() < 1e-9);
+        assert_eq!(emb.embedding_energy, 0.0);
+    }
+
+    #[test]
+    fn h2_is_polarised_by_an_external_charge() {
+        let mut r = h2();
+        r.external_charges = vec![([3.0, 0.0, 0.0], 1.0)];
+        run_scc_dftb(&mut r).expect("embedded H2");
+        let q = &r.partial_charges;
+        // Electrons are pulled towards the positive charge at +x.
+        assert!(q[1] < -1e-3 && q[0] > 1e-3, "charges {q:?}");
+        assert!((q[0] + q[1]).abs() < 1e-8);
+        assert!(r.dipole_moment()[0] < 0.0);
+        assert!(r.embedding_energy < 0.0);
+    }
+
+    #[test]
+    fn h2o_dipole_grows_in_external_charge_field() {
+        let mut vac = water();
+        run_scc_dftb(&mut vac).expect("vacuum");
+        let mu_vac = vac.dipole_moment()[2];
+        assert!(mu_vac > 0.0);
+        let mut along = water();
+        along.external_charges = vec![([0.0, 0.0, -3.5], 1.0)];
+        run_scc_dftb(&mut along).expect("field");
+        let mu_along = along.dipole_moment()[2];
+        assert!(
+            mu_along > mu_vac + 0.01,
+            "dipole must grow: {mu_vac} -> {mu_along}"
+        );
+    }
+
+    #[test]
+    fn energy_derivative_wrt_external_charge_is_qm_potential() {
+        // Hellmann–Feynman: dE/dQ_J = Σ_A (q⁰_A − q_A) / R_AJ.
+        let pos_j = [0.7, -0.4, -3.2];
+        let q_j = 0.6;
+        let run_with = |q: f64| -> QmRegion {
+            let mut r = water();
+            r.external_charges = vec![(pos_j, q)];
+            run_scc_dftb(&mut r).expect("embedded water");
+            r
+        };
+        let r0 = run_with(q_j);
+        let h = 1e-4;
+        let fd = (run_with(q_j + h).total_energy_in_field()
+            - run_with(q_j - h).total_energy_in_field())
+            / (2.0 * h);
+        let analytic: f64 = r0
+            .partial_charges
+            .iter()
+            .zip(r0.positions.iter())
+            .map(|(q, p)| q / (crate::qm_mm::embedding::distance(p, &pos_j) * ANG_TO_BOHR))
+            .sum::<f64>()
+            * HARTREE_TO_KCAL;
+        assert!(
+            (fd - analytic).abs() < 1e-4 * analytic.abs().max(1.0),
+            "dE/dQ: FD {fd} vs analytic {analytic}"
+        );
+    }
+
+    #[test]
+    fn external_charge_force_matches_finite_difference() {
+        let q_pos = [0.4, 0.3, -3.0];
+        let mut r = water();
+        r.external_charges = vec![(q_pos, 0.8)];
+        run_scc_dftb(&mut r).expect("embedded water");
+        let f = r.external_charge_forces[0];
+        let h = 1e-4;
+        for k in 0..3 {
+            let mut e = [0.0; 2];
+            for (slot, sign) in e.iter_mut().zip([1.0, -1.0]) {
+                let mut rr = water();
+                let mut p = q_pos;
+                p[k] += sign * h;
+                rr.external_charges = vec![(p, 0.8)];
+                run_scc_dftb(&mut rr).expect("displaced charge");
+                *slot = rr.total_energy_in_field();
+            }
+            let fd = -(e[0] - e[1]) / (2.0 * h);
+            assert!(
+                (fd - f[k]).abs() < 1e-4 + 1e-4 * fd.abs(),
+                "component {k}: analytic {} vs FD {fd}",
+                f[k]
+            );
+        }
+        for k in 0..3 {
+            let total: f64 = r.forces.iter().map(|g| g[k]).sum::<f64>() + f[k];
+            assert!(total.abs() < 1e-3, "net force component {k}: {total}");
+        }
     }
 }

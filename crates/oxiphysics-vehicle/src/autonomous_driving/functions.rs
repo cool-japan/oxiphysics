@@ -9,9 +9,35 @@ pub(super) fn lcg_rand(state: &mut u64) -> f64 {
         .wrapping_add(1_442_695_040_888_963_407);
     (*state >> 33) as f64 / (1u64 << 31) as f64
 }
+
+/// Row-major 4x4 matrix product `a * b`.
+pub(super) fn mat4_mul(a: &[f64; 16], b: &[f64; 16]) -> [f64; 16] {
+    let mut c = [0.0f64; 16];
+    for (c_row, a_row) in c.chunks_exact_mut(4).zip(a.chunks_exact(4)) {
+        for (j, c_ij) in c_row.iter_mut().enumerate() {
+            *c_ij = a_row
+                .iter()
+                .zip(b.chunks_exact(4))
+                .map(|(a_ik, b_row)| a_ik * b_row[j])
+                .sum();
+        }
+    }
+    c
+}
+/// Row-major 4x4 matrix transpose.
+pub(super) fn mat4_transpose(a: &[f64; 16]) -> [f64; 16] {
+    let mut t = [0.0f64; 16];
+    for (i, a_row) in a.chunks_exact(4).enumerate() {
+        for (j, a_ij) in a_row.iter().enumerate() {
+            t[j * 4 + i] = *a_ij;
+        }
+    }
+    t
+}
 #[cfg(test)]
 mod tests {
 
+    use super::lcg_rand;
     use crate::autonomous_driving::AebSystem;
     use crate::autonomous_driving::AutonomousVehicle;
     use crate::autonomous_driving::BicycleModel;
@@ -37,6 +63,7 @@ mod tests {
     use crate::autonomous_driving::RrtPlanner;
     use crate::autonomous_driving::SensorFusion;
     use crate::autonomous_driving::Vec2;
+    use std::f64::consts::{PI, TAU};
     #[test]
     fn test_vec2_basic() {
         let a = Vec2::new(3.0, 4.0);
@@ -136,6 +163,100 @@ mod tests {
         let mut t = KalmanTracker::new(0, 0.0, 0.0);
         t.update([10.0, 0.0]);
         assert!(t.x[0] > 0.0);
+    }
+    #[test]
+    fn test_kalman_predict_builds_position_velocity_cross_covariance() {
+        // P0 = 10 I, Q = diag(0.01, 0.01, 0.1, 0.1):  P' = F P F^T + Q dt.
+        let mut t = KalmanTracker::new(0, 0.0, 0.0);
+        let dt = 0.5;
+        t.predict(dt);
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        assert!(
+            close(t.p[0], 10.0 + dt * dt * 10.0 + 0.01 * dt),
+            "{}",
+            t.p[0]
+        );
+        assert!(
+            close(t.p[5], 10.0 + dt * dt * 10.0 + 0.01 * dt),
+            "{}",
+            t.p[5]
+        );
+        assert!(close(t.p[10], 10.0 + 0.1 * dt), "{}", t.p[10]);
+        assert!(close(t.p[15], 10.0 + 0.1 * dt), "{}", t.p[15]);
+        // cov(x, vx) = dt * var(vx): previously exactly zero.
+        assert!(close(t.p[2], dt * 10.0), "{}", t.p[2]);
+        assert!(close(t.p[8], dt * 10.0), "{}", t.p[8]);
+        assert!(close(t.p[7], dt * 10.0), "{}", t.p[7]);
+        assert!(close(t.p[13], dt * 10.0), "{}", t.p[13]);
+        // x and y stay uncorrelated.
+        assert!(close(t.p[1], 0.0) && close(t.p[4], 0.0));
+    }
+    #[test]
+    fn test_kalman_velocity_is_estimated_from_position_measurements() {
+        let dt = 0.1;
+        let mut t = KalmanTracker::new(7, 0.0, 0.0);
+        for k in 1..=30 {
+            t.predict(dt);
+            t.update([2.0 * dt * f64::from(k), 0.0]);
+        }
+        let v = t.velocity();
+        assert!((v.x - 2.0).abs() < 0.2, "vx = {}, expected 2.0", v.x);
+        assert!(v.y.abs() < 0.2, "vy = {}, expected 0.0", v.y);
+        // The estimated position follows the target.
+        assert!((t.position().x - 6.0).abs() < 0.3, "x = {}", t.position().x);
+    }
+    #[test]
+    fn test_kalman_velocity_estimated_for_diagonal_motion() {
+        let dt = 0.1;
+        let (vx, vy) = (-1.5, 3.0);
+        let mut t = KalmanTracker::new(0, 5.0, -2.0);
+        for k in 1..=40 {
+            t.predict(dt);
+            let time = dt * f64::from(k);
+            t.update([5.0 + vx * time, -2.0 + vy * time]);
+        }
+        let v = t.velocity();
+        assert!((v.x - vx).abs() < 0.2, "vx = {}", v.x);
+        assert!((v.y - vy).abs() < 0.2, "vy = {}", v.y);
+    }
+    #[test]
+    fn test_kalman_covariance_stays_symmetric_and_shrinks() {
+        let dt = 0.1;
+        let mut t = KalmanTracker::new(0, 0.0, 0.0);
+        let initial_vel_var = t.p[10];
+        for k in 1..=30 {
+            t.predict(dt);
+            t.update([2.0 * dt * f64::from(k), 0.0]);
+        }
+        for i in 0..4 {
+            for j in 0..4 {
+                assert!(
+                    (t.p[i * 4 + j] - t.p[j * 4 + i]).abs() < 1e-12,
+                    "P not symmetric at ({i}, {j})"
+                );
+            }
+            assert!(t.p[i * 4 + i] > 0.0, "variance {i} must stay positive");
+        }
+        assert!(
+            t.p[10] < 0.1 * initial_vel_var,
+            "velocity variance should collapse once velocity is observed: {}",
+            t.p[10]
+        );
+    }
+    #[test]
+    fn test_sensor_fusion_track_reports_nonzero_velocity() {
+        let dt = 0.1;
+        let mut fusion = SensorFusion::new();
+        let mut last = Vec::new();
+        for k in 0..30 {
+            let x = 5.0 + 2.0 * dt * f64::from(k);
+            last = fusion.update(&[Vec2::new(x, -3.0)], dt);
+        }
+        assert_eq!(last.len(), 1, "one confirmed track expected");
+        let (_, pos, vel) = last[0];
+        assert!((vel.x - 2.0).abs() < 0.3, "vx = {}", vel.x);
+        assert!(vel.y.abs() < 0.3, "vy = {}", vel.y);
+        assert!((pos.y + 3.0).abs() < 0.3, "y = {}", pos.y);
     }
     #[test]
     fn test_sensor_fusion_empty() {
@@ -306,6 +427,148 @@ mod tests {
         };
         let pt = path.sample(5.0);
         assert!((pt[0] - 5.0).abs() < 1e-6);
+    }
+    /// Smallest absolute angle difference.
+    fn angle_diff(a: f64, b: f64) -> f64 {
+        ((a - b + PI).rem_euclid(TAU) - PI).abs()
+    }
+    /// Assert that `path` ends exactly at `end` (position and heading).
+    fn assert_reaches_end(path: &DubinsPath, end: [f64; 3], what: &str) {
+        let pose = path.sample(path.total_length());
+        assert!(
+            (pose[0] - end[0]).abs() < 1e-6 && (pose[1] - end[1]).abs() < 1e-6,
+            "{what}: position {:?} != {:?}",
+            &pose[..2],
+            &end[..2]
+        );
+        assert!(
+            angle_diff(pose[2], end[2]) < 1e-6,
+            "{what}: heading {} != {}",
+            pose[2],
+            end[2]
+        );
+    }
+    #[test]
+    fn test_dubins_every_word_reaches_the_end_pose() {
+        use std::collections::HashSet;
+        let mut rng = 20_240_611_u64;
+        let mut seen_words: HashSet<Vec<u8>> = HashSet::new();
+        for trial in 0..3000 {
+            let radius = 0.5 + 9.5 * lcg_rand(&mut rng);
+            // Mix near and far goals so that the CCC words also become optimal.
+            let reach = if trial % 2 == 0 { 4.0 * radius } else { 60.0 };
+            let start = [
+                reach * (2.0 * lcg_rand(&mut rng) - 1.0),
+                reach * (2.0 * lcg_rand(&mut rng) - 1.0),
+                TAU * lcg_rand(&mut rng) - PI,
+            ];
+            let end = [
+                start[0] + reach * (2.0 * lcg_rand(&mut rng) - 1.0),
+                start[1] + reach * (2.0 * lcg_rand(&mut rng) - 1.0),
+                TAU * lcg_rand(&mut rng) - PI,
+            ];
+            let candidates = DubinsPath::candidates(start, end, radius);
+            assert!(
+                !candidates.is_empty(),
+                "trial {trial}: Dubins' theorem guarantees a feasible word"
+            );
+            for path in &candidates {
+                assert_reaches_end(path, end, &format!("trial {trial} {:?}", path.segments));
+                assert!(
+                    path.lengths.iter().all(|&l| l >= 0.0),
+                    "negative segment length {:?}",
+                    path.lengths
+                );
+                seen_words.insert(
+                    path.segments
+                        .iter()
+                        .map(|s| match s {
+                            DubinsSegment::Left => b'L',
+                            DubinsSegment::Straight => b'S',
+                            DubinsSegment::Right => b'R',
+                        })
+                        .collect(),
+                );
+            }
+            let best = DubinsPath::shortest(start, end, radius).expect("path exists");
+            let min_len = candidates
+                .iter()
+                .map(DubinsPath::total_length)
+                .fold(f64::INFINITY, f64::min);
+            assert!((best.total_length() - min_len).abs() < 1e-12);
+            let chord = ((end[0] - start[0]).powi(2) + (end[1] - start[1]).powi(2)).sqrt();
+            assert!(
+                best.total_length() >= chord - 1e-9,
+                "a path cannot be shorter than the straight line"
+            );
+        }
+        // All six words were produced (and verified) at least once.
+        for word in ["LSL", "RSR", "LSR", "RSL", "RLR", "LRL"] {
+            assert!(
+                seen_words.contains(word.as_bytes()),
+                "word {word} was never feasible in the sample"
+            );
+        }
+    }
+    #[test]
+    fn test_dubins_aligned_configurations_give_the_straight_line() {
+        let path = DubinsPath::shortest([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], 2.0).expect("path");
+        assert!((path.total_length() - 10.0).abs() < 1e-9);
+        assert_reaches_end(&path, [10.0, 0.0, 0.0], "straight");
+        // Heading along the direction of travel, 45 degrees.
+        let end = [3.0, 3.0, PI / 4.0];
+        let path = DubinsPath::shortest([0.0, 0.0, PI / 4.0], end, 1.5).expect("path");
+        assert!((path.total_length() - 18.0_f64.sqrt()).abs() < 1e-9);
+        assert_reaches_end(&path, end, "diagonal straight");
+    }
+    #[test]
+    fn test_dubins_u_turn_is_a_half_circle() {
+        let radius = 3.0;
+        let end = [0.0, 2.0 * radius, PI];
+        let path = DubinsPath::shortest([0.0, 0.0, 0.0], end, radius).expect("path");
+        assert!(
+            (path.total_length() - PI * radius).abs() < 1e-9,
+            "half circle expected, got {}",
+            path.total_length()
+        );
+        assert_reaches_end(&path, end, "u-turn");
+    }
+    #[test]
+    fn test_dubins_end_heading_is_honoured() {
+        // The old implementation always returned a straight line towards the goal
+        // and therefore ended with the start heading.
+        let end = [10.0, 5.0, PI];
+        let path = DubinsPath::shortest([0.0, 0.0, 0.0], end, 2.0).expect("path");
+        assert_reaches_end(&path, end, "reverse heading");
+        assert!(path.total_length() > (125.0_f64).sqrt());
+    }
+    #[test]
+    fn test_dubins_same_position_different_heading_gives_a_loop() {
+        let start = [1.0, 2.0, 0.0];
+        for heading in [0.3, PI / 2.0, PI, -2.0, 6.0] {
+            let end = [1.0, 2.0, heading];
+            let path = DubinsPath::shortest(start, end, 2.0).expect("a loop path must exist");
+            assert!(path.total_length() > 0.0);
+            assert_reaches_end(&path, end, &format!("heading {heading}"));
+        }
+    }
+    #[test]
+    fn test_dubins_identical_configurations_and_bad_radius_give_none() {
+        let pose = [3.0, -4.0, 1.0];
+        assert!(DubinsPath::shortest(pose, pose, 2.0).is_none());
+        // Equal heading modulo a full turn is the same configuration.
+        assert!(DubinsPath::shortest(pose, [3.0, -4.0, 1.0 + TAU], 2.0).is_none());
+        for radius in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(DubinsPath::shortest([0.0; 3], [5.0, 5.0, 0.0], radius).is_none());
+        }
+        assert!(DubinsPath::shortest([0.0; 3], [f64::NAN, 5.0, 0.0], 1.0).is_none());
+    }
+    #[test]
+    fn test_dubins_lengths_scale_with_radius() {
+        let a = DubinsPath::shortest([0.0, 0.0, 0.3], [8.0, -3.0, 2.0], 1.0).expect("path");
+        let b = DubinsPath::shortest([0.0, 0.0, 0.3], [16.0, -6.0, 2.0], 2.0).expect("path");
+        assert!((b.total_length() - 2.0 * a.total_length()).abs() < 1e-9);
+        assert_eq!(a.segments, b.segments);
     }
     #[test]
     fn test_autonomous_vehicle_step() {

@@ -340,6 +340,13 @@ impl ThermalMesh1D {
             .push(ThermalContactResistance::new(node_1, node_2, h_c, area));
     }
     /// Explicit Euler step: C*(T_new - T)/dt = -K*T + Q.
+    ///
+    /// The convective loss `h A (T - T_inf)` enters as `-hA T` through the
+    /// conductance matrix (`K` already carries the `hA` diagonal entry, see
+    /// [`assemble_conductance_matrix`](Self::assemble_conductance_matrix)) and as
+    /// `+hA T_inf` through the load; only the load part is added here so the
+    /// loss is not subtracted twice.  Radiation is not part of `K`, so its
+    /// non-linear flux `eps sigma A (T^4 - T_surr^4)` is subtracted explicitly.
     pub fn step_explicit(&mut self, dt: f64, heat_sources: &[f64]) {
         assert_eq!(heat_sources.len(), self.n_nodes);
         let k = self.assemble_conductance_matrix();
@@ -355,8 +362,7 @@ impl ThermalMesh1D {
             let mut q_extra = 0.0;
             for conv in &self.convection_bcs {
                 if conv.node == i {
-                    q_extra += conv.load_contribution()
-                        - conv.stiffness_contribution() * self.temperatures[i];
+                    q_extra += conv.load_contribution();
                 }
             }
             for rad in &self.radiation_bcs {

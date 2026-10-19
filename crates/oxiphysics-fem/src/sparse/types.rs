@@ -8,93 +8,208 @@ use std::collections::HashMap;
 /// sparse matrices.
 ///
 /// Computes a lower-triangular factor `L` such that `L L^T ≈ A`, maintaining
-/// the sparsity pattern of the lower triangle of `A`.  This is the sparse
-/// counterpart of the dense incomplete Cholesky; suitable for use as a
-/// preconditioner in PCG.
+/// the sparsity pattern of the lower triangle of `A` (zero fill-in, "IC(0)").
+/// `L L^T` reproduces `A` exactly on that pattern; for a tridiagonal `A` the
+/// factor is the exact Cholesky factor.  This is the sparse counterpart of the
+/// dense incomplete Cholesky; suitable for use as a preconditioner in PCG.
+///
+/// The factorization is row oriented ("up-looking"): row `i` is built from the
+/// already finished rows `k < i` that it couples to, with every inner product a
+/// sorted merge of two sparse rows, so the cost is
+/// `O(sum_i sum_{k in row i} (nnz_i + nnz_k))`, linear in `nnz` for matrices
+/// with a bounded row length.
+///
+/// # Breakdown handling
+///
+/// IC(0) can break down for a symmetric positive definite matrix that is not an
+/// M- or H-matrix: dropping fill-in can make a pivot `A_ii - sum_k L_ik^2`
+/// non-positive.  The factorization is then restarted on the diagonally shifted
+/// matrix `A + α diag(A)` (Manteuffel, 1980) with `α = 1e-3, 2e-3, 4e-3, ...`
+/// for at most ten shifts (`α <= 0.512`); the shift that finally succeeded is
+/// reported by [`shift`](Self::shift).  If even the largest shift breaks down
+/// the matrix is far from positive definite, and the preconditioner degrades to
+/// the diagonal (Jacobi) scaling `L = diag(sqrt(A_ii))` (with `1` in place of any
+/// non-positive diagonal entry) instead of returning an unusable factor; see
+/// [`used_diagonal_fallback`](Self::used_diagonal_fallback).
 #[derive(Debug, Clone)]
 pub struct IccPreconditioner {
-    /// Lower-triangular Cholesky factor stored in CSR format.
+    /// Lower-triangular Cholesky factor stored in CSR format.  Every row holds
+    /// its off-diagonal entries in ascending column order followed by the
+    /// diagonal entry.
     pub(super) l_values: Vec<f64>,
     pub(super) row_ptr: Vec<usize>,
     pub(super) col_indices: Vec<usize>,
     pub(super) n: usize,
+    /// Manteuffel shift `α` of the successful factorization.
+    pub(super) shift: f64,
+    /// `true` if the factor is the diagonal fallback.
+    pub(super) diagonal_fallback: bool,
+}
+/// First Manteuffel shift tried after a plain IC(0) breakdown.
+const ICC_INITIAL_SHIFT: f64 = 1.0e-3;
+/// Number of shifted restarts (each doubling the shift) before the diagonal
+/// fallback is used.
+const ICC_MAX_SHIFT_TRIES: usize = 10;
+/// A pivot not exceeding this fraction of its (shifted) diagonal entry is a
+/// breakdown: the factor would otherwise contain entries that are larger by the
+/// reciprocal of this fraction.
+const ICC_PIVOT_TOLERANCE: f64 = 1.0e-10;
+/// Inner product of two sparse vectors given by ascending index lists.
+fn sorted_sparse_dot(idx_a: &[usize], val_a: &[f64], idx_b: &[usize], val_b: &[f64]) -> f64 {
+    let mut ia = 0;
+    let mut ib = 0;
+    let mut sum = 0.0;
+    while ia < idx_a.len() && ib < idx_b.len() {
+        match idx_a[ia].cmp(&idx_b[ib]) {
+            std::cmp::Ordering::Equal => {
+                sum += val_a[ia] * val_b[ib];
+                ia += 1;
+                ib += 1;
+            }
+            std::cmp::Ordering::Less => ia += 1,
+            std::cmp::Ordering::Greater => ib += 1,
+        }
+    }
+    sum
 }
 impl IccPreconditioner {
     /// Compute the ICC factorization of a symmetric CSR matrix `a`.
     ///
     /// Only the lower-triangular pattern (including diagonal) of `a` is used.
-    /// Fill-in is dropped (ICC(0) strategy).
+    /// Fill-in is dropped (ICC(0) strategy).  Column indices within a row of `a`
+    /// need not be sorted and duplicate entries are summed.  See the type-level
+    /// documentation for the handling of pivot breakdown.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `a` is not square.
     pub fn new(a: &CsrMatrix) -> Self {
         assert_eq!(a.nrows, a.ncols, "ICC requires a square matrix");
         let n = a.nrows;
-        let mut triplets: Vec<(usize, usize, f64)> = Vec::new();
-        for row in 0..n {
-            let start = a.row_ptr[row];
-            let end = a.row_ptr[row + 1];
-            for idx in start..end {
-                let col = a.col_indices[idx];
-                if col <= row {
-                    triplets.push((row, col, a.values[idx]));
-                }
+        let (row_ptr, col_indices, a_lower) = Self::lower_triangle(a);
+        let mut shift = 0.0_f64;
+        for attempt in 0..=ICC_MAX_SHIFT_TRIES {
+            if let Some(l_values) = Self::factorize(&row_ptr, &col_indices, &a_lower, shift) {
+                return IccPreconditioner {
+                    l_values,
+                    row_ptr,
+                    col_indices,
+                    n,
+                    shift,
+                    diagonal_fallback: false,
+                };
             }
+            shift = if attempt == 0 {
+                ICC_INITIAL_SHIFT
+            } else {
+                2.0 * shift
+            };
         }
-        let lt = CsrMatrix::from_triplets(n, n, &triplets);
-        let mut l_values = lt.values.clone();
-        let row_ptr = lt.row_ptr.clone();
-        let col_indices = lt.col_indices.clone();
-        for j in 0..n {
-            let j_start = row_ptr[j];
-            let j_end = row_ptr[j + 1];
-            let diag_pos = col_indices[j_start..j_end]
-                .iter()
-                .position(|&c| c == j)
-                .map(|off| j_start + off);
-            if let Some(dp) = diag_pos {
-                let sum_sq: f64 = l_values[j_start..dp].iter().map(|&v| v * v).sum();
-                let diag_val = l_values[dp] - sum_sq;
-                if diag_val <= 0.0 {
-                    l_values[dp] = 1e-30_f64.sqrt();
-                } else {
-                    l_values[dp] = diag_val.sqrt();
-                }
-                let l_jj = l_values[dp];
-                for row_i in (j + 1)..n {
-                    let i_start = row_ptr[row_i];
-                    let i_end = row_ptr[row_i + 1];
-                    let pos_ij = col_indices[i_start..i_end]
-                        .iter()
-                        .position(|&c| c == j)
-                        .map(|off| i_start + off);
-                    if let Some(pij) = pos_ij {
-                        let mut dot = 0.0f64;
-                        let mut pi = i_start;
-                        let mut pj = j_start;
-                        while pi < pij && pj < dp {
-                            let ci = col_indices[pi];
-                            let cj = col_indices[pj];
-                            if ci == cj {
-                                dot += l_values[pi] * l_values[pj];
-                                pi += 1;
-                                pj += 1;
-                            } else if ci < cj {
-                                pi += 1;
-                            } else {
-                                pj += 1;
-                            }
-                        }
-                        if l_jj.abs() > 1e-60 {
-                            l_values[pij] = (l_values[pij] - dot) / l_jj;
-                        }
-                    }
-                }
-            }
+        let mut l_values = vec![0.0_f64; a_lower.len()];
+        for i in 0..n {
+            let diag_pos = row_ptr[i + 1] - 1;
+            let d = a_lower[diag_pos];
+            l_values[diag_pos] = if d.is_finite() && d > 0.0 {
+                d.sqrt()
+            } else {
+                1.0
+            };
         }
         IccPreconditioner {
             l_values,
             row_ptr,
             col_indices,
             n,
+            shift: f64::INFINITY,
+            diagonal_fallback: true,
         }
+    }
+    /// Diagonal shift `α` of the factorization: the factor satisfies
+    /// `L L^T ≈ A + α diag(A)`.
+    ///
+    /// `0.0` for a plain IC(0) factor; a positive Manteuffel shift when IC(0)
+    /// broke down; `f64::INFINITY` for the diagonal fallback.
+    pub fn shift(&self) -> f64 {
+        self.shift
+    }
+    /// `true` if the shifted factorizations all broke down and the
+    /// preconditioner is the diagonal (Jacobi) scaling.
+    pub fn used_diagonal_fallback(&self) -> bool {
+        self.diagonal_fallback
+    }
+    /// Lower triangle of `a` (diagonal included) as CSR arrays
+    /// `(row_ptr, col_indices, values)`.  Each row is sorted by column with
+    /// duplicates summed and the diagonal entry present (as an explicit zero if
+    /// `a` does not store it), so the diagonal is the last entry of every row.
+    fn lower_triangle(a: &CsrMatrix) -> (Vec<usize>, Vec<usize>, Vec<f64>) {
+        let n = a.nrows;
+        let mut row_ptr = Vec::with_capacity(n + 1);
+        let mut col_indices: Vec<usize> = Vec::with_capacity(a.nnz() / 2 + n);
+        let mut values: Vec<f64> = Vec::with_capacity(a.nnz() / 2 + n);
+        row_ptr.push(0);
+        let mut entries: Vec<(usize, f64)> = Vec::new();
+        for row in 0..n {
+            entries.clear();
+            for idx in a.row_ptr[row]..a.row_ptr[row + 1] {
+                let col = a.col_indices[idx];
+                if col <= row {
+                    entries.push((col, a.values[idx]));
+                }
+            }
+            entries.sort_by_key(|&(col, _)| col);
+            let row_start = col_indices.len();
+            for &(col, value) in &entries {
+                if col_indices.len() > row_start && col_indices.last() == Some(&col) {
+                    if let Some(last) = values.last_mut() {
+                        *last += value;
+                    }
+                } else {
+                    col_indices.push(col);
+                    values.push(value);
+                }
+            }
+            if col_indices.last() != Some(&row) || col_indices.len() == row_start {
+                col_indices.push(row);
+                values.push(0.0);
+            }
+            row_ptr.push(col_indices.len());
+        }
+        (row_ptr, col_indices, values)
+    }
+    /// Row-oriented IC(0) of `A + shift * diag(A)` on the pattern given by the
+    /// lower-triangle CSR arrays.  Returns `None` on pivot breakdown.
+    fn factorize(
+        row_ptr: &[usize],
+        col_indices: &[usize],
+        a_lower: &[f64],
+        shift: f64,
+    ) -> Option<Vec<f64>> {
+        let n = row_ptr.len().saturating_sub(1);
+        let mut l = vec![0.0_f64; a_lower.len()];
+        for i in 0..n {
+            let row_start = row_ptr[i];
+            let diag_pos = row_ptr[i + 1] - 1;
+            for p in row_start..diag_pos {
+                let k = col_indices[p];
+                let k_start = row_ptr[k];
+                let k_diag = row_ptr[k + 1] - 1;
+                let dot = sorted_sparse_dot(
+                    &col_indices[row_start..p],
+                    &l[row_start..p],
+                    &col_indices[k_start..k_diag],
+                    &l[k_start..k_diag],
+                );
+                l[p] = (a_lower[p] - dot) / l[k_diag];
+            }
+            let sum_sq: f64 = l[row_start..diag_pos].iter().map(|&v| v * v).sum();
+            let a_ii = (1.0 + shift) * a_lower[diag_pos];
+            let pivot = a_ii - sum_sq;
+            if !(a_ii > 0.0 && pivot > ICC_PIVOT_TOLERANCE * a_ii) {
+                return None;
+            }
+            l[diag_pos] = pivot.sqrt();
+        }
+        Some(l)
     }
     /// Apply the ICC preconditioner: solve `(L L^T) z = r`.
     ///

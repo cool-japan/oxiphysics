@@ -108,10 +108,10 @@ pub mod world;
 pub mod ragdoll;
 pub use ragdoll::{
     ArticulatedPose, BalanceController, BallSocketJoint, BodySegmentInertia, BoneDescriptor,
-    ConeTwistLimit, GroundContactDetector, HingeJoint, HumanoidRagdoll, HumanoidSkeleton,
-    JointLimit, PdJointController, PosePdController, Ragdoll, RagdollBone, RagdollPose,
-    RagdollState, SkeletonJoint, forward_kinematics, ragdoll_inertia_tensor,
-    standard_human_segment_inertias,
+    BoneTransform, ConeTwistLimit, GroundContactDetector, HingeJoint, HumanoidRagdoll,
+    HumanoidSkeleton, JointLimit, PdJointController, PosePdController, Ragdoll, RagdollBone,
+    RagdollPose, RagdollState, SkeletonJoint, euler_xyz_to_quat, forward_kinematics,
+    forward_kinematics_transforms, ragdoll_inertia_tensor, standard_human_segment_inertias,
 };
 
 pub mod fluid_coupling;

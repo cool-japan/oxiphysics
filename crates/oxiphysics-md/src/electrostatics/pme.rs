@@ -35,8 +35,9 @@ use std::f64::consts::PI;
 // Physical constant
 // ---------------------------------------------------------------------------
 
-/// Coulomb constant in kJ·Å/(mol·e²); re-exported from the single definition in
-/// [`super::coulomb`] so that every Å-based electrostatics routine agrees.
+/// Coulomb constant in kJ·Å/(mol·e²); re-exported from the single definition
+/// [`crate::electrostatics::COULOMB_K`] so that every Å-based electrostatics
+/// routine agrees.
 pub use super::coulomb::COULOMB_K;
 
 // ---------------------------------------------------------------------------

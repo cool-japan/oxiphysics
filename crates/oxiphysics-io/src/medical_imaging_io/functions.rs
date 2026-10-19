@@ -2,44 +2,151 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-/// Parses raw voxel bytes into f32 based on NIfTI datatype code.
-pub(super) fn parse_nifti_voxels(data: &[u8], datatype: i16, num_voxels: usize) -> Vec<f32> {
-    match datatype {
-        2 => data.iter().take(num_voxels).map(|&b| b as f32).collect(),
-        4 => {
-            let count = num_voxels.min(data.len() / 2);
-            (0..count)
-                .map(|i| read_i16_le(data, i * 2) as f32)
-                .collect()
+/// A scalar voxel storage type of NIfTI-1, with its `datatype` code.
+///
+/// Complex, RGB(A), 1-bit and 128-bit float volumes have no scalar `f32`
+/// reading and are not listed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum VoxelKind {
+    /// `DT_UINT8` (2).
+    Uint8,
+    /// `DT_INT16` (4).
+    Int16,
+    /// `DT_INT32` (8).
+    Int32,
+    /// `DT_FLOAT32` (16).
+    Float32,
+    /// `DT_FLOAT64` (64).
+    Float64,
+    /// `DT_INT8` (256).
+    Int8,
+    /// `DT_UINT16` (512).
+    Uint16,
+    /// `DT_UINT32` (768).
+    Uint32,
+    /// `DT_INT64` (1024).
+    Int64,
+    /// `DT_UINT64` (1280).
+    Uint64,
+}
+impl VoxelKind {
+    /// The storage type of a NIfTI-1 `datatype` code, or `None` if there is no
+    /// scalar reading for it.
+    pub(super) fn from_code(datatype: i16) -> Option<Self> {
+        match datatype {
+            2 => Some(Self::Uint8),
+            4 => Some(Self::Int16),
+            8 => Some(Self::Int32),
+            16 => Some(Self::Float32),
+            64 => Some(Self::Float64),
+            256 => Some(Self::Int8),
+            512 => Some(Self::Uint16),
+            768 => Some(Self::Uint32),
+            1024 => Some(Self::Int64),
+            1280 => Some(Self::Uint64),
+            _ => None,
         }
-        16 => {
-            let count = num_voxels.min(data.len() / 4);
-            (0..count).map(|i| read_f32_le(data, i * 4)).collect()
+    }
+    /// Bytes per voxel.
+    pub(super) fn bytes(self) -> usize {
+        match self {
+            Self::Uint8 | Self::Int8 => 1,
+            Self::Int16 | Self::Uint16 => 2,
+            Self::Int32 | Self::Uint32 | Self::Float32 => 4,
+            Self::Float64 | Self::Int64 | Self::Uint64 => 8,
         }
-        64 => {
-            let count = num_voxels.min(data.len() / 8);
-            (0..count)
-                .map(|i| {
-                    let bytes: [u8; 8] = data[i * 8..i * 8 + 8].try_into().unwrap_or([0; 8]);
-                    f64::from_le_bytes(bytes) as f32
-                })
-                .collect()
+    }
+    /// Bits per voxel: the value the header's `bitpix` must hold.
+    pub(super) fn bitpix(self) -> i16 {
+        match self {
+            Self::Uint8 | Self::Int8 => 8,
+            Self::Int16 | Self::Uint16 => 16,
+            Self::Int32 | Self::Uint32 | Self::Float32 => 32,
+            Self::Float64 | Self::Int64 | Self::Uint64 => 64,
         }
-        _ => vec![0.0; num_voxels],
+    }
+    /// Decode `bytes`, a whole number of little-endian voxels, to `f32`.
+    ///
+    /// Integers wider than 24 bits and doubles are rounded to the nearest `f32`.
+    fn decode(self, bytes: &[u8]) -> Vec<f32> {
+        match self {
+            Self::Uint8 => bytes.iter().map(|&b| f32::from(b)).collect(),
+            Self::Int8 => bytes
+                .iter()
+                .map(|&b| f32::from(i8::from_le_bytes([b])))
+                .collect(),
+            Self::Int16 => decode_le(bytes, |c| f32::from(i16::from_le_bytes(c))),
+            Self::Uint16 => decode_le(bytes, |c| f32::from(u16::from_le_bytes(c))),
+            Self::Int32 => decode_le(bytes, |c| i32::from_le_bytes(c) as f32),
+            Self::Uint32 => decode_le(bytes, |c| u32::from_le_bytes(c) as f32),
+            Self::Float32 => decode_le(bytes, f32::from_le_bytes),
+            Self::Float64 => decode_le(bytes, |c| f64::from_le_bytes(c) as f32),
+            Self::Int64 => decode_le(bytes, |c| i64::from_le_bytes(c) as f32),
+            Self::Uint64 => decode_le(bytes, |c| u64::from_le_bytes(c) as f32),
+        }
     }
 }
-/// Reads a little-endian u16 from a byte slice.
-pub(super) fn read_u16_le(data: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([data[offset], data[offset + 1]])
+/// Convert every `N`-byte chunk of `bytes`; a trailing partial chunk is ignored
+/// (callers pass a whole number of voxels).
+fn decode_le<const N: usize>(bytes: &[u8], convert: impl Fn([u8; N]) -> f32) -> Vec<f32> {
+    let (chunks, _) = bytes.as_chunks::<N>();
+    chunks.iter().map(|&chunk| convert(chunk)).collect()
 }
-/// Reads a little-endian u32 from a byte slice.
-pub(super) fn read_u32_le(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
+/// Human-readable name of a NIfTI-1 `datatype` code, for error messages.
+fn nifti_datatype_name(datatype: i16) -> &'static str {
+    match datatype {
+        0 => "unknown",
+        1 => "binary",
+        32 => "complex64",
+        128 => "rgb24",
+        1536 => "float128",
+        1792 => "complex128",
+        2048 => "complex256",
+        2304 => "rgba32",
+        _ => "not a NIfTI-1 datatype",
+    }
+}
+/// The storage type of a `datatype` code, or the error text for a code without
+/// a scalar reading (complex, RGB, 1-bit, 128-bit float or unknown).
+pub(super) fn voxel_kind(datatype: i16) -> Result<VoxelKind, String> {
+    VoxelKind::from_code(datatype).ok_or_else(|| {
+        format!(
+            "unsupported NIfTI datatype {datatype} ({})",
+            nifti_datatype_name(datatype)
+        )
+    })
+}
+/// Parses raw voxel bytes into f32 based on NIfTI datatype code.
+///
+/// `data` starts at the first voxel (`vox_offset`) and must hold `num_voxels`
+/// voxels of the given datatype; bytes after them are ignored.  The values are
+/// the stored ones: `scl_slope` and `scl_inter` are not applied.
+///
+/// # Errors
+///
+/// Fails, instead of inventing voxels, when the datatype has no scalar reading
+/// (complex, RGB, 1-bit, 128-bit float, or an unknown code) or when `data` is
+/// shorter than `num_voxels` voxels.
+pub(super) fn parse_nifti_voxels(
+    data: &[u8],
+    datatype: i16,
+    num_voxels: usize,
+) -> Result<Vec<f32>, String> {
+    let kind = voxel_kind(datatype)?;
+    let needed = num_voxels.checked_mul(kind.bytes()).ok_or_else(|| {
+        format!(
+            "NIfTI volume of {num_voxels} voxels of {} bytes does not fit in memory",
+            kind.bytes()
+        )
+    })?;
+    let bytes = data.get(..needed).ok_or_else(|| {
+        format!(
+            "NIfTI voxel data is truncated: {num_voxels} voxels of datatype {datatype} need \
+             {needed} bytes but only {} follow the voxel offset",
+            data.len()
+        )
+    })?;
+    Ok(kind.decode(bytes))
 }
 /// Reads a little-endian i16 from a byte slice.
 pub(super) fn read_i16_le(data: &[u8], offset: usize) -> i16 {

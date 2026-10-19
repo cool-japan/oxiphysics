@@ -435,12 +435,18 @@ impl GearTooth {
         let term2 = (ra2.powi(2) - (r2 * phi.cos()).powi(2)).sqrt();
         (term1 + term2 - cp) / (PI * self.module * phi.cos())
     }
-    /// Hertz contact stress at pitch point σH \[N/mm²\] (AGMA/ISO simplified).
+    /// Hertz contact stress at the pitch point σH \[N/mm²\] (ISO 6336 / AGMA, spur gears).
+    ///
+    /// `σH = Z_E · Z_H · sqrt( Wt / (b · d1) · (u + 1) / u )` with the pitch-point
+    /// zone factor `Z_H = sqrt( 2 / (sin φ · cos φ) )` (≈ 2.495 for φ = 20°),
+    /// gear ratio `u = z2 / z1`, face width `b` \[mm\], pinion pitch diameter
+    /// `d1` \[mm\] and tangential force `Wt` \[N\].
     pub fn hertz_contact_stress(&self) -> f64 {
         let phi = self.pressure_angle.to_radians();
         let d1 = self.d1();
         let i = self.gear_ratio();
-        let term = self.wt / (d1 * self.face_width) * (i + 1.0) / i / phi.cos();
+        let zone_factor_squared = 2.0 / (phi.sin() * phi.cos());
+        let term = self.wt / (d1 * self.face_width) * (i + 1.0) / i * zone_factor_squared;
         if term < 0.0 {
             return 0.0;
         }

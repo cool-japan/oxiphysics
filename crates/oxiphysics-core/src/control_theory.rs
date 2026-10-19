@@ -22,6 +22,8 @@
 mod margins;
 mod pole_zero_response;
 
+use crate::numerical_linear_algebra::general_eigen::real_matrix_eigenvalues;
+
 // ---------------------------------------------------------------------------
 // Internal complex number helper
 // ---------------------------------------------------------------------------
@@ -383,47 +385,43 @@ impl StateSpaceModel {
             .collect()
     }
 
-    /// Check stability: all eigenvalues of A must lie strictly inside the unit disk (discrete).
-    /// Uses power iteration / Gershgorin estimate for small systems.
-    /// Returns `true` if stable (all |λ| < 1).
+    /// Spectral radius `ρ(A) = max |λ|` of the state matrix.
+    ///
+    /// The eigenvalues of `A` are computed exactly (real Schur form), so
+    /// complex-conjugate and sign-alternating spectra are handled correctly.
+    /// Returns `None` if `A` is not a finite `n×n` matrix or the eigenvalue
+    /// iteration does not converge.  A system without states has radius `0`.
+    pub fn spectral_radius(&self) -> Option<f64> {
+        let spectrum = real_matrix_eigenvalues(&self.a, self.n)?;
+        Some(
+            spectrum
+                .iter()
+                .map(|&(re, im)| re.hypot(im))
+                .fold(0.0_f64, f64::max),
+        )
+    }
+
+    /// Check asymptotic stability of the discrete-time system: every eigenvalue
+    /// of `A` must lie strictly inside the unit disk, i.e. `ρ(A) < 1`.
+    ///
+    /// The spectrum is computed exactly (see [`spectral_radius`](Self::spectral_radius)).
+    /// An eigenvalue within the rounding error of the unit circle counts as lying
+    /// on it, because a marginally stable system is not asymptotically stable.
+    /// Returns `false` when the eigenvalues cannot be determined (non-finite or
+    /// inconsistently sized `A`).
     pub fn is_stable(&self) -> bool {
-        // For n≤4, use characteristic polynomial roots via companion matrix approach.
-        // For general stability, use Gershgorin circle theorem as a sufficient condition,
-        // then fall back to iterative spectral radius estimation.
-        let spectral_radius = spectral_radius_power_iter(&self.a, self.n, 200, 1e-8);
-        spectral_radius < 1.0
+        let Some(radius) = self.spectral_radius() else {
+            return false;
+        };
+        let scale = self.a.iter().fold(1.0_f64, |acc, v| acc.max(v.abs()));
+        let rounding_margin = 64.0 * f64::EPSILON * self.n as f64 * scale;
+        radius < 1.0 - rounding_margin
     }
 
     /// Reset state to zero.
     pub fn reset(&mut self) {
         self.state = vec![0.0; self.n];
     }
-}
-
-/// Estimate the spectral radius of matrix A (n×n) via power iteration.
-fn spectral_radius_power_iter(a: &[f64], n: usize, max_iter: usize, tol: f64) -> f64 {
-    if n == 0 {
-        return 0.0;
-    }
-    let mut v = vec![1.0f64; n];
-    let mut lambda = 0.0f64;
-    for _iter in 0..max_iter {
-        // w = A*v
-        let w = mat_mul(a, &v, n, n, 1);
-        // norm
-        let norm: f64 = w.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm < 1e-300 {
-            return 0.0;
-        }
-        let new_lambda = norm;
-        // normalize
-        v = w.iter().map(|x| x / norm).collect();
-        if (new_lambda - lambda).abs() < tol {
-            return new_lambda;
-        }
-        lambda = new_lambda;
-    }
-    lambda
 }
 
 // ---------------------------------------------------------------------------
@@ -1837,12 +1835,82 @@ mod tests {
         assert!(mat_inv(&singular, 2).is_none());
     }
 
+    fn state_space_with(a: Vec<f64>, n: usize) -> StateSpaceModel {
+        StateSpaceModel::new(a, vec![0.0; n], vec![0.0; n], vec![0.0], n, 1, 1)
+    }
+
     #[test]
     fn test_spectral_radius_stable_matrix() {
         // Matrix [[0.5, 0], [0, 0.5]] → spectral radius = 0.5
-        let a = vec![0.5, 0.0, 0.0, 0.5];
-        let r = spectral_radius_power_iter(&a, 2, 100, 1e-8);
-        assert!((r - 0.5).abs() < 0.01, "spectral radius should be ~0.5");
+        let ss = state_space_with(vec![0.5, 0.0, 0.0, 0.5], 2);
+        let r = ss.spectral_radius().expect("finite matrix");
+        assert!((r - 0.5).abs() < 1e-12, "spectral radius {r}");
+    }
+
+    #[test]
+    fn test_spectral_radius_of_non_normal_and_oscillatory_matrices() {
+        // [[1.25, -0.75], [-0.75, 1.25]] has the eigenvalues {2, 0.5}.
+        let symmetric = state_space_with(vec![1.25, -0.75, -0.75, 1.25], 2);
+        let r = symmetric.spectral_radius().expect("finite matrix");
+        assert!((r - 2.0).abs() < 1e-12, "spectral radius {r}");
+        // [[0, 2], [0.6, 0]] has the eigenvalues +-sqrt(1.2).
+        let alternating = state_space_with(vec![0.0, 2.0, 0.6, 0.0], 2);
+        let r = alternating.spectral_radius().expect("finite matrix");
+        assert!((r - 1.2_f64.sqrt()).abs() < 1e-12, "spectral radius {r}");
+        // Damped rotation: eigenvalues 0.9 e^{+-i 0.7}.
+        let (c, s) = (0.9 * 0.7_f64.cos(), 0.9 * 0.7_f64.sin());
+        let rotation = state_space_with(vec![c, -s, s, c], 2);
+        let r = rotation.spectral_radius().expect("finite matrix");
+        assert!((r - 0.9).abs() < 1e-12, "spectral radius {r}");
+    }
+
+    #[test]
+    fn test_is_stable_rejects_systems_the_power_iteration_called_stable() {
+        // Power iteration from [1, 1] returned ||A v|| = 0.5 for the first matrix
+        // (spectral radius 2) and oscillated around 0.81 for the second
+        // (spectral radius 1.095): both were reported stable.
+        let growing = state_space_with(vec![1.25, -0.75, -0.75, 1.25], 2);
+        assert!(!growing.is_stable());
+        let alternating = state_space_with(vec![0.0, 2.0, 0.6, 0.0], 2);
+        assert!(!alternating.is_stable());
+    }
+
+    #[test]
+    fn test_is_stable_accepts_stable_spectra() {
+        let diagonal = state_space_with(vec![0.5, 0.0, 0.0, -0.9], 2);
+        assert!(diagonal.is_stable());
+        let (c, s) = (0.9 * 0.7_f64.cos(), 0.9 * 0.7_f64.sin());
+        let rotation = state_space_with(vec![c, -s, s, c], 2);
+        assert!(rotation.is_stable());
+        // A strictly upper-triangular (nilpotent) matrix has the spectrum {0, 0, 0}
+        // even though its entries are large.
+        let nilpotent = state_space_with(vec![0.0, 50.0, 80.0, 0.0, 0.0, 70.0, 0.0, 0.0, 0.0], 3);
+        assert!(nilpotent.is_stable());
+    }
+
+    #[test]
+    fn test_is_stable_treats_the_unit_circle_as_unstable() {
+        // Pure rotation: |lambda| = 1 up to rounding, marginal, not asymptotically stable.
+        let (c, s) = (0.6_f64, 0.8_f64);
+        assert!(!state_space_with(vec![c, -s, s, c], 2).is_stable());
+        // Integrator and sign flip.
+        assert!(!state_space_with(vec![1.0], 1).is_stable());
+        assert!(!state_space_with(vec![-1.0], 1).is_stable());
+    }
+
+    #[test]
+    fn test_is_stable_is_conservative_on_invalid_state_matrices() {
+        let mut nan = state_space_with(vec![0.5, 0.0, 0.0, 0.5], 2);
+        nan.a[1] = f64::NAN;
+        assert!(!nan.is_stable());
+        assert!(nan.spectral_radius().is_none());
+        let mut truncated = state_space_with(vec![0.5, 0.0, 0.0, 0.5], 2);
+        truncated.a.pop();
+        assert!(!truncated.is_stable());
+        // No states: nothing can diverge.
+        let empty = StateSpaceModel::new(vec![], vec![], vec![], vec![0.0], 0, 1, 1);
+        assert_eq!(empty.spectral_radius(), Some(0.0));
+        assert!(empty.is_stable());
     }
 
     #[test]

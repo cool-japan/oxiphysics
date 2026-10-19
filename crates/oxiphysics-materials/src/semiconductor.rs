@@ -188,22 +188,41 @@ impl CarrierConcentration {
         (nc * nv).sqrt() * (-self.band.band_gap_ev / (2.0 * vt)).exp()
     }
 
-    /// Fermi-Dirac integral of order 1/2 (approximation).
+    /// Complete Fermi-Dirac integral of order 1/2 (closed-form approximation).
     ///
-    /// F_{1/2}(eta) approximated using the Joyce-Dixon formula.
+    /// Returns the *unnormalised* integral
+    /// `F_{1/2}(η) = ∫₀^∞ √x / (1 + exp(x − η)) dx`, i.e. `F_{1/2} → (√π/2)·e^η`
+    /// for `η → −∞` (Boltzmann limit) and `F_{1/2} → (2/3)·η^{3/2}` for `η → +∞`
+    /// (degenerate limit).  The reduced Fermi level is `η = (E_F − E_c)/(k_B·T)`.
+    ///
+    /// The integral is evaluated with the Bednarczyk-Bednarczyk (1978)
+    /// approximation
+    ///
+    /// `F_{1/2}(η) ≈ (√π/2) / ( e^{−η} + (3√π/4)·ν^{−3/8} )`,
+    /// `ν = η⁴ + 50 + 33.6·η·(1 − 0.68·exp(−0.17·(η + 1)²))`.
+    ///
+    /// It is exact in both limits and a single smooth expression in between;
+    /// compared with a numerical quadrature of the integral its relative error
+    /// stays below 0.4 % for all `η` (worst near `η ≈ 3.5`; about 0.03 % at
+    /// `η = 0` and `η = 5`).  The expression is evaluated in a form that cannot
+    /// overflow for strongly negative `η`.
     pub fn fermi_dirac_half(eta: f64) -> f64 {
-        if eta < -5.0 {
-            // Non-degenerate: F_{1/2}(eta) ≈ exp(eta) * sqrt(pi)/2
-            (PI.sqrt() / 2.0) * eta.exp()
-        } else if eta > 5.0 {
-            // Highly degenerate: F_{1/2}(eta) ≈ (2/3) * eta^{3/2}
-            (2.0 / 3.0) * eta.powf(1.5)
-        } else {
-            // Intermediate: Padé approximation
-            let exp_eta = eta.exp();
-            let denom = 1.0 + 0.27 * exp_eta;
-            (PI.sqrt() / 2.0) * exp_eta / denom.sqrt()
+        if eta.is_infinite() {
+            return if eta > 0.0 { f64::INFINITY } else { 0.0 };
         }
+        let nu = eta.powi(4)
+            + 50.0
+            + 33.6 * eta * (1.0 - 0.68 * (-0.17 * (eta + 1.0) * (eta + 1.0)).exp());
+        // (3·√π/4)·ν^{−3/8}
+        let degenerate_term = 0.75 * PI.sqrt() * nu.powf(-0.375);
+        // F_{1/2}(η) / (√π/2); both branches are algebraically identical.
+        let normalised = if eta <= 0.0 {
+            let boltzmann = eta.exp();
+            boltzmann / (1.0 + degenerate_term * boltzmann)
+        } else {
+            1.0 / ((-eta).exp() + degenerate_term)
+        };
+        0.5 * PI.sqrt() * normalised
     }
 
     /// Electron concentration n0 in cm^-3 (assuming complete ionization).
@@ -1376,5 +1395,106 @@ mod tests {
             eg_0k > eg_300k,
             "Band gap should be larger at 0K: {eg_0k} vs {eg_300k}"
         );
+    }
+
+    /// Unnormalised F_{1/2}(eta) by composite Simpson quadrature of the smooth
+    /// integrand 2 t² / (1 + exp(t² − eta)) obtained with x = t².
+    fn fermi_dirac_half_quadrature(eta: f64) -> f64 {
+        let t_max = (eta.max(0.0) + 45.0).sqrt();
+        let n = 4000_usize;
+        let h = t_max / n as f64;
+        let f = |t: f64| 2.0 * t * t / (1.0 + (t * t - eta).exp());
+        let mut sum = f(0.0) + f(t_max);
+        for i in 1..n {
+            let w = if i % 2 == 1 { 4.0 } else { 2.0 };
+            sum += w * f(i as f64 * h);
+        }
+        sum * h / 3.0
+    }
+
+    #[test]
+    fn test_fermi_dirac_half_reference_values() {
+        // Unnormalised F_{1/2} from high-precision quadrature; relative tolerance 3e-3.
+        let cases = [
+            (-2.0, 0.114_588),
+            (0.0, 0.678_094),
+            (2.0, 2.502_458),
+            (5.0, 7.837_976),
+            (10.0, 21.344_471),
+        ];
+        for (eta, exact) in cases {
+            let f = CarrierConcentration::fermi_dirac_half(eta);
+            let rel = ((f - exact) / exact).abs();
+            assert!(rel < 3.0e-3, "F_1/2({eta}) = {f}, exact {exact}, rel {rel}");
+        }
+    }
+
+    #[test]
+    fn test_fermi_dirac_half_is_continuous_at_eta_5() {
+        let below = CarrierConcentration::fermi_dirac_half(5.0 - 1.0e-9);
+        let above = CarrierConcentration::fermi_dirac_half(5.0 + 1.0e-9);
+        assert!(
+            (above - below).abs() < 1.0e-6,
+            "no jump at eta = 5: {below} vs {above}"
+        );
+        // dF/deta ~ sqrt(eta) ~ 2.2 near eta = 5, so a 0.002 span changes F by only
+        // about 0.0045 (the former expression jumped from 20.4 to 7.5 across eta = 5).
+        let span = CarrierConcentration::fermi_dirac_half(5.001)
+            - CarrierConcentration::fermi_dirac_half(4.999);
+        assert!(span > 0.0 && span < 0.01, "span = {span}");
+    }
+
+    #[test]
+    fn test_fermi_dirac_half_matches_quadrature_over_eta_range() {
+        // Bednarczyk-Bednarczyk worst-case relative error is ~0.38 % (near eta = 3.5).
+        for k in 0..=50 {
+            let eta = -5.0 + 0.5 * k as f64;
+            let exact = fermi_dirac_half_quadrature(eta);
+            let f = CarrierConcentration::fermi_dirac_half(eta);
+            let rel = ((f - exact) / exact).abs();
+            assert!(
+                rel < 4.5e-3,
+                "eta = {eta}: F = {f}, quadrature {exact}, rel {rel}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fermi_dirac_half_limits_and_monotonicity() {
+        // Boltzmann limit.
+        for eta in [-12.0, -20.0, -35.0] {
+            let f = CarrierConcentration::fermi_dirac_half(eta);
+            let boltzmann = 0.5 * PI.sqrt() * eta.exp();
+            assert!(
+                ((f - boltzmann) / boltzmann).abs() < 1.0e-4,
+                "eta = {eta}: {f} vs {boltzmann}"
+            );
+        }
+        // Degenerate (Sommerfeld) limit: (2/3) eta^{3/2} (1 + pi²/(8 eta²)).
+        for eta in [50.0, 100.0, 400.0] {
+            let f = CarrierConcentration::fermi_dirac_half(eta);
+            let sommerfeld = (2.0 / 3.0) * eta.powf(1.5) * (1.0 + PI * PI / (8.0 * eta * eta));
+            assert!(
+                ((f - sommerfeld) / sommerfeld).abs() < 5.0e-4,
+                "eta = {eta}: {f} vs {sommerfeld}"
+            );
+        }
+        // Strictly increasing and positive over a dense grid; no overflow/NaN at extremes.
+        let mut previous = 0.0_f64;
+        for k in 0..=3000 {
+            let eta = -15.0 + 0.01 * k as f64;
+            let f = CarrierConcentration::fermi_dirac_half(eta);
+            assert!(
+                f.is_finite() && f > previous,
+                "eta = {eta}: {f} after {previous}"
+            );
+            previous = f;
+        }
+        for eta in [-800.0, -1.0e4, f64::NEG_INFINITY] {
+            let f = CarrierConcentration::fermi_dirac_half(eta);
+            assert!(f.is_finite() && f >= 0.0, "eta = {eta}: {f}");
+        }
+        assert!(CarrierConcentration::fermi_dirac_half(f64::INFINITY).is_infinite());
+        assert!(CarrierConcentration::fermi_dirac_half(f64::NAN).is_nan());
     }
 }

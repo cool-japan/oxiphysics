@@ -454,23 +454,66 @@ impl FourBarLinkage {
     pub fn is_crank_rocker(&self) -> bool {
         self.grashof() && self.l2 <= self.l1 && self.l2 <= self.l3 && self.l2 <= self.l4
     }
-    /// Compute the follower angle `theta4` for the current `theta2`.
+    /// Compute the follower angle `theta4` for crank angle `theta2`.
     ///
-    /// Uses the Freudenstein equation. Returns `None` on assembly error.
+    /// Solves Freudenstein's equation in Norton's form with the ground link
+    /// `l1` along the +x axis, the crank pivot at the origin and the follower
+    /// pivot at `(l1, 0)`.  The constants are
+    ///
+    /// ```text
+    /// K1 = l1 / l2,  K2 = l1 / l4,  K3 = (l2² − l3² + l4² + l1²) / (2·l2·l4)
+    /// A = cosθ2 − K1 − K2·cosθ2 + K3,  B = −2·sinθ2,  C = K1 − (K2 + 1)·cosθ2 + K3
+    /// t = tan(θ4 / 2) = (−B − √(B² − 4AC)) / (2A)
+    /// ```
+    ///
+    /// which satisfies the closed-loop condition
+    /// `|(l2·cosθ2, l2·sinθ2) − (l1 + l4·cosθ4, l4·sinθ4)| = l3`.  This selects
+    /// the "open" assembly mode.  The root is evaluated with the cancellation
+    /// free form of the quadratic formula, so it stays accurate and finite when
+    /// `A → 0` (including `A = 0`, where the quadratic is linear in `t`), and
+    /// the result is wrapped into `(−π, π]`.
+    ///
+    /// Returns `None` when the crank or follower length is not positive, or
+    /// when the linkage cannot assemble at this crank angle.
     pub fn follower_angle(&self, theta2: f64) -> Option<f64> {
-        let k1 = self.l1 / self.l4;
-        let k2 = self.l1 / self.l2;
-        let k3 =
-            (sq(self.l2) - sq(self.l3) + sq(self.l4) + sq(self.l1)) / (2.0 * self.l2 * self.l4);
-        let a = theta2.cos() - k1 - k2 * theta2.cos() + k3;
-        let b = -2.0 * theta2.sin();
-        let c = k1 - (k2 + 1.0) * theta2.cos() + k3;
-        let disc = sq(b) - 4.0 * a * c;
-        if disc < 0.0 {
+        let has_positive_crank_and_follower = self.l2 > 0.0 && self.l4 > 0.0;
+        if !has_positive_crank_and_follower {
             return None;
         }
-        let t = (-b - disc.sqrt()) / (2.0 * a);
-        Some(2.0 * t.atan())
+        let k1 = self.l1 / self.l2;
+        let k2 = self.l1 / self.l4;
+        let k3 =
+            (sq(self.l2) - sq(self.l3) + sq(self.l4) + sq(self.l1)) / (2.0 * self.l2 * self.l4);
+        let (sin2, cos2) = theta2.sin_cos();
+        let a = cos2 - k1 - k2 * cos2 + k3;
+        let b = -2.0 * sin2;
+        let c = k1 - (k2 + 1.0) * cos2 + k3;
+        let disc = sq(b) - 4.0 * a * c;
+        if !disc.is_finite() || disc < -1e-12 {
+            return None;
+        }
+        let root = disc.max(0.0).sqrt();
+        // The "−√disc" root of a·t² + b·t + c = 0 is q/a for b ≥ 0 and c/q for
+        // b < 0, with q = −(b + sign(b)·√disc) / 2 (no catastrophic cancellation).
+        let half_angle = if b >= 0.0 {
+            let q = -0.5 * (b + root);
+            if q == 0.0 && a == 0.0 {
+                // The quadratic degenerates to the non-zero constant C: the
+                // only solution is t = ∞, i.e. θ4 = π.
+                std::f64::consts::FRAC_PI_2
+            } else {
+                q.atan2(a)
+            }
+        } else {
+            let q = -0.5 * (b - root);
+            c.atan2(q)
+        };
+        let theta4 = (2.0 * half_angle).rem_euclid(std::f64::consts::TAU);
+        Some(if theta4 > PI {
+            theta4 - std::f64::consts::TAU
+        } else {
+            theta4
+        })
     }
     /// Compute the transmission angle (angle between coupler and follower, radians).
     pub fn transmission_angle(&self, theta2: f64) -> f64 {
@@ -993,10 +1036,17 @@ impl FourBarAnalysis {
     /// Returns `None` if the linkage cannot assemble at this angle.
     pub fn analyse(l1: f64, l2: f64, l3: f64, l4: f64, theta2: f64, omega2: f64) -> Option<Self> {
         let (theta3, theta4) = four_bar_angles(l1, l2, l3, l4, theta2)?;
-        let omega3 =
-            -omega2 * l2 * (theta2 - theta4).sin() / (l3 * (theta3 - theta4).sin()).max(1e-12);
+        let guard_denominator = |d: f64| {
+            if d.abs() < 1e-12 {
+                1e-12_f64.copysign(d)
+            } else {
+                d
+            }
+        };
+        let omega3 = -omega2 * l2 * (theta2 - theta4).sin()
+            / guard_denominator(l3 * (theta3 - theta4).sin());
         let omega4 =
-            -omega2 * l2 * (theta2 - theta3).sin() / (l4 * (theta4 - theta3).sin()).max(1e-12);
+            omega2 * l2 * (theta2 - theta3).sin() / guard_denominator(l4 * (theta4 - theta3).sin());
         let a_x = l2 * theta2.cos();
         let a_y = l2 * theta2.sin();
         let coupler_x = a_x + 0.5 * l3 * theta3.cos();

@@ -168,13 +168,32 @@ impl Shake {
     ///
     /// Returns the number of iterations performed.
     pub fn apply(&self, positions: &mut [Vec3], old_positions: &[Vec3], inv_masses: &[f64]) -> u32 {
+        self.iterate(positions, old_positions, inv_masses, None)
+    }
+
+    /// The SHAKE sweep loop shared by [`Shake::apply`] and
+    /// [`Shake::constraint_forces`], so that the two can never drift apart.
+    ///
+    /// When `multipliers` is given (one slot per constraint) the Lagrange
+    /// multiplier `λ_c` of every correction is accumulated into the slot of its
+    /// constraint over all sweeps.  Every correction displaces the two atoms of a
+    /// constraint along its reference bond `r_ref` by `∓ λ_c · w · r_ref`
+    /// (`w = 1/m`), so the accumulated multipliers describe the whole constraint
+    /// displacement.
+    fn iterate(
+        &self,
+        positions: &mut [Vec3],
+        old_positions: &[Vec3],
+        inv_masses: &[f64],
+        mut multipliers: Option<&mut [f64]>,
+    ) -> u32 {
         let mut iter = 0u32;
 
         for _ in 0..self.max_iter {
             iter += 1;
             let mut converged = true;
 
-            for c in &self.constraints {
+            for (index, c) in self.constraints.iter().enumerate() {
                 let i = c.atom_i;
                 let j = c.atom_j;
 
@@ -197,6 +216,12 @@ impl Shake {
 
                 positions[i] -= r_ref * (lambda * inv_masses[i]);
                 positions[j] += r_ref * (lambda * inv_masses[j]);
+                if let Some(slot) = multipliers
+                    .as_deref_mut()
+                    .and_then(|accumulated| accumulated.get_mut(index))
+                {
+                    *slot += lambda;
+                }
             }
 
             if converged {
@@ -341,10 +366,31 @@ impl Shake {
         }
     }
 
-    /// Compute constraint forces: the Lagrange multiplier forces that
-    /// SHAKE implicitly applies.
+    /// Compute the constraint forces that SHAKE implicitly applies in one step.
     ///
-    /// Returns force on each atom due to constraints.
+    /// `positions` must be the *unconstrained* positions, i.e. the array handed to
+    /// [`Shake::apply`] before it is shaken; `old_positions` are the reference
+    /// positions of that step, `inv_masses[i]` is `1/m_i` and `dt` the (positive)
+    /// time step.  If the already constrained positions are passed instead, no
+    /// constraint is violated, every multiplier is zero and so are the forces.
+    ///
+    /// SHAKE moves the atoms `i` and `j` of constraint `c` along its reference bond
+    /// `r_ref = r_i^old - r_j^old` by `Δr_i = -λ_c w_i r_ref` and
+    /// `Δr_j = +λ_c w_j r_ref`, with `λ_c` the multiplier summed over all sweeps.
+    /// The force that produces this displacement in one time step is
+    /// `F = m Δr / dt²`, so the mass cancels:
+    ///
+    /// ```text
+    /// F_i = -(λ_c / dt²) r_ref,     F_j = +(λ_c / dt²) r_ref.
+    /// ```
+    ///
+    /// The two forces of a constraint are therefore exactly equal and opposite
+    /// (Newton's third law) and, for every atom, `F_i = m_i (shaken_i - unconstrained_i) / dt²`
+    /// holds with `shaken` the result of [`Shake::apply`] with the same `max_iter`
+    /// and tolerance.  Atoms with `inv_masses[i] = 0` (infinite mass) receive the
+    /// finite reaction force of their constraints.
+    ///
+    /// Returns the force on each atom due to the constraints.
     pub fn constraint_forces(
         &self,
         positions: &[Vec3],
@@ -355,25 +401,21 @@ impl Shake {
         let n = positions.len();
         let mut forces = vec![Vec3::new(0.0, 0.0, 0.0); n];
 
-        for c in &self.constraints {
-            let i = c.atom_i;
-            let j = c.atom_j;
+        let mut scratch = positions.to_vec();
+        let mut multipliers = vec![0.0_f64; self.constraints.len()];
+        self.iterate(
+            &mut scratch,
+            old_positions,
+            inv_masses,
+            Some(multipliers.as_mut_slice()),
+        );
 
-            let r_new = positions[i] - positions[j];
-            let r_new_sq = r_new.norm_squared();
-            let delta_sq = r_new_sq - c.distance_sq;
-
-            let r_ref = old_positions[i] - old_positions[j];
-            let denom = 2.0 * r_ref.dot(&r_new) * (inv_masses[i] + inv_masses[j]);
-            if denom.abs() < 1e-30 {
-                continue;
-            }
-
-            let lambda = delta_sq / denom;
-            // Force = -lambda * r_ref / dt^2 (times mass factors already in lambda)
-            let f_scale = lambda / (dt * dt);
-            forces[i] -= r_ref * (f_scale / inv_masses[i].max(1e-30));
-            forces[j] += r_ref * (f_scale / inv_masses[j].max(1e-30));
+        let f_scale = 1.0 / (dt * dt);
+        for (c, lambda) in self.constraints.iter().zip(multipliers.iter()) {
+            let r_ref = old_positions[c.atom_i] - old_positions[c.atom_j];
+            let constraint_force = r_ref * (lambda * f_scale);
+            forces[c.atom_i] -= constraint_force;
+            forces[c.atom_j] += constraint_force;
         }
 
         forces
@@ -1533,5 +1575,146 @@ mod tests {
         ];
         let err = total_constraint_error(&constraints, &positions);
         assert!(err < 1e-12, "error = {err}");
+    }
+
+    // ------------------------------------------------------------------
+    // SHAKE constraint forces
+    // ------------------------------------------------------------------
+
+    /// Water geometry (O, H1, H2) built from the constraint distances themselves
+    /// (O-H 0.9572 Å, H-H 1.5139 Å), so that no constraint is violated.  Rebuilding it
+    /// from the 104.52° angle would miss d_HH by ~1e-6 relative, which already
+    /// produces sizeable constraint forces after the division by dt².
+    fn tip3p_reference() -> Vec<Vec3> {
+        let (d_oh, d_hh): (Real, Real) = (0.9572, 1.5139);
+        let half = 0.5 * d_hh;
+        let height = (d_oh * d_oh - half * half).sqrt();
+        vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(half, height, 0.0),
+            Vec3::new(-half, height, 0.0),
+        ]
+    }
+
+    #[test]
+    fn test_constraint_forces_single_oh_pair_obey_newton_iii() {
+        // One O-H constraint with unequal masses (O 15.9994 u, H 1.008 u); a single SHAKE
+        // sweep, for which the force is exactly m_i * (shaken_i - unconstrained_i) / dt^2.
+        let (m_o, m_h) = (15.9994_f64, 1.008_f64);
+        let inv_masses = vec![1.0 / m_o, 1.0 / m_h];
+        let shake = Shake::with_params(vec![BondConstraint::new(0, 1, 0.9572)], 1, 1e-8);
+        let old_positions = vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.9572, 0.0, 0.0)];
+        let unconstrained = vec![
+            old_positions[0] + Vec3::new(0.012, -0.007, 0.004),
+            old_positions[1] + Vec3::new(-0.02, 0.03, -0.01),
+        ];
+        let dt = 0.002;
+
+        let mut shaken = unconstrained.clone();
+        shake.apply(&mut shaken, &old_positions, &inv_masses);
+        let forces = shake.constraint_forces(&unconstrained, &old_positions, &inv_masses, dt);
+
+        assert!(forces[0].norm() > 1e-3, "the violated bond must be forced");
+        assert_eq!(forces[0], -forces[1], "Newton III: F_O = -F_H");
+        for (atom, mass) in [m_o, m_h].into_iter().enumerate() {
+            let expected = (shaken[atom] - unconstrained[atom]) * (mass / (dt * dt));
+            assert!(
+                (forces[atom] - expected).norm() <= 1e-10 * expected.norm(),
+                "atom {atom}: F = {:?}, m (shaken - unconstrained) / dt^2 = {expected:?}",
+                forces[atom]
+            );
+        }
+        // The force acts along the reference bond.
+        let bond = old_positions[0] - old_positions[1];
+        assert!(forces[0].cross(&bond).norm() < 1e-12 * forces[0].norm() * bond.norm());
+    }
+
+    #[test]
+    fn test_constraint_forces_of_rigid_water_reproduce_the_shake_displacement() {
+        // Three coupled constraints, default (converging) SHAKE: for every atom
+        // F_i = m_i (shaken_i - unconstrained_i) / dt^2 and the forces sum to zero.
+        let masses = [15.9994_f64, 1.008, 1.008];
+        let inv_masses: Vec<f64> = masses.iter().map(|m| 1.0 / m).collect();
+        let shake = Shake::new(water_shake_constraints(0));
+        let old_positions = tip3p_reference();
+        let kicks = [
+            Vec3::new(0.021, -0.013, 0.006),
+            Vec3::new(-0.034, 0.027, -0.012),
+            Vec3::new(0.018, 0.041, 0.009),
+        ];
+        let unconstrained: Vec<Vec3> = old_positions
+            .iter()
+            .zip(kicks.iter())
+            .map(|(p, k)| p + k)
+            .collect();
+        let dt = 0.002;
+
+        let mut shaken = unconstrained.clone();
+        let iters = shake.apply(&mut shaken, &old_positions, &inv_masses);
+        assert!(iters > 1, "the coupled constraints need several sweeps");
+        assert!(shake.max_relative_violation(&shaken) < 1e-7);
+
+        let forces = shake.constraint_forces(&unconstrained, &old_positions, &inv_masses, dt);
+        let mut total = Vec3::new(0.0, 0.0, 0.0);
+        for atom in 0..3 {
+            let expected = (shaken[atom] - unconstrained[atom]) * (masses[atom] / (dt * dt));
+            assert!(
+                (forces[atom] - expected).norm() <= 1e-9 * expected.norm(),
+                "atom {atom}: F = {:?}, m (shaken - unconstrained) / dt^2 = {expected:?}",
+                forces[atom]
+            );
+            total += forces[atom];
+        }
+        let scale = forces.iter().map(|f| f.norm()).fold(0.0_f64, f64::max);
+        assert!(
+            total.norm() < 1e-9 * scale,
+            "constraint forces must sum to zero, got {total:?}"
+        );
+
+        // Applying the forces for one step lands on the shaken positions.
+        for atom in 0..3 {
+            let moved = unconstrained[atom] + forces[atom] * (dt * dt / masses[atom]);
+            assert!((moved - shaken[atom]).norm() < 1e-12, "atom {atom}");
+        }
+    }
+
+    #[test]
+    fn test_constraint_forces_vanish_when_no_constraint_is_violated() {
+        let inv_masses = vec![1.0 / 15.9994, 1.0 / 1.008, 1.0 / 1.008];
+        let shake = Shake::new(water_shake_constraints(0));
+        let reference = tip3p_reference();
+        let dt = 0.002;
+        // Rigid geometry passed as "unconstrained" positions: nothing to enforce.
+        let forces = shake.constraint_forces(&reference, &reference, &inv_masses, dt);
+        assert!(forces.iter().all(|f| f.norm() < 1e-9), "{forces:?}");
+        // The documented precondition: already shaken positions carry no violation either.
+        let mut shaken: Vec<Vec3> = reference
+            .iter()
+            .map(|p| p + Vec3::new(0.02, -0.01, 0.015))
+            .collect();
+        shaken[1] += Vec3::new(0.03, 0.0, 0.0);
+        shake.apply(&mut shaken, &reference, &inv_masses);
+        let forces = shake.constraint_forces(&shaken, &reference, &inv_masses, dt);
+        assert!(forces.iter().all(|f| f.norm() < 1e-6), "{forces:?}");
+    }
+
+    #[test]
+    fn test_constraint_forces_of_a_fixed_atom_are_finite() {
+        // Atom 0 has infinite mass (w = 0): it does not move, yet it receives the finite
+        // reaction of the bond (the old per-mass division produced ~1e30 here).
+        let inv_masses = vec![0.0, 0.5];
+        let shake = Shake::new(vec![BondConstraint::new(0, 1, 1.0)]);
+        let old_positions = vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)];
+        let unconstrained = vec![old_positions[0], Vec3::new(1.2, 0.1, 0.0)];
+        let dt = 0.01;
+        let mut shaken = unconstrained.clone();
+        shake.apply(&mut shaken, &old_positions, &inv_masses);
+        assert_eq!(shaken[0], unconstrained[0]);
+
+        let forces = shake.constraint_forces(&unconstrained, &old_positions, &inv_masses, dt);
+        assert_eq!(forces[0], -forces[1]);
+        let expected = (shaken[1] - unconstrained[1]) * (2.0 / (dt * dt));
+        assert!((forces[1] - expected).norm() <= 1e-10 * expected.norm());
+        assert!(forces[0].norm() < 1e4, "force {:?}", forces[0]);
     }
 }

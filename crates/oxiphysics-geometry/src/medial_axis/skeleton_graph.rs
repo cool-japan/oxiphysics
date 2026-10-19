@@ -551,8 +551,8 @@ pub(super) fn cluster_balls(
     let mut anchor = vec![false; m];
     for (i, b) in nodes.iter().enumerate() {
         let c = assign[i];
-        for k in 0..3 {
-            sum[c][k] += b.position[k];
+        for (acc, x) in sum[c].iter_mut().zip(b.position) {
+            *acc += x;
         }
         rad[c] += b.radius;
         count[c] += 1;

@@ -294,8 +294,10 @@ impl TransmittanceReflectance {
 
 /// CIE 1931 XYZ colour space integration from a spectral power distribution.
 ///
-/// Uses a compact 31-point tabulation (380–780 nm, 10 nm spacing) of the
-/// standard CIE 2° observer colour matching functions.
+/// Uses the analytic multi-lobe Gaussian fit of Wyman, Sloan & Shirley (2013)
+/// to the standard CIE 2° observer colour matching functions (see the private
+/// `cie_cmf` helper); the fit deviates from the tabulated functions by at most
+/// about 0.015 (1.5 % of the peak of ȳ) between 380 and 780 nm.
 #[derive(Debug, Clone)]
 pub struct ColorFromSpectrum {
     /// Wavelengths (nm) at each sample point.
@@ -373,21 +375,34 @@ impl ColorFromSpectrum {
 
 /// CIE 1931 2° standard observer colour matching functions at wavelength `lam_nm`.
 ///
-/// Uses analytical Gaussian fits (Wyman et al. 2013) for a compact representation.
+/// Evaluates the multi-lobe piecewise-Gaussian fit of Wyman, Sloan & Shirley,
+/// "Simple Analytic Approximations to the CIE XYZ Color Matching Functions",
+/// *J. Comput. Graph. Tech.* 2(2), 2013 (wavelengths in nm):
+///
+/// ```text
+/// x̄ = 1.056·g(λ; 599.8, 37.9, 31.0) + 0.362·g(λ; 442.0, 16.0, 26.7)
+///     − 0.065·g(λ; 501.1, 20.4, 26.2)
+/// ȳ = 0.821·g(λ; 568.8, 46.9, 40.5) + 0.286·g(λ; 530.9, 16.3, 31.1)
+/// z̄ = 1.217·g(λ; 437.0, 11.8, 36.0) + 0.681·g(λ; 459.0, 26.0, 13.8)
+/// ```
+///
+/// with `g(λ; μ, σ₁, σ₂) = exp(−½·((λ − μ)/σ)²)` and `σ = σ₁` for `λ < μ`,
+/// `σ = σ₂` otherwise.  Between 380 and 780 nm the fit deviates from the
+/// tabulated CIE values by at most about 0.015 (1.5 % of the peak of ȳ = 1).
+/// The result is clamped at zero because the small negative lobe of x̄ near
+/// 500 nm must not make a colour matching function negative.
 fn cie_cmf(lam_nm: f64) -> (f64, f64, f64) {
-    // Gaussian approximation — accurate to ~2% for most wavelengths.
-    let xbar = gaussian(lam_nm, 1.056, 599.8, 37.9, 0.362)
-        + gaussian(lam_nm, 0.821, 568.8, 46.9, 0.243)
-        + gaussian(lam_nm, -0.065, 601.0, 94.5, 0.000);
-    let ybar =
-        gaussian(lam_nm, 0.821, 556.3, 46.9, 0.243) + gaussian(lam_nm, 0.286, 530.9, 16.3, 0.180);
-    let zbar =
-        gaussian(lam_nm, 1.217, 437.0, 11.8, 0.000) + gaussian(lam_nm, 0.681, 459.0, 26.0, 0.000);
+    let xbar = lobe(lam_nm, 1.056, 599.8, 37.9, 31.0) + lobe(lam_nm, 0.362, 442.0, 16.0, 26.7)
+        - lobe(lam_nm, 0.065, 501.1, 20.4, 26.2);
+    let ybar = lobe(lam_nm, 0.821, 568.8, 46.9, 40.5) + lobe(lam_nm, 0.286, 530.9, 16.3, 31.1);
+    let zbar = lobe(lam_nm, 1.217, 437.0, 11.8, 36.0) + lobe(lam_nm, 0.681, 459.0, 26.0, 13.8);
     (xbar.max(0.0), ybar.max(0.0), zbar.max(0.0))
 }
 
-/// Gaussian helper: a·exp(-0.5·((x−mu)/sigma)²).
-fn gaussian(x: f64, a: f64, mu: f64, sigma: f64, _shift: f64) -> f64 {
+/// One piecewise-Gaussian lobe `a·g(x; mu, sigma_below, sigma_above)`, where the
+/// width is `sigma_below` for `x < mu` and `sigma_above` otherwise.
+fn lobe(x: f64, a: f64, mu: f64, sigma_below: f64, sigma_above: f64) -> f64 {
+    let sigma = if x < mu { sigma_below } else { sigma_above };
     let z = (x - mu) / sigma;
     a * (-0.5 * z * z).exp()
 }
@@ -1102,6 +1117,95 @@ mod tests {
                 "CMF must be non-negative at {lam} nm"
             );
         }
+    }
+
+    // CIE 1931 2° standard observer, selected rows of the 10 nm table.
+    const CIE_1931_TABLE: [(f64, f64, f64, f64); 17] = [
+        (400.0, 0.014310, 0.000396, 0.067850),
+        (420.0, 0.134380, 0.004000, 0.645600),
+        (440.0, 0.348280, 0.023000, 1.747060),
+        (450.0, 0.336200, 0.038000, 1.772110),
+        (460.0, 0.290800, 0.060000, 1.669200),
+        (480.0, 0.095640, 0.139020, 0.812950),
+        (500.0, 0.004900, 0.323000, 0.272000),
+        (520.0, 0.063270, 0.710000, 0.078250),
+        (540.0, 0.290400, 0.954000, 0.020300),
+        (560.0, 0.594500, 0.995000, 0.003900),
+        (580.0, 0.916300, 0.870000, 0.001650),
+        (600.0, 1.062200, 0.631000, 0.000800),
+        (620.0, 0.854450, 0.381000, 0.000190),
+        (640.0, 0.447900, 0.175000, 0.000020),
+        (660.0, 0.164900, 0.061000, 0.0),
+        (680.0, 0.046770, 0.017000, 0.0),
+        (700.0, 0.011359, 0.004102, 0.0),
+    ];
+
+    // CIE CMF fit reproduces the tabulated observer to within 0.02.
+    #[test]
+    fn test_cie_cmf_matches_tabulated_observer() {
+        for &(lam, x_ref, y_ref, z_ref) in &CIE_1931_TABLE {
+            let (x, y, z) = cie_cmf(lam);
+            assert!((x - x_ref).abs() < 0.02, "x̄({lam}) = {x}, CIE {x_ref}");
+            assert!((y - y_ref).abs() < 0.02, "ȳ({lam}) = {y}, CIE {y_ref}");
+            assert!((z - z_ref).abs() < 0.02, "z̄({lam}) = {z}, CIE {z_ref}");
+        }
+    }
+
+    // Anchor values of the three functions (each previously wrong).
+    #[test]
+    fn test_cie_cmf_anchor_values() {
+        let (_, y555, _) = cie_cmf(555.0);
+        assert!((y555 - 1.00).abs() < 0.01, "ȳ(555) = {y555}");
+        let (x600, _, _) = cie_cmf(600.0);
+        assert!((x600 - 1.06).abs() < 0.02, "x̄(600) = {x600}");
+        let (_, _, z450) = cie_cmf(450.0);
+        assert!((z450 - 1.75).abs() < 0.1, "z̄(450) = {z450}");
+    }
+
+    // x̄ has its short-wavelength lobe near 442 nm; ȳ and z̄ have no such lobe
+    // at 600 nm.
+    #[test]
+    fn test_cie_cmf_blue_lobe_of_xbar() {
+        let (x442, _, _) = cie_cmf(442.0);
+        let (x500, _, _) = cie_cmf(500.0);
+        assert!(x442 > 0.3, "x̄(442) = {x442} (CIE 0.35)");
+        assert!(x500 < 0.01, "x̄(500) = {x500} (CIE 0.005)");
+        let (_, y600, z600) = cie_cmf(600.0);
+        assert!(z600 < 0.01 && y600 > 0.5);
+    }
+
+    // The three functions peak where the CIE observer does.
+    #[test]
+    fn test_cie_cmf_peak_wavelengths() {
+        let peak = |component: fn((f64, f64, f64)) -> f64| {
+            let mut best = (380.0, f64::NEG_INFINITY);
+            let mut lam = 380.0;
+            while lam <= 780.0 {
+                let value = component(cie_cmf(lam));
+                if value > best.1 {
+                    best = (lam, value);
+                }
+                lam += 1.0;
+            }
+            best.0
+        };
+        let x_peak = peak(|c| c.0);
+        let y_peak = peak(|c| c.1);
+        let z_peak = peak(|c| c.2);
+        assert!((598.0..=602.0).contains(&x_peak), "x̄ peaks at {x_peak} nm");
+        assert!((553.0..=558.0).contains(&y_peak), "ȳ peaks at {y_peak} nm");
+        assert!((445.0..=450.0).contains(&z_peak), "z̄ peaks at {z_peak} nm");
+    }
+
+    // An equal-energy spectrum has equal X, Y and Z: the three CIE functions
+    // enclose the same area.
+    #[test]
+    fn test_equal_energy_spectrum_has_equal_tristimulus_values() {
+        let lams: Vec<f64> = (380..=780).map(|l| l as f64).collect();
+        let power = vec![1.0; lams.len()];
+        let (x, y, z) = ColorFromSpectrum::new(lams, power).to_xyz();
+        assert!((x / y - 1.0).abs() < 0.005, "X/Y = {}", x / y);
+        assert!((z / y - 1.0).abs() < 0.005, "Z/Y = {}", z / y);
     }
 
     // 46. RefractiveIndex::new stores values correctly.

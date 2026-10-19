@@ -147,6 +147,13 @@ impl ContactBatchProcessor {
     ///
     /// `n_bodies` is the total body count; the returned `Vec` has one entry
     /// per body, initialised to zero and populated by this function.
+    ///
+    /// The returned [`AccumulatedImpulse`] values are true impulses
+    /// (Δ momentum): for a contact with normal `n` and scalar impulse `J` the
+    /// linear impulse is `-J n` on body A and `+J n` on body B, and the angular
+    /// impulse is `r × (±J n)` about each body's centre.  The inverse mass (and
+    /// inverse inertia) is applied exactly once, by
+    /// [`AccumulatedImpulse::apply`] / [`apply_impulses`].
     pub fn process_contacts(
         &self,
         contacts: &[ContactPoint],
@@ -175,15 +182,19 @@ impl ContactBatchProcessor {
             } else {
                 0.0
             };
+            // `j + corr` is the scalar impulse magnitude `J`; the linear impulse
+            // on each body is `∓ J n` (no inverse-mass factor: `apply` scales the
+            // impulse by the body's inverse mass).
+            let magnitude = j + corr;
             let impulse_a = [
-                -w_a * (j + corr) * c.normal[0],
-                -w_a * (j + corr) * c.normal[1],
-                -w_a * (j + corr) * c.normal[2],
+                -magnitude * c.normal[0],
+                -magnitude * c.normal[1],
+                -magnitude * c.normal[2],
             ];
             let impulse_b = [
-                w_b * (j + corr) * c.normal[0],
-                w_b * (j + corr) * c.normal[1],
-                w_b * (j + corr) * c.normal[2],
+                magnitude * c.normal[0],
+                magnitude * c.normal[1],
+                magnitude * c.normal[2],
             ];
             for k in 0..3 {
                 impulses[a].linear[k] += impulse_a[k];

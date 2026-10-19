@@ -2,7 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use super::functions::{foam_header, parse_dict_tokens, strip_foam_comments, tokenise_foam};
+use super::functions::{
+    foam_header, foam_header_with_note, parse_dict_tokens, strip_foam_comments, tokenise_foam,
+};
 
 /// A single boundary condition entry for a `FoamField`.
 pub struct FoamBc {
@@ -89,6 +91,11 @@ pub struct FoamMesh {
     /// Owner cell index for each face.
     pub owner: Vec<usize>,
     /// Neighbour cell index for each face (-1 for boundary faces).
+    ///
+    /// Internal faces come first.  A list that only holds the internal faces,
+    /// as in the OpenFOAM `neighbour` file, is accepted as well: faces without
+    /// an entry are boundary faces.  [`FoamMesh::write_neighbour`] always
+    /// writes the OpenFOAM form (internal faces only).
     pub neighbour: Vec<i64>,
     /// Total number of cells.
     pub n_cells: usize,
@@ -99,9 +106,25 @@ impl FoamMesh {
     /// Build a simple structured hex mesh: `nx × ny × nz` cells filling
     /// a box `[0, lx] × [0, ly] × [0, lz]`.
     ///
-    /// Face ordering follows the OpenFOAM convention (lower-index owner,
-    /// internal faces first, then boundary faces grouped by patch).
+    /// Face ordering follows the OpenFOAM convention: internal faces come
+    /// first in upper-triangular order (sorted by owner cell, then by
+    /// neighbour cell, with the owner always the lower-numbered cell), then the
+    /// boundary faces grouped by patch.  Every face normal (right-hand rule
+    /// along the vertex order) points out of the owner cell, so internal faces
+    /// point into the neighbour and boundary faces out of the box.  `neighbour`
+    /// holds one entry per face, `-1` for boundary faces; a zero cell count in
+    /// any direction yields an empty mesh.
     pub fn box_mesh(lx: f64, ly: f64, lz: f64, nx: usize, ny: usize, nz: usize) -> Self {
+        if nx == 0 || ny == 0 || nz == 0 {
+            return FoamMesh {
+                points: Vec::new(),
+                faces: Vec::new(),
+                owner: Vec::new(),
+                neighbour: Vec::new(),
+                n_cells: 0,
+                boundary_patches: Vec::new(),
+            };
+        }
         let mut points = Vec::with_capacity((nx + 1) * (ny + 1) * (nz + 1));
         for k in 0..=nz {
             for j in 0..=ny {
@@ -121,47 +144,63 @@ impl FoamMesh {
         let mut faces: Vec<Vec<usize>> = Vec::new();
         let mut owner: Vec<usize> = Vec::new();
         let mut neighbour: Vec<i64> = Vec::new();
+        // Internal faces as (owner, neighbour, vertices).  Every face is wound so
+        // that its normal points from the owner cell into the neighbour cell.
+        let mut internal: Vec<(usize, usize, Vec<usize>)> = Vec::new();
         for k in 0..nz {
             for j in 0..ny {
                 for i in 1..nx {
-                    faces.push(vec![
-                        pid(i, j, k),
-                        pid(i, j + 1, k),
-                        pid(i, j + 1, k + 1),
-                        pid(i, j, k + 1),
-                    ]);
-                    owner.push(cid(i - 1, j, k));
-                    neighbour.push(cid(i, j, k) as i64);
+                    internal.push((
+                        cid(i - 1, j, k),
+                        cid(i, j, k),
+                        vec![
+                            pid(i, j, k),
+                            pid(i, j + 1, k),
+                            pid(i, j + 1, k + 1),
+                            pid(i, j, k + 1),
+                        ],
+                    ));
                 }
             }
         }
         for k in 0..nz {
             for j in 1..ny {
                 for i in 0..nx {
-                    faces.push(vec![
-                        pid(i, j, k),
-                        pid(i + 1, j, k),
-                        pid(i + 1, j, k + 1),
-                        pid(i, j, k + 1),
-                    ]);
-                    owner.push(cid(i, j - 1, k));
-                    neighbour.push(cid(i, j, k) as i64);
+                    internal.push((
+                        cid(i, j - 1, k),
+                        cid(i, j, k),
+                        vec![
+                            pid(i, j, k),
+                            pid(i, j, k + 1),
+                            pid(i + 1, j, k + 1),
+                            pid(i + 1, j, k),
+                        ],
+                    ));
                 }
             }
         }
         for k in 1..nz {
             for j in 0..ny {
                 for i in 0..nx {
-                    faces.push(vec![
-                        pid(i, j, k),
-                        pid(i + 1, j, k),
-                        pid(i + 1, j + 1, k),
-                        pid(i, j + 1, k),
-                    ]);
-                    owner.push(cid(i, j, k - 1));
-                    neighbour.push(cid(i, j, k) as i64);
+                    internal.push((
+                        cid(i, j, k - 1),
+                        cid(i, j, k),
+                        vec![
+                            pid(i, j, k),
+                            pid(i + 1, j, k),
+                            pid(i + 1, j + 1, k),
+                            pid(i, j + 1, k),
+                        ],
+                    ));
                 }
             }
+        }
+        // OpenFOAM's upper-triangular order: by owner cell, then by neighbour cell.
+        internal.sort_by_key(|&(own, nbr, _)| (own, nbr));
+        for (own, nbr, face) in internal {
+            faces.push(face);
+            owner.push(own);
+            neighbour.push(nbr as i64);
         }
         let xmin_start = faces.len();
         for k in 0..nz {
@@ -317,9 +356,23 @@ impl FoamMesh {
         s.push_str(")\n");
         s
     }
+    /// The `note` entry OpenFOAM stores in the header of `owner` and
+    /// `neighbour`: the mesh sizes.
+    fn mesh_size_note(&self) -> String {
+        format!(
+            "nPoints:{} nCells:{} nFaces:{} nInternalFaces:{}",
+            self.points.len(),
+            self.n_cells,
+            self.faces.len(),
+            self.n_internal_faces()
+        )
+    }
     /// Write the `owner` file content as a `String`.
+    ///
+    /// The list holds one owner cell per face; the header `note` records
+    /// `nPoints`, `nCells`, `nFaces` and `nInternalFaces`.
     pub fn write_owner(&self) -> String {
-        let mut s = foam_header("labelList", "owner");
+        let mut s = foam_header_with_note("labelList", "owner", Some(&self.mesh_size_note()));
         s.push('\n');
         s.push_str(&format!("{}\n(\n", self.owner.len()));
         for &o in &self.owner {
@@ -329,11 +382,15 @@ impl FoamMesh {
         s
     }
     /// Write the `neighbour` file content as a `String`.
+    ///
+    /// As in OpenFOAM the list only covers the internal faces: its length is
+    /// `nInternalFaces` and boundary faces (negative neighbour) are not
+    /// written.
     pub fn write_neighbour(&self) -> String {
-        let mut s = foam_header("labelList", "neighbour");
+        let mut s = foam_header_with_note("labelList", "neighbour", Some(&self.mesh_size_note()));
         s.push('\n');
-        s.push_str(&format!("{}\n(\n", self.neighbour.len()));
-        for &n in &self.neighbour {
+        s.push_str(&format!("{}\n(\n", self.n_internal_faces()));
+        for &n in self.neighbour.iter().filter(|&&n| n >= 0) {
             s.push_str(&format!("{}\n", n));
         }
         s.push_str(")\n");
@@ -361,9 +418,13 @@ impl FoamMesh {
     pub fn n_internal_faces(&self) -> usize {
         self.neighbour.iter().filter(|&&n| n >= 0).count()
     }
-    /// Count boundary faces (those with neighbour == -1).
+    /// Count boundary faces: every face that has no neighbour cell.
+    ///
+    /// Correct for both neighbour layouts, one entry per face with `-1` for
+    /// boundary faces, and the standard OpenFOAM list that only covers the
+    /// internal faces.
     pub fn n_boundary_faces(&self) -> usize {
-        self.neighbour.iter().filter(|&&n| n < 0).count()
+        self.faces.len().saturating_sub(self.n_internal_faces())
     }
     /// Total number of faces.
     pub fn n_faces(&self) -> usize {
@@ -401,9 +462,58 @@ impl FoamMesh {
             (min[2] + max[2]) * 0.5,
         ]
     }
-    /// Check basic mesh consistency: owner/neighbour length matches faces.
+    /// Check that the mesh obeys OpenFOAM's face-ordering rules.
+    ///
+    /// Returns `true` when
+    /// * `owner` has one entry per face and `neighbour` at most one,
+    /// * the internal faces (non-negative neighbour) come first and every
+    ///   later neighbour entry is negative,
+    /// * each internal face has `owner < neighbour`, both below `n_cells`, and
+    ///   the internal faces are in strictly increasing upper-triangular order
+    ///   (by owner, then by neighbour),
+    /// * every boundary face has a valid owner cell,
+    /// * each face has at least three vertices, all existing points, and
+    /// * every boundary patch lies within the boundary faces.
     pub fn check_topology(&self) -> bool {
-        self.owner.len() == self.faces.len() && self.neighbour.len() == self.faces.len()
+        let n_faces = self.faces.len();
+        if self.owner.len() != n_faces || self.neighbour.len() > n_faces {
+            return false;
+        }
+        let n_internal = self.neighbour.iter().take_while(|&&n| n >= 0).count();
+        if self.neighbour.iter().skip(n_internal).any(|&n| n >= 0) {
+            return false;
+        }
+        let mut previous: Option<(usize, usize)> = None;
+        for (&own, &nbr) in self.owner.iter().zip(&self.neighbour).take(n_internal) {
+            let Ok(nbr) = usize::try_from(nbr) else {
+                return false;
+            };
+            if own >= nbr || nbr >= self.n_cells {
+                return false;
+            }
+            if previous.is_some_and(|prev| (own, nbr) <= prev) {
+                return false;
+            }
+            previous = Some((own, nbr));
+        }
+        if self.owner.iter().any(|&own| own >= self.n_cells) {
+            return false;
+        }
+        let n_points = self.points.len();
+        if self
+            .faces
+            .iter()
+            .any(|face| face.len() < 3 || face.iter().any(|&v| v >= n_points))
+        {
+            return false;
+        }
+        self.boundary_patches.iter().all(|patch| {
+            patch.start_face >= n_internal
+                && patch
+                    .start_face
+                    .checked_add(patch.n_faces)
+                    .is_some_and(|end| end <= n_faces)
+        })
     }
     /// Find the patch with a given name.
     pub fn find_patch(&self, name: &str) -> Option<&FoamPatch> {

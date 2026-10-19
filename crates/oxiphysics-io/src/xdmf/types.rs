@@ -2,6 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::mixed::{fixed_rows, join_ids, mixed_rows, xdmf_mixed_element_count};
 use std::io::Write;
 
 /// Topology types supported for unstructured mesh output.
@@ -415,6 +416,16 @@ impl XdmfWriter {
         ));
     }
     /// Emit a ``Topology` element for an unstructured mesh.
+    ///
+    /// `npe` is the number of nodes per element and `connectivity` is grouped
+    /// into rows of `npe` nodes. `npe == 0` marks a variable-size topology
+    /// (`"Mixed"`): `connectivity` is then an XDMF mixed stream (`[cell type,
+    /// node ids...]` per element, see [`xdmf_mixed_element_count`]) that is
+    /// written flat, one element per line, as an integer `DataItem` of
+    /// `connectivity.len()` entries. `n_elements` must be the element count of
+    /// that stream; this method cannot fail, so validate the stream with
+    /// [`xdmf_mixed_element_count`] first. A stream that does not parse is
+    /// written as a single unstructured line instead of being split.
     pub fn write_unstructured_topology(
         &mut self,
         topo_type: &str,
@@ -427,22 +438,29 @@ impl XdmfWriter {
             topo_type, n_elements
         ));
         self.indent += 1;
+        if npe == 0 {
+            self.push_line(&format!(
+                "<DataItem Format=\"XML\" DataType=\"Int\" Dimensions=\"{}\">",
+                connectivity.len()
+            ));
+            let rows = mixed_rows(connectivity).unwrap_or_else(|_| vec![join_ids(connectivity)]);
+            self.indent += 1;
+            for row in &rows {
+                self.push_line(row);
+            }
+            self.indent = self.indent.saturating_sub(1);
+            self.push_line("</DataItem>");
+            self.indent = self.indent.saturating_sub(1);
+            self.push_line("</Topology>");
+            return;
+        }
         self.push_line(&format!(
             "<DataItem Format=\"XML\" Dimensions=\"{} {}\">\n{}  ",
             n_elements,
             npe,
             "  ".repeat(self.indent)
         ));
-        let row_strings: Vec<String> = connectivity
-            .chunks(npe)
-            .map(|chunk| {
-                chunk
-                    .iter()
-                    .map(|i| i.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .collect();
+        let row_strings = fixed_rows(connectivity, npe);
         let pad = "  ".repeat(self.indent);
         for r in &row_strings {
             self.buf.push_str(&pad);
@@ -666,7 +684,16 @@ pub struct XdmfMeshStep {
 }
 impl XdmfMeshStep {
     /// Number of elements in this step.
+    ///
+    /// For a fixed-size topology this is `connectivity.len() / nodes_per_element`.
+    /// For [`XdmfTopologyType::Mixed`] the connectivity is an XDMF mixed
+    /// stream and the elements are counted by walking its cell-type codes (see
+    /// [`xdmf_mixed_element_count`]); a malformed stream counts as 0 elements
+    /// here and is reported as an error when the step is serialised.
     pub fn n_elements(&self) -> usize {
+        if self.topology == XdmfTopologyType::Mixed {
+            return xdmf_mixed_element_count(&self.connectivity).unwrap_or(0);
+        }
         let npe = self.topology.nodes_per_element();
         self.connectivity.len().checked_div(npe).unwrap_or(0)
     }
@@ -844,7 +871,13 @@ impl XdmfMeshTimeSeries {
         self.steps.iter().map(|s| s.time).collect()
     }
     /// Serialize the mesh time series to XDMF XML.
-    pub fn to_xml(&self) -> String {
+    ///
+    /// A step with [`XdmfTopologyType::Mixed`] topology carries an XDMF mixed
+    /// connectivity stream (`[cell type, node ids...]` per element, see
+    /// [`xdmf_mixed_element_count`]); a malformed stream makes the
+    /// serialisation fail with an [`std::io::ErrorKind::InvalidInput`] error
+    /// that names the offending step.
+    pub fn to_xml(&self) -> std::io::Result<String> {
         let mut s = String::new();
         s.push_str("<?xml version=\"1.0\"?>\n");
         s.push_str("<Xdmf Version=\"3.0\">\n");
@@ -852,10 +885,32 @@ impl XdmfMeshTimeSeries {
         s.push_str(
             "    <Grid Name=\"MeshTimeSeries\" GridType=\"Collection\" CollectionType=\"Temporal\">\n",
         );
-        for step in &self.steps {
+        for (step_index, step) in self.steps.iter().enumerate() {
             let n_nodes = step.nodes.len();
-            let n_elements = step.n_elements();
             let npe = step.topology.nodes_per_element();
+            let (n_elements, data_type, dimensions, rows) =
+                if step.topology == XdmfTopologyType::Mixed {
+                    let rows = mixed_rows(&step.connectivity).map_err(|e| {
+                        std::io::Error::new(
+                            e.kind(),
+                            format!("mesh step {step_index} (t = {}): {e}", step.time),
+                        )
+                    })?;
+                    (
+                        rows.len(),
+                        " DataType=\"Int\"",
+                        step.connectivity.len().to_string(),
+                        rows,
+                    )
+                } else {
+                    let n_elements = step.n_elements();
+                    (
+                        n_elements,
+                        "",
+                        format!("{n_elements} {npe}"),
+                        fixed_rows(&step.connectivity, npe),
+                    )
+                };
             s.push_str("      <Grid Name=\"mesh\" GridType=\"Uniform\">\n");
             s.push_str(&format!("        <Time Value=\"{}\"/>\n", step.time));
             s.push_str(&format!(
@@ -864,12 +919,10 @@ impl XdmfMeshTimeSeries {
                 n_elements
             ));
             s.push_str(&format!(
-                "          <DataItem Format=\"XML\" Dimensions=\"{} {}\">\n",
-                n_elements, npe
+                "          <DataItem Format=\"XML\"{data_type} Dimensions=\"{dimensions}\">\n"
             ));
-            for chunk in step.connectivity.chunks(npe) {
-                let row: Vec<String> = chunk.iter().map(|&i| i.to_string()).collect();
-                s.push_str(&format!("            {}\n", row.join(" ")));
+            for row in &rows {
+                s.push_str(&format!("            {row}\n"));
             }
             s.push_str("          </DataItem>\n");
             s.push_str("        </Topology>\n");
@@ -923,7 +976,7 @@ impl XdmfMeshTimeSeries {
         s.push_str("    </Grid>\n");
         s.push_str("  </Domain>\n");
         s.push_str("</Xdmf>\n");
-        s
+        Ok(s)
     }
 }
 /// An XDMF time series collection.

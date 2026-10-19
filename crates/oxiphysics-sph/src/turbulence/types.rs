@@ -78,15 +78,25 @@ impl MixingLength {
         self.von_karman * y * (1.0 - (-y_plus / 26.0).exp())
     }
 }
-/// Sub-Particle Scale (SPS) turbulence model (Gotoh et al. 2001).
+/// Sub-Particle Scale (SPS) turbulence model (Gotoh et al. 2001, in the SPH form of
+/// Dalrymple & Rogers 2006).
 ///
 /// Accounts for sub-particle-scale turbulent stresses via a Smagorinsky-type
-/// eddy-viscosity closure.
+/// eddy-viscosity closure with a Yoshizawa isotropic term:
+///
+/// ```text
+/// τ_ij = ρ [ 2 ν_t ( S_ij − ⅓ S_kk δ_ij ) − ⅔ C_I Δ² |S|² δ_ij ],   ν_t = (C_s Δ)² |S|
+/// ```
+///
+/// The stress is added to the momentum equation (`+(1/ρ)∇·τ`), where it acts as an
+/// extra, strain-dependent viscosity: [`SpsModel::apply_sps_forces`] returns the force
+/// `m_i Σ_j m_j (τ_i/ρ_i² + τ_j/ρ_j²)·∇_iW_ij`.
 #[derive(Debug, Clone)]
 pub struct SpsModel {
-    /// Smagorinsky constant (default 0.12).
+    /// Smagorinsky constant C_s (default 0.12).
     pub cs: f64,
-    /// SPS turbulent kinetic-energy constant (default 0.0066).
+    /// Yoshizawa constant C_I of the isotropic SPS stress (default 0.0066).  It enters
+    /// the stress linearly, as `⅔ C_I Δ² |S|²`.
     pub ci: f64,
     /// Nominal particle spacing Δx (m).
     pub particle_spacing: f64,
@@ -105,9 +115,10 @@ impl SpsModel {
     /// Uses the standard SPH gradient:
     ///   ∂v_α/∂x_β ≈ Σ_j (m_j/ρ_j) (v_j_α - v_i_α) ∂W_ij/∂x_β
     ///
-    /// `kernel_grads[k]` is the gradient vector of W(r_ij, h) evaluated at
-    /// the position of neighbour `neighbors[k]`, pointing from i → j:
-    ///   ∇_i W_ij = (dW/dr) * r_hat_ij  (a \[f64;3\] value).
+    /// `kernel_grads[k]` is the gradient of the kernel with respect to the position
+    /// of particle `i` for the neighbour `neighbors[k]`:
+    ///   ∇_i W_ij = (dW/dr) (x_i − x_j)/|x_i − x_j|  (a \[f64;3\] value),
+    /// which points from i towards j because dW/dr < 0.
     pub fn compute_strain_rate_tensor(
         &self,
         i: usize,
@@ -145,25 +156,34 @@ impl SpsModel {
         let _ = rho_i;
         s
     }
-    /// Compute the SPS turbulent stress tensor τ^SPS_ij.
+    /// Compute the SPS turbulent stress tensor τ^SPS_ij (Pa).
     ///
-    /// τ_ij = ν_turb * S_ij - (2/3) k_sgs δ_ij
+    /// Dalrymple & Rogers (2006), eq. for the SPS stress:
     ///
-    /// where
-    ///   ν_turb = (Cs · Δx)² · |S|
-    ///   k_sgs  = (Ci · Δx)² · |S|²
-    pub fn compute_sps_stress(&self, s: &Mat3, _rho: f64) -> Mat3 {
+    /// ```text
+    /// τ_ij = ρ [ 2 ν_t ( S_ij − ⅓ S_kk δ_ij ) − ⅔ C_I Δ² |S|² δ_ij ]
+    /// ```
+    ///
+    /// with the eddy viscosity `ν_t = (C_s Δ)² |S|`, the strain-rate magnitude
+    /// `|S| = sqrt(2 S_ij S_ij)` and the particle spacing `Δ`.  `C_I` is
+    /// [`SpsModel::ci`] (0.0066) and enters linearly.  The stress is per unit
+    /// volume, so it is proportional to the density `rho` (kg/m³) of the particle;
+    /// the trace of the stress is `−2 ρ C_I Δ² |S|²` for any `S`.
+    ///
+    /// `s` is the symmetric strain-rate tensor `S_ij = ½(∂_i v_j + ∂_j v_i)` (1/s).
+    pub fn compute_sps_stress(&self, s: &Mat3, rho: f64) -> Mat3 {
         let dx = self.particle_spacing;
         let s_mag = strain_rate_magnitude(s);
         let cs_dx = self.cs * dx;
-        let ci_dx = self.ci * dx;
         let nu_turb = cs_dx * cs_dx * s_mag;
-        let k_sgs = ci_dx * ci_dx * s_mag * s_mag;
+        let mean_normal_strain = (s[0][0] + s[1][1] + s[2][2]) / 3.0;
+        let isotropic = (2.0 / 3.0) * self.ci * dx * dx * s_mag * s_mag;
         let mut tau: Mat3 = mat3_zero();
         for a in 0..3 {
             for b in 0..3 {
                 let delta = if a == b { 1.0 } else { 0.0 };
-                tau[a][b] = nu_turb * s[a][b] - (2.0 / 3.0) * k_sgs * delta;
+                tau[a][b] = rho
+                    * (2.0 * nu_turb * (s[a][b] - mean_normal_strain * delta) - isotropic * delta);
             }
         }
         tau
@@ -171,10 +191,11 @@ impl SpsModel {
     /// Compute SPS turbulent forces for all particles.
     ///
     /// The force on particle `i` from the SPS stress divergence is:
-    ///   f_i^SPS = m_i * Σ_j m_j * (τ_i/ρ_i² + τ_j/ρ_j²) · ∇W_ij
+    ///   f_i^SPS = m_i * Σ_j m_j * (τ_i/ρ_i² + τ_j/ρ_j²) · ∇_iW_ij
     ///
-    /// `all_kernel_grads[i][k]` is the kernel gradient for the k-th
-    /// neighbour of particle i.
+    /// with the stress `τ` of [`SpsModel::compute_sps_stress`] (a stress, so it
+    /// carries the density).  `all_kernel_grads[i][k]` is the kernel gradient
+    /// `∇_i W_ij = (dW/dr)(x_i − x_j)/|x_i − x_j|` for the k-th neighbour of particle i.
     pub fn apply_sps_forces(
         &self,
         positions: &[[f64; 3]],
@@ -299,18 +320,26 @@ impl SmagorinskyLes {
         cs_delta_sq * s_mag
     }
     /// Compute the SGS stress tensor τ_ij = -2 ρ ν_t S̄_ij.
+    ///
+    /// This is the stress that is *subtracted* in the filtered momentum equation,
+    /// `Dū/Dt = … − (1/ρ) ∇·τ`; [`SmagorinskyLes::sgs_acceleration`] applies that sign.
     pub fn sgs_stress(&self, strain_rate: &Mat3, density: f64) -> Mat3 {
         let nu_t = self.eddy_viscosity(strain_rate);
         mat3_scale(-2.0 * density * nu_t, *strain_rate)
     }
-    /// Compute the SGS acceleration contribution for particle i:
+    /// Compute the SGS acceleration (m/s²) of particle i:
     ///
     /// ```text
-    /// a_sgs_α = (1/ρ_i) Σ_j m_j (τ_i/ρ_i² + τ_j/ρ_j²) · ∇W_ij
+    /// a_sgs,α = −Σ_j m_j (τ_i,αβ/ρ_i² + τ_j,αβ/ρ_j²) ∂_β W_ij  ≈  −(1/ρ_i) ∂_β τ_αβ
     /// ```
     ///
-    /// `tau_i` and `tau_j` are the SGS stress tensors; `grad_w` is the
-    /// kernel gradient ∇W_ij pointing from i to j.
+    /// `tau_i` and `neighbors_tau` are SGS stress tensors in the convention of
+    /// [`SmagorinskyLes::sgs_stress`] (`τ = −2 ρ ν_t S̄`, the stress that is subtracted
+    /// from the momentum equation), which is why the sum enters with a minus sign: the
+    /// acceleration is `+(1/ρ) ∇·(2 ρ ν_t S̄)`, i.e. a viscous force that opposes the
+    /// relative velocity of the particles and dissipates resolved kinetic energy.
+    /// `kernel_grads[k]` is the kernel gradient `∇_i W_ij = (dW/dr)(x_i − x_j)/|x_i − x_j|`
+    /// of the k-th neighbour (pointing from i towards j).
     pub fn sgs_acceleration(
         &self,
         tau_i: &Mat3,
@@ -333,7 +362,7 @@ impl SmagorinskyLes {
                     sum_beta +=
                         (tau_i[alpha][beta] / rho_i2 + tau_j[alpha][beta] / rho_j2) * grad[beta];
                 }
-                acc[alpha] += m_j * sum_beta;
+                acc[alpha] -= m_j * sum_beta;
             }
         }
         acc
@@ -485,10 +514,11 @@ impl DynamicSmagorinsky {
         self.sgs_stress_with_cs_sq(cs_sq, &s_grid, density)
     }
 }
-/// Turbulent diffusion coefficient for the SPH momentum equation.
+/// Turbulent diffusion operator for the SPH momentum equation.
 ///
-/// Returns the particle contribution to the turbulent stress divergence:
-/// (1/ρ) ∂τ_ij/∂x_j ≈ sum_j (m_j / ρ_j) (τ_i^j + τ_i^j) · ∇W_ij
+/// Returns the pairwise contribution of the Smagorinsky SGS stress
+/// `τ = −2 ρ ν_t S` to the acceleration `−(1/ρ_i) ∇·τ = (1/ρ_i) ∇·(2 ρ ν_t S)`:
+/// `a_i = −Σ_j m_j (τ_i/ρ_i² + τ_j/ρ_j²) · ∇_iW_ij`.
 #[derive(Debug, Clone)]
 pub struct TurbulentDiffusionSph {
     /// Smagorinsky constant.
@@ -503,9 +533,14 @@ impl TurbulentDiffusionSph {
     }
     /// Compute turbulent acceleration contribution on particle i from neighbor j.
     ///
-    /// a_turb_i = Σ_j (m_j / ρ_j) · (τ_ij_i/ρ_i + τ_ij_j/ρ_j) · ∇W_ij
+    /// a_turb_i = −m_j (τ_i/ρ_i² + τ_j/ρ_j²) · ∇_iW_ij,   τ = −2 ρ ν_t S
     ///
-    /// Returns the 3-component acceleration vector.
+    /// where `grad_w = ∇_iW_ij = (dW/dr)(x_i − x_j)/|x_i − x_j|`.  Summed over the
+    /// neighbours of `i` this is the SPH form of `(1/ρ_i) ∇·(2 ρ ν_t S)`: a viscous
+    /// acceleration that opposes the relative velocity (the stress `τ` is the one that
+    /// is subtracted from the momentum equation, hence the minus sign).
+    ///
+    /// Returns the 3-component acceleration vector (m/s²).
     pub fn turbulent_acceleration(
         &self,
         s_i: Mat3,
@@ -525,7 +560,7 @@ impl TurbulentDiffusionSph {
                     + tau_j[alpha][beta] / (rho_j * rho_j))
                     * grad_w[beta];
             }
-            acc[alpha] = mass_j * sum;
+            acc[alpha] = -mass_j * sum;
         }
         acc
     }

@@ -24,6 +24,12 @@
 
 use std::f64::consts::PI;
 
+mod rg199;
+pub use rg199::{
+    RG199_MIN_FLUENCE_N_CM2, RpvProductForm, chemistry_factor_fahrenheit, chemistry_factor_for,
+    rg199_fluence_factor, upper_shelf_energy_decrease_percent,
+};
+
 // ---------------------------------------------------------------------------
 // Section 1 — Zircaloy cladding
 // ---------------------------------------------------------------------------
@@ -470,21 +476,34 @@ pub enum RpvSteelGrade {
 }
 
 /// Charpy impact properties of RPV steel.
+///
+/// The embrittlement correlations follow U.S. NRC Regulatory Guide 1.99,
+/// Revision 2 (see [`RpvProductForm`], [`chemistry_factor_for`] and
+/// [`upper_shelf_energy_decrease_percent`]).  The guide derives them for
+/// SA-302, SA-336, SA-533 and SA-508 steels (its Regulatory Position 1.3); for
+/// other grades, such as the VVER steel, they are an extrapolation.
 #[derive(Debug, Clone)]
 pub struct RpvCharpy {
     /// Steel grade.
     pub grade: RpvSteelGrade,
+    /// Product form (base metal or weld): selects the RG 1.99 chemistry-factor
+    /// table and the copper labelling of the upper-shelf curves.
+    /// [`RpvCharpy::new`] sets [`RpvProductForm::BaseMetal`] (every
+    /// [`RpvSteelGrade`] is a plate or forging grade); use
+    /// [`RpvCharpy::with_product_form`] for weld metal.
+    pub product_form: RpvProductForm,
     /// Unirradiated upper-shelf energy (J).
     pub use_unirradiated: f64,
     /// Unirradiated reference temperature (°C).
     pub rt_ndt_0: f64,
-    /// Fast neutron fluence at vessel wall (n/m², E > 1 MeV).
+    /// Fast neutron fluence at vessel wall (n/cm², E > 1 MeV).
     pub fluence: f64,
     /// Copper content (weight%).
     pub copper_wt: f64,
     /// Nickel content (weight%).
     pub nickel_wt: f64,
-    /// Phosphorus content (weight%).
+    /// Phosphorus content (weight%).  Recorded for completeness only: Revision
+    /// 2 of RG 1.99 dropped the phosphorus term of earlier revisions.
     pub phosphorus_wt: f64,
 }
 
@@ -501,6 +520,7 @@ impl RpvCharpy {
     ) -> Self {
         Self {
             grade,
+            product_form: RpvProductForm::BaseMetal,
             use_unirradiated,
             rt_ndt_0,
             fluence,
@@ -510,21 +530,24 @@ impl RpvCharpy {
         }
     }
 
+    /// Return the record with the given product form (base metal or weld).
+    pub fn with_product_form(mut self, product_form: RpvProductForm) -> Self {
+        self.product_form = product_form;
+        self
+    }
+
     /// Charpy upper-shelf energy drop (ΔUE, J) due to irradiation.
     ///
-    /// Regulatory Guide 1.99 Rev.2 correlation (NRC, 1988):
-    /// ΔUE/USE₀ = A · Φ^(0.28 − 0.10 log Φ)
+    /// Regulatory Guide 1.99 Rev. 2, Regulatory Position 1.2: the percentage
+    /// decrease of the upper-shelf energy is read from Figure 2 as a function of
+    /// the copper content, the product form and the fluence (see
+    /// [`upper_shelf_energy_decrease_percent`]) and applied to the unirradiated
+    /// value.  There is no decrease at or below
+    /// [`RG199_MIN_FLUENCE_N_CM2`].
     pub fn use_drop(&self) -> f64 {
-        if self.fluence < 1e18 {
-            return 0.0;
-        }
-        let phi = self.fluence / 1e19_f64; // normalise to 10¹⁹ n/cm²
-        // A factor depends on copper and nickel
-        let a =
-            0.11 * (1.0 + 1.58 * self.copper_wt.max(0.0)) * (1.0 + 3.77 * self.nickel_wt.max(0.0));
-        let exponent = 0.28 - 0.10 * phi.log10();
-        let fraction = a * phi.powf(exponent);
-        fraction * self.use_unirradiated
+        let percent =
+            upper_shelf_energy_decrease_percent(self.product_form, self.copper_wt, self.fluence);
+        self.use_unirradiated * percent / 100.0
     }
 
     /// Irradiated upper-shelf energy (J).
@@ -532,17 +555,17 @@ impl RpvCharpy {
         (self.use_unirradiated - self.use_drop()).max(0.0)
     }
 
-    /// RTNDT shift (°C) — Reg Guide 1.99 Rev.2 CF method.
+    /// RTNDT shift (°C) — Reg Guide 1.99 Rev.2, Regulatory Position 1.1.
     ///
-    /// ΔRTNDT = CF · Φ^(0.28 − 0.10 log Φ)
+    /// ΔRTNDT = CF · f^(0.28 − 0.10 log f)
+    ///
+    /// with the chemistry factor CF of Table 1 (welds) or Table 2 (base metal),
+    /// converted to °C (see [`chemistry_factor_for`]), and f the fluence in
+    /// units of 10¹⁹ n/cm² (see [`rg199_fluence_factor`]).  There is no shift at
+    /// or below [`RG199_MIN_FLUENCE_N_CM2`].
     pub fn rtndt_shift(&self) -> f64 {
-        if self.fluence < 1e18 {
-            return 0.0;
-        }
-        let phi = self.fluence / 1e19_f64;
-        let cf = chemistry_factor(self.copper_wt, self.nickel_wt);
-        let exponent = 0.28 - 0.10 * phi.log10();
-        cf * phi.powf(exponent)
+        chemistry_factor_for(self.product_form, self.copper_wt, self.nickel_wt)
+            * rg199_fluence_factor(self.fluence)
     }
 
     /// Irradiated reference temperature RTNDT (°C).
@@ -559,16 +582,13 @@ impl RpvCharpy {
     }
 }
 
-/// Chemistry factor CF (°C) from Reg Guide 1.99 Rev.2 Table 2.
+/// Chemistry factor CF (°C) of Reg Guide 1.99 Rev.2 Table 2 (base metal),
+/// bilinearly interpolated in copper and nickel content.
 ///
-/// Approximate bilinear interpolation over copper content.
+/// The factor never drops below 20 °F = 11.1 °C, the floor of the table; use
+/// [`chemistry_factor_for`] to select the weld table (Table 1).
 pub fn chemistry_factor(copper_wt: f64, nickel_wt: f64) -> f64 {
-    let cu = copper_wt.clamp(0.0, 0.40);
-    let ni = nickel_wt.clamp(0.0, 1.2);
-    // Simplified analytical fit
-    let cf_cu = if cu < 0.10 { 0.0 } else { (cu - 0.10) * 250.0 };
-    let cf_ni = ni * 20.0;
-    (cf_cu + cf_ni).max(0.0)
+    chemistry_factor_for(RpvProductForm::BaseMetal, copper_wt, nickel_wt)
 }
 
 // ---------------------------------------------------------------------------
@@ -1368,8 +1388,62 @@ mod tests {
     }
 
     #[test]
-    fn test_chemistry_factor_zero_low_cu() {
-        let cf = chemistry_factor(0.05, 0.0);
-        assert_eq!(cf, 0.0, "no CF for very low copper");
+    fn test_chemistry_factor_has_the_20_f_floor_for_low_copper() {
+        // RG 1.99 Rev. 2 Table 2: CF is never below 20 °F (11.1 °C); Cu 0.05 %,
+        // Ni 0 gives 25 °F.  (The former test asserted CF = 0, which no table
+        // entry supports.)
+        let floor = chemistry_factor(0.0, 0.0);
+        assert!((floor - 20.0 * 5.0 / 9.0).abs() < 1e-12, "floor {floor} °C");
+        let low_copper = chemistry_factor(0.05, 0.0);
+        assert!(
+            (low_copper - 25.0 * 5.0 / 9.0).abs() < 1e-12,
+            "CF(0.05, 0) = {low_copper} °C"
+        );
+    }
+
+    #[test]
+    fn test_rpv_charpy_weld_shift_exceeds_base_metal_shift() {
+        // Cu 0.20 %, Ni 0.80 %: Table 1 gives 194 °F, Table 2 gives 159 °F; at
+        // 1e19 n/cm² the fluence factor is 1, so the shift equals CF.
+        let base = RpvCharpy::new(
+            RpvSteelGrade::A508Class3,
+            100.0,
+            -20.0,
+            1e19,
+            0.20,
+            0.8,
+            0.01,
+        );
+        let weld = base.clone().with_product_form(RpvProductForm::Weld);
+        assert_eq!(base.product_form, RpvProductForm::BaseMetal);
+        assert!((base.rtndt_shift() - 159.0 * 5.0 / 9.0).abs() < 1e-9);
+        assert!((weld.rtndt_shift() - 194.0 * 5.0 / 9.0).abs() < 1e-9);
+        assert!(weld.rtndt_irradiated() > base.rtndt_irradiated());
+    }
+
+    #[test]
+    fn test_rpv_charpy_use_drop_is_continuous_across_1e18() {
+        // The former implementation returned 0 below 1e18 n/cm² and jumped to
+        // 11-30 % there.
+        let charpy = |fluence: f64| {
+            RpvCharpy::new(
+                RpvSteelGrade::A533GradeB,
+                100.0,
+                -30.0,
+                fluence,
+                0.20,
+                0.8,
+                0.02,
+            )
+        };
+        let below = charpy(0.999e18).use_drop();
+        let above = charpy(1.001e18).use_drop();
+        assert!(below > 10.0, "USE drop just below 1e18: {below} J");
+        assert!((above - below).abs() < 0.2, "{below} J vs {above} J");
+        // Drop grows with fluence up to the end of Figure 2 and stays below the
+        // unirradiated energy.
+        let high = charpy(6.0e19);
+        assert!(high.use_drop() > charpy(1.0e19).use_drop());
+        assert!(high.use_irradiated() > 0.0 && high.use_irradiated() < 100.0);
     }
 }

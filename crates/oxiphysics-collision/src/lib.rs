@@ -47,9 +47,9 @@ pub mod query;
 
 pub mod gjk_epa;
 pub use gjk_epa::{
-    ConvexShape, EpaFace, EpaResult, GjkBox, GjkCapsule, GjkSphere, Simplex, add3, cross3,
-    do_simplex, dot3, epa, gjk_distance, gjk_epa_contact, gjk_intersect, len3, minkowski_support,
-    normalize3, scale3, sub3,
+    ConvexShape, EpaFace, EpaResult, GjkBox, GjkCapsule, GjkSphere, Simplex, SupportPoint, add3,
+    cross3, do_simplex, dot3, epa, gjk_distance, gjk_epa_contact, gjk_intersect, len3,
+    minkowski_support, minkowski_support_point, normalize3, scale3, sub3,
 };
 
 pub mod contact_graph;

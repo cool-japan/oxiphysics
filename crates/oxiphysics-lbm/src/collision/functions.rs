@@ -5,7 +5,9 @@
 use crate::grid::{LbmGrid2D, LbmGrid3D, equilibrium_2d, equilibrium_3d};
 use crate::lattice::{CS2, D3Q19_OPPOSITES, D3Q19_VELOCITIES, D3Q19_WEIGHTS};
 
-use super::central_moments::central_moments_to_populations_d3q19;
+use super::central_moments::{
+    central_moments_to_populations_d3q19, raw_moments_to_populations_d3q19,
+};
 use super::types::EntropicCollision;
 
 /// Compute the D3Q19 equilibrium distribution for a given macroscopic state.
@@ -906,28 +908,36 @@ pub fn compute_pi1_tensor(f: &[f64; 19], feq: &[f64; 19]) -> [f64; 6] {
     }
     pi
 }
+/// Second-order Hermite contraction `Σ_ab (c_a c_b − cs² δ_ab) T_ab` of a symmetric tensor
+/// stored as `[xx, yy, zz, xy, xz, yz]` with the lattice velocity `c`.
+///
+/// The `−cs² δ_ab` part makes the polynomial orthogonal to the conserved moments:
+/// `Σ_i w_i H2_ab(c_i) = 0`.
+#[inline]
+fn hermite2_contraction(tensor: &[f64; 6], c: [f64; 3]) -> f64 {
+    (c[0] * c[0] - CS2) * tensor[0]
+        + (c[1] * c[1] - CS2) * tensor[1]
+        + (c[2] * c[2] - CS2) * tensor[2]
+        + 2.0 * c[0] * c[1] * tensor[3]
+        + 2.0 * c[0] * c[2] * tensor[4]
+        + 2.0 * c[1] * c[2] * tensor[5]
+}
 /// Reconstruct the regularized first-order distribution f^(1) from Π^(1).
 ///
-/// Uses the D3Q19 second-order Hermite expansion:
-/// `f^(1)_i = w_i / (2 cs⁴) * c_{iα} c_{iβ} Π^(1)_{αβ}`
+/// Uses the D3Q19 second-order Hermite expansion
+/// `f^(1)_i = w_i / (2 cs⁴) (c_{iα} c_{iβ} − cs² δ_{αβ}) Π^(1)_{αβ}`.
+///
+/// The `−cs² δ_{αβ}` term removes the trace of Π^(1) from the zeroth moment: `Σ_i f^(1)_i = 0`
+/// and `Σ_i f^(1)_i c_i = 0` for every Π^(1), while the second moment reproduces the input
+/// tensor, `Σ_i f^(1)_i c_{iα} c_{iβ} = Π^(1)_{αβ}`. The density argument is not needed and is
+/// ignored.
 pub fn regularized_f1_d3q19(pi1: &[f64; 6], _rho: f64) -> [f64; 19] {
-    let cs4 = (1.0 / 3.0_f64).powi(2);
-    let mut f1 = [0.0f64; 19];
-    for (i, f1_i) in f1.iter_mut().enumerate() {
-        let w = D3Q19_WEIGHTS[i];
+    let cs4 = CS2 * CS2;
+    std::array::from_fn(|i| {
         let c = D3Q19_VELOCITIES[i];
-        let cx = c[0] as f64;
-        let cy = c[1] as f64;
-        let cz = c[2] as f64;
-        let q = cx * cx * pi1[0]
-            + cy * cy * pi1[1]
-            + cz * cz * pi1[2]
-            + 2.0 * cx * cy * pi1[3]
-            + 2.0 * cx * cz * pi1[4]
-            + 2.0 * cy * cz * pi1[5];
-        *f1_i = w / (2.0 * cs4) * q;
-    }
-    f1
+        let c = [f64::from(c[0]), f64::from(c[1]), f64::from(c[2])];
+        D3Q19_WEIGHTS[i] / (2.0 * cs4) * hermite2_contraction(pi1, c)
+    })
 }
 /// Compute the recursive correction tensor Q^(1) from Π^(1) and u.
 ///
@@ -948,30 +958,14 @@ pub fn compute_q1_recursive(pi1: &[f64; 6], u: [f64; 3], tau_minus_half: f64) ->
     ]
 }
 /// Reconstruct f^(1) with both Π^(1) and Q^(1) corrections.
+///
+/// `q1` is a symmetric correction tensor `[xx, yy, zz, xy, xz, yz]` that is contracted with
+/// the same second-order Hermite polynomial as `pi1`, i.e. the result is
+/// [`regularized_f1_d3q19`] of `pi1 + q1`. It therefore has no mass and no momentum for any
+/// `pi1` and `q1`.
 pub fn regularized_f1_with_q_d3q19(pi1: &[f64; 6], q1: &[f64; 6]) -> [f64; 19] {
-    let cs4 = (1.0 / 3.0_f64).powi(2);
-    let mut f1 = [0.0f64; 19];
-    for (i, f1_i) in f1.iter_mut().enumerate() {
-        let w = D3Q19_WEIGHTS[i];
-        let c = D3Q19_VELOCITIES[i];
-        let cx = c[0] as f64;
-        let cy = c[1] as f64;
-        let cz = c[2] as f64;
-        let q_pi = cx * cx * pi1[0]
-            + cy * cy * pi1[1]
-            + cz * cz * pi1[2]
-            + 2.0 * cx * cy * pi1[3]
-            + 2.0 * cx * cz * pi1[4]
-            + 2.0 * cy * cz * pi1[5];
-        let q_q = cx * cx * q1[0]
-            + cy * cy * q1[1]
-            + cz * cz * q1[2]
-            + 2.0 * cx * cy * q1[3]
-            + 2.0 * cx * cz * q1[4]
-            + 2.0 * cy * cz * q1[5];
-        *f1_i = w / (2.0 * cs4) * q_pi + w / (6.0 * cs4 * (1.0 / 3.0)) * q_q;
-    }
-    f1
+    let total: [f64; 6] = std::array::from_fn(|k| pi1[k] + q1[k]);
+    regularized_f1_d3q19(&total, 1.0)
 }
 /// Compute the 19 raw moments of a D3Q19 distribution.
 ///
@@ -1005,51 +999,15 @@ pub fn compute_raw_moments_d3q19(f: &[f64; 19]) -> [f64; 19] {
     }
     m
 }
-/// Return relaxation rate for the i-th raw moment group.
-pub(super) fn raw_moment_rate(i: usize, omega_v: f64, omega_b: f64, omega_g: f64) -> f64 {
-    match i {
-        0..=3 => 1.0,
-        4..=6 => omega_b,
-        7..=9 => omega_v,
-        _ => omega_g,
-    }
-}
-/// Reconstruct a distribution from its raw moments (least-squares projection).
+/// Reconstruct the 19 populations from their 19 raw moments.
 ///
-/// Uses the pseudo-inverse via the D3Q19 velocity basis.
+/// Exact inverse of [`compute_raw_moments_d3q19`]. The 19 monomials `c_x^a c_y^b c_z^c` with at
+/// most two non-zero exponents are linearly independent on the D3Q19 velocity set, so the
+/// 19×19 moment matrix `M` is invertible and `f = M⁻¹ m` recovers every population from the
+/// density, momentum, stress, third-order and fourth-order raw moments alike. The inverse is
+/// evaluated in closed form by [`raw_moments_to_populations_d3q19`].
 pub fn raw_moments_to_f_d3q19(m: &[f64; 19]) -> [f64; 19] {
-    let rho = m[0];
-    let jx = m[1];
-    let jy = m[2];
-    let jz = m[3];
-    let ux = if rho > 1e-14 { jx / rho } else { 0.0 };
-    let uy = if rho > 1e-14 { jy / rho } else { 0.0 };
-    let uz = if rho > 1e-14 { jz / rho } else { 0.0 };
-    let mut f_out = compute_equilibrium_d3q19(rho, [ux, uy, uz]);
-    let feq_m = compute_raw_moments_d3q19(&f_out);
-    let cs4 = (1.0 / 3.0_f64).powi(2);
-    let dxx = m[4] - feq_m[4];
-    let dyy = m[5] - feq_m[5];
-    let dzz = m[6] - feq_m[6];
-    let dxy = m[7] - feq_m[7];
-    let dxz = m[8] - feq_m[8];
-    let dyz = m[9] - feq_m[9];
-    for (i, f_out_i) in f_out.iter_mut().enumerate() {
-        let w = D3Q19_WEIGHTS[i];
-        let c = D3Q19_VELOCITIES[i];
-        let cx = c[0] as f64;
-        let cy = c[1] as f64;
-        let cz = c[2] as f64;
-        let correction = w / (2.0 * cs4)
-            * (cx * cx * dxx
-                + cy * cy * dyy
-                + cz * cz * dzz
-                + 2.0 * cx * cy * dxy
-                + 2.0 * cx * cz * dxz
-                + 2.0 * cy * cz * dyz);
-        *f_out_i += correction;
-    }
-    f_out
+    raw_moments_to_populations_d3q19(m)
 }
 /// Compute central moments of a D3Q19 distribution in the co-moving frame u.
 ///
@@ -1126,55 +1084,118 @@ pub fn entropic_equilibrium_d3q19(rho: f64, u: [f64; 3]) -> [f64; 19] {
     }
     feq
 }
+/// Largest entropic over-relaxation factor, the BGK limit `α = 2`.
+const ENTROPIC_ALPHA_BGK: f64 = 2.0;
+/// Convergence tolerance of the mirror-state search (on `α` and on the scaled entropy gap).
+const ENTROPIC_ALPHA_TOLERANCE: f64 = 1e-14;
+/// Iteration cap of the safeguarded Newton search; bisection alone converges in about 50.
+const ENTROPIC_ALPHA_MAX_ITERATIONS: usize = 200;
 /// Compute the entropic relaxation factor α for ELBM.
 ///
-/// Solves the mirror state equation H(f^{mirr}) = H(f) where
-/// `f^{mirr} = f + α(feq − f)`.  Uses a bisection root-finder.
+/// Solves the mirror-state equation `H(f + α(feq − f)) = H(f)` for its non-trivial root, with
+/// `H(f) = Σ_i f_i ln(f_i / w_i)` (Ansumali & Karlin, Phys. Rev. E 65, 056312). `H` is convex
+/// along the line from `f` through `feq`: it first drops below `H(f)`, reaches its minimum near
+/// `α = 1` and climbs back to `H(f)` at `α*`; the root is found by Newton's method started at
+/// the BGK end `α = 2`, safeguarded by bisection on the bracket `[1, 2]`.
 ///
-/// Returns α ∈ (0, 2].
+/// Returns α ∈ (1, 2]:
+///
+/// - the root `α*` when `H` returns to `H(f)` inside the admissible interval, so that
+///   `H(f + α*(feq − f)) = H(f)` to round-off;
+/// - `2` (the BGK limit) when the entropy has not yet returned to `H(f)` at `α = 2`, which is
+///   the case for states very close to equilibrium (`α* → 2` as `f → feq`), when the
+///   populations of both `f` and `feq` are not all positive (the entropy is undefined), and
+///   when `H(feq) ≥ H(f)`, i.e. when `f` is closer to the entropy minimum than the supplied
+///   `feq` is;
+/// - the positivity limit `min_i f_i / (f_i − feq_i)` when it is smaller than the above, so
+///   that no population turns negative along the way.
+///
+/// `α* → 2` as `f → feq` holds when `feq` is the entropy minimiser for the mass and momentum
+/// of `f`, such as [`entropic_equilibrium_d3q19`] for planar flows. The low-Mach polynomial
+/// equilibrium of a moving fluid differs from the minimiser at `O(|u|³)`; for a tiny
+/// non-equilibrium `ε` the root is then `2 + O(|u|³ / ε)`, outside `(1, 2]`, and `2` is returned.
 pub fn entropic_alpha_d3q19(f: &[f64; 19], feq: &[f64; 19]) -> f64 {
+    if f.iter()
+        .chain(feq.iter())
+        .any(|&x| x <= 0.0 || !x.is_finite())
+    {
+        return ENTROPIC_ALPHA_BGK;
+    }
     let df: [f64; 19] = std::array::from_fn(|i| feq[i] - f[i]);
-    let h_eval = |alpha: f64| -> f64 {
-        f.iter()
-            .zip(df.iter())
-            .zip(D3Q19_WEIGHTS.iter())
-            .map(|((&fi_raw, &dfi), &wi)| {
-                let fi = fi_raw + alpha * dfi;
-                if fi > 1e-300 && wi > 0.0 {
-                    fi * (fi / wi).ln()
-                } else {
-                    0.0
-                }
-            })
-            .sum()
-    };
-    let h0 = h_eval(0.0);
-    if h_eval(2.0) <= h0 {
-        return 2.0;
-    }
-    let mut lo = 1.0f64;
-    let mut hi = 2.0f64;
-    for _ in 0..50 {
-        let mid = (lo + hi) * 0.5;
-        if h_eval(mid) < h0 {
-            hi = mid;
-        } else {
-            lo = mid;
+    // Largest alpha for which every population of f + alpha (feq - f) stays non-negative.
+    let alpha_positive = f
+        .iter()
+        .zip(df.iter())
+        .filter(|&(_, &dfi)| dfi < 0.0)
+        .map(|(&fi, &dfi)| fi / -dfi)
+        .fold(f64::INFINITY, f64::min);
+    let alpha_max = alpha_positive.min(ENTROPIC_ALPHA_BGK);
+    let h0: f64 = f
+        .iter()
+        .zip(D3Q19_WEIGHTS.iter())
+        .map(|(&fi, &wi)| fi * (fi / wi).ln())
+        .sum();
+    // H(alpha) - H(0) and dH/dalpha along the line.
+    let excess = |alpha: f64| -> (f64, f64) {
+        let mut h = 0.0_f64;
+        let mut dh = 0.0_f64;
+        for ((&fi, &dfi), &wi) in f.iter().zip(df.iter()).zip(D3Q19_WEIGHTS.iter()) {
+            let x = (fi + alpha * dfi).max(0.0);
+            let ln_ratio = (x / wi).ln();
+            if x > 0.0 {
+                h += x * ln_ratio;
+            }
+            dh += dfi * (ln_ratio + 1.0);
         }
+        (h - h0, dh)
+    };
+    if excess(alpha_max).0 <= 0.0 || excess(1.0).0 >= 0.0 {
+        return alpha_max;
     }
-    lo
+    let mut lo = 1.0_f64;
+    let mut hi = alpha_max;
+    let mut alpha = alpha_max;
+    let gap_tolerance = ENTROPIC_ALPHA_TOLERANCE * (1.0 + h0.abs());
+    for _ in 0..ENTROPIC_ALPHA_MAX_ITERATIONS {
+        let (gap, slope) = excess(alpha);
+        if gap.abs() <= gap_tolerance {
+            break;
+        }
+        if gap > 0.0 {
+            hi = alpha;
+        } else {
+            lo = alpha;
+        }
+        let newton = alpha - gap / slope;
+        let next = if newton > lo && newton < hi {
+            newton
+        } else {
+            0.5 * (lo + hi)
+        };
+        if (next - alpha).abs() <= ENTROPIC_ALPHA_TOLERANCE {
+            alpha = next;
+            break;
+        }
+        alpha = next;
+    }
+    alpha
 }
-/// Entropic stabilized BGK (ELBM) collision with exact α from entropic condition.
+/// Entropic lattice Boltzmann (ELBM) collision `f* = f + α β (feq − f)` with `β = ω / 2`.
 ///
-/// Uses the entropic equilibrium and computes α to ensure H(f_out) ≤ H(f_in).
-pub fn collide_entropic_stabilized(f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
+/// `feq` is the entropic equilibrium of `(rho, u)` ([`entropic_equilibrium_d3q19`]) and `α` the
+/// mirror-state factor of [`entropic_alpha_d3q19`], so `H(f + α (feq − f)) = H(f)` and, for
+/// `β ≤ 1`, the collision never increases the entropy (`H(f*) ≤ H(f)`). `omega` sets the
+/// viscosity: `α → 2` for near-equilibrium populations, where the operator becomes BGK with the
+/// relaxation rate `omega` (`ν = cs² (1/ω − 1/2)`). Choose `omega ∈ (0, 2]`.
+///
+/// The product-form equilibrium conserves mass and momentum exactly whenever one velocity
+/// component vanishes (axis-aligned and planar flows) and to `O(|u|^5)` for fully
+/// three-dimensional flows, and so does this collision.
+pub fn collide_entropic_stabilized(f: &[f64; 19], rho: f64, u: [f64; 3], omega: f64) -> [f64; 19] {
     let feq = entropic_equilibrium_d3q19(rho, u);
     let alpha = entropic_alpha_d3q19(f, &feq);
-    let mut f_out = *f;
-    for (f_out_i, (&fi, &feqi)) in f_out.iter_mut().zip(f.iter().zip(feq.iter())) {
-        *f_out_i += alpha * (feqi - fi);
-    }
-    f_out
+    let beta = 0.5 * omega;
+    std::array::from_fn(|i| f[i] + alpha * beta * (feq[i] - f[i]))
 }
 /// Compute the D3Q19 discrete H-function: H = Σ_i f_i ln(f_i / w_i).
 pub fn discrete_h_function(f: &[f64; 19]) -> f64 {
@@ -1340,11 +1361,13 @@ mod tests_advanced_collision {
     fn test_regularized_full_mass_conservation() {
         let f = make_perturbed(1.0, [0.03, 0.0, 0.0], 0.01);
         let (rho, u) = compute_macroscopic(&f);
-        let coll = RegularizedCollisionFull::from_viscosity(1.0 / 6.0);
+        // nu = 0.1 gives omega = 1.25, so f^(1) enters with the non-zero weight 1 - omega;
+        // nu = 1/6 (omega = 1) would multiply f^(1) by zero and hide a mass defect.
+        let coll = RegularizedCollisionFull::from_viscosity(0.1);
         let f_out = coll.collide(&f, rho, u);
         let rho_out: f64 = f_out.iter().sum();
         assert!(
-            (rho_out - rho).abs() < 1e-11,
+            (rho_out - rho).abs() < 1e-14,
             "Regularized full mass not conserved: {rho_out}"
         );
     }
@@ -1390,10 +1413,15 @@ mod tests_advanced_collision {
         let pi1 = compute_pi1_tensor(&f, &feq);
         let f1 = regularized_f1_d3q19(&pi1, rho);
         let sum: f64 = f1.iter().sum();
-        assert!(
-            sum.abs() < 1.0,
-            "f1 mass should be small in magnitude: {sum}"
-        );
+        assert!(sum.abs() < 1e-15, "f1 must carry no mass: {sum}");
+        // The second moment of f^(1) is the non-equilibrium stress it was built from.
+        let pi_back = compute_pi1_tensor(&f1, &[0.0; 19]);
+        for (k, (&back, &orig)) in pi_back.iter().zip(pi1.iter()).enumerate() {
+            assert!(
+                (back - orig).abs() < 1e-15,
+                "stress component {k}: {back} vs {orig}"
+            );
+        }
     }
     #[test]
     fn test_regularized_full_momentum_conservation() {
@@ -1431,11 +1459,11 @@ mod tests_advanced_collision {
     fn test_rr_lbm_mass_conservation() {
         let f = make_perturbed(1.0, [0.03, 0.01, 0.0], 0.01);
         let (rho, u) = compute_macroscopic(&f);
-        let coll = RecursiveRegularized::from_viscosity(1.0 / 6.0);
+        let coll = RecursiveRegularized::from_viscosity(0.1);
         let f_out = coll.collide(&f, rho, u);
         let rho_out: f64 = f_out.iter().sum();
         assert!(
-            (rho_out - rho).abs() < 1e-10,
+            (rho_out - rho).abs() < 1e-14,
             "RR mass not conserved: {rho_out}"
         );
     }
@@ -1483,11 +1511,11 @@ mod tests_advanced_collision {
     fn test_hrr_mass_conservation() {
         let f = make_perturbed(1.0, [0.02, 0.01, 0.0], 0.01);
         let (rho, u) = compute_macroscopic(&f);
-        let coll = HybridRecursiveRegularized::new(1.0 / 6.0, 0.05);
+        let coll = HybridRecursiveRegularized::new(0.1, 0.05);
         let f_out = coll.collide(&f, rho, u);
         let rho_out: f64 = f_out.iter().sum();
         assert!(
-            (rho_out - rho).abs() < 1e-10,
+            (rho_out - rho).abs() < 1e-14,
             "HRR mass not conserved: {rho_out}"
         );
     }
@@ -1539,7 +1567,7 @@ mod tests_advanced_collision {
         let coll = RawMomentCollision::from_viscosity(1.0 / 6.0, 0.0);
         let f_out = coll.collide(&f, rho, u);
         let rho_out: f64 = f_out.iter().sum();
-        assert!((rho_out - rho).abs() < 1e-2, "RawMoment mass: {rho_out}");
+        assert!((rho_out - rho).abs() < 1e-14, "RawMoment mass: {rho_out}");
     }
     #[test]
     fn test_raw_moment_at_equilibrium() {
@@ -1688,15 +1716,22 @@ mod tests_advanced_collision {
         let feq = compute_equilibrium_d3q19(rho, u);
         let alpha = entropic_alpha_d3q19(&f, &feq);
         assert!(
-            (0.0..=(2.0 + 1e-10)).contains(&alpha),
-            "Alpha out of [0,2]: {alpha}"
+            alpha > 1.0 && alpha <= 2.0,
+            "Alpha out of the entropic range (1, 2]: {alpha}"
         );
+        let mirror: [f64; 19] = std::array::from_fn(|i| f[i] + alpha * (feq[i] - f[i]));
+        if alpha < 2.0 {
+            assert!(
+                (discrete_h_function(&mirror) - discrete_h_function(&f)).abs() < 1e-10,
+                "the mirror state must have the entropy of f"
+            );
+        }
     }
     #[test]
     fn test_entropic_stabilized_mass_conservation() {
         let f = make_perturbed(1.0, [0.03, 0.01, 0.0], 0.01);
         let (rho, u) = compute_macroscopic(&f);
-        let f_out = collide_entropic_stabilized(&f, rho, u);
+        let f_out = collide_entropic_stabilized(&f, rho, u, 1.2);
         let rho_out: f64 = f_out.iter().sum();
         assert!(
             (rho_out - rho).abs() < 1e-11,

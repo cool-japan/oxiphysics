@@ -11,6 +11,7 @@
 //! Uses Wendland C2/C4 kernels for accurate density and gradient estimation.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::kernel::{SphKernel, WendlandC2Kernel, WendlandC4Kernel};
 
@@ -53,6 +54,51 @@ fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
+
+// ---------------------------------------------------------------------------
+// Spatial hash
+// ---------------------------------------------------------------------------
+
+/// Multiplicative mixing constant of the cell-key hasher (the 64-bit constant
+/// of the Fx hash).
+const CELL_HASH_SEED: u64 = 0x517c_c1b7_2722_0a95;
+
+/// Fast deterministic hasher for the integer grid-cell keys of the spatial
+/// hash: a multiply-rotate mix (Fx hash) instead of the DoS-resistant SipHash of
+/// the standard library, which costs several times more per lookup and is not
+/// needed for cell coordinates. The same keys always give the same buckets, so
+/// the neighbour search is reproducible.
+#[derive(Debug, Default, Clone, Copy)]
+struct CellKeyHasher {
+    state: u64,
+}
+
+impl Hasher for CellKeyHasher {
+    fn finish(&self) -> u64 {
+        // The multiplication leaves the entropy in the high bits; the hash
+        // table indexes buckets with the low bits.
+        self.state.rotate_left(26)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_u64(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.state = (self.state.rotate_left(5) ^ value).wrapping_mul(CELL_HASH_SEED);
+    }
+
+    fn write_i64(&mut self, value: i64) {
+        self.write_u64(u64::from_le_bytes(value.to_le_bytes()));
+    }
+}
+
+/// Grid cell → indices of the particles inside it.
+type CellMap = HashMap<(i64, i64, i64), Vec<usize>, BuildHasherDefault<CellKeyHasher>>;
 
 // ---------------------------------------------------------------------------
 // Wendland C2 kernel
@@ -142,11 +188,14 @@ pub struct DfsphConfig {
     pub smoothing_length: f64,
     /// Kernel support radius (typically 2h).
     pub support_radius: f64,
-    /// Viscosity coefficient (m²/s).
+    /// Kinematic viscosity ν (m²/s) of the fluid, the viscosity coefficient of
+    /// [`VelocityAdvection`]. [`DfsphSolver::step`] does not apply viscous forces
+    /// itself; advect the velocities with
+    /// [`VelocityAdvection::advect_velocity`] for a viscous fluid.
     pub viscosity: f64,
-    /// Gravity acceleration.
+    /// Gravity acceleration (m/s²), applied by [`DfsphSolver::step`].
     pub gravity: [f64; 3],
-    /// Surface tension coefficient (N/m).
+    /// Surface tension coefficient (N/m). Not used by [`DfsphSolver::step`].
     pub surface_tension: f64,
 }
 
@@ -912,9 +961,22 @@ impl VelocityAdvection {
         }
     }
 
-    /// Compute viscosity force on particle i from neighbors.
+    /// Compute the viscous acceleration of particle `i` from its neighbours.
     ///
-    /// Uses Morris (1997) viscosity: a_visc = ν Σ_j (m_j/ρ_j) (v_j-v_i) ∇²W_ij
+    /// Uses the Morris et al. (1997) formulation with the dynamic viscosity
+    /// `μ = ρ ν` of a fluid with kinematic viscosity `ν` (`self.viscosity`):
+    ///
+    /// ```text
+    /// a_i = Σ_j m_j (μ_i + μ_j) / (ρ_i ρ_j) · (r_ij · ∇_iW_ij) / (|r_ij|² + η²) · (v_i − v_j)
+    ///     = ν Σ_j m_j (ρ_i + ρ_j) / (ρ_i ρ_j) · (r_ij dW/dr) / (|r_ij|² + η²) · (v_i − v_j)
+    /// ```
+    ///
+    /// with `r_ij = x_i − x_j`, `η² = 0.01 h²` and `r_ij · ∇_iW_ij = r_ij dW/dr`,
+    /// which is negative inside the kernel support. The coefficient of
+    /// `v_i − v_j` is therefore negative, i.e. the acceleration opposes the
+    /// relative velocity and the term is dissipative; the pair exchange is
+    /// antisymmetric (momentum conserving). For a uniform density the sum is the
+    /// Brookshaw Laplacian `ν ∇²v`; its unit is m/s².
     pub fn viscosity_accel(
         &self,
         pos_i: [f64; 3],
@@ -922,11 +984,15 @@ impl VelocityAdvection {
         rho_i: f64,
         neighbors: &[NeighborEntry], // (pos, vel, mass, rho)
     ) -> [f64; 3] {
-        let density_obj = WcSphDensity::new(self.kernel.clone(), self.h);
         let mut accel = [0.0f64; 3];
+        if rho_i < 1e-15 {
+            return accel;
+        }
+        let eta_sq = 0.01 * self.h * self.h;
         for (pos_j, vel_j, mass_j, rho_j) in neighbors {
             let r_vec = sub3(pos_i, *pos_j);
-            let r = norm3(r_vec);
+            let r_sq = norm_sq3(r_vec);
+            let r = r_sq.sqrt();
             if r < 1e-15 || *rho_j < 1e-15 {
                 continue;
             }
@@ -935,11 +1001,9 @@ impl VelocityAdvection {
                 KernelType::WendlandC4 => wendland_c4_gradient_mag(r, self.h),
             };
             let v_ij = sub3(vel_i, *vel_j);
-            let coeff = self.viscosity * 2.0 * mass_j / (rho_i * rho_j) * dw_dr / r;
-            let _ = density_obj.eval_kernel(r);
-            accel[0] -= coeff * v_ij[0];
-            accel[1] -= coeff * v_ij[1];
-            accel[2] -= coeff * v_ij[2];
+            let coeff = self.viscosity * (rho_i + rho_j) * mass_j / (rho_i * rho_j) * dw_dr * r
+                / (r_sq + eta_sq);
+            accel = add3(accel, scale3(v_ij, coeff));
         }
         accel
     }
@@ -953,7 +1017,6 @@ impl VelocityAdvection {
         neighbor_data: &[Vec<NeighborEntry>],
         dt: f64,
     ) {
-        let n = particles.len();
         let new_velocities: Vec<[f64; 3]> = particles
             .iter()
             .enumerate()
@@ -970,7 +1033,6 @@ impl VelocityAdvection {
         for (p, new_vel) in particles.iter_mut().zip(new_velocities.iter()) {
             p.velocity = *new_vel;
         }
-        let _ = n;
     }
 
     /// Advance particle positions by velocity for time dt.
@@ -1104,7 +1166,7 @@ pub struct DfsphSolver {
     /// Convergence statistics.
     pub stats: DfsphStats,
     /// Spatial hash for neighbor search.
-    spatial_hash: HashMap<(i64, i64, i64), Vec<usize>>,
+    spatial_hash: CellMap,
 }
 
 impl DfsphSolver {
@@ -1116,7 +1178,7 @@ impl DfsphSolver {
             neighbor_lists: Vec::new(),
             alphas: Vec::new(),
             stats: DfsphStats::new(),
-            spatial_hash: HashMap::new(),
+            spatial_hash: CellMap::default(),
         }
     }
 
@@ -1133,17 +1195,25 @@ impl DfsphSolver {
     }
 
     /// Build spatial hash for O(1) neighbor lookup.
+    ///
+    /// The cell vectors of the previous call are emptied and refilled instead of
+    /// being reallocated, and cells that are no longer occupied are dropped, so a
+    /// steady simulation does not allocate here.
     pub fn build_spatial_hash(&mut self) {
-        self.spatial_hash.clear();
+        for cell in self.spatial_hash.values_mut() {
+            cell.clear();
+        }
         let h = self.config.support_radius;
         for (i, p) in self.particles.iter().enumerate() {
-            let key = self.hash_key(p.position, h);
+            let key = Self::hash_key(p.position, h);
             self.spatial_hash.entry(key).or_default().push(i);
         }
+        // Cells that no particle entered this time are no longer needed.
+        self.spatial_hash.retain(|_, cell| !cell.is_empty());
     }
 
     /// Compute grid cell key for a position.
-    fn hash_key(&self, pos: [f64; 3], h: f64) -> (i64, i64, i64) {
+    fn hash_key(pos: [f64; 3], h: f64) -> (i64, i64, i64) {
         (
             (pos[0] / h).floor() as i64,
             (pos[1] / h).floor() as i64,
@@ -1156,24 +1226,31 @@ impl DfsphSolver {
     /// [`build_spatial_hash`](Self::build_spatial_hash) must have been called
     /// for the current positions. The hash cell size equals the support radius,
     /// so every particle closer than the support radius lies in the 3×3×3 block
-    /// of cells around the query cell. Each list contains the particle itself
-    /// (distance zero), which [`update_densities`](Self::update_densities) uses
-    /// for the self contribution; the solver loops skip `j == i`. A particle
-    /// with non-finite coordinates has an empty list (no distance to it is
-    /// below the support radius) and does not disturb the others; cell indices
-    /// that would overflow `i64` for such a particle are skipped.
+    /// of cells around the query cell (27 cells, squared distances, no square
+    /// roots). Each list contains the particle itself (distance zero), which
+    /// [`update_densities`](Self::update_densities) uses for the self
+    /// contribution; the solver loops skip `j == i`. The per-particle lists of
+    /// the previous call are cleared and refilled, not reallocated. A particle
+    /// with non-finite coordinates has an empty list (no distance to it is below
+    /// the support radius) and does not disturb the others; cell indices that
+    /// would overflow `i64` for such a particle are skipped.
+    ///
+    /// A hash grid is used instead of [`crate::neighbor::LinkedCellList`]
+    /// because the latter allocates one cell for every `h³` of the bounding box
+    /// of all particles: a single escaped particle (a diverged simulation) at
+    /// `1e300` would make it request an impossible allocation, while the hash
+    /// grid stores only the occupied cells.
     pub fn build_neighbor_lists(&mut self) {
         let n = self.particles.len();
-        self.neighbor_lists = vec![Vec::new(); n];
+        self.neighbor_lists.truncate(n);
+        self.neighbor_lists.resize_with(n, Vec::new);
         let h = self.config.support_radius;
         let support_sq = h * h;
 
-        let positions: Vec<_> = self.particles.iter().map(|p| p.position).collect();
-
-        for i in 0..n {
-            let pos_i = positions[i];
-            let base = self.hash_key(pos_i, h);
-            let mut neighbors = Vec::new();
+        for (i, list) in self.neighbor_lists.iter_mut().enumerate() {
+            list.clear();
+            let pos_i = self.particles[i].position;
+            let base = Self::hash_key(pos_i, h);
             for dx in -1i64..=1 {
                 for dy in -1i64..=1 {
                     for dz in -1i64..=1 {
@@ -1186,15 +1263,14 @@ impl DfsphSolver {
                         };
                         if let Some(cell) = self.spatial_hash.get(&(kx, ky, kz)) {
                             for &j in cell {
-                                if norm_sq3(sub3(pos_i, positions[j])) < support_sq {
-                                    neighbors.push(j);
+                                if norm_sq3(sub3(pos_i, self.particles[j].position)) < support_sq {
+                                    list.push(j);
                                 }
                             }
                         }
                     }
                 }
             }
-            self.neighbor_lists[i] = neighbors;
         }
     }
 
@@ -1202,7 +1278,6 @@ impl DfsphSolver {
     pub fn update_densities(&mut self) {
         let h = self.config.smoothing_length;
         let kernel = WcSphDensity::new(KernelType::WendlandC2, h);
-        let _n = self.particles.len();
         let positions: Vec<_> = self.particles.iter().map(|p| p.position).collect();
         let masses: Vec<_> = self.particles.iter().map(|p| p.mass).collect();
 
@@ -1486,4 +1561,13 @@ impl DfsphSolver {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod convergence_tests;
+
+#[cfg(test)]
+mod neighbor_tests;
+
+#[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod viscosity_tests;

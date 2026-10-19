@@ -966,13 +966,13 @@ mod tests_crack_front {
 
     fn make_front(k1: f64, k2: f64) -> CrackFront {
         let mut front = CrackFront::new(1e6, 2e6, 1e-4, 1e-2);
-        let v = CrackFrontVertex::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], k1, k2);
+        let v = CrackFrontVertex::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], k1, k2);
         front.add_vertex(v);
         front
     }
     #[test]
     fn test_crack_front_vertex_new_normalises_normal() {
-        let v = CrackFrontVertex::new([0.0; 3], [3.0, 4.0, 0.0], 1e6, 0.0);
+        let v = CrackFrontVertex::new([0.0; 3], [3.0, 4.0, 0.0], [1.0, 0.0, 0.0], 1e6, 0.0);
         let len = norm3(v.normal);
         assert!(
             (len - 1.0).abs() < 1e-12,
@@ -981,7 +981,7 @@ mod tests_crack_front {
     }
     #[test]
     fn test_max_hoop_stress_pure_mode1_is_zero() {
-        let v = CrackFrontVertex::new([0.0; 3], [0.0, 1.0, 0.0], 2e6, 0.0);
+        let v = CrackFrontVertex::new([0.0; 3], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 2e6, 0.0);
         assert!(
             v.max_hoop_stress_angle().abs() < 1e-12,
             "pure mode-I → θ = 0"
@@ -989,7 +989,7 @@ mod tests_crack_front {
     }
     #[test]
     fn test_equivalent_sif_pure_mode1() {
-        let v = CrackFrontVertex::new([0.0; 3], [0.0, 1.0, 0.0], 2e6, 0.0);
+        let v = CrackFrontVertex::new([0.0; 3], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 2e6, 0.0);
         assert!(
             (v.equivalent_sif() - 2e6).abs() < 1e-3,
             "K_eq should equal K_I for pure mode-I"
@@ -1013,7 +1013,7 @@ mod tests_crack_front {
     #[test]
     fn test_crack_front_propagation_increment_clamped() {
         let mut front = CrackFront::new(1e6, 2e6, 1e-4, 1e-2);
-        let v = CrackFrontVertex::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], 1e9, 0.0);
+        let v = CrackFrontVertex::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 1e9, 0.0);
         front.add_vertex(v);
         front.propagate();
         let pos = front.vertices[0].position;
@@ -1069,7 +1069,7 @@ mod tests_crack_front {
     #[test]
     fn test_delete_fractured_elements_near_front() {
         let mut front = CrackFront::new(1e6, 2e6, 1e-4, 1e-2);
-        let v = CrackFrontVertex::new([0.5, 0.5, 0.5], [0.0, 1.0, 0.0], 2e6, 0.0);
+        let v = CrackFrontVertex::new([0.5, 0.5, 0.5], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 2e6, 0.0);
         front.add_vertex(v);
         let tet_indices: &[[usize; 4]] = &[[0, 1, 2, 3], [4, 5, 6, 7]];
         let positions: &[[f64; 3]] = &[
@@ -1093,7 +1093,13 @@ mod tests_crack_front {
     #[test]
     fn test_delete_fractured_elements_no_deletion_when_far() {
         let mut front = CrackFront::new(1e6, 2e6, 1e-4, 1e-2);
-        let v = CrackFrontVertex::new([100.0, 100.0, 100.0], [0.0, 1.0, 0.0], 2e6, 0.0);
+        let v = CrackFrontVertex::new(
+            [100.0, 100.0, 100.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            2e6,
+            0.0,
+        );
         front.add_vertex(v);
         let tet_indices: &[[usize; 4]] = &[[0, 1, 2, 3]];
         let positions: &[[f64; 3]] = &[
@@ -1111,10 +1117,17 @@ mod tests_crack_front {
     #[test]
     fn test_arrest_sub_critical_marks_low_k_vertices() {
         let mut front = CrackFront::new(1e6, 2e6, 1e-4, 1e-2);
-        front.add_vertex(CrackFrontVertex::new([0.0; 3], [0.0, 1.0, 0.0], 0.3e6, 0.0));
+        front.add_vertex(CrackFrontVertex::new(
+            [0.0; 3],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            0.3e6,
+            0.0,
+        ));
         front.add_vertex(CrackFrontVertex::new(
             [1.0, 0.0, 0.0],
             [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
             3e6,
             0.0,
         ));
@@ -1131,10 +1144,17 @@ mod tests_crack_front {
     #[test]
     fn test_active_vertex_count() {
         let mut front = CrackFront::new(1e6, 2e6, 1e-4, 1e-2);
-        front.add_vertex(CrackFrontVertex::new([0.0; 3], [0.0, 1.0, 0.0], 2e6, 0.0));
+        front.add_vertex(CrackFrontVertex::new(
+            [0.0; 3],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            2e6,
+            0.0,
+        ));
         front.add_vertex(CrackFrontVertex {
             position: [1.0, 0.0, 0.0],
             normal: [0.0, 1.0, 0.0],
+            propagation_dir: [1.0, 0.0, 0.0],
             k1: 2e6,
             k2: 0.0,
             arrested: true,
@@ -1144,7 +1164,7 @@ mod tests_crack_front {
     #[test]
     fn test_estimate_sif_nearest_node() {
         let mut front = CrackFront::new(1e6, 2e6, 1e-4, 1e-2);
-        let v = CrackFrontVertex::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.0, 0.0);
+        let v = CrackFrontVertex::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 0.0, 0.0);
         front.add_vertex(v);
         let positions = vec![[0.01_f64, 0.0, 0.0]];
         let stress_voigt = vec![[0.0_f64, 1e6, 0.0, 0.0, 0.0, 0.0]];

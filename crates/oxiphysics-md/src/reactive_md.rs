@@ -6,8 +6,18 @@
 //! This module provides infrastructure for reactive molecular dynamics where
 //! bonds can form and break dynamically during simulation.
 
+use crate::MdError;
+
 /// Boltzmann constant in eV/K.
 pub const KB_EV: f64 = 8.617333262e-5;
+
+/// Coulomb constant `k_e = e² / (4π ε₀)` in eV·Å/e² (CODATA 2018).
+///
+/// This is the prefactor that turns the charge product of two atoms (in units
+/// of the elementary charge) divided by their distance in Å into an energy in
+/// eV: `E = k_e q_i q_j / r_ij`.  Every charge-equilibration routine of the
+/// reactive modules shares this constant.
+pub const KE_EV_ANG: f64 = 14.399_645_478_4;
 
 // ---------------------------------------------------------------------------
 // ChemicalBond
@@ -373,7 +383,34 @@ impl Default for ReactiveMdConfig {
 
 /// Electronegativity Equalization Method (EEM) for charge assignment.
 ///
-/// Solves the linear system: H * q = -chi, where H is the Coulomb hardness matrix.
+/// The charges minimise the electrostatic energy
+///
+/// ```text
+/// E(q) = Σ_i (χ_i q_i + η_i q_i²) + Σ_{i<j} J_ij q_i q_j      subject to Σ_i q_i = Q,
+/// ```
+///
+/// i.e. they solve the bordered linear system, whose Lagrange multiplier `μ` is
+/// minus the common, equalised electronegativity (`χ_i + Σ_j H_ij q_j = −μ` for
+/// every atom)
+///
+/// ```text
+/// [ 2 η_i δ_ij + J_ij (i ≠ j)    1 ] [ q ]   [ −χ ]
+/// [ 1ᵀ                           0 ] [ μ ] = [  Q ].
+/// ```
+///
+/// Electronegativities `χ` are in eV, hardnesses `η` in eV/e², distances in Å and
+/// charges in units of the elementary charge, so the off-diagonal Coulomb kernel
+/// carries the constant [`KE_EV_ANG`] (eV·Å/e²):
+///
+/// * bare Coulomb (default): `J_ij = k_e / r_ij`;
+/// * ReaxFF shielded Coulomb (after [`EemCharges::with_shielding`]):
+///   `J_ij = k_e / (r_ij³ + γ_ij⁻³)^{1/3}` with `γ_ij = √(γ_i γ_j)`, which stays
+///   finite (`k_e γ_ij`) when two atoms approach each other.
+///
+/// The diagonal is `2 η_i` (`η` as in the energy expression above, half the
+/// self-Coulomb `J_ii`), whereas [`crate::reactive::eem_charges`] writes the
+/// energy as `Σ(χ q + ½ η q²)` and takes `η_i` itself on the diagonal: pass
+/// `2 η_i` there to obtain the same charges.
 #[derive(Clone, Debug)]
 pub struct EemCharges {
     /// Electronegativities for each atom (eV).
@@ -382,16 +419,27 @@ pub struct EemCharges {
     pub hardnesses: Vec<f64>,
     /// Total charge constraint.
     pub total_charge: f64,
+    /// Optional ReaxFF shielding parameters `γ_i` per atom (1/Å); `None` selects
+    /// the bare Coulomb kernel `k_e / r`.
+    pub shielding: Option<Vec<f64>>,
 }
 
 impl EemCharges {
-    /// Create a new EEM charge solver.
+    /// Create a new EEM charge solver with the bare Coulomb kernel.
     pub fn new(electronegativities: Vec<f64>, hardnesses: Vec<f64>, total_charge: f64) -> Self {
         Self {
             electronegativities,
             hardnesses,
             total_charge,
+            shielding: None,
         }
+    }
+
+    /// Switch to the ReaxFF shielded Coulomb kernel with per-atom parameters
+    /// `gammas` (1/Å, one per atom, non-negative and finite).
+    pub fn with_shielding(mut self, gammas: Vec<f64>) -> Self {
+        self.shielding = Some(gammas);
+        self
     }
 
     /// Number of atoms.
@@ -399,25 +447,79 @@ impl EemCharges {
         self.electronegativities.len()
     }
 
+    /// Check that all per-atom arrays and the positions describe the same atoms.
+    fn validate(&self, positions: &[[f64; 3]]) -> Result<(), MdError> {
+        let n = self.n_atoms();
+        if self.hardnesses.len() != n || positions.len() != n {
+            return Err(MdError::General(format!(
+                "EEM needs one entry per atom: {n} electronegativities, {} hardnesses, \
+                 {} positions",
+                self.hardnesses.len(),
+                positions.len()
+            )));
+        }
+        if let Some(gammas) = &self.shielding {
+            if gammas.len() != n {
+                return Err(MdError::General(format!(
+                    "EEM shielding needs one parameter per atom: {n} atoms, {} parameters",
+                    gammas.len()
+                )));
+            }
+            if gammas.iter().any(|g| !(g.is_finite() && *g >= 0.0)) {
+                return Err(MdError::General(
+                    "EEM shielding parameters must be finite and non-negative".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Coulomb kernel `J_ij` (eV/e²) for atoms `i` and `j` at distance `distance` (Å).
+    fn coupling(&self, i: usize, j: usize, distance: f64) -> f64 {
+        let r = distance.max(1e-6);
+        let gammas = self
+            .shielding
+            .as_ref()
+            .and_then(|gammas| gammas.get(i).zip(gammas.get(j)));
+        match gammas {
+            Some((&gamma_i, &gamma_j)) => {
+                let gamma_ij = (gamma_i * gamma_j).sqrt();
+                KE_EV_ANG / (r.powi(3) + gamma_ij.powi(-3)).cbrt()
+            }
+            None => KE_EV_ANG / r,
+        }
+    }
+
     /// Build the EEM matrix (n+1) x (n+1) including charge constraint row.
-    pub fn build_matrix(&self, positions: &[[f64; 3]]) -> Vec<Vec<f64>> {
+    ///
+    /// The diagonal holds `2 η_i`, the off-diagonal the Coulomb kernel
+    /// `J_ij` in eV/e² (see the type-level documentation), and the last
+    /// row/column the Lagrange constraint `Σ q = Q`.
+    ///
+    /// # Errors
+    /// [`MdError::General`] if the per-atom arrays, the shielding parameters and
+    /// `positions` do not all describe the same number of atoms, or a shielding
+    /// parameter is negative or not finite.
+    pub fn build_matrix(&self, positions: &[[f64; 3]]) -> Result<Vec<Vec<f64>>, MdError> {
+        self.validate(positions)?;
         let n = self.n_atoms();
         let mut mat = vec![vec![0.0f64; n + 1]; n + 1];
 
-        // Diagonal: hardness
+        // Diagonal: 2 * hardness
         for (i, row) in mat.iter_mut().enumerate().take(n) {
             row[i] = 2.0 * self.hardnesses[i];
         }
 
-        // Off-diagonal: Coulomb 1/r_ij
+        // Off-diagonal: Coulomb kernel in eV/e^2
         for i in 0..n {
             for j in (i + 1)..n {
                 let dx = positions[i][0] - positions[j][0];
                 let dy = positions[i][1] - positions[j][1];
                 let dz = positions[i][2] - positions[j][2];
-                let r = (dx * dx + dy * dy + dz * dz).sqrt().max(1e-6);
-                mat[i][j] = 1.0 / r;
-                mat[j][i] = 1.0 / r;
+                let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                let coupling = self.coupling(i, j, r);
+                mat[i][j] = coupling;
+                mat[j][i] = coupling;
             }
         }
 
@@ -430,65 +532,30 @@ impl EemCharges {
         }
         mat[n][n] = 0.0;
 
-        mat
+        Ok(mat)
     }
 
-    /// Solve for charges using Gaussian elimination (simplified).
+    /// Solve for the charges by LU decomposition with partial pivoting.
     ///
-    /// Returns per-atom charges satisfying sum = total_charge.
-    pub fn solve(&self, positions: &[[f64; 3]]) -> Vec<f64> {
+    /// Returns per-atom charges satisfying `Σ q = total_charge`.
+    ///
+    /// # Errors
+    /// [`MdError::General`] for inconsistent input (see
+    /// [`EemCharges::build_matrix`]), a singular EEM matrix, or a non-finite
+    /// solution.
+    pub fn solve(&self, positions: &[[f64; 3]]) -> Result<Vec<f64>, MdError> {
+        self.validate(positions)?;
         let n = self.n_atoms();
         if n == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-
-        let mut mat = self.build_matrix(positions);
-        let mut rhs = vec![0.0f64; n + 1];
-        for (rhs_i, &en) in rhs.iter_mut().zip(self.electronegativities.iter()) {
-            *rhs_i = -en;
-        }
-        rhs[n] = self.total_charge;
-
-        // Forward elimination
-        for col in 0..=n {
-            // Find pivot
-            let mut pivot_row = col;
-            for row in (col + 1)..=(n) {
-                if mat[row][col].abs() > mat[pivot_row][col].abs() {
-                    pivot_row = row;
-                }
-            }
-            mat.swap(col, pivot_row);
-            rhs.swap(col, pivot_row);
-
-            let diag = mat[col][col];
-            if diag.abs() < 1e-14 {
-                continue;
-            }
-            for row in (col + 1)..=(n) {
-                let factor = mat[row][col] / diag;
-                let col_row: Vec<f64> = mat[col].clone();
-                for (mat_rc, &col_c) in mat[row].iter_mut().skip(col).zip(col_row.iter().skip(col))
-                {
-                    *mat_rc -= factor * col_c;
-                }
-                rhs[row] -= factor * rhs[col];
-            }
-        }
-
-        // Back substitution
-        let mut x = vec![0.0f64; n + 1];
-        for i in (0..=(n)).rev() {
-            let mut sum = rhs[i];
-            for j in (i + 1)..=(n) {
-                sum -= mat[i][j] * x[j];
-            }
-            if mat[i][i].abs() > 1e-14 {
-                x[i] = sum / mat[i][i];
-            }
-        }
-
-        x[..n].to_vec()
+        let matrix = self.build_matrix(positions)?;
+        let mut rhs: Vec<f64> = self.electronegativities.iter().map(|chi| -chi).collect();
+        rhs.push(self.total_charge);
+        let mut solution =
+            crate::reactive::functions::solve_bordered_system(&matrix, &rhs, 1e-10, 4)?;
+        solution.truncate(n);
+        Ok(solution)
     }
 }
 
@@ -807,126 +874,8 @@ impl NudgedElasticBand {
 // TransitionStateSearch (Dimer Method)
 // ---------------------------------------------------------------------------
 
-/// Dimer method for saddle point search (transition state finding).
-///
-/// Reference: Henkelman & Jonsson, J. Chem. Phys. 111, 7010 (1999).
-#[derive(Clone, Debug)]
-pub struct TransitionStateSearch {
-    /// Half-distance between dimer images (Angstrom).
-    pub dimer_length: f64,
-    /// Rotation step size (radians).
-    pub rotation_angle: f64,
-    /// Translation step size.
-    pub translation_step: f64,
-    /// Maximum rotation steps per translation.
-    pub max_rotation_steps: usize,
-    /// Rotation convergence criterion.
-    pub rotation_tol: f64,
-}
-
-impl TransitionStateSearch {
-    /// Create dimer method with default parameters.
-    pub fn new() -> Self {
-        Self {
-            dimer_length: 0.01,
-            rotation_angle: 0.01,
-            translation_step: 0.1,
-            max_rotation_steps: 10,
-            rotation_tol: 1e-4,
-        }
-    }
-
-    /// Compute the effective curvature along the dimer axis.
-    ///
-    /// C = (F2 - F1) · N / (2 * dimer_length)
-    /// where N is the dimer unit vector.
-    pub fn curvature(
-        &self,
-        force_r1: &[[f64; 3]],
-        force_r2: &[[f64; 3]],
-        dimer_axis: &[[f64; 3]],
-    ) -> f64 {
-        let delta_f: f64 = force_r1
-            .iter()
-            .zip(force_r2.iter())
-            .zip(dimer_axis.iter())
-            .map(|((f1, f2), n)| {
-                (f2[0] - f1[0]) * n[0] + (f2[1] - f1[1]) * n[1] + (f2[2] - f1[2]) * n[2]
-            })
-            .sum();
-        delta_f / (2.0 * self.dimer_length)
-    }
-
-    /// Construct dimer image 2 from image 1, midpoint, and axis direction.
-    pub fn build_image2(
-        midpoint: &[[f64; 3]],
-        dimer_axis: &[[f64; 3]],
-        dimer_length: f64,
-    ) -> Vec<[f64; 3]> {
-        midpoint
-            .iter()
-            .zip(dimer_axis.iter())
-            .map(|(r, n)| {
-                [
-                    r[0] + dimer_length * n[0],
-                    r[1] + dimer_length * n[1],
-                    r[2] + dimer_length * n[2],
-                ]
-            })
-            .collect()
-    }
-
-    /// Translate the dimer midpoint using effective force (inverted along dimer axis).
-    pub fn translate_midpoint(
-        &self,
-        midpoint: &mut [[f64; 3]],
-        force: &[[f64; 3]],
-        dimer_axis: &[[f64; 3]],
-        curvature: f64,
-    ) {
-        let n = midpoint.len();
-        // Project force onto and perp to dimer axis
-        let f_parallel: f64 = force
-            .iter()
-            .zip(dimer_axis.iter())
-            .map(|(f, n)| f[0] * n[0] + f[1] * n[1] + f[2] * n[2])
-            .sum();
-
-        for i in 0..n {
-            let f_para_vec = [
-                f_parallel * dimer_axis[i][0],
-                f_parallel * dimer_axis[i][1],
-                f_parallel * dimer_axis[i][2],
-            ];
-            let f_perp = [
-                force[i][0] - f_para_vec[0],
-                force[i][1] - f_para_vec[1],
-                force[i][2] - f_para_vec[2],
-            ];
-
-            // If curvature negative (saddle region): invert parallel force
-            let effective_f = if curvature < 0.0 {
-                [
-                    -f_para_vec[0] + f_perp[0],
-                    -f_para_vec[1] + f_perp[1],
-                    -f_para_vec[2] + f_perp[2],
-                ]
-            } else {
-                force[i]
-            };
-
-            for d in 0..3 {
-                midpoint[i][d] += self.translation_step * effective_f[d];
-            }
-        }
-    }
-}
-
-impl Default for TransitionStateSearch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+mod dimer;
+pub use dimer::{DimerRotation, DimerSearchResult, TransitionStateSearch};
 
 // ---------------------------------------------------------------------------
 // KineticMonteCarlo
@@ -1213,7 +1162,7 @@ mod tests {
         let eta = vec![12.1, 13.4];
         let eem = EemCharges::new(chi, eta, 0.0);
         let pos = vec![[0.0, 0.0, 0.0], [1.4, 0.0, 0.0]];
-        let mat = eem.build_matrix(&pos);
+        let mat = eem.build_matrix(&pos).expect("two atoms, two positions");
         assert_eq!(mat.len(), 3);
         assert_eq!(mat[0].len(), 3);
     }
@@ -1224,10 +1173,213 @@ mod tests {
         let eta = vec![12.1, 13.4, 11.0];
         let eem = EemCharges::new(chi, eta, 0.0);
         let pos = vec![[0.0, 0.0, 0.0], [1.4, 0.0, 0.0], [2.8, 0.0, 0.0]];
-        let charges = eem.solve(&pos);
+        let charges = eem.solve(&pos).expect("EEM matrix is regular");
         assert_eq!(charges.len(), 3);
         let total: f64 = charges.iter().sum();
-        assert!(total.abs() < 0.1);
+        assert!(total.abs() < 1e-10, "total charge {total}");
+        // The more electronegative second atom is negative, the first positive.
+        assert!(charges[1] < 0.0 && charges[0] > 0.0, "{charges:?}");
+    }
+
+    #[test]
+    fn test_eem_matrix_carries_the_coulomb_constant() {
+        // Pre-fix the off-diagonal was 1/r (Å⁻¹) next to eV/e² hardnesses: charges were
+        // wrong by about 14x.  The kernel is k_e / r in eV/e².
+        let eem = EemCharges::new(vec![5.0, 7.0], vec![9.0, 11.0], 0.0);
+        let r = 2.5;
+        let mat = eem
+            .build_matrix(&[[0.0, 0.0, 0.0], [r, 0.0, 0.0]])
+            .expect("two atoms, two positions");
+        assert!(
+            (mat[0][1] - KE_EV_ANG / r).abs() < 1e-12,
+            "J = {}",
+            mat[0][1]
+        );
+        assert_eq!(mat[0][1], mat[1][0]);
+        assert!((KE_EV_ANG - 14.399_645).abs() < 1e-6);
+        // Diagonal 2 η, Lagrange border of ones with a zero corner.
+        assert!((mat[0][0] - 18.0).abs() < 1e-14 && (mat[1][1] - 22.0).abs() < 1e-14);
+        assert_eq!(
+            (mat[0][2], mat[1][2], mat[2][0], mat[2][1], mat[2][2]),
+            (1.0, 1.0, 1.0, 1.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn test_eem_two_atom_charge_matches_the_closed_form() {
+        // q_1 = (χ_2 − χ_1) / (2η_1 + 2η_2 − 2 k_e / r),  q_2 = −q_1  (neutral pair).
+        let (chi, eta) = (vec![5.0, 7.0], vec![9.0, 11.0]);
+        let eem = EemCharges::new(chi.clone(), eta.clone(), 0.0);
+        for &r in &[3.0, 5.0, 8.0] {
+            let charges = eem
+                .solve(&[[0.0, 0.0, 0.0], [0.0, r, 0.0]])
+                .expect("EEM matrix is regular");
+            let expected = (chi[1] - chi[0]) / (2.0 * eta[0] + 2.0 * eta[1] - 2.0 * KE_EV_ANG / r);
+            assert!(
+                (charges[0] - expected).abs() < 1e-10,
+                "r = {r}: {} vs {expected}",
+                charges[0]
+            );
+            assert!((charges[1] + expected).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_eem_charges_equalise_the_electronegativity_and_sum_to_the_total() {
+        let chi = vec![4.53, 6.93, 4.53, 5.2];
+        let eta = vec![5.0, 8.0, 5.0, 6.5];
+        let pos = vec![
+            [-3.0, 0.0, 0.0],
+            [0.0, 0.2, 0.0],
+            [3.0, -0.1, 0.4],
+            [0.5, 3.5, 1.0],
+        ];
+        for &total in &[0.0, 0.7, -2.0] {
+            let eem = EemCharges::new(chi.clone(), eta.clone(), total);
+            let charges = eem.solve(&pos).expect("EEM matrix is regular");
+            let mat = eem.build_matrix(&pos).expect("consistent input");
+            let effective: Vec<f64> = (0..4)
+                .map(|i| chi[i] + (0..4).map(|j| mat[i][j] * charges[j]).sum::<f64>())
+                .collect();
+            let spread = effective.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+                - effective.iter().cloned().fold(f64::INFINITY, f64::min);
+            assert!(
+                spread < 1e-9,
+                "Q = {total}: electronegativity spread {spread}"
+            );
+            assert!((charges.iter().sum::<f64>() - total).abs() < 1e-10);
+            assert!(
+                charges.iter().any(|q| q.abs() > 1e-3),
+                "charges collapsed: {charges:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_eem_matches_the_free_function_with_doubled_hardness() {
+        // EemCharges puts 2 η on the diagonal (E = Σ χ q + η q²), crate::reactive::eem_charges
+        // puts η (E = Σ χ q + ½ η q²): the two agree for η_free = 2 η.
+        let chi = vec![6.96, 8.74, 7.5];
+        let eta = vec![12.1, 13.4, 11.0];
+        let pos = vec![[0.0, 0.0, 0.0], [1.4, 0.0, 0.0], [2.8, 0.0, 0.0]];
+        let class = EemCharges::new(chi.clone(), eta.clone(), 1.0)
+            .solve(&pos)
+            .expect("EEM matrix is regular");
+        let doubled: Vec<f64> = eta.iter().map(|e| 2.0 * e).collect();
+        let free = crate::reactive::eem_charges(&pos, &chi, &doubled, 1.0, 1e-12, 10)
+            .expect("EEM matrix is regular");
+        for (a, b) in class.iter().zip(free.iter()) {
+            assert!((a - b).abs() < 1e-9, "{a} vs {b}");
+        }
+        assert!((class.iter().sum::<f64>() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_eem_shielded_kernel_follows_the_reaxff_form() {
+        // J(r) = k_e / (r³ + γ_ij⁻³)^(1/3),  γ_ij = sqrt(γ_i γ_j).
+        let eem =
+            EemCharges::new(vec![5.0, 7.0], vec![9.0, 11.0], 0.0).with_shielding(vec![0.8, 1.2]);
+        let gamma_ij = (0.8_f64 * 1.2).sqrt();
+        for &r in &[0.5, 1.0, 2.0, 5.0] {
+            let mat = eem
+                .build_matrix(&[[0.0, 0.0, 0.0], [0.0, 0.0, r]])
+                .expect("consistent input");
+            let expected = KE_EV_ANG / (r.powi(3) + gamma_ij.powi(-3)).cbrt();
+            assert!((mat[0][1] - expected).abs() < 1e-12, "r = {r}");
+            assert!(
+                mat[0][1] < KE_EV_ANG / r,
+                "shielding must weaken the bare kernel"
+            );
+        }
+        // Finite when the atoms coincide (bare Coulomb diverges): J(0) = k_e γ_ij.
+        let contact = eem
+            .build_matrix(&[[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]])
+            .expect("consistent input");
+        assert!((contact[0][1] - KE_EV_ANG * gamma_ij).abs() < 1e-6 * KE_EV_ANG);
+        // Far apart the shielded kernel is the bare k_e / r.
+        let far = eem
+            .build_matrix(&[[0.0, 0.0, 0.0], [60.0, 0.0, 0.0]])
+            .expect("consistent input");
+        assert!((far[0][1] * 60.0 / KE_EV_ANG - 1.0).abs() < 1e-5);
+        // γ = 0 shields completely.
+        let off =
+            EemCharges::new(vec![5.0, 7.0], vec![9.0, 11.0], 0.0).with_shielding(vec![0.0, 1.0]);
+        let mat = off
+            .build_matrix(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+            .expect("consistent input");
+        assert_eq!(mat[0][1], 0.0);
+    }
+
+    #[test]
+    fn test_eem_shielding_regularises_close_atoms() {
+        // At 0.4 Å the bare coupling k_e / r = 36 eV exceeds 2η, making the matrix
+        // indefinite and the charge transfer unphysically large; the shielded kernel keeps
+        // the neutral pair stable and the physical sign (less electronegative atom positive).
+        let (chi, eta) = (vec![5.0, 7.0], vec![9.0, 11.0]);
+        let pos = [[0.0, 0.0, 0.0], [0.4, 0.0, 0.0]];
+        let bare = EemCharges::new(chi.clone(), eta.clone(), 0.0)
+            .solve(&pos)
+            .expect("EEM matrix is regular");
+        let shielded = EemCharges::new(chi, eta, 0.0)
+            .with_shielding(vec![0.9, 0.9])
+            .solve(&pos)
+            .expect("EEM matrix is regular");
+        assert!(
+            bare[0] < 0.0,
+            "bare kernel gives the unphysical sign: {bare:?}"
+        );
+        assert!(shielded[0] > 0.0 && shielded[1] < 0.0, "{shielded:?}");
+        let gamma_ij = 0.9_f64;
+        let j = KE_EV_ANG / (0.4_f64.powi(3) + gamma_ij.powi(-3)).cbrt();
+        let expected = 2.0 / (18.0 + 22.0 - 2.0 * j);
+        assert!((shielded[0] - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_eem_handles_single_atom_and_empty_systems() {
+        let single = EemCharges::new(vec![5.0], vec![9.0], 0.6)
+            .solve(&[[0.0, 0.0, 0.0]])
+            .expect("single atom");
+        assert_eq!(single.len(), 1);
+        assert!((single[0] - 0.6).abs() < 1e-12);
+        let empty = EemCharges::new(Vec::new(), Vec::new(), 0.0)
+            .solve(&[])
+            .expect("empty system");
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_eem_rejects_inconsistent_input() {
+        let eem = EemCharges::new(vec![5.0, 7.0], vec![9.0, 11.0], 0.0);
+        assert!(eem.solve(&[[0.0; 3]]).is_err(), "too few positions");
+        assert!(
+            eem.build_matrix(&[[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+                .is_err()
+        );
+        let short_eta = EemCharges::new(vec![5.0, 7.0], vec![9.0], 0.0);
+        assert!(short_eta.solve(&[[0.0; 3], [1.0, 0.0, 0.0]]).is_err());
+        let two_atoms = [[0.0; 3], [1.0, 0.0, 0.0]];
+        assert!(
+            eem.clone()
+                .with_shielding(vec![1.0])
+                .solve(&two_atoms)
+                .is_err()
+        );
+        assert!(
+            eem.clone()
+                .with_shielding(vec![1.0, -1.0])
+                .solve(&two_atoms)
+                .is_err()
+        );
+        assert!(
+            eem.with_shielding(vec![1.0, f64::NAN])
+                .solve(&two_atoms)
+                .is_err()
+        );
+        // Zero hardness with the coupling suppressed is a singular system, not silent zeros.
+        let singular =
+            EemCharges::new(vec![5.0, 7.0], vec![0.0, 0.0], 0.0).with_shielding(vec![0.0, 0.0]);
+        assert!(singular.solve(&two_atoms).is_err());
     }
 
     #[test]
@@ -1303,31 +1455,6 @@ mod tests {
         let sf = neb.spring_force(&prev, &curr, &next, &tau);
         // Evenly spaced => zero spring force
         assert!(sf[0][0].abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_tss_new() {
-        let tss = TransitionStateSearch::new();
-        assert!(tss.dimer_length > 0.0);
-        assert!(tss.max_rotation_steps > 0);
-    }
-
-    #[test]
-    fn test_tss_curvature() {
-        let tss = TransitionStateSearch::new();
-        let f1 = vec![[1.0, 0.0, 0.0]];
-        let f2 = vec![[0.0, 0.0, 0.0]];
-        let n = vec![[1.0, 0.0, 0.0]];
-        let c = tss.curvature(&f1, &f2, &n);
-        assert!(c < 0.0); // negative curvature: saddle region
-    }
-
-    #[test]
-    fn test_tss_build_image2() {
-        let mid = vec![[1.0, 1.0, 1.0]];
-        let axis = vec![[1.0, 0.0, 0.0]];
-        let img2 = TransitionStateSearch::build_image2(&mid, &axis, 0.01);
-        assert!((img2[0][0] - 1.01).abs() < 1e-10);
     }
 
     #[test]

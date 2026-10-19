@@ -2,11 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+#[cfg(test)]
+use super::correlation::ElectronCorrelation;
 use super::types::BasisFunction;
 #[cfg(test)]
-use super::types::{
-    ElectronCorrelation, NaturalBondOrbital, NboAnalysis, QmmmBoundary, QmmmCoupling,
-};
+use super::types::{CartesianAxis, NaturalBondOrbital, NboAnalysis, QmmmBoundary, QmmmCoupling};
 #[cfg(test)]
 use super::types_2::{BasisSetType, HartreeFockSolver};
 #[cfg(test)]
@@ -14,71 +14,6 @@ use super::types_2::{DensityFunctionalTheory, EmbeddingType, NboInteraction};
 #[cfg(test)]
 use super::types_3::{LinkAtomQmmm, MolecularOrbital, ScfStatus, XcFunctional};
 
-/// Contracted two-electron repulsion integral (μν|λσ) via primitive decomposition.
-///
-/// For s–s|s–s pairs the Obara–Saika / Boys-function formula is exact.
-/// For all combinations involving p-type functions the same product-Gaussian-center
-/// approach gives the zeroth-order (monopole) contribution, which is the dominant
-/// term for STO-3G and sufficient for qualitatively correct HF results.
-pub(super) fn primitive_eri_contracted(
-    bmu: &BasisFunction,
-    bnu: &BasisFunction,
-    bla: &BasisFunction,
-    bsi: &BasisFunction,
-) -> f64 {
-    use oxiphysics_core::numerics::boys_fn;
-    use std::f64::consts::PI;
-    let mut val = 0.0;
-    for (i, &ai) in bmu.exponents.iter().enumerate() {
-        for (j, &aj) in bnu.exponents.iter().enumerate() {
-            for (k, &ak) in bla.exponents.iter().enumerate() {
-                for (l, &al) in bsi.exponents.iter().enumerate() {
-                    let p = ai + aj;
-                    let q = ak + al;
-                    let zeta = p + q;
-                    let p_center = [
-                        (ai * bmu.center[0] + aj * bnu.center[0]) / p,
-                        (ai * bmu.center[1] + aj * bnu.center[1]) / p,
-                        (ai * bmu.center[2] + aj * bnu.center[2]) / p,
-                    ];
-                    let q_center = [
-                        (ak * bla.center[0] + al * bsi.center[0]) / q,
-                        (ak * bla.center[1] + al * bsi.center[1]) / q,
-                        (ak * bla.center[2] + al * bsi.center[2]) / q,
-                    ];
-                    let r_mu_nu2: f64 = bmu
-                        .center
-                        .iter()
-                        .zip(bnu.center.iter())
-                        .map(|(a, b)| (a - b).powi(2))
-                        .sum();
-                    let r_la_si2: f64 = bla
-                        .center
-                        .iter()
-                        .zip(bsi.center.iter())
-                        .map(|(a, b)| (a - b).powi(2))
-                        .sum();
-                    let k_munu = (-ai * aj / p * r_mu_nu2).exp();
-                    let k_lasi = (-ak * al / q * r_la_si2).exp();
-                    let r_pq2: f64 = p_center
-                        .iter()
-                        .zip(q_center.iter())
-                        .map(|(a, b)| (a - b).powi(2))
-                        .sum();
-                    let t = p * q / zeta * r_pq2;
-                    let f0 = boys_fn(t, 0)[0];
-                    let pre = 2.0 * PI.powf(2.5) / (p * q * zeta.sqrt());
-                    let coeff = bmu.coefficients[i]
-                        * bnu.coefficients[j]
-                        * bla.coefficients[k]
-                        * bsi.coefficients[l];
-                    val += coeff * pre * k_munu * k_lasi * f0;
-                }
-            }
-        }
-    }
-    val
-}
 /// Build a minimal STO-3G overlap matrix for H₂ at bond length R (Bohr).
 pub fn build_h2_overlap(r: f64) -> [[f64; 2]; 2] {
     let zeta = 1.24;
@@ -139,14 +74,67 @@ mod tests {
     }
     #[test]
     fn test_sto3g_p_angular_momentum() {
-        let bf = BasisFunction::sto3g_p([0.0, 0.0, 0.0], 1.0);
+        let bf = BasisFunction::sto3g_p([0.0, 0.0, 0.0], 1.0, CartesianAxis::Y);
         assert_eq!(bf.angular_momentum, 1);
     }
     #[test]
     fn test_self_overlap_near_one() {
-        let bf = BasisFunction::sto3g_s([0.0, 0.0, 0.0], 1.0);
-        let s = bf.overlap_with(&bf);
-        assert!(s > 0.0, "self-overlap should be positive");
+        for zeta in [1.0, 1.24, 5.67, 7.66] {
+            let bf = BasisFunction::sto3g_s([0.3, -0.1, 2.0], zeta);
+            let s = bf.overlap_with(&bf);
+            assert!(
+                (s - 1.0).abs() < 1e-6,
+                "1s self-overlap {s} for zeta {zeta}"
+            );
+            let bf2 = BasisFunction::sto3g_2s([0.3, -0.1, 2.0], zeta);
+            let s2 = bf2.overlap_with(&bf2);
+            assert!(
+                (s2 - 1.0).abs() < 1e-6,
+                "2s self-overlap {s2} for zeta {zeta}"
+            );
+        }
+    }
+    #[test]
+    fn test_p_function_unit_norm() {
+        // Same-centre self-overlap of one Cartesian p component:
+        // Σ c_i c_j (π/γ)^{3/2} / (2γ).
+        for zeta in [1.72, 2.25] {
+            let bf = BasisFunction::sto3g_p([0.0; 3], zeta, CartesianAxis::X);
+            let mut s = 0.0;
+            for (&ai, &ci) in bf.exponents.iter().zip(bf.coefficients.iter()) {
+                for (&aj, &cj) in bf.exponents.iter().zip(bf.coefficients.iter()) {
+                    let g = ai + aj;
+                    s += ci * cj * (std::f64::consts::PI / g).powf(1.5) / (2.0 * g);
+                }
+            }
+            assert!((s - 1.0).abs() < 1e-6, "p self-overlap {s}");
+        }
+    }
+    #[test]
+    fn test_sto3g_hydrogen_exponents_and_primitive_weights() {
+        // ζ = 1.24 reproduces the standard H STO-3G primitives (3.42525091,
+        // 0.62391373, 0.16885540) and the tabulated weights of *normalised*
+        // primitives (0.15432897, 0.53532814, 0.44463454).
+        let bf = BasisFunction::sto3g_s([0.0; 3], 1.24);
+        let expected_alpha = [0.168_855_40, 0.623_913_73, 3.425_250_91];
+        let expected_d = [0.444_634_54, 0.535_328_14, 0.154_328_97];
+        let mut ratio: Option<f64> = None;
+        for k in 0..3 {
+            assert!((bf.exponents[k] - expected_alpha[k]).abs() < 1e-6);
+            let n_k = (2.0 * bf.exponents[k] / std::f64::consts::PI).powf(0.75);
+            let r = bf.coefficients[k] / (n_k * expected_d[k]);
+            if let Some(r0) = ratio {
+                assert!((r - r0).abs() < 1e-6 * r0, "primitive weights distorted");
+            }
+            ratio = Some(r);
+        }
+    }
+    #[test]
+    fn test_h2_sto3g_overlap_szabo_ostlund() {
+        // Szabo & Ostlund: S_12 = 0.6593 for ζ = 1.24 at R = 1.4 bohr.
+        let a = BasisFunction::sto3g_s([0.0; 3], 1.24);
+        let b = BasisFunction::sto3g_s([1.4, 0.0, 0.0], 1.24);
+        assert!((a.overlap_with(&b) - 0.6593).abs() < 1e-4);
     }
     #[test]
     fn test_overlap_decreases_with_distance() {
@@ -279,10 +267,22 @@ mod tests {
     }
     #[test]
     fn test_dft_ks_scf_runs() {
-        let hf = make_2x2_hf();
+        let hf = HartreeFockSolver::from_atoms(&[1, 1], &[[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]], 0)
+            .expect("H2");
         let dft = DensityFunctionalTheory::new(hf, XcFunctional::Pbe);
-        let result = dft.run_ks_scf();
-        assert!(result.energy.is_finite());
+        let result = dft.run_ks_scf().expect("PBE H2");
+        assert_eq!(result.status, ScfStatus::Converged);
+        assert!(
+            result.energy < -1.1 && result.energy > -1.2,
+            "{}",
+            result.energy
+        );
+    }
+    #[test]
+    fn test_dft_ks_scf_rejects_integral_only_solver() {
+        // A solver built from bare matrices has no basis functions to put on a grid.
+        let dft = DensityFunctionalTheory::new(make_2x2_hf(), XcFunctional::Pbe);
+        assert!(dft.run_ks_scf().is_err());
     }
     #[test]
     fn test_homo_lumo_gap_positive() {
@@ -297,8 +297,7 @@ mod tests {
         let hf = make_2x2_hf();
         let mut dft = DensityFunctionalTheory::new(hf, XcFunctional::Lda);
         dft.set_pseudopotential(-0.1);
-        let result = dft.run_ks_scf();
-        assert!(result.energy.is_finite());
+        assert_eq!(dft.pseudopotential_energy, -0.1);
     }
     #[test]
     fn test_mo_is_occupied() {
@@ -349,36 +348,76 @@ mod tests {
         let wbi = MolecularOrbital::wiberg_bond_index(&density, &overlap, &[0], &[1]);
         assert!(wbi.is_finite());
     }
+    /// Two occupied + two virtual orbitals with a physically structured MO tensor:
+    /// (pq|rs) = 0.1 + 0.05·δ_pq·δ_rs, which has full 8-fold symmetry.
     fn make_ec() -> ElectronCorrelation {
         let eps = vec![-0.6, -0.5, 0.3, 0.4];
-        let eri = vec![0.1; 4];
-        ElectronCorrelation::new(2, 2, eps, eri, -1.0)
+        let n = 4;
+        let mut eri = vec![0.0; n * n * n * n];
+        for p in 0..n {
+            for q in 0..n {
+                for r in 0..n {
+                    for s in 0..n {
+                        let diag = if p == q && r == s { 0.05 } else { 0.0 };
+                        eri[((p * n + q) * n + r) * n + s] = 0.1 + diag;
+                    }
+                }
+            }
+        }
+        ElectronCorrelation::new(2, 2, eps, eri, -1.0).expect("consistent sizes")
     }
     #[test]
-    fn test_mp2_result_finite() {
+    fn test_mp2_energy_negative_and_split() {
         let ec = make_ec();
-        let r = ec.mp2_energy();
-        assert!(r.e_mp2.is_finite());
+        let r = ec.mp2_energy().expect("MP2");
+        assert!(r.e_mp2 < 0.0, "MP2 correlation energy must be negative");
+        assert!((r.e_os + r.e_ss - r.e_mp2).abs() < 1e-14);
+        // (ia|jb) = (ib|ja) = 0.1 here, so E_SS = 0 and E_OS = −Σ 0.01/Δ.
+        assert!(r.e_ss.abs() < 1e-14);
+        let eps = [-0.6, -0.5, 0.3, 0.4];
+        let mut expected = 0.0;
+        for i in 0..2 {
+            for j in 0..2 {
+                for a in 2..4 {
+                    for b in 2..4 {
+                        expected -= 0.01 / (eps[a] + eps[b] - eps[i] - eps[j]);
+                    }
+                }
+            }
+        }
+        assert!((r.e_mp2 - expected).abs() < 1e-14);
     }
     #[test]
     fn test_mp2_total_includes_hf() {
         let ec = make_ec();
-        let r = ec.mp2_energy();
+        let r = ec.mp2_energy().expect("MP2");
         assert_eq!(r.e_hf, -1.0);
         assert!((r.e_total - r.e_hf - r.e_mp2).abs() < 1e-10);
     }
     #[test]
-    fn test_cis_returns_states() {
+    fn test_cis_requires_dipoles_and_returns_sorted_states() {
         let ec = make_ec();
-        let states = ec.cis_states(2);
-        assert!(states.len() <= 2);
-    }
-    #[test]
-    fn test_cis_excitation_energies_positive() {
-        let ec = make_ec();
-        let states = ec.cis_states(4);
+        assert!(ec.cis_states(2).is_err());
+        let n = 4;
+        let mut dz = vec![0.0; n * n];
+        for p in 0..n {
+            for q in 0..n {
+                dz[p * n + q] = if p == q { 0.0 } else { 0.3 };
+            }
+        }
+        let ec = ec
+            .with_mo_dipoles([vec![0.0; n * n], vec![0.0; n * n], dz])
+            .expect("dipoles");
+        let states = ec.cis_states(4).expect("CIS");
+        assert_eq!(states.len(), 4);
+        for w in states.windows(2) {
+            assert!(w[0].excitation_energy <= w[1].excitation_energy);
+        }
         for s in &states {
-            assert!(s.excitation_energy > 0.0 || s.excitation_energy.is_finite());
+            assert!(s.excitation_energy > 0.0);
+            assert!(s.oscillator_strength >= 0.0);
+            let norm: f64 = s.amplitudes.iter().map(|x| x * x).sum();
+            assert!((norm - 1.0).abs() < 1e-10);
         }
     }
     #[test]
@@ -391,20 +430,22 @@ mod tests {
     fn test_ccs_t1_diagnostic_nonzero() {
         let ec = make_ec();
         let t1 = ec.ccs_t1_diagnostic(&[0.02, 0.01, 0.015, 0.005]);
-        assert!(t1 > 0.0);
+        assert!((t1 - ((0.0004f64 + 0.0001 + 0.000225 + 0.000025) / 2.0).sqrt()).abs() < 1e-15);
     }
     #[test]
-    fn test_ccs_energy_finite() {
+    fn test_ccs_energy_value() {
         let ec = make_ec();
         let t1 = vec![0.02; 4];
-        let e = ec.ccs_energy(&t1);
-        assert!(e.is_finite());
+        let e = ec.ccs_energy(&t1).expect("CCS");
+        // Σ_{ia,jb} [2·0.1 − 0.1] t² = 16 · 0.1 · 0.0004
+        assert!((e - 16.0 * 0.1 * 0.0004).abs() < 1e-15);
     }
     #[test]
-    fn test_scs_mp2_finite() {
+    fn test_scs_mp2_scaling() {
         let ec = make_ec();
-        let e = ec.scs_mp2_energy(1.2, 0.333);
-        assert!(e.is_finite());
+        let mp2 = ec.mp2_energy().expect("MP2");
+        let e = ec.scs_mp2_energy(1.2, 0.333).expect("SCS");
+        assert!((e - (mp2.e_hf + 1.2 * mp2.e_os + 0.333 * mp2.e_ss)).abs() < 1e-14);
     }
     #[test]
     fn test_nbo_role_bond() {
@@ -530,8 +571,9 @@ mod tests {
     #[test]
     fn test_h2_overlap_diagonal_near_one() {
         let s = build_h2_overlap(1.4);
-        assert!(s[0][0] > 0.5);
-        assert!(s[1][1] > 0.5);
+        assert!((s[0][0] - 1.0).abs() < 1e-6);
+        assert!((s[1][1] - 1.0).abs() < 1e-6);
+        assert!((s[0][1] - 0.6593).abs() < 1e-4);
     }
     #[test]
     fn test_h2_overlap_off_diagonal_positive() {

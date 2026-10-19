@@ -5,6 +5,29 @@
 //!
 //! Provides time-of-impact (TOI) computation for moving shapes: spheres,
 //! capsules, boxes, and general convex shapes. Uses `[f64; 3]` for 3D vectors.
+//!
+//! The casts translate one shape along a straight line (`position(t) = pos +
+//! t * vel`) against a static one and find the first `t` at which their gap
+//! reaches [`ShapeCastConfig::target_distance`] by conservative advancement:
+//! the exact distance between the shapes is measured, and time advances by the
+//! largest step that cannot skip the contact. The step is the gap divided by
+//! the speed at which the gap closes along the direction of the closest
+//! features (a Newton step on the convex gap function), see the
+//! [`advancement`] module, so oblique approaches converge as fast as head-on
+//! ones. The distances are exact: segment-box and box-box queries are closed
+//! form, and convex hulls given as point sets use the
+//! Gilbert-Johnson-Keerthi algorithm ([`hull_distance`]).
+
+mod advancement;
+mod box_queries;
+mod hull_distance;
+
+use advancement::{Probe, advance, separation_direction, unit_vector};
+use box_queries::{
+    aabb_overlap_normal, aabb_separation, box_corners, box_exit_normal, clamp_to_box,
+    segment_box_distance,
+};
+use hull_distance::{HullDistance, hull_distance};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector helpers
@@ -12,6 +35,14 @@
 
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -54,7 +85,9 @@ pub struct ShapeCastConfig {
     pub max_toc: f64,
     /// Target separation distance (shapes are in contact when dist <= target_distance).
     pub target_distance: f64,
-    /// Tolerance for time-of-impact convergence.
+    /// Distance tolerance for time-of-impact convergence: a cast reports a hit
+    /// as soon as the gap between the shapes is at most
+    /// `target_distance + toi_tolerance`.
     pub toi_tolerance: f64,
 }
 
@@ -79,9 +112,11 @@ pub struct ShapeCastResult {
     pub toi: f64,
     /// Contact normal at the time of impact (pointing from B to A).
     pub normal_at_toi: [f64; 3],
-    /// Witness point on shape A at TOI.
+    /// Witness point on shape A at TOI: the closest point of A to B (for a
+    /// capsule cast, the closest point of the capsule's axis segment).
     pub witness_a: [f64; 3],
-    /// Witness point on shape B at TOI.
+    /// Witness point on shape B at TOI: the closest point of B to A (for a
+    /// capsule-capsule cast, the closest point of the other axis segment).
     pub witness_b: [f64; 3],
     /// True if the shapes were already penetrating at t=0.
     pub is_penetrating: bool,
@@ -251,6 +286,63 @@ impl AngularMotion {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Probe helpers shared by the casts
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Probe of a sphere (centre `pos`, `radius`) against the point `nearest` of a
+/// static convex shape that is closest to the centre.
+///
+/// The witness on the sphere is the point of its surface facing `nearest`.
+fn sphere_probe(
+    pos: [f64; 3],
+    radius: f64,
+    nearest: [f64; 3],
+    fallback: Option<[f64; 3]>,
+) -> Probe {
+    let direction = separation_direction(pos, nearest);
+    let facing = direction.or(fallback);
+    Probe {
+        gap: dist3(pos, nearest) - radius,
+        direction,
+        fallback,
+        witness_a: facing.map_or(pos, |n| sub3(pos, scale3(n, radius))),
+        witness_b: nearest,
+    }
+}
+
+/// Probe of two convex hulls given by the distance query `nearest`.
+fn hull_probe(nearest: &HullDistance, fallback: Option<[f64; 3]>) -> Probe {
+    Probe {
+        gap: nearest.distance,
+        direction: if nearest.intersecting {
+            None
+        } else {
+            separation_direction(nearest.point_a, nearest.point_b)
+        },
+        fallback,
+        witness_a: nearest.point_a,
+        witness_b: nearest.point_b,
+    }
+}
+
+/// Unit normal of the triangle `(v0, v1, v2)`, oriented against the motion
+/// `vel` (so that it points towards the side a mover comes from), or `None` for
+/// a degenerate triangle.
+fn triangle_normal_against(
+    vel: [f64; 3],
+    v0: [f64; 3],
+    v1: [f64; 3],
+    v2: [f64; 3],
+) -> Option<[f64; 3]> {
+    let normal = unit_vector(cross3(sub3(v1, v0), sub3(v2, v0)))?;
+    Some(if dot3(normal, vel) > 0.0 {
+        scale3(normal, -1.0)
+    } else {
+        normal
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SphereCast — moving sphere cast
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -290,6 +382,8 @@ impl SphereCast {
     }
 
     /// Sphere vs axis-aligned box TOI via conservative advancement.
+    ///
+    /// The witness on the sphere is the point of its surface facing the box.
     pub fn vs_box(
         motion_a: &LinearMotion,
         radius_a: f64,
@@ -297,41 +391,23 @@ impl SphereCast {
         half_extents: [f64; 3],
         cfg: &ShapeCastConfig,
     ) -> ShapeCastResult {
-        // Use conservative advancement: step until sphere hits box
         let lo = sub3(box_center, half_extents);
         let hi = add3(box_center, half_extents);
-
-        let mut t = 0.0;
-        let max_iters = 64;
-        for _ in 0..max_iters {
+        advance(motion_a.vel, cfg, |t| {
             let pos = motion_a.position_at(t);
-            // Closest point on box to sphere center
-            let q = [
-                pos[0].clamp(lo[0], hi[0]),
-                pos[1].clamp(lo[1], hi[1]),
-                pos[2].clamp(lo[2], hi[2]),
-            ];
-            let d = dist3(pos, q) - radius_a;
-            if d <= cfg.target_distance + cfg.toi_tolerance {
-                let n = if len3(sub3(pos, q)) > 1e-12 {
-                    normalize3(sub3(pos, q))
-                } else {
-                    [0.0, 1.0, 0.0]
-                };
-                let wa = add3(pos, scale3(n, -radius_a));
-                return ShapeCastResult::hit(t, n, wa, q);
-            }
-            // Advance by d / |vel|
-            let speed = len3(motion_a.vel).max(1e-12);
-            t += d.max(cfg.toi_tolerance) / speed;
-            if t > cfg.max_toc {
-                break;
-            }
-        }
-        ShapeCastResult::no_hit(cfg.max_toc)
+            let nearest = clamp_to_box(pos, lo, hi);
+            Some(sphere_probe(
+                pos,
+                radius_a,
+                nearest,
+                Some(box_exit_normal(pos, lo, hi)),
+            ))
+        })
     }
 
     /// Sphere vs triangle TOI via conservative advancement.
+    ///
+    /// The witness on the sphere is the point of its surface facing the triangle.
     pub fn vs_triangle(
         motion_a: &LinearMotion,
         radius_a: f64,
@@ -340,61 +416,12 @@ impl SphereCast {
         v2: [f64; 3],
         cfg: &ShapeCastConfig,
     ) -> ShapeCastResult {
-        let mut t = 0.0;
-        let max_iters = 64;
-        for _ in 0..max_iters {
+        let fallback = triangle_normal_against(motion_a.vel, v0, v1, v2);
+        advance(motion_a.vel, cfg, |t| {
             let pos = motion_a.position_at(t);
-            let ab = sub3(v1, v0);
-            let ac = sub3(v2, v0);
-            let ap = sub3(pos, v0);
-            let d1 = dot3(ab, ap);
-            let d2 = dot3(ac, ap);
-            let d3 = dot3(ab, sub3(pos, v1));
-            let d4 = dot3(ac, sub3(pos, v1));
-            let (u, v) = if d1 <= 0.0 && d2 <= 0.0 {
-                (1.0, 0.0)
-            } else if d3 >= 0.0 && d4 <= d3 {
-                (0.0, 1.0)
-            } else {
-                let a_coef = dot3(ab, ab);
-                let b_coef = dot3(ab, ac);
-                let c_coef = dot3(ac, ac);
-                let det = a_coef * c_coef - b_coef * b_coef;
-                if det.abs() < 1e-12 {
-                    (1.0, 0.0)
-                } else {
-                    let inv_det = 1.0 / det;
-                    let v_ = (c_coef * d1 - b_coef * d2) * inv_det;
-                    let w_ = (a_coef * d2 - b_coef * d1) * inv_det;
-                    let v_ = v_.clamp(0.0, 1.0);
-                    let w_ = w_.clamp(0.0, 1.0 - v_);
-                    (1.0 - v_ - w_, v_)
-                }
-            };
-            let _q = add3(
-                add3(scale3(v0, u + v), scale3(v1, 1.0 - u - v)),
-                scale3(v2, 0.0),
-            );
-            let _ = (u, v);
-            // Simplified: use PointTriangleDist
-            let (q, _) = crate_point_tri(pos, v0, v1, v2);
-            let d = dist3(pos, q) - radius_a;
-            if d <= cfg.target_distance + cfg.toi_tolerance {
-                let n = if len3(sub3(pos, q)) > 1e-12 {
-                    normalize3(sub3(pos, q))
-                } else {
-                    [0.0, 0.0, 1.0]
-                };
-                let wa = add3(pos, scale3(n, -radius_a));
-                return ShapeCastResult::hit(t, n, wa, q);
-            }
-            let speed = len3(motion_a.vel).max(1e-12);
-            t += d.max(cfg.toi_tolerance) / speed;
-            if t > cfg.max_toc {
-                break;
-            }
-        }
-        ShapeCastResult::no_hit(cfg.max_toc)
+            let (nearest, _) = crate_point_tri(pos, v0, v1, v2);
+            Some(sphere_probe(pos, radius_a, nearest, fallback))
+        })
     }
 }
 
@@ -456,6 +483,10 @@ pub struct CapsuleCast;
 
 impl CapsuleCast {
     /// Capsule vs capsule TOI via conservative advancement.
+    ///
+    /// Each capsule is given by its axis segment and radius. The witnesses are
+    /// the closest points of the two axes at the time of impact; moving
+    /// `radius` along the normal from them reaches the capsule surfaces.
     pub fn vs_capsule(
         motion: &LinearMotion,
         local_a: [f64; 3],
@@ -467,33 +498,33 @@ impl CapsuleCast {
         cfg: &ShapeCastConfig,
     ) -> ShapeCastResult {
         let r = radius_a + radius_b;
-        let mut t = 0.0;
-        let max_iters = 64;
-        for _ in 0..max_iters {
+        advance(motion.vel, cfg, |t| {
             let offset = motion.position_at(t);
-            let cap_a = add3(local_a, offset);
-            let cap_b = add3(local_b, offset);
-            // Segment-segment closest distance
-            let (seg_dist, wa, wb) = seg_seg_dist(cap_a, cap_b, static_a, static_b);
-            let d = seg_dist - r;
-            if d <= cfg.target_distance {
-                let n = if seg_dist > 1e-12 {
-                    normalize3(sub3(wa, wb))
-                } else {
-                    [0.0, 1.0, 0.0]
-                };
-                return ShapeCastResult::hit(t, n, wa, wb);
-            }
-            let speed = len3(motion.vel).max(1e-12);
-            t += d / speed;
-            if t > cfg.max_toc {
-                break;
-            }
-        }
-        ShapeCastResult::no_hit(cfg.max_toc)
+            let (seg_dist, wa, wb) = seg_seg_dist(
+                add3(local_a, offset),
+                add3(local_b, offset),
+                static_a,
+                static_b,
+            );
+            Some(Probe {
+                gap: seg_dist - r,
+                direction: separation_direction(wa, wb),
+                fallback: None,
+                witness_a: wa,
+                witness_b: wb,
+            })
+        })
     }
 
-    /// Capsule vs axis-aligned box TOI.
+    /// Capsule vs axis-aligned box TOI via conservative advancement.
+    ///
+    /// The capsule is given by its axis segment (`local_a`..`local_b`, relative
+    /// to the motion's position) and `radius`. The distance used for the
+    /// advancement is the exact distance between the whole axis segment and the
+    /// box, so a capsule whose middle hits a face or an edge is detected just
+    /// like one whose end caps do. `witness_a` is the closest point of the axis
+    /// segment and `witness_b` the closest point of the box; moving `radius`
+    /// from `witness_a` along `-normal_at_toi` reaches the capsule surface.
     pub fn vs_box(
         motion: &LinearMotion,
         local_a: [f64; 3],
@@ -505,39 +536,18 @@ impl CapsuleCast {
     ) -> ShapeCastResult {
         let lo = sub3(box_center, half_extents);
         let hi = add3(box_center, half_extents);
-        let mut t = 0.0;
-        let max_iters = 64;
-        for _ in 0..max_iters {
+        advance(motion.vel, cfg, |t| {
             let offset = motion.position_at(t);
-            let cap_a = add3(local_a, offset);
-            let cap_b = add3(local_b, offset);
-            // Find min distance from capsule segment to box
-            let mut min_dist = f64::INFINITY;
-            let mut best_q = cap_a;
-            for &p in &[cap_a, cap_b] {
-                let q = [
-                    p[0].clamp(lo[0], hi[0]),
-                    p[1].clamp(lo[1], hi[1]),
-                    p[2].clamp(lo[2], hi[2]),
-                ];
-                let d = dist3(p, q);
-                if d < min_dist {
-                    min_dist = d;
-                    best_q = q;
-                }
-            }
-            let _ = best_q;
-            let d = min_dist - radius;
-            if d <= cfg.target_distance {
-                return ShapeCastResult::hit(t, [0.0, 1.0, 0.0], cap_a, box_center);
-            }
-            let speed = len3(motion.vel).max(1e-12);
-            t += d / speed;
-            if t > cfg.max_toc {
-                break;
-            }
-        }
-        ShapeCastResult::no_hit(cfg.max_toc)
+            let nearest =
+                segment_box_distance(add3(local_a, offset), add3(local_b, offset), lo, hi);
+            Some(Probe {
+                gap: nearest.distance - radius,
+                direction: separation_direction(nearest.segment_point, nearest.box_point),
+                fallback: Some(box_exit_normal(nearest.segment_point, lo, hi)),
+                witness_a: nearest.segment_point,
+                witness_b: nearest.box_point,
+            })
+        })
     }
 }
 
@@ -604,6 +614,9 @@ pub struct BoxCast;
 
 impl BoxCast {
     /// Box vs box TOI via conservative advancement.
+    ///
+    /// The witnesses are the closest points of the two boxes; where their
+    /// extents overlap on an axis both sit in the middle of the overlap.
     pub fn vs_box(
         motion: &LinearMotion,
         half_a: [f64; 3],
@@ -611,36 +624,28 @@ impl BoxCast {
         half_b: [f64; 3],
         cfg: &ShapeCastConfig,
     ) -> ShapeCastResult {
-        let mut t = 0.0;
-        let max_iters = 64;
-        for _ in 0..max_iters {
+        let lo_b = sub3(center_b, half_b);
+        let hi_b = add3(center_b, half_b);
+        advance(motion.vel, cfg, |t| {
             let pos_a = motion.position_at(t);
-            let lo_a = sub3(pos_a, half_a);
-            let hi_a = add3(pos_a, half_a);
-            let lo_b = sub3(center_b, half_b);
-            let hi_b = add3(center_b, half_b);
-
-            // AABB-AABB separation
-            let sep = [
-                (lo_a[0] - hi_b[0]).max(lo_b[0] - hi_a[0]).max(0.0),
-                (lo_a[1] - hi_b[1]).max(lo_b[1] - hi_a[1]).max(0.0),
-                (lo_a[2] - hi_b[2]).max(lo_b[2] - hi_a[2]).max(0.0),
-            ];
-            let d = len3(sep);
-            if d <= cfg.target_distance {
-                let n = normalize3(sub3(pos_a, center_b));
-                return ShapeCastResult::hit(t, n, pos_a, center_b);
-            }
-            let speed = len3(motion.vel).max(1e-12);
-            t += d / speed;
-            if t > cfg.max_toc {
-                break;
-            }
-        }
-        ShapeCastResult::no_hit(cfg.max_toc)
+            let nearest = aabb_separation(sub3(pos_a, half_a), add3(pos_a, half_a), lo_b, hi_b);
+            Some(Probe {
+                gap: nearest.distance,
+                direction: nearest.direction,
+                fallback: Some(aabb_overlap_normal(pos_a, half_a, center_b, half_b)),
+                witness_a: nearest.point_a,
+                witness_b: nearest.point_b,
+            })
+        })
     }
 
     /// Box vs triangle TOI via conservative advancement.
+    ///
+    /// The advancement uses the exact distance between the box and the whole
+    /// triangle (face, edges and vertices), computed with GJK on the box
+    /// corners and the triangle vertices, so a box that lands on the interior
+    /// of a large triangle is detected at the correct time. The witnesses are
+    /// the closest points of the box and of the triangle.
     pub fn vs_triangle(
         motion: &LinearMotion,
         half_extents: [f64; 3],
@@ -649,37 +654,13 @@ impl BoxCast {
         v2: [f64; 3],
         cfg: &ShapeCastConfig,
     ) -> ShapeCastResult {
-        let mut t = 0.0;
-        let max_iters = 64;
-        for _ in 0..max_iters {
-            let pos = motion.position_at(t);
-            let lo = sub3(pos, half_extents);
-            let hi = add3(pos, half_extents);
-            // Check each triangle vertex against box
-            let mut min_dist = f64::INFINITY;
-            for &v in &[v0, v1, v2] {
-                let q = [
-                    v[0].clamp(lo[0], hi[0]),
-                    v[1].clamp(lo[1], hi[1]),
-                    v[2].clamp(lo[2], hi[2]),
-                ];
-                let d = dist3(v, q);
-                if d < min_dist {
-                    min_dist = d;
-                }
-            }
-            if min_dist <= cfg.target_distance {
-                let tri_center = scale3(add3(add3(v0, v1), v2), 1.0 / 3.0);
-                let n = normalize3(sub3(pos, tri_center));
-                return ShapeCastResult::hit(t, n, pos, tri_center);
-            }
-            let speed = len3(motion.vel).max(1e-12);
-            t += min_dist / speed;
-            if t > cfg.max_toc {
-                break;
-            }
-        }
-        ShapeCastResult::no_hit(cfg.max_toc)
+        let corners = box_corners(half_extents);
+        let triangle = [v0, v1, v2];
+        let fallback = triangle_normal_against(motion.vel, v0, v1, v2);
+        advance(motion.vel, cfg, |t| {
+            let nearest = hull_distance(&corners, motion.position_at(t), &triangle)?;
+            Some(hull_probe(&nearest, fallback))
+        })
     }
 }
 
@@ -689,62 +670,29 @@ impl BoxCast {
 
 /// GJK-based convex shape cast using conservative advancement.
 ///
-/// Shapes are represented as point clouds (convex hulls).
+/// Shapes are represented as point clouds: the convex hull of the points is the
+/// shape. The distance between the hulls is exact (Gilbert-Johnson-Keerthi on
+/// the Minkowski difference), so the cast does not depend on how densely the
+/// hulls are sampled.
 pub struct ConvexCast;
 
 impl ConvexCast {
-    /// GJK distance between two point clouds (approximate).
-    fn gjk_distance(pts_a: &[[f64; 3]], pts_b: &[[f64; 3]]) -> (f64, [f64; 3], [f64; 3]) {
-        // Simple implementation: find closest pair of points
-        let mut min_dist = f64::INFINITY;
-        let mut best_a = pts_a[0];
-        let mut best_b = pts_b[0];
-        for &a in pts_a {
-            for &b in pts_b {
-                let d = dist3(a, b);
-                if d < min_dist {
-                    min_dist = d;
-                    best_a = a;
-                    best_b = b;
-                }
-            }
-        }
-        (min_dist, best_a, best_b)
-    }
-
-    /// Translates all points of a convex shape by offset.
-    fn translate_shape(pts: &[[f64; 3]], offset: [f64; 3]) -> Vec<[f64; 3]> {
-        pts.iter().map(|&p| add3(p, offset)).collect()
-    }
-
-    /// Convex cast via conservative advancement with TOI bisection.
+    /// Convex cast via conservative advancement.
+    ///
+    /// `shape_a` is moved by `motion.position_at(t)` (its points are relative to
+    /// the motion's position); `shape_b` is static. The witnesses are the
+    /// closest points of the two hulls. If either point set is empty there is
+    /// nothing to hit and the result is a miss.
     pub fn cast(
         motion: &LinearMotion,
         shape_a: &[[f64; 3]],
         shape_b: &[[f64; 3]],
         cfg: &ShapeCastConfig,
     ) -> ShapeCastResult {
-        let mut t = 0.0;
-        let max_iters = 32;
-        for _ in 0..max_iters {
-            let offset = motion.position_at(t);
-            let moved_a = Self::translate_shape(shape_a, offset);
-            let (d, wa, wb) = Self::gjk_distance(&moved_a, shape_b);
-            if d <= cfg.target_distance {
-                let n = if d > 1e-12 {
-                    normalize3(sub3(wa, wb))
-                } else {
-                    [0.0, 1.0, 0.0]
-                };
-                return ShapeCastResult::hit(t, n, wa, wb);
-            }
-            let speed = len3(motion.vel).max(1e-12);
-            t += d / speed;
-            if t > cfg.max_toc {
-                break;
-            }
-        }
-        ShapeCastResult::no_hit(cfg.max_toc)
+        advance(motion.vel, cfg, |t| {
+            let nearest = hull_distance(shape_a, motion.position_at(t), shape_b)?;
+            Some(hull_probe(&nearest, None))
+        })
     }
 }
 
@@ -896,7 +844,7 @@ impl MeshBvhCast {
             let v1 = self.vertices[self.indices[3 * tri + 1]];
             let v2 = self.vertices[self.indices[3 * tri + 2]];
             let result = SphereCast::vs_triangle(motion, radius, v0, v1, v2, cfg);
-            if result.hit && result.toi < best.toi {
+            if result.hit && (!best.hit || result.toi < best.toi) {
                 best = result;
             }
         }
@@ -912,6 +860,9 @@ impl MeshBvhCast {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {

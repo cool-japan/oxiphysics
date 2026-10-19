@@ -206,32 +206,32 @@ Conventions: `[x]` done / `[ ]` planned / `[~]` deferred until the stated condit
 Verified: 387 (critical 0, high 109, medium 224, low 54); 61 further raw findings pending second-round verification. IDs refer to the audit ledger; `[x]` = fixed.
 
 ### High (109)
-- [ ] **F1976** (high, bug, medium/medium) `abaqus_format.rs:362` — AbaqusWriter emits invalid INP (section data, undefined sets, *Plastic, *End Part)
-- [ ] **F1980** (high, bug, easy/small) `amber/functions/functions_impl.rs:83` — build_angles drops the third atom of every angle
+- [x] **F1976** (high, bug, medium/medium) `abaqus_format.rs:362` — AbaqusWriter emits invalid INP (section data, undefined sets, *Plastic, *End Part)
+- [x] **F1980** (high, bug, easy/small) `amber/functions/functions_impl.rs:83` — build_angles drops the third atom of every angle
 - [x] **F1981** (high, bug, easy/small) `amber/functions/functions_impl.rs:89` — build_angles never reads the third atom; AmberAngle lacks atom k
 - [x] **F1982** (high, fabrication, medium/small) `amber/functions/functions_impl.rs:115` — extract_lj_parameters labels the packed pair table as diagonal (i,i) types
 - [x] **F1983** (high, fabrication, easy/small) `amber/functions/functions_impl.rs:132` — extract_dihedrals hardcodes zero parameters and misreads the type index
 - [x] **F1984** (high, bug, easy/small) `amber/functions/functions_impl.rs:519` — parse_mdcrd re-slices quadratically and panics on a boxless final frame
 - [x] **F1988** (high, fabrication, medium/medium) `ambermd_io.rs:403` — PrmtopFile write/read drops bond atoms, fabricates (2i,2i+1) pairs
 - [x] **F1989** (high, bug, easy/small) `ambermd_io.rs:532` — Rst7File::read reads the box as velocities; fails on touching 12.7 fields
-- [ ] **F1990** (high, bug, easy/small) `ambermd_io.rs:649` — mdcrd readers break on touching 10F8.3 fields (<= -100 or >= 1000)
+- [x] **F1990** (high, bug, easy/small) `ambermd_io.rs:649` — mdcrd readers break on touching 10F8.3 fields (<= -100 or >= 1000)
 - [x] **F1995** (high, panic, easy/small) `amr_io/types.rs:351` — AmrCheckpoint::read panics on truncated files before mapping the error
-- [ ] **F1999** (high, bug, medium/medium) `animation_io.rs:509` — BVH ignores CHANNELS rotation order; export Euler convention mismatches import
+- [x] **F1999** (high, bug, medium/medium) `animation_io.rs:509` — BVH ignores CHANNELS rotation order; export Euler convention mismatches import
 - [x] **F2003** (high, bug, medium/medium) `binary_format.rs:677` — OxiFile decoder: unbounded group recursion, wrapped bounds check
 - [x] **F2009** (high, panic, easy/small) `binary_formats.rs:429` — DcdReader panics on 8 zero bytes and short frames
-- [ ] **F2014** (high, bug, medium/medium) `cad_io/functions.rs:65` — tessellate_brep ignores edge direction; create_box mesh is broken
-- [ ] **F2015** (high, bug, medium/medium) `cad_io/types.rs:79` — IGES parser keeps the entity type in parameters and matches records by order
-- [ ] **F2020** (high, bug, medium/small) `calculix_format.rs:428` — CalculiX *BOUNDARY loses DOF ranges, pre-step BCs and node-set names
-- [ ] **F2027** (high, bug, easy/small) `checkpoint_io/types.rs:196` — RestartFile::load parses scalars from undecompressed bytes
-- [ ] **F2034** (high, bug, easy/small) `checkpoint_io/types.rs:1205` — CheckpointReader never verifies the CRC footer written by finalize
-- [ ] **F2035** (high, bug, easy/small) `checkpoint_io/types.rs:1275` — Checkpoint footer CRC written but never verified on read
-- [ ] **F2036** (high, panic, easy/small) `checkpoint_io/types.rs:1317` — Unchecked count*N cursor math and with_capacity on untrusted checkpoint bytes
-- [ ] **F2037** (high, bug, easy/small) `checkpoint_io/types.rs:1323` — Checkpoint block-skip arithmetic wraps; hang or capacity panic
-- [ ] **F2038** (high, bug, medium/medium) `crystallography_io.rs:91` — CIF parser keeps only the last loop, never leaves loop mode, stores U as B
-- [ ] **F2042** (high, bug, medium/small) `crystallography_io.rs:798` — POSCAR Cartesian→fractional assumes orthogonal cell, ignores scale, mislabels mode
-- [ ] **F2043** (high, bug, easy/small) `crystallography_io.rs:965` — simulate_xrd: Miller indices capped at ±5, and wrong LP factor
-- [ ] **F2044** (high, bug, medium/small) `crystallography_io.rs:1004` — simulate_xrd: wrong Lorentz-polarization factor, hkl capped at 5, width in grid points
-- [ ] **F2063** (high, bug, easy/trivial) `exodus/functions.rs:821` — refine_tet4_mesh emits four inverted child tetrahedra
+- [x] **F2014** (high, bug, medium/medium) `cad_io/functions.rs:65` — tessellate_brep ignores edge direction; create_box mesh is broken
+- [x] **F2015** (high, bug, medium/medium) `cad_io/types.rs:79` — IGES parser keeps the entity type in parameters and matches records by order
+- [x] **F2020** (high, bug, medium/small) `calculix_format.rs:428` — CalculiX *BOUNDARY loses DOF ranges, pre-step BCs and node-set names
+- [x] **F2027** (high, bug, easy/small) `checkpoint_io/types.rs:196` — RestartFile::load parses scalars from undecompressed bytes
+- [x] **F2034** (high, bug, easy/small) `checkpoint_io/types.rs:1205` — CheckpointReader never verifies the CRC footer written by finalize
+- [x] **F2035** (high, bug, easy/small) `checkpoint_io/types.rs:1275` — Checkpoint footer CRC written but never verified on read
+- [x] **F2036** (high, panic, easy/small) `checkpoint_io/types.rs:1317` — Unchecked count*N cursor math and with_capacity on untrusted checkpoint bytes
+- [x] **F2037** (high, bug, easy/small) `checkpoint_io/types.rs:1323` — Checkpoint block-skip arithmetic wraps; hang or capacity panic
+- [x] **F2038** (high, bug, medium/medium) `crystallography_io.rs:91` — CIF parser keeps only the last loop, never leaves loop mode, stores U as B
+- [x] **F2042** (high, bug, medium/small) `crystallography_io.rs:798` — POSCAR Cartesian→fractional assumes orthogonal cell, ignores scale, mislabels mode
+- [x] **F2043** (high, bug, easy/small) `crystallography_io.rs:965` — simulate_xrd: Miller indices capped at ±5, and wrong LP factor
+- [x] **F2044** (high, bug, medium/small) `crystallography_io.rs:1004` — simulate_xrd: wrong Lorentz-polarization factor, hkl capped at 5, width in grid points
+- [x] **F2063** (high, bug, easy/trivial) `exodus/functions.rs:821` — refine_tet4_mesh emits four inverted child tetrahedra
 - [ ] **F2074** (high, bug, medium/medium) `finite_element_io/types.rs:166` — MAPDL NBLOCK/EBLOCK read from wrong columns; real CDB misparsed
 - [ ] **F2075** (high, fabrication, medium/medium) `finite_element_io/types.rs:382` — GmshMesh::parse v4 branch is fake; v4 $Elements panics
 - [ ] **F2077** (high, panic, medium/small) `finite_element_io/types.rs:707` — parse_chexa panics on 10-field lines; continuations never joined
@@ -261,60 +261,60 @@ Verified: 387 (critical 0, high 109, medium 224, low 54); 61 further raw finding
 - [ ] **F2199** (high, perf, medium/small) `mesh_quality/functions.rs:241` — Duplicate-vertex removal and suggest_improvements are O(V^2) with sqrt
 - [ ] **F2204** (high, bug, easy/small) `molecular_visualization_io/functions.rs:142` — CIF parser zeroes coordinates with s.u. and never leaves loops
 - [ ] **F2205** (high, bug, easy/trivial) `molecular_visualization_io/functions.rs:343` — write_poscar emits both 'Direct' and 'Cartesian' mode lines
-- [ ] **F2206** (high, bug, easy/small) `molecular_visualization_io/types.rs:275` — CHGCAR density() indexes z-fastest but grid stored x-fastest
-- [ ] **F2207** (high, fabrication, easy/small) `molecular_visualization_io/types.rs:576` — DX parser reads data from 'object 2', so APBS files load as zeros
-- [ ] **F2213** (high, missing-feature, hard/large) `netcdf/functions.rs:15` — No real NetCDF classic binary format; AMBER trajectories unusable externally
-- [ ] **F2219** (high, fabrication, easy/small) `netcdf/types.rs:326` — Trajectory builder write_cdl writes no data section; frames discarded
-- [ ] **F2222** (high, bug, medium/small) `numpy/functions.rs:161` — NPY reader ignores fortran_order, returns transposed data
-- [ ] **F2233** (high, bug, easy/small) `openfoam/functions.rs:1606` — green_gauss_gradient divides by 3V; neighbour indexing panics on standard lists
-- [ ] **F2234** (high, bug, easy/trivial) `openfoam/types.rs:141` — box_mesh internal y-faces wound so normals point neighbour→owner
-- [ ] **F2235** (high, bug, medium/small) `openfoam/types.rs:332` — OpenFOAM neighbour file includes -1 boundary entries
-- [ ] **F2236** (high, bug, medium/small) `openfoam_format.rs:125` — extract_paren_block uses rfind; boundary vectors become internal cells
-- [ ] **F2246** (high, panic, easy/small) `particle_data_io.rs:317` — Header-declared counts drive Vec::with_capacity: abort on corrupt files
-- [ ] **F2249** (high, bug, medium/small) `particle_data_io.rs:932` — Delta encoder drops sub-threshold motion; reconstruction drifts
-- [ ] **F2250** (high, fabrication, medium/small) `particle_data_io.rs:999` — ParticleDiffWriter::reconstruct fabricates mass/radius/time; drops sub-threshold drift
-- [ ] **F2253** (high, bug, medium/medium) `particle_formats.rs:418` — LAMMPS dump reader zeroes positions for xs/xu columns
-- [ ] **F2258** (high, bug, medium/medium) `particle_formats.rs:1015` — DCD reader: header underflow panic; unit-cell record read as X
-- [ ] **F2259** (high, bug, medium/medium) `particle_formats.rs:1061` — DCD reader misreads NAMD unit-cell record as X coordinates
-- [ ] **F2260** (high, bug, easy/small) `particle_formats.rs:1199` — DCD writer puts DELTA in NAMNF slot; VMD/NAMD misread files
-- [ ] **F2265** (high, bug, easy/small) `plot3d_format.rs:266` — PLOT3D .q read/written point-interleaved, not variable-major
-- [ ] **F2268** (high, bug, easy/small) `point_cloud_io/functions.rs:276` — estimate_normals eigen solver returns wrong normals (absolute shift)
-- [ ] **F2269** (high, bug, medium/small) `point_cloud_io/functions.rs:288` — Normal estimation eigen-solver fails on small-scale or axis-aligned covariances
+- [x] **F2206** (high, bug, easy/small) `molecular_visualization_io/types.rs:275` — CHGCAR density() indexes z-fastest but grid stored x-fastest
+- [x] **F2207** (high, fabrication, easy/small) `molecular_visualization_io/types.rs:576` — DX parser reads data from 'object 2', so APBS files load as zeros
+- [x] **F2213** (high, missing-feature, hard/large) `netcdf/functions.rs:15` — No real NetCDF classic binary format; AMBER trajectories unusable externally
+- [x] **F2219** (high, fabrication, easy/small) `netcdf/types.rs:326` — Trajectory builder write_cdl writes no data section; frames discarded
+- [x] **F2222** (high, bug, medium/small) `numpy/functions.rs:161` — NPY reader ignores fortran_order, returns transposed data
+- [x] **F2233** (high, bug, easy/small) `openfoam/functions.rs:1606` — green_gauss_gradient divides by 3V; neighbour indexing panics on standard lists
+- [x] **F2234** (high, bug, easy/trivial) `openfoam/types.rs:141` — box_mesh internal y-faces wound so normals point neighbour→owner
+- [x] **F2235** (high, bug, medium/small) `openfoam/types.rs:332` — OpenFOAM neighbour file includes -1 boundary entries
+- [x] **F2236** (high, bug, medium/small) `openfoam_format.rs:125` — extract_paren_block uses rfind; boundary vectors become internal cells
+- [x] **F2246** (high, panic, easy/small) `particle_data_io.rs:317` — Header-declared counts drive Vec::with_capacity: abort on corrupt files
+- [x] **F2249** (high, bug, medium/small) `particle_data_io.rs:932` — Delta encoder drops sub-threshold motion; reconstruction drifts
+- [x] **F2250** (high, fabrication, medium/small) `particle_data_io.rs:999` — ParticleDiffWriter::reconstruct fabricates mass/radius/time; drops sub-threshold drift
+- [x] **F2253** (high, bug, medium/medium) `particle_formats.rs:418` — LAMMPS dump reader zeroes positions for xs/xu columns
+- [x] **F2258** (high, bug, medium/medium) `particle_formats.rs:1015` — DCD reader: header underflow panic; unit-cell record read as X
+- [x] **F2259** (high, bug, medium/medium) `particle_formats.rs:1061` — DCD reader misreads NAMD unit-cell record as X coordinates
+- [x] **F2260** (high, bug, easy/small) `particle_formats.rs:1199` — DCD writer puts DELTA in NAMNF slot; VMD/NAMD misread files
+- [x] **F2265** (high, bug, easy/small) `plot3d_format.rs:266` — PLOT3D .q read/written point-interleaved, not variable-major
+- [x] **F2268** (high, bug, easy/small) `point_cloud_io/functions.rs:276` — estimate_normals eigen solver returns wrong normals (absolute shift)
+- [x] **F2269** (high, bug, medium/small) `point_cloud_io/functions.rs:288` — Normal estimation eigen-solver fails on small-scale or axis-aligned covariances
 - [x] **F2279** (high, bug, easy/small) `remote_sensing_io.rs:366` — Dem::flow_accumulation re-adds upstream totals every pass (wrong)
 - [x] **F2281** (high, panic, medium/small) `remote_sensing_io.rs:810` — LAS reader takes 1.4 extended count from older files; capacity panic
-- [ ] **F2282** (high, bug, medium/small) `remote_sensing_io.rs:839` — LAS reader misreads LAS 1.2/1.3 counts and formats 6-10
+- [x] **F2282** (high, bug, medium/small) `remote_sensing_io.rs:839` — LAS reader misreads LAS 1.2/1.3 counts and formats 6-10
 - [x] **F2283** (high, bug, easy/small) `restart_io.rs:277` — write_binary emits arrays of differing lengths under one count n
 - [x] **F2284** (high, bug, easy/small) `restart_io.rs:335` — Restart ASCII/JSON writes 6 decimals; reader zeroes parse errors
 - [x] **F2286** (high, bug, medium/medium) `restart_io.rs:466` — JSON restart files cannot be read back; JSON writer is lossy
 - [x] **F2287** (high, panic, easy/small) `restart_io.rs:510` — Restart binary reader preallocates from unchecked u64 count
 - [x] **F2289** (high, bug, easy/small) `restart_io.rs:768` — save_checkpoint swallows write errors then prunes older good checkpoints
 - [x] **F2292** (high, bug, easy/small) `robotics_io/urdf_parser.rs:64` — URDF inertial origin rpy ignored; inertia tensor left in wrong frame
-- [ ] **F2296** (high, bug, easy/small) `seismic_io.rs:468` — SAC header writes NVHDR at the NZJDAY offset; readers reject files
-- [ ] **F2299** (high, fabrication, hard/medium) `seismic_io.rs:932` — Butterworth FrequencyFilter::apply is a moving-average difference
-- [ ] **F2304** (high, bug, easy/trivial) `sensor_io.rs:421` — Madgwick gradient Jacobian has four sign errors; pitch correction diverges
-- [ ] **F2312** (high, bug, easy/small) `simulation_io.rs:313` — Scene/Checkpoint readers drop orientation, velocities, mass and shape
-- [ ] **F2313** (high, bug, easy/small) `simulation_io.rs:442` — TRAJ binary format misaligns without velocities; reader trusts header counts
-- [ ] **F2320** (high, bug, medium/small) `spectroscopy_io/types.rs:1023` — JCAMP-DX reader double-applies YFACTOR; writer output not re-readable
-- [ ] **F2325** (high, perf, easy/small) `stl/functions_2.rs:174` — STL weld_vertices is O(V^2) linear scan over unique vertices
-- [ ] **F2326** (high, panic, easy/small) `streaming_io/functions.rs:591` — Chunk decoders overflow size math; ChunkedReader::open can loop forever
-- [ ] **F2328** (high, bug, easy/trivial) `streaming_io/types.rs:30` — RleEncoder never escapes literal 0xFF bytes; decode corrupts data
-- [ ] **F2332** (high, bug, easy/small) `streaming_io/types.rs:628` — ChunkedReader::open loops forever on wrapping frame length
-- [ ] **F2335** (high, bug, easy/trivial) `streaming_io/types.rs:1263` — CompressionStream misreads literal f32 whose low byte is 0xFF
+- [x] **F2296** (high, bug, easy/small) `seismic_io.rs:468` — SAC header writes NVHDR at the NZJDAY offset; readers reject files
+- [x] **F2299** (high, fabrication, hard/medium) `seismic_io.rs:932` — Butterworth FrequencyFilter::apply is a moving-average difference
+- [x] **F2304** (high, bug, easy/trivial) `sensor_io.rs:421` — Madgwick gradient Jacobian has four sign errors; pitch correction diverges
+- [x] **F2312** (high, bug, easy/small) `simulation_io.rs:313` — Scene/Checkpoint readers drop orientation, velocities, mass and shape
+- [x] **F2313** (high, bug, easy/small) `simulation_io.rs:442` — TRAJ binary format misaligns without velocities; reader trusts header counts
+- [x] **F2320** (high, bug, medium/small) `spectroscopy_io/types.rs:1023` — JCAMP-DX reader double-applies YFACTOR; writer output not re-readable
+- [x] **F2325** (high, perf, easy/small) `stl/functions_2.rs:174` — STL weld_vertices is O(V^2) linear scan over unique vertices
+- [x] **F2326** (high, panic, easy/small) `streaming_io/functions.rs:591` — Chunk decoders overflow size math; ChunkedReader::open can loop forever
+- [x] **F2328** (high, bug, easy/trivial) `streaming_io/types.rs:30` — RleEncoder never escapes literal 0xFF bytes; decode corrupts data
+- [x] **F2332** (high, bug, easy/small) `streaming_io/types.rs:628` — ChunkedReader::open loops forever on wrapping frame length
+- [x] **F2335** (high, bug, easy/trivial) `streaming_io/types.rs:1263` — CompressionStream misreads literal f32 whose low byte is 0xFF
 - [x] **F2338** (high, bug, medium/medium) `tecplot_format.rs:280` — Tecplot FE zones written and read without element connectivity
 - [x] **F2348** (high, bug, medium/small) `trajectory/functions.rs:134` — Kabsch alignment never rotates: mat3_inv_transpose returns the inverse
 - [x] **F2370** (high, bug, medium/medium) `vtu/functions.rs:101` — compute_cell_quality: wrong edges, SJ=0 for every hex/quad
 - [x] **F2371** (high, bug, medium/small) `vtu/functions.rs:277` — estimate_gradient underestimates gradients ~3× (inconsistent estimator)
 - [x] **F2376** (high, fabrication, medium/large) `vtu/types.rs:814` — VtuReader drops connectivity, returns zero points silently
 - [x] **F2380** (high, bug, easy/small) `weather_data_io/functions.rs:165` — GEV L-moment fit: wrong constant, wrong location sign, wrong shape sign
-- [ ] **F2384** (high, bug, easy/small) `weather_data_io/types.rs:1109` — GribReader::next_message loops forever on total_len=0, overflows on huge
-- [ ] **F2386** (high, bug, medium/medium) `weather_data_io/types.rs:1208` — GRIB2 Section 3/4/5 fields read at wrong octet offsets
-- [ ] **F2387** (high, fabrication, medium/medium) `weather_data_io/types.rs:1250` — GRIB2 Section 7 decoded as raw f32, ignoring Section 5 packing
-- [ ] **F2392** (high, bug, easy/trivial) `weather_io.rs:778` — Bolton LCL uses ln(T−Td) in °C instead of ln(T/Td) in K
-- [ ] **F2394** (high, bug, easy/trivial) `weather_io.rs:1052` — density_altitude applies 120 ft/°C rule to metre inputs
-- [ ] **F2401** (high, bug, easy/small) `xarray_io.rs:295` — xarray_to_vtk_structured writes C-order data under x-fastest DIMENSIONS
-- [ ] **F2407** (high, panic, medium/small) `xdmf/functions.rs:341` — XDMF Mixed topology panics via chunks(0) in three writers
-- [ ] **F2416** (high, panic, easy/small) `xtc_dcd.rs:233` — Untrusted XTC/DCD header counts drive Vec::with_capacity (abort)
-- [ ] **F2421** (high, bug, easy/small) `xtc_dcd.rs:775` — xtc_to_dcd skips nm→Å conversion; DCD timestep unit mismatched
+- [x] **F2384** (high, bug, easy/small) `weather_data_io/types.rs:1109` — GribReader::next_message loops forever on total_len=0, overflows on huge
+- [x] **F2386** (high, bug, medium/medium) `weather_data_io/types.rs:1208` — GRIB2 Section 3/4/5 fields read at wrong octet offsets
+- [x] **F2387** (high, fabrication, medium/medium) `weather_data_io/types.rs:1250` — GRIB2 Section 7 decoded as raw f32, ignoring Section 5 packing
+- [x] **F2392** (high, bug, easy/trivial) `weather_io.rs:778` — Bolton LCL uses ln(T−Td) in °C instead of ln(T/Td) in K
+- [x] **F2394** (high, bug, easy/trivial) `weather_io.rs:1052` — density_altitude applies 120 ft/°C rule to metre inputs
+- [x] **F2401** (high, bug, easy/small) `xarray_io.rs:295` — xarray_to_vtk_structured writes C-order data under x-fastest DIMENSIONS
+- [x] **F2407** (high, panic, medium/small) `xdmf/functions.rs:341` — XDMF Mixed topology panics via chunks(0) in three writers
+- [x] **F2416** (high, panic, easy/small) `xtc_dcd.rs:233` — Untrusted XTC/DCD header counts drive Vec::with_capacity (abort)
+- [x] **F2421** (high, bug, easy/small) `xtc_dcd.rs:775` — xtc_to_dcd skips nm→Å conversion; DCD timestep unit mismatched
 
 ### Medium (224)
 - [ ] **F1974** (medium, test, easy/medium) `crates/oxiphysics-io/Cargo.toml:19` — No malformed-input property or fuzz tests for any decoder

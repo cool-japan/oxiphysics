@@ -47,36 +47,31 @@ pub(super) fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
 }
 /// Tessellate a BREP solid into a triangle mesh.
 ///
-/// Uses simple fan triangulation for planar faces with straight edges.
-pub fn tessellate_brep(solid: &BrepSolid, _segments_per_edge: usize) -> TriangleMesh {
-    let mut mesh = TriangleMesh::new();
-    let mut vert_map: Vec<usize> = Vec::with_capacity(solid.vertices.len());
-    for v in &solid.vertices {
-        vert_map.push(mesh.add_vertex(v.position));
-    }
-    for face in &solid.faces {
-        if face.edge_loops.is_empty() {
-            continue;
-        }
-        let outer = &face.edge_loops[0];
-        let mut face_verts: Vec<usize> = Vec::new();
-        for &eidx in outer {
-            let edge = &solid.edges[eidx];
-            let sv = vert_map[edge.start_vertex];
-            if face_verts.is_empty()
-                || *face_verts.last().expect("collection should not be empty") != sv
-            {
-                face_verts.push(sv);
-            }
-        }
-        if face_verts.len() >= 3 {
-            for i in 1..face_verts.len() - 1 {
-                mesh.add_triangle(face_verts[0], face_verts[i], face_verts[i + 1]);
-            }
-        }
-    }
-    mesh.compute_normals();
-    mesh
+/// Each face is triangulated in the plane of its boundary: the edges of every
+/// loop are walked in the direction given by the loop's connectivity (edges
+/// are stored undirected), circular-arc edges are divided into
+/// `segments_per_edge` pieces whose sample points are shared by the faces
+/// meeting at the edge, and the polygon with its hole loops is cut into
+/// triangles by ear clipping.  Straight edges are not subdivided.  The
+/// triangles of a planar face wind counter-clockwise about the face's declared
+/// normal, so a solid whose face normals point outwards yields a closed,
+/// consistently oriented mesh.  Curved surfaces are approximated by the flat
+/// facets spanned by their boundary.  Faces without edge loops are skipped.
+///
+/// # Errors
+///
+/// Returns a description of the defect when the solid fails
+/// [`BrepSolid::validate`], when the edges of a loop are not connected or the
+/// loop is not closed, when a loop has fewer than three vertices or encloses
+/// no area, when the declared normal of a planar face is perpendicular to its
+/// loop, when a face cannot be triangulated (a hole outside the outer loop,
+/// a self-intersecting boundary, features thinner than 1e-12 of the face's
+/// extent), or when `segments_per_edge` exceeds 65536.
+pub fn tessellate_brep(
+    solid: &BrepSolid,
+    segments_per_edge: usize,
+) -> Result<TriangleMesh, String> {
+    super::tessellation::tessellate(solid, segments_per_edge)
 }
 #[cfg(test)]
 mod tests {
@@ -193,9 +188,9 @@ mod tests {
     #[test]
     fn test_tessellate_box() {
         let solid = BrepSolid::create_box("test", 1.0, 1.0, 1.0);
-        let mesh = tessellate_brep(&solid, 10);
-        assert!(mesh.triangle_count() > 0);
-        assert!(mesh.vertex_count() > 0);
+        let mesh = tessellate_brep(&solid, 10).unwrap();
+        assert_eq!(mesh.triangle_count(), 12);
+        assert_eq!(mesh.vertex_count(), 8);
     }
     #[test]
     fn test_mesh_surface_area() {
@@ -440,8 +435,9 @@ ENDSEC;
         let solid = BrepSolid::create_box("box", 1.0, 1.0, 1.0);
         let root = AssemblyComponent::new("root", solid, AssemblyTransform::identity());
         let assembly = Assembly::new("test", root, LengthUnit::Millimeter);
-        let stl = assembly.to_stl();
+        let stl = assembly.to_stl().unwrap();
         assert!(stl.contains("solid test"));
         assert!(stl.contains("endsolid test"));
+        assert_eq!(stl.matches("facet normal").count(), 12);
     }
 }

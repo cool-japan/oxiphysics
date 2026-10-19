@@ -39,10 +39,6 @@ pub(super) fn clamp01(v: f64) -> f64 {
     v.clamp(0.0, 1.0)
 }
 #[inline]
-pub(super) fn clamp_f(v: f64, lo: f64, hi: f64) -> f64 {
-    v.clamp(lo, hi)
-}
-#[inline]
 pub(super) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],

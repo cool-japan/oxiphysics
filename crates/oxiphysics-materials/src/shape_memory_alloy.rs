@@ -114,6 +114,19 @@ pub struct SmaPhaseState {
     pub strain: f64,
     /// Accumulated transformation strain.
     pub transformation_strain: f64,
+    /// Transformation memory of the forward (loading / detwinning) branch of
+    /// [`BrinsonModel`]: the progress `s ∈ [0, 1]` through its stress window
+    /// that the current cosine ramp has reached.  The branch only transforms
+    /// further when its progress exceeds this value, so elastic unloading and
+    /// reloading retrace the same path.  `None` until the first update (the
+    /// progress at the current stress and temperature is used instead).
+    pub progress_forward: Option<f64>,
+    /// Transformation memory of the reverse (heating / unloading) branch; see
+    /// [`SmaPhaseState::progress_forward`].
+    pub progress_reverse: Option<f64>,
+    /// Transformation memory of the cooling branch; see
+    /// [`SmaPhaseState::progress_forward`].
+    pub progress_cooling: Option<f64>,
 }
 
 impl SmaPhaseState {
@@ -127,6 +140,9 @@ impl SmaPhaseState {
             stress: 0.0,
             strain: 0.0,
             transformation_strain: 0.0,
+            progress_forward: None,
+            progress_reverse: None,
+            progress_cooling: None,
         }
     }
 
@@ -140,6 +156,9 @@ impl SmaPhaseState {
             stress: 0.0,
             strain: 0.0,
             transformation_strain: 0.0,
+            progress_forward: None,
+            progress_reverse: None,
+            progress_cooling: None,
         }
     }
 
@@ -157,15 +176,23 @@ impl SmaPhaseState {
 ///
 /// The martensite fraction evolves as:
 ///
-/// * Forward (A→M): `ξ = 1 − exp(a_M (Ms − T) + b_M σ)`
+/// * Forward (A→M): `ξ = 1 − exp(−[a_M (Ms − T) + b_M σ])`
 /// * Reverse (M→A): `ξ = exp(a_A (As − T) + b_A σ)`
 ///
-/// where `a_M`, `b_M`, `a_A`, `b_A` are material constants derived
-/// from the transformation temperatures and Clausius-Clapeyron slope.
+/// with `a_M = ln(100)/(Ms − Mf)`, `a_A = ln(100)/(Af − As)` (so that the
+/// transformation is 99 % complete at `Mf` / `Af`) and the stress constants
+/// `b_M = a_M/C_M`, `b_A = a_A/C_A`.  A tensile stress raises the transformation
+/// temperatures by `σ/C` (Clausius-Clapeyron), i.e. `Ms(σ) = Ms + σ/C_M`, which
+/// is exactly what the `b σ` terms express: stress promotes the forward
+/// transformation and retards the reverse one.
 #[derive(Debug, Clone)]
 pub struct TanakaModel {
     /// Transformation temperatures.
     pub temps: TransformationTemperatures,
+    /// Clausius-Clapeyron slope for martensite, `C_M` (Pa / K).
+    pub cm: f64,
+    /// Clausius-Clapeyron slope for austenite, `C_A` (Pa / K).
+    pub ca: f64,
     /// Exponential constant for martensitic transformation.
     pub a_m: f64,
     /// Stress constant for martensitic transformation.
@@ -204,22 +231,18 @@ impl TanakaModel {
         e_m: f64,
         theta: f64,
     ) -> Self {
+        // ln(100) = -ln(0.01): the exponential has decayed to 1 % at Mf / Af.
+        let ln_100 = -(0.01_f64).ln();
         let dm = temps.ms - temps.mf;
         let da = temps.af - temps.as_;
-        let a_m = if dm.abs() > EPS {
-            -2.0 * (0.01_f64).ln() / dm
-        } else {
-            0.0
-        };
-        let a_a = if da.abs() > EPS {
-            -2.0 * (0.01_f64).ln() / da
-        } else {
-            0.0
-        };
-        let b_m = if cm.abs() > EPS { -a_m / cm } else { 0.0 };
-        let b_a = if ca.abs() > EPS { -a_a / ca } else { 0.0 };
+        let a_m = if dm.abs() > EPS { ln_100 / dm } else { 0.0 };
+        let a_a = if da.abs() > EPS { ln_100 / da } else { 0.0 };
+        let b_m = if cm.abs() > EPS { a_m / cm } else { 0.0 };
+        let b_a = if ca.abs() > EPS { a_a / ca } else { 0.0 };
         Self {
             temps,
+            cm,
+            ca,
             a_m,
             b_m,
             a_a,
@@ -231,13 +254,15 @@ impl TanakaModel {
         }
     }
 
-    /// Forward transformation (A → M): compute new ξ.
+    /// Forward transformation (A → M): martensite fraction
+    /// `ξ = 1 − exp(−[a_M (Ms − T) + b_M σ])`, clamped to `[0, 1]`.
     pub fn forward_fraction(&self, temp: f64, stress: f64) -> f64 {
         let arg = self.a_m * (self.temps.ms - temp) + self.b_m * stress;
         (1.0 - (-arg).exp()).clamp(0.0, 1.0)
     }
 
-    /// Reverse transformation (M → A): compute new ξ.
+    /// Reverse transformation (M → A): martensite fraction
+    /// `ξ = exp(a_A (As − T) + b_A σ)`, clamped to `[0, 1]`.
     pub fn reverse_fraction(&self, temp: f64, stress: f64) -> f64 {
         let arg = self.a_a * (self.temps.as_ - temp) + self.b_a * stress;
         arg.exp().clamp(0.0, 1.0)
@@ -245,19 +270,25 @@ impl TanakaModel {
 
     /// Determine the phase fraction for a given (T, σ) state.
     ///
-    /// Selects forward or reverse based on where the temperature falls
-    /// relative to the (stress-shifted) transformation temperatures.
-    pub fn phase_fraction(&self, temp: f64, stress: f64) -> f64 {
-        let shifted = self
-            .temps
-            .shifted(stress, DEFAULT_CC_SLOPE, DEFAULT_CC_SLOPE);
+    /// The transformation temperatures are shifted by the model's own
+    /// Clausius-Clapeyron slopes `C_M`, `C_A` ([`TanakaModel::cm`],
+    /// [`TanakaModel::ca`]):
+    ///
+    /// * `T ≤ Ms(σ)`: forward branch.  Martensite already present is never
+    ///   destroyed by temperatures below `As(σ)`, so the result is
+    ///   `max(ξ_prev, forward_fraction)`.
+    /// * `T ≥ As(σ)`: reverse branch, `min(ξ_prev, reverse_fraction)`
+    ///   (austenite is not re-transformed above `Ms(σ)`).
+    /// * `Ms(σ) < T < As(σ)`: the thermal hysteresis window; nothing
+    ///   transforms and the previous fraction `xi_prev` is returned.
+    pub fn phase_fraction(&self, temp: f64, stress: f64, xi_prev: f64) -> f64 {
+        let shifted = self.temps.shifted(stress, self.cm, self.ca);
         if temp <= shifted.ms {
-            self.forward_fraction(temp, stress)
+            xi_prev.max(self.forward_fraction(temp, stress))
         } else if temp >= shifted.as_ {
-            self.reverse_fraction(temp, stress)
+            xi_prev.min(self.reverse_fraction(temp, stress))
         } else {
-            // Between Ms and As: retain previous fraction (simplified: use forward)
-            self.forward_fraction(temp, stress)
+            xi_prev
         }
     }
 
@@ -387,6 +418,55 @@ impl LiangRogersModel {
 // BrinsonModel
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Remaining (untransformed) fraction `(1 + cos πs)/2` of a cosine-kinetics
+/// transformation that has advanced to progress `s ∈ [0, 1]` of its window.
+fn cosine_remaining(s: f64) -> f64 {
+    0.5 * (1.0 + (PI * s).cos())
+}
+
+/// Fraction of the material that is still untransformed after a cosine-kinetics
+/// branch advances from progress `s_old` to `s_new ≥ s_old`:
+/// `(1 + cos π s_new) / (1 + cos π s_old)`.
+///
+/// Because the remaining fraction of a cosine ramp factorises, applying this
+/// ratio step by step gives exactly the closed-form cosine kinetics from the
+/// start of the transformation, independent of the step size.
+fn cosine_survival_ratio(s_old: f64, s_new: f64) -> f64 {
+    let old = cosine_remaining(s_old);
+    if old <= 1.0e-30 {
+        return 0.0;
+    }
+    (cosine_remaining(s_new) / old).clamp(0.0, 1.0)
+}
+
+/// Linear progress of `value` through the window `[start, finish]`, clamped to
+/// `[0, 1]`.  A vanishing window acts as a step located at `finish`.
+fn window_progress(value: f64, start: f64, finish: f64) -> f64 {
+    let width = finish - start;
+    if width <= EPS {
+        return if value >= finish { 1.0 } else { 0.0 };
+    }
+    ((value - start) / width).clamp(0.0, 1.0)
+}
+
+/// Upper limit of bisection steps used to invert the constitutive law for the
+/// stress (the bracket halves every step, so this is far beyond round-off).
+const BISECTION_MAX_ITERATIONS: usize = 200;
+
+/// Progress increase below which a kinetic branch counts as not advanced
+/// (round-off in the stress must not erase the transformation memory).
+const PROGRESS_TOLERANCE: f64 = 1.0e-12;
+
+/// Result of one kinetic update of the [`BrinsonModel`].
+struct KineticUpdate {
+    /// Stress-induced martensite fraction ξ_S.
+    xi_s: f64,
+    /// Temperature-induced martensite fraction ξ_T.
+    xi_t: f64,
+    /// Transformation memory `[forward, reverse, cooling]` after the update.
+    progress: [f64; 3],
+}
+
 /// Brinson model for SMA — separates stress-induced (ξ_S) and
 /// temperature-induced (ξ_T) martensite fractions.
 ///
@@ -394,6 +474,39 @@ impl LiangRogersModel {
 /// follows cosine kinetics with separate evolution rules. This allows
 /// capturing both superelasticity and shape memory effect within a single
 /// unified framework.
+///
+/// **Constitutive law:** `σ = E(ξ)·(ε − ε_L·ξ_S) + Θ·(T − T_ref)` with the
+/// rule-of-mixtures modulus `E(ξ) = E_A + ξ (E_M − E_A)`.
+///
+/// **Kinetics (Brinson 1993).**  Three branches, each a cosine ramp in its own
+/// progress variable `s ∈ [0, 1]`:
+///
+/// * *forward* (loading, A→M and detwinning M_twinned→M_detwinned): `s` runs
+///   over the stress window `σ_s^cr + C_M (T − Ms)⁺ … σ_f^cr + C_M (T − Ms)⁺`;
+///   it drives `(ξ_S, ξ_T)` towards `(1, 0)`.  Below `Ms` this is the
+///   detwinning of twinned martensite between the critical stresses
+///   `σ_s^cr` and `σ_f^cr`.
+/// * *reverse* (heating or unloading, M→A): `s` runs over
+///   `As + σ/C_A … Af + σ/C_A` in temperature; it drives `(ξ_S, ξ_T)` to `(0, 0)`,
+///   i.e. complete recovery above `Af(σ)`.
+/// * *cooling* (A→twinned M): `s` runs over `Ms … Mf`; the remaining austenite
+///   becomes twinned martensite, `ξ_T → 1 − ξ_S`, below `Mf`.  Detwinned
+///   martensite is not re-twinned by cooling (the literal formula of Brinson's
+///   paper would also drive `ξ_S` to zero); the window is stress free because
+///   stress-induced martensite is described by the forward branch.
+///
+/// A branch acts only when its progress exceeds the progress stored in the
+/// state (the *transformation memory*, [`SmaPhaseState::progress_forward`] and
+/// friends); the transformable material then decays by the cosine ratio of
+/// the old and new progress.  The result for a monotone path therefore equals
+/// Brinson's closed form from the transformation-start fractions and does not
+/// depend on the step size, and elastic unloading / reloading retraces the
+/// same path.  Whenever a branch transforms, the memory of all branches
+/// restarts from the current progress, because a new ramp begins from the new
+/// fractions (as in Brinson's original model, an inner loop that reloads after
+/// a partial reverse transformation therefore resumes forward transformation
+/// with a new cosine ramp starting at the window edge).  The transformation
+/// criteria use the tensile part of the stress, `max(σ, 0)`.
 #[derive(Debug, Clone)]
 pub struct BrinsonModel {
     /// Transformation temperatures.
@@ -414,10 +527,20 @@ pub struct BrinsonModel {
     pub sigma_crit_s: f64,
     /// Critical finish stress for detwinning at T < Ms (Pa).
     pub sigma_crit_f: f64,
+    /// Reference temperature `T_ref` (K) at which the thermoelastic stress
+    /// `Θ·(T − T_ref)` vanishes.  [`BrinsonModel::new`] sets it to the austenite
+    /// finish temperature `Af` (stress-free austenite is the natural undeformed
+    /// configuration); use [`BrinsonModel::with_reference_temperature`] to set
+    /// the temperature at which a specimen is stress free, e.g. the test
+    /// temperature of an isothermal experiment.
+    pub t_ref: f64,
 }
 
 impl BrinsonModel {
     /// Create a new Brinson model.
+    ///
+    /// The thermoelastic reference temperature [`BrinsonModel::t_ref`] is
+    /// initialised to the austenite finish temperature.
     pub fn new(
         temps: TransformationTemperatures,
         cm: f64,
@@ -429,6 +552,7 @@ impl BrinsonModel {
         sigma_crit_s: f64,
         sigma_crit_f: f64,
     ) -> Self {
+        let t_ref = temps.af;
         Self {
             temps,
             cm,
@@ -439,7 +563,15 @@ impl BrinsonModel {
             theta,
             sigma_crit_s,
             sigma_crit_f,
+            t_ref,
         }
+    }
+
+    /// Return the model with the thermoelastic reference temperature set to
+    /// `t_ref` (K), the temperature at which `Θ·(T − T_ref)` vanishes.
+    pub fn with_reference_temperature(mut self, t_ref: f64) -> Self {
+        self.t_ref = t_ref;
+        self
     }
 
     /// Effective elastic modulus via the rule of mixtures.
@@ -465,40 +597,61 @@ impl BrinsonModel {
         (sigma_ms, sigma_mf)
     }
 
+    /// Progress of the forward (loading / detwinning) transformation through
+    /// its stress window at `(temp, stress)`.
+    fn forward_progress(&self, temp: f64, stress: f64) -> f64 {
+        let (sig_s, sig_f) = self.critical_stresses_at_temp(temp);
+        window_progress(stress.max(0.0), sig_s, sig_f)
+    }
+
+    /// Progress of the reverse (heating / unloading) transformation through its
+    /// stress-shifted temperature window `As(σ) … Af(σ)`.
+    fn reverse_progress(&self, temp: f64, stress: f64) -> f64 {
+        let shifted = self.temps.shifted(stress.max(0.0), self.cm, self.ca);
+        window_progress(temp, shifted.as_, shifted.af)
+    }
+
+    /// Progress of the stress-free cooling transformation through `Ms … Mf`.
+    fn cooling_progress(&self, temp: f64) -> f64 {
+        window_progress(self.temps.ms - temp, 0.0, self.temps.ms - self.temps.mf)
+    }
+
     /// Compute stress-induced martensite fraction ξ_S for the loading branch.
     ///
     /// Uses cosine kinetics between `sigma_crit_s` and `sigma_crit_f`
-    /// shifted by temperature.
+    /// (shifted by `C_M (T − Ms)` above `Ms`) starting from the fraction
+    /// `xi_s_prev` at the start of the transformation:
+    /// below the window ξ_S stays `xi_s_prev`, above it the whole material is
+    /// detwinned martensite, `ξ_S = 1`.  (Brinson's ξ_S does not depend on the
+    /// twinned fraction, hence `_xi_t_prev` is unused.)
     pub fn xi_s_loading(&self, temp: f64, stress: f64, xi_s_prev: f64, _xi_t_prev: f64) -> f64 {
-        let (sig_s, sig_f) = self.critical_stresses_at_temp(temp);
-        if stress < sig_s || stress > sig_f {
-            return xi_s_prev;
-        }
-        let dsig = sig_f - sig_s;
-        if dsig.abs() < EPS {
-            return xi_s_prev;
-        }
-        let cos_val = (PI / dsig * (stress - sig_f)).cos();
-        let xi_s = (1.0 - xi_s_prev) / 2.0 * cos_val + (1.0 + xi_s_prev) / 2.0;
-        xi_s.clamp(0.0, 1.0)
+        let remaining = cosine_remaining(self.forward_progress(temp, stress));
+        // ξ_S0·r + (1 − r) = 1 − (1 − ξ_S0)·r, exact at both ends of the window.
+        (xi_s_prev * remaining + (1.0 - remaining)).clamp(0.0, 1.0)
     }
 
     /// Compute temperature-induced martensite fraction ξ_T for cooling.
+    ///
+    /// Cosine kinetics between the stress-shifted `Ms(σ)` and `Mf(σ)` starting
+    /// from the fraction `xi_t_prev` at the start of the transformation: above
+    /// `Ms(σ)` it stays `xi_t_prev`, below `Mf(σ)` it is 1.  ([`BrinsonModel::update_state`]
+    /// uses the stress-free window, i.e. `stress = 0`, as in Brinson's
+    /// original model, because stress-induced martensite is described by the
+    /// forward branch.)
     pub fn xi_t_cooling(&self, temp: f64, stress: f64, xi_t_prev: f64) -> f64 {
         let shifted = self.temps.shifted(stress, self.cm, self.ca);
-        if temp > shifted.ms || temp < shifted.mf {
-            return xi_t_prev;
-        }
-        let dm = shifted.ms - shifted.mf;
-        if dm.abs() < EPS {
-            return xi_t_prev;
-        }
-        let cos_val = (PI * (temp - shifted.mf) / dm).cos();
-        let xi_t = (1.0 - xi_t_prev) / 2.0 * cos_val + (1.0 + xi_t_prev) / 2.0;
-        xi_t.clamp(0.0, 1.0)
+        let progress = window_progress(shifted.ms - temp, 0.0, shifted.ms - shifted.mf);
+        let remaining = cosine_remaining(progress);
+        // ξ_T0·r + (1 − r) = 1 − (1 − ξ_T0)·r, exact at both ends of the window.
+        (xi_t_prev * remaining + (1.0 - remaining)).clamp(0.0, 1.0)
     }
 
     /// Reverse transformation (M → A): both ξ_S and ξ_T decrease.
+    ///
+    /// Cosine kinetics between the stress-shifted `As(σ)` and `Af(σ)`, starting
+    /// from the fractions at the start of the transformation: below `As(σ)` the
+    /// fractions are unchanged, above `Af(σ)` the material is fully austenitic,
+    /// `(0, 0)`.  Both fractions decrease proportionally.
     pub fn reverse_fractions(
         &self,
         temp: f64,
@@ -506,21 +659,8 @@ impl BrinsonModel {
         xi_s_prev: f64,
         xi_t_prev: f64,
     ) -> (f64, f64) {
-        let shifted = self.temps.shifted(stress, self.cm, self.ca);
-        if temp < shifted.as_ || temp > shifted.af {
-            return (xi_s_prev, xi_t_prev);
-        }
-        let da = shifted.af - shifted.as_;
-        if da.abs() < EPS {
-            return (xi_s_prev, xi_t_prev);
-        }
-        let xi_prev = xi_s_prev + xi_t_prev;
-        let cos_val = (PI * (temp - shifted.as_) / da).cos();
-        let xi_new = xi_prev / 2.0 * (cos_val + 1.0);
-        let xi_new = xi_new.clamp(0.0, 1.0);
-        // Distribute proportionally
-        let ratio = if xi_prev > EPS { xi_new / xi_prev } else { 0.0 };
-        (xi_s_prev * ratio, xi_t_prev * ratio)
+        let remaining = cosine_remaining(self.reverse_progress(temp, stress));
+        (xi_s_prev * remaining, xi_t_prev * remaining)
     }
 
     /// Integrated constitutive relation: σ = E(ξ)(ε − ε_L ξ_S) + Θ(T − T₀).
@@ -537,38 +677,176 @@ impl BrinsonModel {
         e * (strain - self.h_max * xi_s) + self.theta * (temp - temp_ref)
     }
 
-    /// Incremental update for a full Brinson loading step.
-    pub fn update_state(&self, state: &mut SmaPhaseState, strain_new: f64, temp_new: f64) {
-        let _temp_old = state.temperature;
-        let stress_est = self.stress_response(
-            strain_new,
-            state.xi_s,
-            state.xi_t,
-            temp_new,
-            state.temperature,
-        );
+    /// Progress `[forward, reverse, cooling]` of the three kinetic branches at
+    /// `(stress, temp)`.
+    fn branch_progress(&self, stress: f64, temp: f64) -> [f64; 3] {
+        [
+            self.forward_progress(temp, stress),
+            self.reverse_progress(temp, stress),
+            self.cooling_progress(temp),
+        ]
+    }
 
-        // Determine which branch (forward/reverse)
-        let shifted = self.temps.shifted(stress_est, self.cm, self.ca);
-        if temp_new <= shifted.ms && temp_new >= shifted.mf {
-            // Cooling → forward transformation
-            let xi_s_new = self.xi_s_loading(temp_new, stress_est, state.xi_s, state.xi_t);
-            let xi_t_new = self.xi_t_cooling(temp_new, stress_est, state.xi_t);
-            state.xi_s = xi_s_new;
-            state.xi_t = xi_t_new;
-        } else if temp_new >= shifted.as_ && temp_new <= shifted.af {
-            // Heating → reverse transformation
-            let (xi_s_new, xi_t_new) =
-                self.reverse_fractions(temp_new, stress_est, state.xi_s, state.xi_t);
-            state.xi_s = xi_s_new;
-            state.xi_t = xi_t_new;
+    /// Transformation memory `[forward, reverse, cooling]` of a state: the
+    /// stored branch progress, or, before the first update, the progress at the
+    /// state's own stress and temperature.
+    fn branch_frontiers(&self, state: &SmaPhaseState) -> [f64; 3] {
+        let current = self.branch_progress(state.stress, state.temperature);
+        [
+            state.progress_forward.unwrap_or(current[0]),
+            state.progress_reverse.unwrap_or(current[1]),
+            state.progress_cooling.unwrap_or(current[2]),
+        ]
+    }
+
+    /// Martensite fractions and branch memory reached at stress `stress` and
+    /// temperature `temp` when starting from the state `prev`.
+    ///
+    /// The reverse, forward and cooling branches are applied in this order,
+    /// each only if its progress exceeds the progress stored in `prev` (the
+    /// transformation memory).  Every application is a convex combination of
+    /// the current fractions and the branch's target, so `ξ_S, ξ_T ≥ 0` and
+    /// `ξ_S + ξ_T ≤ 1` are preserved.  If any branch transformed, the memory of
+    /// every branch restarts from its current progress (a new ramp begins from
+    /// the new fractions); otherwise the memory is unchanged.
+    fn kinetics_at(&self, prev: &SmaPhaseState, stress: f64, temp: f64) -> KineticUpdate {
+        let mut xi_s = prev.xi_s.clamp(0.0, 1.0);
+        let mut xi_t = prev.xi_t.max(0.0).min((1.0 - xi_s).max(0.0));
+        let frontier = self.branch_frontiers(prev);
+        let current = self.branch_progress(stress, temp);
+        let advanced = [
+            current[0] > frontier[0] + PROGRESS_TOLERANCE,
+            current[1] > frontier[1] + PROGRESS_TOLERANCE,
+            current[2] > frontier[2] + PROGRESS_TOLERANCE,
+        ];
+
+        // Reverse transformation: heating through, or unloading into, the austenite window.
+        if advanced[1] {
+            let keep = cosine_survival_ratio(frontier[1], current[1]);
+            xi_s *= keep;
+            xi_t *= keep;
         }
+        // Forward transformation: loading / detwinning towards detwinned martensite.
+        if advanced[0] {
+            let keep = cosine_survival_ratio(frontier[0], current[0]);
+            xi_s = xi_s * keep + (1.0 - keep);
+            xi_t *= keep;
+        }
+        // Cooling: remaining austenite becomes twinned martensite; detwinned martensite is kept.
+        if advanced[2] {
+            let keep = cosine_survival_ratio(frontier[2], current[2]);
+            let max_twinned = (1.0 - xi_s).max(0.0);
+            xi_t = xi_t * keep + max_twinned * (1.0 - keep);
+        }
+        let progress = if advanced.iter().any(|&a| a) {
+            current
+        } else {
+            frontier
+        };
+        KineticUpdate {
+            xi_s,
+            xi_t,
+            progress,
+        }
+    }
 
-        state.xi = (state.xi_s + state.xi_t).clamp(0.0, 1.0);
-        state.strain = strain_new;
-        state.temperature = temp_new;
-        state.transformation_strain = self.h_max * state.xi_s;
-        state.stress = self.stress_response(strain_new, state.xi_s, state.xi_t, temp_new, temp_new);
+    /// Store a new material-point state.
+    fn commit_state(
+        &self,
+        state: &mut SmaPhaseState,
+        strain: f64,
+        stress: f64,
+        temp: f64,
+        update: &KineticUpdate,
+    ) {
+        state.xi_s = update.xi_s;
+        state.xi_t = update.xi_t;
+        state.xi = (update.xi_s + update.xi_t).clamp(0.0, 1.0);
+        state.strain = strain;
+        state.temperature = temp;
+        state.stress = stress;
+        state.transformation_strain = self.h_max * update.xi_s;
+        state.progress_forward = Some(update.progress[0]);
+        state.progress_reverse = Some(update.progress[1]);
+        state.progress_cooling = Some(update.progress[2]);
+    }
+
+    /// Strain-driven update of an SMA material point to `(strain_new, temp_new)`.
+    ///
+    /// The martensite fractions depend on the stress through the transformation
+    /// criteria, and the stress depends on the fractions through the
+    /// constitutive law `σ = E(ξ)(ε − ε_L ξ_S) + Θ (T − T_ref)`; the two are
+    /// solved together: the stress is the root of
+    /// `σ − [E(ξ(σ))(ε − ε_L ξ_S(σ)) + Θ (T − T_ref)]`, found by bisection on
+    /// the bracket `±(E_max (|ε| + ε_L) + |Θ (T − T_ref)|)` that contains every
+    /// admissible stress.  The previous state supplies the starting fractions
+    /// and the previous progress of each kinetic branch (see [`BrinsonModel`]).
+    ///
+    /// Consequently the model detwins twinned martensite below `Ms` under load
+    /// (`σ_s^cr ≤ σ ≤ σ_f^cr`, saturating at `ξ_S = 1` above `σ_f^cr`),
+    /// transforms completely to austenite above `Af(σ)`, and to twinned
+    /// martensite on cooling below `Mf`.  Non-finite inputs leave the state
+    /// unchanged.
+    pub fn update_state(&self, state: &mut SmaPhaseState, strain_new: f64, temp_new: f64) {
+        if !(strain_new.is_finite() && temp_new.is_finite()) {
+            return;
+        }
+        let previous = *state;
+        let thermal = self.theta * (temp_new - self.t_ref);
+        let e_max = self.e_a.abs().max(self.e_m.abs());
+        let bound = e_max * (strain_new.abs() + self.h_max.abs()) + thermal.abs();
+        let residual = |sigma: f64| -> f64 {
+            let update = self.kinetics_at(&previous, sigma, temp_new);
+            let law =
+                self.stress_response(strain_new, update.xi_s, update.xi_t, temp_new, self.t_ref);
+            sigma - law
+        };
+        let (mut lo, mut hi) = (-bound, bound);
+        for _ in 0..BISECTION_MAX_ITERATIONS {
+            let mid = 0.5 * (lo + hi);
+            let value = residual(mid);
+            if value > 0.0 {
+                hi = mid;
+            } else if value < 0.0 {
+                lo = mid;
+            } else {
+                lo = mid;
+                hi = mid;
+            }
+            if hi - lo <= f64::EPSILON * mid.abs().max(1.0) {
+                break;
+            }
+        }
+        let sigma = 0.5 * (lo + hi);
+        let update = self.kinetics_at(&previous, sigma, temp_new);
+        self.commit_state(state, strain_new, sigma, temp_new, &update);
+    }
+
+    /// Stress-driven update of an SMA material point to `(stress_new, temp_new)`.
+    ///
+    /// With the stress prescribed the martensite fractions follow directly from
+    /// the kinetics and the strain from the constitutive law,
+    /// `ε = (σ − Θ (T − T_ref)) / E(ξ) + ε_L ξ_S`.  This is the natural way to
+    /// simulate stress-free unloading and thermal recovery
+    /// (`stress_new = 0`).  Non-finite inputs, or a non-positive modulus, leave
+    /// the state unchanged.
+    pub fn update_state_stress_controlled(
+        &self,
+        state: &mut SmaPhaseState,
+        stress_new: f64,
+        temp_new: f64,
+    ) {
+        if !(stress_new.is_finite() && temp_new.is_finite()) {
+            return;
+        }
+        let update = self.kinetics_at(state, stress_new, temp_new);
+        let modulus = self.effective_modulus((update.xi_s + update.xi_t).clamp(0.0, 1.0));
+        if !(modulus.is_finite() && modulus > 0.0) {
+            return;
+        }
+        let strain = (stress_new - self.theta * (temp_new - self.t_ref)) / modulus
+            + self.h_max * update.xi_s;
+        self.commit_state(state, strain, stress_new, temp_new, &update);
     }
 }
 
@@ -604,16 +882,26 @@ impl SuperelasticCurveGenerator {
         }
     }
 
+    /// The model used for the isothermal test: the specimen is stress free at
+    /// the operating temperature, so the thermoelastic reference temperature is
+    /// the operating temperature and the curve starts at the origin.
+    fn isothermal_model(&self) -> BrinsonModel {
+        self.model
+            .clone()
+            .with_reference_temperature(self.temperature)
+    }
+
     /// Generate loading branch stress-strain data.
     ///
     /// Returns a vector of `(strain, stress)` pairs.
     pub fn loading_curve(&self, max_strain: f64) -> Vec<(f64, f64)> {
         let n = self.resolution.max(2);
         let mut result = Vec::with_capacity(n);
+        let model = self.isothermal_model();
         let mut state = SmaPhaseState::new(self.temperature);
         for i in 0..n {
             let eps = max_strain * (i as f64) / (n as f64 - 1.0);
-            self.model.update_state(&mut state, eps, self.temperature);
+            model.update_state(&mut state, eps, self.temperature);
             result.push((eps, state.stress));
         }
         result
@@ -624,11 +912,12 @@ impl SuperelasticCurveGenerator {
         let n = self.resolution.max(2);
         let mut result = Vec::with_capacity(n);
         let peak_strain = state_at_peak.strain;
+        let model = self.isothermal_model();
         let mut state = *state_at_peak;
         for i in 0..n {
             let eps = peak_strain * (1.0 - (i as f64) / (n as f64 - 1.0));
             // Simple unloading: update with decreasing strain
-            self.model.update_state(&mut state, eps, self.temperature);
+            model.update_state(&mut state, eps, self.temperature);
             result.push((eps, state.stress.max(0.0)));
         }
         result
@@ -638,9 +927,10 @@ impl SuperelasticCurveGenerator {
     pub fn full_loop(&self, max_strain: f64) -> Vec<(f64, f64)> {
         let loading = self.loading_curve(max_strain);
         let last_state = {
+            let model = self.isothermal_model();
             let mut s = SmaPhaseState::new(self.temperature);
             for &(eps, _) in &loading {
-                self.model.update_state(&mut s, eps, self.temperature);
+                model.update_state(&mut s, eps, self.temperature);
             }
             s
         };
@@ -681,22 +971,34 @@ impl ShapeMemoryEffect {
 
     /// Simulate deformation at low temperature, then thermal recovery.
     ///
-    /// Returns `(residual_strain_before_heating, residual_strain_after_heating)`.
+    /// 1. The twinned martensite at the deformation temperature is strained to
+    ///    `applied_strain` (strain-controlled); the load detwins it.
+    /// 2. The specimen is unloaded to zero stress (stress-controlled); the
+    ///    detwinned martensite is retained and leaves a residual strain.
+    /// 3. It is heated stress-free to the recovery temperature; the reverse
+    ///    transformation (completed at `Af`) recovers the residual strain.
+    ///
+    /// The specimen is stress free at the deformation temperature, which is
+    /// therefore the thermoelastic reference temperature of the simulation.
+    ///
+    /// Returns `(residual_strain_before_heating, residual_strain_after_heating)`,
+    /// the transformation strains `ε_L·ξ_S` of steps 2 and 3.
     pub fn simulate_recovery(&self, applied_strain: f64) -> (f64, f64) {
-        // Step 1: deform at T < Mf (full martensite)
+        let model = self
+            .model
+            .clone()
+            .with_reference_temperature(self.deform_temperature);
+
+        // Step 1: deform the twinned martensite (full martensite at T < Mf).
         let mut state = SmaPhaseState::fully_martensite(self.deform_temperature);
-        self.model
-            .update_state(&mut state, applied_strain, self.deform_temperature);
+        model.update_state(&mut state, applied_strain, self.deform_temperature);
+
+        // Step 2: unload mechanically to zero stress.
+        model.update_state_stress_controlled(&mut state, 0.0, self.deform_temperature);
         let residual_before = state.transformation_strain;
 
-        // Step 2: unload mechanically
-        self.model
-            .update_state(&mut state, 0.0, self.deform_temperature);
-        let _strain_after_unload = state.strain;
-
-        // Step 3: heat above Af
-        self.model
-            .update_state(&mut state, 0.0, self.recovery_temperature);
+        // Step 3: heat stress free to the recovery temperature.
+        model.update_state_stress_controlled(&mut state, 0.0, self.recovery_temperature);
         let residual_after = state.transformation_strain;
 
         (residual_before, residual_after)
@@ -1173,7 +1475,14 @@ fn trapz_area(curve: &[(f64, f64)]) -> f64 {
 /// Generate a temperature sweep stress-strain path for shape memory effect
 /// demonstration.
 ///
-/// Returns a vector of `(temperature, strain)` pairs showing recovery.
+/// A specimen of detwinned martensite storing the residual transformation
+/// strain `initial_strain` (at most `ε_L`) at `t_start` is heated stress free
+/// to `t_end` in `n_steps` temperature steps (at least two); the stored strain
+/// is recovered while the temperature passes the stress-free window
+/// `As … Af`.
+///
+/// Returns a vector of `(temperature, transformation strain)` pairs showing
+/// the recovery.
 pub fn temperature_sweep_recovery(
     model: &BrinsonModel,
     initial_strain: f64,
@@ -1183,14 +1492,22 @@ pub fn temperature_sweep_recovery(
 ) -> Vec<(f64, f64)> {
     let n = n_steps.max(2);
     let mut result = Vec::with_capacity(n);
+    let model = model.clone().with_reference_temperature(t_start);
+    let xi_s0 = if model.h_max > EPS {
+        (initial_strain / model.h_max).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let mut state = SmaPhaseState::fully_martensite(t_start);
-    state.strain = initial_strain;
-    state.transformation_strain = model.h_max;
+    state.xi_s = xi_s0;
+    state.xi_t = 1.0 - xi_s0;
+    state.strain = model.h_max * xi_s0;
+    state.transformation_strain = model.h_max * xi_s0;
 
     for i in 0..n {
         let t_frac = i as f64 / (n as f64 - 1.0);
         let temp = t_start + t_frac * (t_end - t_start);
-        model.update_state(&mut state, 0.0, temp);
+        model.update_state_stress_controlled(&mut state, 0.0, temp);
         result.push((temp, state.transformation_strain));
     }
     result
@@ -1220,386 +1537,4 @@ pub fn tangent_modulus(strain0: f64, stress0: f64, strain1: f64, stress1: f64) -
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TOL: f64 = 1.0e-6;
-
-    // Helper: create NiTi Brinson model
-    fn niti_brinson() -> BrinsonModel {
-        NiTiPreset::brinson()
-    }
-
-    // Helper: create NiTi temperatures
-    fn niti_temps() -> TransformationTemperatures {
-        NiTiPreset::temperatures()
-    }
-
-    // 1. TransformationTemperatures basic sanity
-    #[test]
-    fn test_transformation_temperatures_basic() {
-        let tt = niti_temps();
-        assert!(tt.ms > tt.mf, "Ms > Mf required");
-        assert!(tt.af > tt.as_, "Af > As required");
-        assert!(tt.hysteresis() > 0.0, "Hysteresis should be positive");
-    }
-
-    // 2. Temperature shift via Clausius-Clapeyron
-    #[test]
-    fn test_temperature_shift() {
-        let tt = niti_temps();
-        let stress = 100.0e6; // 100 MPa
-        let shifted = tt.shifted(stress, 6.5e6, 6.5e6);
-        let expected_shift = 100.0e6 / 6.5e6;
-        assert!((shifted.ms - tt.ms - expected_shift).abs() < TOL);
-        assert!((shifted.af - tt.af - expected_shift).abs() < TOL);
-    }
-
-    // 3. Tanaka model: fully martensite below Mf
-    #[test]
-    fn test_tanaka_full_martensite() {
-        let model = NiTiPreset::tanaka();
-        let xi = model.forward_fraction(200.0, 0.0); // well below Mf
-        assert!(xi > 0.99, "Should be nearly fully martensite, got {xi}");
-    }
-
-    // 4. Tanaka model: fully austenite above Af
-    #[test]
-    fn test_tanaka_full_austenite() {
-        let model = NiTiPreset::tanaka();
-        let xi = model.reverse_fraction(400.0, 0.0); // well above Af
-        assert!(xi < 0.01, "Should be nearly fully austenite, got {xi}");
-    }
-
-    // 5. Tanaka effective modulus at ξ=0 equals E_A
-    #[test]
-    fn test_tanaka_modulus_austenite() {
-        let model = NiTiPreset::tanaka();
-        let e = model.effective_modulus(0.0);
-        assert!((e - 67.0e9).abs() < TOL, "E at xi=0 should be E_A");
-    }
-
-    // 6. Tanaka effective modulus at ξ=1 equals E_M
-    #[test]
-    fn test_tanaka_modulus_martensite() {
-        let model = NiTiPreset::tanaka();
-        let e = model.effective_modulus(1.0);
-        assert!((e - 26.3e9).abs() < TOL, "E at xi=1 should be E_M");
-    }
-
-    // 7. Liang-Rogers: phase fraction at Mf is 1
-    #[test]
-    fn test_liang_rogers_mf() {
-        let model = NiTiPreset::liang_rogers();
-        let xi = model.phase_fraction(model.temps.mf, 0.0, 0.0);
-        assert!(
-            (xi - 1.0).abs() < 0.01,
-            "At Mf, xi should be ~1.0, got {xi}"
-        );
-    }
-
-    // 8. Liang-Rogers: phase fraction above Af is 0
-    #[test]
-    fn test_liang_rogers_above_af() {
-        let model = NiTiPreset::liang_rogers();
-        let xi = model.phase_fraction(model.temps.af + 50.0, 0.0, 1.0);
-        assert!(xi < 0.01, "Above Af, xi should be ~0, got {xi}");
-    }
-
-    // 9. Liang-Rogers: reverse fraction at Af with xi_prev=1
-    #[test]
-    fn test_liang_rogers_reverse_at_af() {
-        let model = NiTiPreset::liang_rogers();
-        let xi = model.reverse_fraction(model.temps.af, 0.0, 1.0);
-        assert!(xi < 0.05, "At Af with xi_prev=1, xi should be ~0, got {xi}");
-    }
-
-    // 10. Brinson: effective modulus interpolation
-    #[test]
-    fn test_brinson_modulus_interpolation() {
-        let model = niti_brinson();
-        let e_half = model.effective_modulus(0.5);
-        let expected = 0.5 * 67.0e9 + 0.5 * 26.3e9;
-        assert!(
-            (e_half - expected).abs() < TOL,
-            "E at xi=0.5 should be average, got {e_half}"
-        );
-    }
-
-    // 11. Brinson: critical stress increases with temperature above Ms
-    #[test]
-    fn test_brinson_critical_stress_vs_temp() {
-        let model = niti_brinson();
-        let (sig_s_low, _) = model.critical_stresses_at_temp(model.temps.ms);
-        let (sig_s_high, _) = model.critical_stresses_at_temp(model.temps.ms + 20.0);
-        assert!(
-            sig_s_high > sig_s_low,
-            "Critical stress should increase with T"
-        );
-    }
-
-    // 12. Brinson: stress response at zero strain and xi=0 is zero (at T_ref)
-    #[test]
-    fn test_brinson_zero_stress_at_origin() {
-        let model = niti_brinson();
-        let sigma = model.stress_response(0.0, 0.0, 0.0, 300.0, 300.0);
-        assert!(
-            sigma.abs() < TOL,
-            "Stress at origin should be zero, got {sigma}"
-        );
-    }
-
-    // 13. Brinson: state update changes xi during cooling
-    #[test]
-    fn test_brinson_state_update_cooling() {
-        let model = niti_brinson();
-        let mut state = SmaPhaseState::new(model.temps.af + 10.0);
-        // Cool to between Mf and Ms
-        let target_temp = (model.temps.mf + model.temps.ms) / 2.0;
-        model.update_state(&mut state, 0.001, target_temp);
-        assert!(
-            state.xi > 0.0,
-            "xi should increase during cooling, got {}",
-            state.xi
-        );
-    }
-
-    // 14. Superelastic curve: loading curve is non-empty
-    #[test]
-    fn test_superelastic_loading_nonempty() {
-        let model = niti_brinson();
-        let curve_gen = SuperelasticCurveGenerator::new(model, 350.0, 50);
-        let curve = curve_gen.loading_curve(0.06);
-        assert!(!curve.is_empty(), "Loading curve should be non-empty");
-        assert_eq!(curve.len(), 50);
-    }
-
-    // 15. Superelastic curve: stress generally increases during loading
-    #[test]
-    fn test_superelastic_loading_trend() {
-        let model = niti_brinson();
-        let curve_gen = SuperelasticCurveGenerator::new(model, 350.0, 100);
-        let curve = curve_gen.loading_curve(0.05);
-        // Overall trend: final stress should be higher than initial (non-zero) stress
-        let first_nonzero = curve.iter().find(|(_, s)| *s > 0.0);
-        let last = curve.last().unwrap();
-        if let Some(first) = first_nonzero {
-            assert!(
-                last.1 >= first.1,
-                "Final stress should exceed initial: first={:.6}, last={:.6}",
-                first.1,
-                last.1
-            );
-        }
-    }
-
-    // 16. Superelastic curve: full loop has more points than one branch
-    #[test]
-    fn test_superelastic_full_loop_length() {
-        let model = niti_brinson();
-        let curve_gen = SuperelasticCurveGenerator::new(model, 350.0, 30);
-        let loop_curve = curve_gen.full_loop(0.05);
-        assert!(
-            loop_curve.len() > 30,
-            "Full loop should have loading + unloading points"
-        );
-    }
-
-    // 17. Shape memory effect: recovery ratio is non-negative
-    #[test]
-    fn test_sme_recovery_ratio_nonneg() {
-        let model = niti_brinson();
-        let sme = ShapeMemoryEffect::new(model, 250.0, 350.0);
-        let ratio = sme.recovery_ratio(0.05);
-        assert!(ratio >= 0.0, "Recovery ratio should be >= 0, got {ratio}");
-    }
-
-    // 18. Two-way shape memory: training increases two_way_fraction
-    #[test]
-    fn test_twsm_training() {
-        let model = niti_brinson();
-        let mut twsm = TwoWayShapeMemory::new(model);
-        assert!(twsm.two_way_fraction < TOL, "Initially should be ~0");
-        for _ in 0..20 {
-            twsm.train_cycle();
-        }
-        assert!(
-            twsm.two_way_fraction > 0.1,
-            "After training, fraction should grow, got {}",
-            twsm.two_way_fraction
-        );
-    }
-
-    // 19. Two-way: cooling strain at T < Mf is nonzero after training
-    #[test]
-    fn test_twsm_cooling_strain() {
-        let model = niti_brinson();
-        let mut twsm = TwoWayShapeMemory::new(model.clone());
-        for _ in 0..50 {
-            twsm.train_cycle();
-        }
-        let eps = twsm.cooling_strain(model.temps.mf - 10.0);
-        assert!(eps > 0.0, "Cooling strain should be > 0, got {eps}");
-    }
-
-    // 20. Two-way: heating strain above Af is zero
-    #[test]
-    fn test_twsm_heating_above_af() {
-        let model = niti_brinson();
-        let mut twsm = TwoWayShapeMemory::new(model.clone());
-        for _ in 0..10 {
-            twsm.train_cycle();
-        }
-        let eps = twsm.heating_strain(model.temps.af + 20.0);
-        assert!(
-            eps.abs() < TOL,
-            "Heating strain above Af should be ~0, got {eps}"
-        );
-    }
-
-    // 21. Training effect: residual strain accumulates
-    #[test]
-    fn test_training_residual_accumulates() {
-        let mut te = TrainingEffect::new();
-        te.add_cycle();
-        let r1 = te.current_residual();
-        for _ in 0..50 {
-            te.add_cycle();
-        }
-        let r51 = te.current_residual();
-        assert!(r51 > r1, "Residual should grow: r1={r1}, r51={r51}");
-    }
-
-    // 22. Training effect: plateau stress decreases
-    #[test]
-    fn test_training_plateau_decreases() {
-        let mut te = TrainingEffect::new();
-        te.add_cycle();
-        let s1 = te.current_plateau_stress();
-        for _ in 0..100 {
-            te.add_cycle();
-        }
-        let s101 = te.current_plateau_stress();
-        assert!(
-            s101 < s1,
-            "Plateau stress should decrease: s1={s1}, s101={s101}"
-        );
-    }
-
-    // 23. Thermomechanical: forward transformation heats
-    #[test]
-    fn test_thermo_forward_heats() {
-        let tmc = NiTiPreset::thermomechanical();
-        let dt = tmc.temperature_increment(0.5); // dxi = +0.5
-        // Forward transformation releases heat → dt < 0 because of formula sign
-        // but physical convention: temperature rises. Our formula: dT = -L/cp * dxi
-        // dxi > 0 → dT < 0 (latent heat absorbed from surroundings for forward)
-        // Actually for SMA, A→M is exothermic so temp rises.
-        // Our formula gives dT = -L/cp * dxi. If L > 0 and dxi > 0 → dT < 0.
-        // This models the environment perspective. Let's just verify it's nonzero.
-        assert!(dt.abs() > 0.0, "Temperature change should be nonzero");
-    }
-
-    // 24. Thermomechanical: no phase change → no temperature change
-    #[test]
-    fn test_thermo_no_change() {
-        let tmc = NiTiPreset::thermomechanical();
-        let dt = tmc.temperature_increment(0.0);
-        assert!(dt.abs() < TOL, "No phase change → no dT");
-    }
-
-    // 25. Clausius-Clapeyron: symmetric slopes
-    #[test]
-    fn test_cc_symmetric() {
-        let cc = ClausiusClapeyron::symmetric(6.5e6);
-        assert!(
-            (cc.cm - cc.ca).abs() < TOL,
-            "Symmetric slopes should be equal"
-        );
-    }
-
-    // 26. Clausius-Clapeyron: stress shift
-    #[test]
-    fn test_cc_stress_shift() {
-        let cc = ClausiusClapeyron::new(6.5e6, 7.0e6);
-        let ds = cc.stress_shift_martensite(10.0);
-        let expected = 6.5e6 * 10.0;
-        assert!((ds - expected).abs() < TOL, "Stress shift incorrect");
-    }
-
-    // 27. CuAlNi preset creates valid model
-    #[test]
-    fn test_cualni_preset() {
-        let model = CuAlNiPreset::brinson();
-        assert!(model.e_a > model.e_m, "E_A > E_M for CuAlNi");
-        assert!(model.h_max > 0.0, "h_max should be positive");
-    }
-
-    // 28. CuZnAl preset creates valid model
-    #[test]
-    fn test_cuznal_preset() {
-        let model = CuZnAlPreset::brinson();
-        let tt = CuZnAlPreset::temperatures();
-        assert!(tt.af > tt.ms, "Af > Ms required");
-        assert!(model.h_max > 0.0);
-    }
-
-    // 29. Hysteresis energy of identical curves is zero
-    #[test]
-    fn test_hysteresis_energy_zero() {
-        let curve = vec![(0.0, 0.0), (0.01, 100.0e6), (0.02, 200.0e6)];
-        let e = hysteresis_energy(&curve, &curve);
-        assert!(e < TOL, "Same loading/unloading → zero hysteresis");
-    }
-
-    // 30. Hysteresis energy of a simple rectangle
-    #[test]
-    fn test_hysteresis_energy_rectangle() {
-        let loading = vec![(0.0, 100.0), (1.0, 100.0)];
-        let unloading = vec![(0.0, 50.0), (1.0, 50.0)];
-        let e = hysteresis_energy(&loading, &unloading);
-        assert!(
-            (e - 50.0).abs() < TOL,
-            "Rectangle hysteresis should be 50.0, got {e}"
-        );
-    }
-
-    // 31. Secant modulus
-    #[test]
-    fn test_secant_modulus() {
-        let m = secant_modulus(0.01, 700.0e6);
-        assert!((m - 70.0e9).abs() < 1.0, "Secant modulus should be E");
-    }
-
-    // 32. Tangent modulus
-    #[test]
-    fn test_tangent_modulus() {
-        let m = tangent_modulus(0.01, 700.0e6, 0.02, 1400.0e6);
-        assert!((m - 70.0e9).abs() < 1.0, "Tangent modulus should be 70 GPa");
-    }
-
-    // 33. Temperature sweep recovery returns correct length
-    #[test]
-    fn test_temp_sweep_length() {
-        let model = niti_brinson();
-        let sweep = temperature_sweep_recovery(&model, 0.05, 250.0, 350.0, 20);
-        assert_eq!(sweep.len(), 20);
-    }
-
-    // 34. Brinson reverse fractions decrease xi
-    #[test]
-    fn test_brinson_reverse_decreases() {
-        let model = niti_brinson();
-        let mid_temp = (model.temps.as_ + model.temps.af) / 2.0;
-        let (xs, xt) = model.reverse_fractions(mid_temp, 0.0, 0.5, 0.5);
-        assert!(xs + xt < 1.0, "Reverse should decrease total xi");
-    }
-
-    // 35. SmaPhaseState: fully martensite has xi=1
-    #[test]
-    fn test_phase_state_full_martensite() {
-        let state = SmaPhaseState::fully_martensite(250.0);
-        assert!((state.xi - 1.0).abs() < TOL);
-        assert!((state.xi_t - 1.0).abs() < TOL);
-    }
-}
+mod tests;

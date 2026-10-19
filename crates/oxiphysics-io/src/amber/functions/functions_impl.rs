@@ -4,9 +4,8 @@
 
 use super::super::types::{
     AmberAngle, AmberBond, AmberDihedral, AmberEnergyFrame, AmberTopology, FfAngleParam,
-    FfBondParam, LjParameter, MdcrdFrame,
+    FfBondParam, LjParameter,
 };
-use crate::fortran_fields::parse_real_record;
 
 /// Extract the raw text body of a `%FLAG `name` section.
 ///
@@ -652,62 +651,6 @@ pub fn parse_residue_selection(s: &str) -> Result<Vec<usize>, String> {
     }
     Ok(result)
 }
-/// Number of coordinate values per line of an MDCRD record (`10F8.3`).
-const MDCRD_VALUES_PER_LINE: usize = 10;
-/// Column width of an MDCRD field (`F8.3`).
-const MDCRD_COLUMN_WIDTH: usize = 8;
-/// Parse the periodic-box line of an MDCRD frame (`a b c`, extra values are
-/// ignored).
-fn parse_mdcrd_box(line: &str) -> Option<[f64; 3]> {
-    match parse_real_record(line, MDCRD_COLUMN_WIDTH).ok()?.as_slice() {
-        [a, b, c, ..] => Some([*a, *b, *c]),
-        _ => None,
-    }
-}
-/// Parse AMBER MDCRD trajectory data from a string.
-///
-/// MDCRD format: a title line, then for every frame the coordinates in
-/// `10F8.3` records (ten values per line, fewer on the last line of a frame),
-/// followed by one `3F8.3` box line when `has_box` is set.
-///
-/// Fields are cut into 8-character columns when they touch each other
-/// (`1.000-100.000`) and split on blanks otherwise.  Only complete frames are
-/// returned: parsing stops at the first frame whose coordinate lines are
-/// truncated, do not hold exactly `3 * n_atoms` numbers, or contain something
-/// that is not a number.  A final frame without its box line, or with a box
-/// line of fewer than three numbers, is returned with `box_dims == None`.
-/// `n_atoms == 0` yields no frames.
-pub fn parse_mdcrd(s: &str, n_atoms: usize, has_box: bool) -> Vec<MdcrdFrame> {
-    let Some(n_coords) = n_atoms.checked_mul(3).filter(|&n| n > 0) else {
-        return Vec::new();
-    };
-    let coords_lines = n_coords.div_ceil(MDCRD_VALUES_PER_LINE);
-    let frame_lines = coords_lines + usize::from(has_box);
-    let lines: Vec<&str> = s.lines().skip(1).collect();
-    let mut frames = Vec::new();
-    let mut first = 0usize;
-    while first + coords_lines <= lines.len() {
-        let box_line = first + coords_lines;
-        let mut coords: Vec<f64> = Vec::with_capacity(n_coords);
-        for line in &lines[first..box_line] {
-            match parse_real_record(line, MDCRD_COLUMN_WIDTH) {
-                Ok(values) => coords.extend(values),
-                Err(_) => return frames,
-            }
-        }
-        if coords.len() != n_coords {
-            return frames;
-        }
-        let box_dims = if has_box {
-            lines.get(box_line).and_then(|line| parse_mdcrd_box(line))
-        } else {
-            None
-        };
-        frames.push(MdcrdFrame { coords, box_dims });
-        first += frame_lines;
-    }
-    frames
-}
 /// Serialises a minimal AMBER prmtop-format string from an `AmberTopology`.
 ///
 /// The output contains `%VERSION`, `%FLAG TITLE`, `%FLAG POINTERS`,
@@ -778,6 +721,7 @@ pub fn write_prmtop(topo: &AmberTopology) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::amber::parse_mdcrd;
     use crate::amber::types::*;
     use std::str::FromStr;
     fn minimal_prmtop() -> String {
@@ -1346,6 +1290,26 @@ mod tests {
             "theta0={}",
             angle.theta0
         );
+    }
+    #[test]
+    fn test_angle_third_atom_is_parsed_from_the_hydrogen_section() {
+        // ANGLES_INC_HYDROGEN "0 3 6 1": atoms 0, 1 and 2, parameter type 0.
+        let text = prmtop_text(&[
+            ("POINTERS", "10I8", "       3"),
+            (
+                "ANGLES_INC_HYDROGEN",
+                "10I8",
+                "       0       3       6       1",
+            ),
+            ("ANGLE_FORCE_CONSTANT", "5E16.8", "  6.30000000E+01"),
+            ("ANGLE_EQUIL_VALUE", "5E16.8", "  1.94000000E+00"),
+        ]);
+        let top = AmberTopology::from_prmtop_str(&text).unwrap();
+        assert_eq!(top.angles.len(), 1);
+        let angle = &top.angles[0];
+        assert_eq!((angle.i, angle.j, angle.atom_k, angle.k_idx), (0, 1, 2, 0));
+        assert!((angle.k - 63.0).abs() < 1e-12);
+        assert!((angle.theta0 - 1.94).abs() < 1e-12);
     }
     #[test]
     fn test_angle_sections_combine_in_file_order_with_their_own_types() {

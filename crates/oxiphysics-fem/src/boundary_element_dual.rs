@@ -37,8 +37,8 @@
 use std::f64::consts::PI;
 
 use super::{
-    BoundaryMesh, CrackElement, DenseMatrix, DualBem, cross3, dot3, kelvin_displacement_3d,
-    kelvin_traction_3d, norm3, normalize3, sub3,
+    BoundaryMesh, CrackElement, DenseMatrix, DualBem, cross3, dot3, elastostatic_self_g_block,
+    kelvin_displacement_3d, kelvin_traction_3d, norm3, normalize3, sub3,
 };
 
 /// Kronecker delta.
@@ -278,12 +278,13 @@ pub(super) fn assemble_dual_bem_system(dbem: &DualBem) -> (DenseMatrix, Vec<f64>
             let col0 = 3 * bj;
             let area = be.area;
             if bi == bj {
-                // Weakly-singular self term: area-equivalent analytic value,
-                // matching `assemble_elastostatic_bem`.
-                let equiv_r = (area / PI).sqrt().max(f64::EPSILON);
-                let g_self = area / (16.0 * PI * mu * (1.0 - nu) * equiv_r);
-                for d in 0..3 {
-                    mat.add(row0 + d, col0 + d, g_self);
+                // Weakly-singular self term: the analytic disk integral of the
+                // Kelvin kernel, shared with `assemble_elastostatic_bem`.
+                let g_self = elastostatic_self_g_block(area, &be.normal, mu, nu);
+                for (i, g_row) in g_self.iter().enumerate() {
+                    for (j, &value) in g_row.iter().enumerate() {
+                        mat.add(row0 + i, col0 + j, value);
+                    }
                 }
             } else {
                 for i in 0..3 {

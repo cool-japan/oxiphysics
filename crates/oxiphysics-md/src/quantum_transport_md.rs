@@ -14,6 +14,8 @@
 //! - Wigner quasi-probability distribution ([`WignerFunction`])
 //! - Boltzmann transport equation ([`BoltzmannTransport`])
 
+use oxiphysics_core::numerical_methods::symmetric_eigen_n;
+
 /// Physical constants
 pub mod constants {
     /// Elementary charge in Coulombs
@@ -138,7 +140,7 @@ impl TightBindingModel {
     pub fn uniform_chain(n_sites: usize, epsilon: f64, t: f64) -> Self {
         let on_site = vec![epsilon; n_sites];
         let mut model = Self::new(n_sites, on_site, 1);
-        for i in 0..n_sites - 1 {
+        for i in 0..n_sites.saturating_sub(1) {
             model.hoppings.push((i, i + 1, t));
             model.hoppings.push((i + 1, i, t));
         }
@@ -164,13 +166,22 @@ impl TightBindingModel {
         h
     }
 
-    /// Computes eigenvalues via Jacobi iteration.
+    /// Computes all eigenvalues of the (real symmetric) Hamiltonian.
     ///
-    /// Returns eigenvalues in ascending order.
+    /// The matrix from [`TightBindingModel::build_hamiltonian`] is reduced to
+    /// tridiagonal form by Householder reflections and diagonalised with the
+    /// implicit-shift QL algorithm
+    /// ([`oxiphysics_core::numerical_methods::symmetric_eigen_n`]), which is
+    /// accurate to roughly machine precision for any on-site energies and
+    /// hoppings.  Returns the eigenvalues in ascending order.
     pub fn eigenvalues(&self) -> Vec<f64> {
         let n = self.n_sites;
-        let h = self.build_hamiltonian();
-        jacobi_eigenvalues(&h, n)
+        if n == 0 {
+            return Vec::new();
+        }
+        let flat = self.build_hamiltonian();
+        let rows: Vec<Vec<f64>> = flat.chunks_exact(n).map(<[f64]>::to_vec).collect();
+        symmetric_eigen_n(&rows).0
     }
 
     /// Returns the band width (max - min eigenvalue).
@@ -184,72 +195,42 @@ impl TightBindingModel {
 
     /// Returns the density of states at energy E using Lorentzian broadening.
     ///
+    /// This diagonalises the Hamiltonian on every call; use
+    /// [`TightBindingModel::density_of_states_grid`] to evaluate many energies.
+    ///
     /// # Arguments
     /// * `energy` - Energy at which to evaluate DOS
     /// * `eta` - Lorentzian broadening width
     pub fn density_of_states(&self, energy: f64, eta: f64) -> f64 {
+        lorentzian_density(&self.eigenvalues(), energy, eta)
+    }
+
+    /// Returns the Lorentzian-broadened density of states on a grid of energies.
+    ///
+    /// The Hamiltonian is diagonalised once for the whole grid, so this costs
+    /// one `O(n³)` eigensolve plus `O(n)` work per energy instead of one eigensolve
+    /// per energy.  `result[k]` equals
+    /// [`TightBindingModel::density_of_states`]`(energies[k], eta)`.
+    ///
+    /// # Arguments
+    /// * `energies` - Energies at which to evaluate the DOS
+    /// * `eta` - Lorentzian broadening width
+    pub fn density_of_states_grid(&self, energies: &[f64], eta: f64) -> Vec<f64> {
         let eigs = self.eigenvalues();
-        let mut dos = 0.0;
-        for e in eigs {
-            dos += eta / (std::f64::consts::PI * ((energy - e).powi(2) + eta * eta));
-        }
-        dos
+        energies
+            .iter()
+            .map(|&energy| lorentzian_density(&eigs, energy, eta))
+            .collect()
     }
 }
 
-/// Jacobi iteration to find eigenvalues of a symmetric matrix.
-fn jacobi_eigenvalues(mat: &[f64], n: usize) -> Vec<f64> {
-    let mut a = mat.to_vec();
-    let max_iter = 100 * n * n;
-
-    for _ in 0..max_iter {
-        // Find largest off-diagonal element
-        let mut max_val = 0.0_f64;
-        let mut p = 0;
-        let mut q = 1;
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let val = a[i * n + j].abs();
-                if val > max_val {
-                    max_val = val;
-                    p = i;
-                    q = j;
-                }
-            }
-        }
-        if max_val < 1e-12 {
-            break;
-        }
-
-        // Compute rotation angle
-        let theta = if (a[q * n + q] - a[p * n + p]).abs() < 1e-15 {
-            std::f64::consts::FRAC_PI_4
-        } else {
-            0.5 * ((2.0 * a[p * n + q]) / (a[q * n + q] - a[p * n + p])).atan()
-        };
-        let c = theta.cos();
-        let s = theta.sin();
-
-        // Apply Jacobi rotation
-        let mut new_a = a.clone();
-        for i in 0..n {
-            if i != p && i != q {
-                new_a[i * n + p] = c * a[i * n + p] + s * a[i * n + q];
-                new_a[p * n + i] = new_a[i * n + p];
-                new_a[i * n + q] = -s * a[i * n + p] + c * a[i * n + q];
-                new_a[q * n + i] = new_a[i * n + q];
-            }
-        }
-        new_a[p * n + p] = c * c * a[p * n + p] + 2.0 * s * c * a[p * n + q] + s * s * a[q * n + q];
-        new_a[q * n + q] = s * s * a[p * n + p] - 2.0 * s * c * a[p * n + q] + c * c * a[q * n + q];
-        new_a[p * n + q] = 0.0;
-        new_a[q * n + p] = 0.0;
-        a = new_a;
-    }
-
-    let mut eigs: Vec<f64> = (0..n).map(|i| a[i * n + i]).collect();
-    eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    eigs
+/// Sum of unit-area Lorentzians of half-width `eta` centred on `eigenvalues`,
+/// evaluated at `energy`.
+fn lorentzian_density(eigenvalues: &[f64], energy: f64, eta: f64) -> f64 {
+    eigenvalues
+        .iter()
+        .map(|&e| eta / (std::f64::consts::PI * ((energy - e).powi(2) + eta * eta)))
+        .sum()
 }
 
 /// Landauer transmission and conductance calculations.
@@ -1087,6 +1068,135 @@ mod tests {
                 assert!((h[i * n + j] - h[j * n + i]).abs() < EPS);
             }
         }
+    }
+
+    #[test]
+    fn test_tight_binding_open_chain_matches_analytic_spectrum() {
+        // Open chain of N sites: E_k = eps + 2 t cos(k pi / (N + 1)), k = 1..N.
+        // The pre-fix Jacobi rotation returned [-0.99, .., 1.02] for N = 6.
+        for &(n_sites, epsilon, hopping) in &[(6_usize, 0.0, -1.0), (5, 0.7, -1.0), (8, -0.4, 0.6)]
+        {
+            let model = TightBindingModel::uniform_chain(n_sites, epsilon, hopping);
+            let eigs = model.eigenvalues();
+            let mut expected: Vec<f64> = (1..=n_sites)
+                .map(|k| {
+                    epsilon
+                        + 2.0
+                            * hopping
+                            * (k as f64 * std::f64::consts::PI / (n_sites + 1) as f64).cos()
+                })
+                .collect();
+            expected.sort_by(f64::total_cmp);
+            assert_eq!(eigs.len(), n_sites);
+            for (computed, exact) in eigs.iter().zip(expected.iter()) {
+                assert!(
+                    (computed - exact).abs() < 1e-10,
+                    "N = {n_sites}: eigenvalue {computed} vs analytic {exact}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_tight_binding_six_site_chain_band_edges() {
+        let model = TightBindingModel::uniform_chain(6, 0.0, -1.0);
+        let eigs = model.eigenvalues();
+        let edge = 2.0 * (std::f64::consts::PI / 7.0).cos();
+        assert!((eigs[0] + edge).abs() < 1e-10, "lowest = {}", eigs[0]);
+        assert!((eigs[5] - edge).abs() < 1e-10, "highest = {}", eigs[5]);
+        assert!((model.band_width() - 2.0 * edge).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_tight_binding_unequal_on_site_energies() {
+        // [[0, 1], [1, 2]] has eigenvalues 1 -/+ sqrt(2); the pre-fix rotation gave [1, 1].
+        let mut model = TightBindingModel::new(2, vec![0.0, 2.0], 1);
+        model.add_hopping(0, 1, 1.0);
+        let eigs = model.eigenvalues();
+        let root2 = 2.0_f64.sqrt();
+        assert!((eigs[0] - (1.0 - root2)).abs() < 1e-12, "got {}", eigs[0]);
+        assert!((eigs[1] - (1.0 + root2)).abs() < 1e-12, "got {}", eigs[1]);
+    }
+
+    #[test]
+    fn test_tight_binding_irregular_four_site_model_matches_reference() {
+        // Reference eigenvalues from an independent dense eigensolver.
+        let mut model = TightBindingModel::new(4, vec![0.5, -0.3, 1.2, 0.0], 1);
+        model.add_hopping(0, 1, -1.0);
+        model.add_hopping(1, 2, -0.7);
+        model.add_hopping(2, 3, 0.4);
+        model.add_hopping(0, 3, 0.25);
+        let expected = [
+            -1.171_840_723_085_788_1,
+            -0.054_057_175_294_630_72,
+            0.876_372_921_929_440_5,
+            1.749_524_976_450_978,
+        ];
+        let eigs = model.eigenvalues();
+        for (computed, exact) in eigs.iter().zip(expected.iter()) {
+            assert!((computed - exact).abs() < 1e-12, "{computed} vs {exact}");
+        }
+    }
+
+    #[test]
+    fn test_tight_binding_spectrum_preserves_trace_and_frobenius_norm() {
+        let mut model = TightBindingModel::new(5, vec![0.3, -0.8, 1.1, 0.0, 0.6], 2);
+        model.add_hopping(0, 1, -0.9);
+        model.add_hopping(1, 2, 0.5);
+        model.add_hopping(2, 3, -1.3);
+        model.add_hopping(3, 4, 0.7);
+        model.add_hopping(0, 4, 0.2);
+        model.add_hopping(1, 3, -0.4);
+        let h = model.build_hamiltonian();
+        let eigs = model.eigenvalues();
+        let trace: f64 = (0..5).map(|i| h[i * 5 + i]).sum();
+        let frobenius_sq: f64 = h.iter().map(|x| x * x).sum();
+        let eig_sum: f64 = eigs.iter().sum();
+        let eig_sq_sum: f64 = eigs.iter().map(|x| x * x).sum();
+        assert!((eig_sum - trace).abs() < 1e-12);
+        assert!((eig_sq_sum - frobenius_sq).abs() < 1e-11);
+    }
+
+    #[test]
+    fn test_tight_binding_empty_model_has_no_eigenvalues() {
+        let model = TightBindingModel::new(0, Vec::new(), 1);
+        assert!(model.eigenvalues().is_empty());
+        assert_eq!(model.band_width(), 0.0);
+        assert_eq!(model.density_of_states(0.0, 0.1), 0.0);
+    }
+
+    #[test]
+    fn test_tight_binding_degenerate_uniform_chains() {
+        // A chain without sites must not underflow `n_sites - 1`; a single site is
+        // just its on-site energy.
+        let empty = TightBindingModel::uniform_chain(0, 0.3, -1.0);
+        assert!(empty.hoppings.is_empty());
+        assert!(empty.eigenvalues().is_empty());
+        let single = TightBindingModel::uniform_chain(1, 0.3, -1.0);
+        assert!(single.hoppings.is_empty());
+        assert_eq!(single.eigenvalues(), vec![0.3]);
+    }
+
+    #[test]
+    fn test_tight_binding_dos_grid_matches_pointwise_dos() {
+        let model = TightBindingModel::uniform_chain(6, 0.0, -1.0);
+        let energies: Vec<f64> = (0..21).map(|k| -2.5 + 0.25 * k as f64).collect();
+        let grid = model.density_of_states_grid(&energies, 0.05);
+        assert_eq!(grid.len(), energies.len());
+        for (energy, value) in energies.iter().zip(grid.iter()) {
+            let pointwise = model.density_of_states(*energy, 0.05);
+            assert!((value - pointwise).abs() < 1e-12, "E = {energy}");
+        }
+        // Each eigenvalue is a unit-area Lorentzian, so the DOS integrates to N sites.
+        let wide: Vec<f64> = (0..20_001).map(|k| -100.0 + 0.01 * k as f64).collect();
+        let dense = model.density_of_states_grid(&wide, 0.05);
+        let integral: f64 = dense.iter().sum::<f64>() * 0.01;
+        assert!((integral - 6.0).abs() < 0.01, "integrated DOS = {integral}");
+        // The DOS peaks at the band edges (eigenvalues), not between them.
+        let edge = 2.0 * (std::f64::consts::PI / 7.0).cos();
+        let at_edge = model.density_of_states(edge, 0.05);
+        let in_gap = model.density_of_states(edge + 0.4, 0.05);
+        assert!(at_edge > 5.0 * in_gap, "edge {at_edge} vs outside {in_gap}");
     }
 
     // ---- LandauerTransmission ----

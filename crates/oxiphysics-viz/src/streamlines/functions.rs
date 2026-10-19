@@ -52,12 +52,15 @@ pub fn q_criterion(j: &[[f64; 3]; 3]) -> f64 {
         |m: &[[f64; 3]; 3]| -> f64 { m.iter().flat_map(|row| row.iter()).map(|&x| x * x).sum() };
     0.5 * (frobenius_sq(&w) - frobenius_sq(&s))
 }
-/// Compute the three eigenvalues of the symmetric 3×3 matrix `m = S² + W²`
-/// (used in the λ₂ criterion), returning them sorted in ascending order.
+/// Compute the three eigenvalues of the symmetric 3×3 matrix `A = S² + W²`
+/// (used in the λ₂ criterion), returning them sorted in ascending order
+/// `λ₁ ≤ λ₂ ≤ λ₃`.
 ///
-/// Uses Cardano's method for the characteristic polynomial of a symmetric 3×3 matrix.
+/// `S` and `W` are the symmetric and antisymmetric parts of the
+/// velocity-gradient tensor `j`; the middle eigenvalue `λ₂` is the quantity the
+/// λ₂ vortex criterion tests for negativity.  The eigenvalues are obtained in
+/// closed form with Smith's trigonometric method for symmetric 3×3 matrices.
 pub fn lambda2_eigenvalues(j: &[[f64; 3]; 3]) -> [f64; 3] {
-    use std::f64::consts::PI;
     let (s, w) = decompose_gradient(j);
     let mut a = [[0.0_f64; 3]; 3];
     for i in 0..3 {
@@ -69,32 +72,56 @@ pub fn lambda2_eigenvalues(j: &[[f64; 3]; 3]) -> [f64; 3] {
             a[i][k] = val;
         }
     }
-    let p1 = a[0][1] * a[0][1] + a[0][2] * a[0][2] + a[1][2] * a[1][2];
-    let trace = a[0][0] + a[1][1] + a[2][2];
-    let q_val = (a[0][0] * a[1][1] + a[0][0] * a[2][2] + a[1][1] * a[2][2]
-        - a[0][1] * a[0][1]
-        - a[0][2] * a[0][2]
-        - a[1][2] * a[1][2])
-        / 3.0;
-    let r_val = (a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[1][2])
-        - a[0][1] * (a[0][1] * a[2][2] - a[1][2] * a[0][2])
-        + a[0][2] * (a[0][1] * a[1][2] - a[1][1] * a[0][2]))
-        / 2.0;
-    if p1.abs() < 1e-24 {
-        let mut eigs = [a[0][0], a[1][1], a[2][2]];
-        eigs.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
-        return eigs;
+    symmetric_eigenvalues_ascending(&a)
+}
+/// Eigenvalues of a real symmetric 3×3 matrix in ascending order.
+///
+/// Smith's trigonometric solution of the characteristic cubic: with
+/// `q = tr(A)/3`, `p = √((Σ(aᵢᵢ − q)² + 2·Σᵢ<ⱼ aᵢⱼ²)/6)` and `B = (A − qI)/p`,
+/// the outer eigenvalues are `q + 2p·cos φ` and `q + 2p·cos(φ + 2π/3)` with
+/// `φ = acos(det(B)/2)/3`, and the middle one follows from the trace,
+/// `3q − λ_max − λ_min`.  A matrix whose off-diagonal part vanishes to
+/// rounding accuracy (relative to its diagonal) returns its sorted diagonal.
+///
+/// The eigenvalues are accurate to about machine precision (relative to the
+/// largest one) when they are well separated, and to about `√ε ≈ 1e-8` when two
+/// of them coincide, as the closed form cannot resolve a double root better.
+///
+/// `a` must be symmetric; a matrix with a non-finite entry gives `[NaN; 3]`.
+pub(super) fn symmetric_eigenvalues_ascending(a: &[[f64; 3]; 3]) -> [f64; 3] {
+    use std::f64::consts::PI;
+    if a.iter().flatten().any(|v| !v.is_finite()) {
+        return [f64::NAN; 3];
     }
-    let p2 = trace / 3.0;
-    let p = (p1 / 3.0).sqrt();
-    let discr = (r_val - q_val * p2 - 2.0 * p2.powi(3)) / (2.0 * p * p * p);
-    let discr_clamped = discr.clamp(-1.0, 1.0);
-    let phi = discr_clamped.acos() / 3.0;
-    let e1 = p2 + 2.0 * p * phi.cos();
-    let e2 = p2 + 2.0 * p * (phi + 2.0 * PI / 3.0).cos();
-    let e3 = p2 + 2.0 * p * (phi + 4.0 * PI / 3.0).cos();
-    let mut eigs = [e1, e2, e3];
-    eigs.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    let sorted_diagonal = || {
+        let mut eigs = [a[0][0], a[1][1], a[2][2]];
+        eigs.sort_by(f64::total_cmp);
+        eigs
+    };
+    let off_diagonal_sq = a[0][1] * a[0][1] + a[0][2] * a[0][2] + a[1][2] * a[1][2];
+    let diagonal_sq = a[0][0] * a[0][0] + a[1][1] * a[1][1] + a[2][2] * a[2][2];
+    if off_diagonal_sq <= 1e-30 * diagonal_sq {
+        return sorted_diagonal();
+    }
+    let q = (a[0][0] + a[1][1] + a[2][2]) / 3.0;
+    let p2 = (a[0][0] - q).powi(2)
+        + (a[1][1] - q).powi(2)
+        + (a[2][2] - q).powi(2)
+        + 2.0 * off_diagonal_sq;
+    let p = (p2 / 6.0).sqrt();
+    if !(p.is_finite() && p > 0.0) {
+        return sorted_diagonal();
+    }
+    let b = |row: usize, col: usize| (a[row][col] - if row == col { q } else { 0.0 }) / p;
+    let det_b = b(0, 0) * (b(1, 1) * b(2, 2) - b(1, 2) * b(2, 1))
+        - b(0, 1) * (b(1, 0) * b(2, 2) - b(1, 2) * b(2, 0))
+        + b(0, 2) * (b(1, 0) * b(2, 1) - b(1, 1) * b(2, 0));
+    let phi = (0.5 * det_b).clamp(-1.0, 1.0).acos() / 3.0;
+    let largest = q + 2.0 * p * phi.cos();
+    let smallest = q + 2.0 * p * (phi + 2.0 * PI / 3.0).cos();
+    let middle = 3.0 * q - largest - smallest;
+    let mut eigs = [smallest, middle, largest];
+    eigs.sort_by(f64::total_cmp);
     eigs
 }
 /// Detect vortex cores from a 3-D grid of sample points.
@@ -307,10 +334,75 @@ pub fn compute_enhanced_lic(
     }
     tex
 }
-/// Detect approximate 2-D flow topology critical points on a grid.
+/// Number of `cell_size`-wide cells needed to cover `range`.
 ///
-/// Scans cells of size `cell_size` across the given 2-D range, looking for
-/// velocity sign changes that indicate critical points.
+/// Returns `None` when the scan is ill-defined (a non-finite range, or a cell
+/// size that is not a positive finite number) or the cell count does not fit
+/// in `usize`; an empty or reversed range needs no cells.
+fn topology_cell_count(range: [f64; 2], cell_size: f64) -> Option<usize> {
+    let well_formed =
+        cell_size.is_finite() && cell_size > 0.0 && range[0].is_finite() && range[1].is_finite();
+    if !well_formed {
+        return None;
+    }
+    let span = range[1] - range[0];
+    if span <= 0.0 {
+        return Some(0);
+    }
+    let cells = (span / cell_size).ceil();
+    if cells.is_finite() && cells < usize::MAX as f64 {
+        Some(cells as usize)
+    } else {
+        None
+    }
+}
+/// Classify a zero-velocity point of a 2-D flow from its velocity-gradient
+/// matrix `[[∂u/∂x, ∂u/∂y], [∂v/∂x, ∂v/∂y]]`.
+///
+/// With `det = ∂u/∂x·∂v/∂y − ∂u/∂y·∂v/∂x`, `tr = ∂u/∂x + ∂v/∂y` and
+/// `disc = tr² − 4·det` (the discriminant of the eigenvalue equation):
+/// `|det| ≈ 0` (relative to the matrix norm) is a degenerate
+/// [`TopologyPointKind::Stagnation`]; `det < 0` a saddle; `disc < 0`
+/// complex eigenvalues, i.e. a vortex centre (or spiral focus); otherwise both
+/// eigenvalues are real with the sign of `tr`, a source (`tr > 0`) or a sink.
+///
+/// Returns `None` when a matrix entry is not finite.
+fn classify_flow_critical_point(jacobian: [[f64; 2]; 2]) -> Option<TopologyPointKind> {
+    let [[du_dx, du_dy], [dv_dx, dv_dy]] = jacobian;
+    if ![du_dx, du_dy, dv_dx, dv_dy].iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    let det = du_dx * dv_dy - du_dy * dv_dx;
+    let trace = du_dx + dv_dy;
+    let norm_sq = du_dx * du_dx + du_dy * du_dy + dv_dx * dv_dx + dv_dy * dv_dy;
+    if det.abs() <= 1e-12 * norm_sq {
+        return Some(TopologyPointKind::Stagnation);
+    }
+    let discriminant = trace * trace - 4.0 * det;
+    Some(if det < 0.0 {
+        TopologyPointKind::Saddle
+    } else if discriminant < 0.0 {
+        TopologyPointKind::VortexCentre
+    } else if trace > 0.0 {
+        TopologyPointKind::Source
+    } else {
+        TopologyPointKind::Sink
+    })
+}
+/// Detect 2-D flow topology critical points on a grid.
+///
+/// The rectangle `x_range × y_range` of the plane `z = z_plane` is covered by
+/// square cells of side `cell_size` (the last cell in each direction may
+/// extend past the end of its range).  A cell whose centre has a speed
+/// `√(u² + v²)` below `stagnation_threshold` is a near-stagnation candidate;
+/// the 2×2 velocity-gradient matrix is then estimated there by central
+/// differences with half-step `0.1·cell_size` and the point is classified
+/// from its eigenvalues (see [`TopologyPointKind`]): saddle, vortex centre,
+/// source, sink, or a degenerate stagnation point when the matrix is singular.
+/// Candidates whose gradient stencil is not finite are skipped.
+///
+/// Returns no points unless `cell_size` is a positive finite number and both
+/// ranges are finite (so that the scan always terminates).
 pub fn detect_topology_points(
     x_range: [f64; 2],
     y_range: [f64; 2],
@@ -319,49 +411,48 @@ pub fn detect_topology_points(
     velocity_field: &dyn Fn([f64; 3]) -> [f64; 3],
     stagnation_threshold: f64,
 ) -> Vec<FlowTopologyPoint> {
+    let (Some(nx), Some(ny)) = (
+        topology_cell_count(x_range, cell_size),
+        topology_cell_count(y_range, cell_size),
+    ) else {
+        return Vec::new();
+    };
+    let h = cell_size * 0.1;
+    let inv_two_h = 0.5 / h;
     let mut points = Vec::new();
-    let mut x = x_range[0];
-    while x < x_range[1] {
-        let mut y = y_range[0];
-        while y < y_range[1] {
-            let v = velocity_field([x + cell_size * 0.5, y + cell_size * 0.5, z_plane]);
-            let vmag = (v[0] * v[0] + v[1] * v[1]).sqrt();
-            if vmag < stagnation_threshold {
-                let h = cell_size * 0.1;
-                let cx = x + cell_size * 0.5;
-                let cy = y + cell_size * 0.5;
-                let dvx_dx = (velocity_field([cx + h, cy, z_plane])[0]
-                    - velocity_field([cx - h, cy, z_plane])[0])
-                    / (2.0 * h);
-                let dvy_dy = (velocity_field([cx, cy + h, z_plane])[1]
-                    - velocity_field([cx, cy - h, z_plane])[1])
-                    / (2.0 * h);
-                let det = dvx_dx * dvy_dy;
-                let kind = if det < 0.0 {
-                    TopologyPointKind::Saddle
-                } else {
-                    let dvx_dy = (velocity_field([cx, cy + h, z_plane])[0]
-                        - velocity_field([cx, cy - h, z_plane])[0])
-                        / (2.0 * h);
-                    let dvy_dx = (velocity_field([cx + h, cy, z_plane])[1]
-                        - velocity_field([cx - h, cy, z_plane])[1])
-                        / (2.0 * h);
-                    let curl = dvy_dx - dvx_dy;
-                    if curl.abs() > 1e-6 {
-                        TopologyPointKind::VortexCentre
-                    } else {
-                        TopologyPointKind::Stagnation
-                    }
-                };
+    for ix in 0..nx {
+        let cx = x_range[0] + (ix as f64 + 0.5) * cell_size;
+        for iy in 0..ny {
+            let cy = y_range[0] + (iy as f64 + 0.5) * cell_size;
+            let v = velocity_field([cx, cy, z_plane]);
+            let vmag = v[0].hypot(v[1]);
+            // False for a NaN speed or threshold: such cells are never candidates.
+            let is_slow = vmag < stagnation_threshold;
+            if !is_slow {
+                continue;
+            }
+            let east = velocity_field([cx + h, cy, z_plane]);
+            let west = velocity_field([cx - h, cy, z_plane]);
+            let north = velocity_field([cx, cy + h, z_plane]);
+            let south = velocity_field([cx, cy - h, z_plane]);
+            let jacobian = [
+                [
+                    (east[0] - west[0]) * inv_two_h,
+                    (north[0] - south[0]) * inv_two_h,
+                ],
+                [
+                    (east[1] - west[1]) * inv_two_h,
+                    (north[1] - south[1]) * inv_two_h,
+                ],
+            ];
+            if let Some(kind) = classify_flow_critical_point(jacobian) {
                 points.push(FlowTopologyPoint {
                     position: [cx, cy],
                     kind,
                     velocity_magnitude: vmag,
                 });
             }
-            y += cell_size;
         }
-        x += cell_size;
     }
     points
 }

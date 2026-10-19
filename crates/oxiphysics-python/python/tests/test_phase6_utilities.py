@@ -259,6 +259,26 @@ def test_spatial_grid_k_nearest():
     assert len(results) <= 3
 
 
+def test_spatial_grid_rejects_invalid_cell_size():
+    if not hasattr(ox, "SpatialGrid"):
+        pytest.skip("SpatialGrid not yet bound")
+    for bad in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            ox.SpatialGrid(bad)
+
+
+def test_spatial_grid_pairs_and_nearest_are_ordered():
+    if not hasattr(ox, "SpatialGrid"):
+        pytest.skip("SpatialGrid not yet bound")
+    grid = ox.SpatialGrid(2.0)
+    for ident, x in ((9, 4.0), (3, 0.0), (7, 2.0), (1, 6.0)):
+        grid.insert(ident, [x, 0.0, 0.0])
+    assert grid.query_radius([2.0, 0.0, 0.0], 2.0) == [3, 7, 9]
+    assert grid.pairs_within_radius(2.0) == [(1, 9), (3, 7), (7, 9)]
+    ranked = grid.k_nearest([0.0, 0.0, 0.0], 3)
+    assert [ident for ident, _ in ranked] == [3, 7, 9]
+
+
 # ---------------------------------------------------------------------------
 # LodSystem
 # ---------------------------------------------------------------------------

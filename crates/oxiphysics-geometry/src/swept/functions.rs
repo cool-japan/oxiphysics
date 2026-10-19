@@ -125,39 +125,100 @@ pub fn minkowski_support(
     let sb = support_b(neg3(dir));
     sub3(sa, sb)
 }
-/// Time-of-impact for a moving sphere (the `SweptSphere`) against a static
-/// sphere.
+/// Earliest time `t` in `[0, 1]` at which a point that starts at `rel_start`
+/// and moves with the constant velocity `vel` (displacement per unit `t`)
+/// enters the ball of radius `radius` centred at the origin.
 ///
-/// The swept sphere travels linearly from `center_start` to `center_end`.
-/// Returns the normalised time `t` in `[0, 1]` of first contact, or `None` if
-/// there is no collision during the sweep.
-pub fn swept_sphere_vs_sphere(
-    swept: &SweptSphere,
-    sphere_center: [f64; 3],
-    sphere_radius: f64,
+/// Every sphere-versus-sphere sweep reduces to this query in the frame of the
+/// other sphere: `rel_start` is the centre-to-centre offset at `t = 0`, `vel`
+/// the relative displacement over the sweep and `radius` the sum of the radii.
+///
+/// * If the point is already inside (or touching) the ball at `t = 0` the
+///   result is `Some(0.0)`: the quadratic's smaller root is then negative and
+///   its larger root is the *exit* time, which must never be reported as the
+///   time of impact.
+/// * Otherwise the entry time is the smaller root of
+///   `|rel_start + t * vel|^2 = radius^2`, evaluated as `c / q` with
+///   `q = -(b - sqrt(b^2 - 4ac)) / 2` so that no catastrophic cancellation
+///   occurs when the contact is nearly tangential.
+/// * Non-finite input yields `None`.
+pub(super) fn first_contact_with_ball(
+    rel_start: [f64; 3],
+    vel: [f64; 3],
+    radius: f64,
 ) -> Option<f64> {
-    let combined_radius = swept.radius + sphere_radius;
-    let vel = sub3(swept.center_end, swept.center_start);
-    let rel = sub3(swept.center_start, sphere_center);
+    let c = dot3(rel_start, rel_start) - radius * radius;
+    if c <= 0.0 {
+        return Some(0.0);
+    }
     let a = dot3(vel, vel);
-    let b = 2.0 * dot3(rel, vel);
-    let c = dot3(rel, rel) - combined_radius * combined_radius;
     if a < 1e-14 {
-        return if c <= 0.0 { Some(0.0) } else { None };
+        return None;
+    }
+    let b = 2.0 * dot3(rel_start, vel);
+    if b >= 0.0 {
+        return None;
     }
     let disc = b * b - 4.0 * a * c;
     if disc < 0.0 {
         return None;
     }
-    let sq = disc.sqrt();
-    let t1 = (-b - sq) / (2.0 * a);
-    let t2 = (-b + sq) / (2.0 * a);
-    let t = if t1 >= 0.0 { t1 } else { t2 };
-    if (0.0..=1.0).contains(&t) {
-        Some(t)
-    } else {
-        None
+    let q = -0.5 * (b - disc.sqrt());
+    let t = c / q;
+    if t <= 1.0 { Some(t) } else { None }
+}
+/// Earliest time `t` in `[0, 1]` at which the point `origin + t * displacement`
+/// comes within `radius` of the segment `[seg_a, seg_b]` (i.e. enters the
+/// capsule of that radius around the segment).
+///
+/// * A point that is already inside the capsule at `t = 0` returns
+///   `Some(0.0)`.
+/// * A degenerate segment (`seg_a == seg_b`) is a sphere and is routed to
+///   [`first_contact_with_ball`]; the capsule/ray algebra divides by the
+///   squared segment length and would otherwise silently miss every hit.
+/// * A zero displacement that does not start inside the capsule never makes
+///   contact.
+/// * Otherwise the entry time is the first intersection of the sweep line with
+///   the capsule surface (cylinder side plus the two hemispherical caps), taken
+///   in sweep units by passing the un-normalised displacement as ray
+///   direction.
+pub(super) fn first_contact_with_capsule(
+    origin: [f64; 3],
+    displacement: [f64; 3],
+    seg_a: [f64; 3],
+    seg_b: [f64; 3],
+    radius: f64,
+) -> Option<f64> {
+    if point_segment_distance(origin, seg_a, seg_b) <= radius {
+        return Some(0.0);
     }
+    let axis = sub3(seg_b, seg_a);
+    if dot3(axis, axis) < 1e-14 {
+        return first_contact_with_ball(sub3(origin, seg_a), displacement, radius);
+    }
+    if dot3(displacement, displacement) < 1e-14 {
+        return None;
+    }
+    let t = SweptSphere::new(seg_a, seg_b, radius).ray_intersect(origin, displacement)?;
+    if t <= 1.0 { Some(t) } else { None }
+}
+/// Time-of-impact for a moving sphere (the `SweptSphere`) against a static
+/// sphere.
+///
+/// The swept sphere travels linearly from `center_start` to `center_end`.
+/// Returns the normalised time `t` in `[0, 1]` of first contact, `Some(0.0)` if
+/// the spheres already overlap at the start of the sweep, or `None` if there is
+/// no collision during the sweep.
+pub fn swept_sphere_vs_sphere(
+    swept: &SweptSphere,
+    sphere_center: [f64; 3],
+    sphere_radius: f64,
+) -> Option<f64> {
+    first_contact_with_ball(
+        sub3(swept.center_start, sphere_center),
+        sub3(swept.center_end, swept.center_start),
+        swept.radius + sphere_radius,
+    )
 }
 /// Time-of-impact for a moving sphere against an infinite plane.
 ///
@@ -195,7 +256,9 @@ pub fn swept_sphere_vs_plane(
 /// Sphere A moves from `a_start` to `a_end` with radius `ra`.
 /// Sphere B moves from `b_start` to `b_end` with radius `rb`.
 ///
-/// Returns `t` in `[0, 1]` of first contact, or `None`.
+/// Both spheres move linearly and simultaneously over the unit time interval.
+/// Returns `t` in `[0, 1]` of first contact, `Some(0.0)` if the spheres already
+/// overlap at `t = 0`, or `None` if they never touch during the sweep.
 pub fn swept_sphere_vs_swept_sphere(
     a_start: [f64; 3],
     a_end: [f64; 3],
@@ -204,29 +267,9 @@ pub fn swept_sphere_vs_swept_sphere(
     b_end: [f64; 3],
     rb: f64,
 ) -> Option<f64> {
-    let combined = ra + rb;
     let rel_start = sub3(a_start, b_start);
     let rel_end = sub3(a_end, b_end);
-    let vel = sub3(rel_end, rel_start);
-    let a = dot3(vel, vel);
-    let b = 2.0 * dot3(rel_start, vel);
-    let c = dot3(rel_start, rel_start) - combined * combined;
-    if a < 1e-14 {
-        return if c <= 0.0 { Some(0.0) } else { None };
-    }
-    let disc = b * b - 4.0 * a * c;
-    if disc < 0.0 {
-        return None;
-    }
-    let sq = disc.sqrt();
-    let t1 = (-b - sq) / (2.0 * a);
-    let t2 = (-b + sq) / (2.0 * a);
-    let t = if t1 >= 0.0 { t1 } else { t2 };
-    if (0.0..=1.0).contains(&t) {
-        Some(t)
-    } else {
-        None
-    }
+    first_contact_with_ball(rel_start, sub3(rel_end, rel_start), ra + rb)
 }
 /// Linear cast: move sphere A from `start` along `displacement` and find
 /// the time of first contact with a static sphere B.
@@ -412,51 +455,24 @@ pub fn segment_segment_distance(a1: [f64; 3], b1: [f64; 3], a2: [f64; 3], b2: [f
     let closest2 = add3(a2, scale3(d2, t));
     len3(sub3(closest1, closest2))
 }
-/// Time-of-impact between two swept spheres represented as capsules.
+/// Time-of-impact between two spheres that each translate linearly over the
+/// unit time interval (`a.center_at(t)` and `b.center_at(t)`).
 ///
-/// This uses segment-segment closest-distance to check if two capsules
-/// (swept spheres) intersect.
+/// Returns the earliest `t` in `[0, 1]` at which the two spheres touch,
+/// `Some(0.0)` if they already overlap at `t = 0`, or `None` if they never
+/// touch. This is a closed-form relative-motion query (a quadratic in `t`, see
+/// [`swept_sphere_vs_swept_sphere`]); it is *not* a test of whether the two
+/// swept capsule volumes intersect, because spheres whose paths cross at
+/// different times do not collide.
 pub fn capsule_capsule_toi(a: &SweptSphere, b: &SweptSphere) -> Option<f64> {
-    let combined_radius = a.radius + b.radius;
-    let n_steps = 32;
-    let mut lo = 0.0_f64;
-    let mut hi = 1.0_f64;
-    let dist0 = len3(sub3(a.center_start, b.center_start));
-    if dist0 <= combined_radius {
-        return Some(0.0);
-    }
-    let dist1 = len3(sub3(a.center_end, b.center_end));
-    let mid_a = a.center_at(0.5);
-    let mid_b = b.center_at(0.5);
-    let dist_mid = len3(sub3(mid_a, mid_b));
-    let min_dist = dist0.min(dist1).min(dist_mid);
-    if min_dist
-        > combined_radius
-            + len3(sub3(a.center_end, a.center_start))
-            + len3(sub3(b.center_end, b.center_start))
-    {
-        return None;
-    }
-    for _ in 0..n_steps {
-        let t = (lo + hi) * 0.5;
-        let pa = a.center_at(t);
-        let pb = b.center_at(t);
-        let d = len3(sub3(pa, pb));
-        if d <= combined_radius {
-            hi = t;
-        } else {
-            lo = t;
-        }
-    }
-    if hi <= 1.0 {
-        let pa = a.center_at(hi);
-        let pb = b.center_at(hi);
-        let d = len3(sub3(pa, pb));
-        if d <= combined_radius + 1e-6 {
-            return Some(hi);
-        }
-    }
-    None
+    swept_sphere_vs_swept_sphere(
+        a.center_start,
+        a.center_end,
+        a.radius,
+        b.center_start,
+        b.center_end,
+        b.radius,
+    )
 }
 #[cfg(test)]
 mod tests {
@@ -843,12 +859,24 @@ mod tests {
         assert!((sa - 4.0 * std::f64::consts::PI).abs() < 1e-9);
     }
 }
-/// Conservative CCD: time-of-impact for a moving sphere vs a static capsule.
+/// Exact CCD: time-of-impact for a moving sphere vs a static capsule.
 ///
 /// The capsule axis runs from `cap_a` to `cap_b` with `cap_radius`.
-/// The sphere moves from `sphere_start` to `sphere_end` with `sphere_radius`.
+/// The sphere moves linearly from `sphere_start` to `sphere_end` with
+/// `sphere_radius`.
 ///
-/// Returns `Some(CcdResult)` at the earliest time of contact, or `None`.
+/// The sphere centre sweeps a line segment, so contact happens when that
+/// segment first enters the capsule of radius `sphere_radius + cap_radius`
+/// around the axis. The entry time is found in closed form from the cylinder
+/// side and the two spherical end caps (a sampled or bisected distance test
+/// would tunnel through short contact windows, because the distance to a
+/// capsule is not monotone along a sweep). A zero-length axis
+/// (`cap_a == cap_b`) is treated as a sphere.
+///
+/// Returns `Some(CcdResult)` at the earliest time of contact (`toi = 0` if the
+/// shapes already overlap), with `contact_point` the point of the capsule axis
+/// closest to the sphere centre at that time, or `None` if there is no contact
+/// during the sweep.
 pub fn ccd_sphere_vs_capsule(
     sphere_start: [f64; 3],
     sphere_end: [f64; 3],
@@ -857,43 +885,17 @@ pub fn ccd_sphere_vs_capsule(
     cap_b: [f64; 3],
     cap_radius: f64,
 ) -> Option<CcdResult> {
-    let combined = sphere_radius + cap_radius;
-    let n_steps = 32_usize;
-    {
-        let d = point_segment_distance(sphere_start, cap_a, cap_b);
-        if d <= combined {
-            let closest = closest_point_on_segment(sphere_start, cap_a, cap_b);
-            return Some(CcdResult {
-                toi: 0.0,
-                contact_point: closest,
-            });
-        }
-    }
-    let mut lo = 0.0f64;
-    let mut hi = 1.0f64;
-    let d_end = point_segment_distance(sphere_end, cap_a, cap_b);
-    if d_end > combined {
-        let mid = lerp3(sphere_start, sphere_end, 0.5);
-        let d_mid = point_segment_distance(mid, cap_a, cap_b);
-        if d_mid > combined {
-            return None;
-        }
-    }
-    for _ in 0..n_steps {
-        let t = (lo + hi) * 0.5;
-        let pos = lerp3(sphere_start, sphere_end, t);
-        let d = point_segment_distance(pos, cap_a, cap_b);
-        if d <= combined {
-            hi = t;
-        } else {
-            lo = t;
-        }
-    }
-    let contact_pos = lerp3(sphere_start, sphere_end, hi);
-    let contact_point = closest_point_on_segment(contact_pos, cap_a, cap_b);
+    let toi = first_contact_with_capsule(
+        sphere_start,
+        sub3(sphere_end, sphere_start),
+        cap_a,
+        cap_b,
+        sphere_radius + cap_radius,
+    )?;
+    let contact_pos = lerp3(sphere_start, sphere_end, toi);
     Some(CcdResult {
-        toi: hi,
-        contact_point,
+        toi,
+        contact_point: closest_point_on_segment(contact_pos, cap_a, cap_b),
     })
 }
 /// CCD time-of-impact for two moving AABBs.

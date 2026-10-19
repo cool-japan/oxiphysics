@@ -5,10 +5,12 @@
 //!
 //! Full GJK with simplex management (1D–4D), EPA (Expanding Polytope Algorithm)
 //! for penetration depth/normal, warm-start cache, Minkowski difference support,
-//! 2-D GJK, ray-cast GJK, time-of-impact via bilateral advancement, and feature
-//! pair generation.
+//! 2-D GJK, ray-cast GJK, time-of-impact via conservative advancement, and
+//! feature pair generation.
 
-use crate::gjk_epa::simplex_closest::closest_point_to_origin;
+use crate::gjk_epa::distance::{DistanceOutcome, DistanceSettings, SimplexVertex, solve_with};
+use crate::gjk_epa::simplex_closest::{SimplexClosest, closest_point_to_origin};
+use crate::gjk_epa::{SupportPoint, complete_tetrahedron, expand_polytope};
 
 // ---------------------------------------------------------------------------
 // Vector math helpers
@@ -211,43 +213,79 @@ impl SimplexManager {
         self.support_b.clear();
     }
 
+    /// Closest point of the newest (at most four) vertices to the origin, its
+    /// barycentric weights over that window, and the index of the window's first
+    /// vertex.
+    fn nearest(&self) -> (SimplexClosest, usize) {
+        let start = self.vertices.len().saturating_sub(4);
+        (closest_point_to_origin(&self.vertices[start..]), start)
+    }
+
     /// Find the closest point to the origin on the current simplex.
     ///
-    /// Returns (closest_point, did_contain_origin).
+    /// Returns `(closest_point, did_contain_origin)`. The closest point is the
+    /// true nearest point of the convex hull of the vertices (only the newest
+    /// four take part, see [`SimplexManager::prune`]); it is the origin itself
+    /// when a tetrahedron encloses the origin. `did_contain_origin` is `true`
+    /// when the origin lies inside a non-degenerate tetrahedron or on a lower
+    /// dimensional simplex.
     pub fn closest_to_origin(&self) -> ([f64; 3], bool) {
-        match self.vertices.len() {
-            0 => ([0.0; 3], false),
-            1 => (self.vertices[0], len_sq3(self.vertices[0]) < 1e-24),
-            2 => {
-                let (_, p) = line_closest_point_to_origin(self.vertices[0], self.vertices[1]);
-                (p, len_sq3(p) < 1e-24)
-            }
-            3 => {
-                let p = triangle_closest_to_origin(
-                    self.vertices[0],
-                    self.vertices[1],
-                    self.vertices[2],
-                );
-                (p, len_sq3(p) < 1e-24)
-            }
-            _ => {
-                let contains = tetrahedron_contains_origin(
-                    self.vertices[0],
-                    self.vertices[1],
-                    self.vertices[2],
-                    self.vertices[3],
-                );
-                ([0.0; 3], contains)
+        if self.vertices.is_empty() {
+            return ([0.0; 3], false);
+        }
+        let (nearest, _) = self.nearest();
+        let contains = nearest.encloses_origin || len_sq3(nearest.point) < 1e-24;
+        (nearest.point, contains)
+    }
+
+    /// Reduce the simplex to the sub-simplex closest to origin.
+    ///
+    /// The oldest vertices beyond four are dropped first. Then every vertex that
+    /// does not support the closest point (barycentric weight zero) is removed
+    /// from `vertices`, `support_a` and `support_b` alike. A tetrahedron that
+    /// encloses the origin is kept whole: it is the seed of the EPA polytope.
+    pub fn reduce_to_closest(&mut self) {
+        self.prune();
+        let (nearest, _) = self.nearest();
+        if nearest.encloses_origin {
+            return;
+        }
+        for index in (0..self.vertices.len()).rev() {
+            if nearest.weights.get(index).is_none_or(|w| *w <= 0.0) {
+                self.vertices.remove(index);
+                self.support_a.remove(index);
+                self.support_b.remove(index);
             }
         }
     }
 
-    /// Reduce the simplex to the sub-simplex closest to origin.
-    pub fn reduce_to_closest(&mut self) {
-        // Simple reduction: keep up to 4 most relevant points
-        if self.vertices.len() > 4 {
-            self.prune();
+    /// Points on shape A and shape B that realise [`SimplexManager::closest_to_origin`].
+    ///
+    /// They are the blends `sum(l_i * support_a_i)` and `sum(l_i * support_b_i)`
+    /// with the barycentric weights `l_i` of the closest point, so their
+    /// difference is the closest point of the simplex to the origin. For an
+    /// enclosing tetrahedron both points coincide and lie in both shapes.
+    pub fn witness_points(&self) -> ([f64; 3], [f64; 3]) {
+        let (nearest, start) = self.nearest();
+        let mut point_a = [0.0; 3];
+        let mut point_b = [0.0; 3];
+        for (offset, &weight) in nearest.weights.iter().enumerate() {
+            let index = start + offset;
+            if let (Some(&sa), Some(&sb)) = (self.support_a.get(index), self.support_b.get(index)) {
+                point_a = add3(point_a, scale3(sa, weight));
+                point_b = add3(point_b, scale3(sb, weight));
+            }
         }
+        (point_a, point_b)
+    }
+
+    /// Simplex made of the given solver vertices.
+    fn from_vertices(vertices: &[SimplexVertex]) -> Self {
+        let mut simplex = SimplexManager::new();
+        for vertex in vertices {
+            simplex.add(vertex.w, vertex.sa, vertex.sb);
+        }
+        simplex
     }
 }
 
@@ -378,9 +416,15 @@ pub struct ExpandingPolytope {
 }
 
 impl ExpandingPolytope {
-    /// Construct from a simplex (must be a tetrahedron).
+    /// Construct from a simplex, which has to be a tetrahedron that encloses
+    /// the origin (the simplex [`GjkSolver::query`] ends on for generic
+    /// overlapping shapes).
+    ///
+    /// A simplex with fewer than four vertices (or a degenerate one) spans no
+    /// volume: the polytope then has no faces. [`EpaExpander::expand`] still
+    /// derives the penetration from such a polytope by completing its vertices
+    /// to a tetrahedron of support points of the Minkowski difference.
     pub fn from_simplex(simplex: &SimplexManager) -> Self {
-        assert!(simplex.size() >= 4, "EPA requires a tetrahedron simplex");
         let vertices = simplex.vertices.clone();
         let support_a = simplex.support_a.clone();
         let support_b = simplex.support_b.clone();
@@ -392,9 +436,11 @@ impl ExpandingPolytope {
             faces: Vec::new(),
         };
         // Build initial faces of tetrahedron
-        let face_indices = [[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]];
-        for fi in &face_indices {
-            ep.add_face(*fi);
+        if simplex.size() >= 4 {
+            let face_indices = [[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]];
+            for fi in &face_indices {
+                ep.add_face(*fi);
+            }
         }
         ep
     }
@@ -423,6 +469,56 @@ impl ExpandingPolytope {
             normal,
             dist,
         });
+    }
+
+    /// Penetration result of the part of the boundary nearest to the origin.
+    ///
+    /// Several faces can lie in the nearest plane (the triangles of one facet of
+    /// a polyhedral Minkowski difference), and only one of them contains the
+    /// foot of the perpendicular from the origin. Among all faces whose plane is
+    /// within a relative `1e-9` of the nearest one, the face whose triangle is
+    /// closest to the origin is therefore used: its plane distance is the
+    /// depth, its outward normal (reversed, so that it points from B to A) the
+    /// normal, and the contact points are the blends of the support points of
+    /// its vertices with the barycentric weights of the point of the triangle
+    /// nearest to the origin. That point is the foot `p = n * depth` whenever the
+    /// foot lies in the triangle, so `point_a - point_b == p == -normal * depth`
+    /// then holds exactly, and `point_a` is the point of shape A that has to
+    /// travel furthest to leave shape B.
+    ///
+    /// Returns `None` when the polytope has no faces.
+    pub fn nearest_result(&self) -> Option<EpaResult> {
+        let nearest_plane = self.closest_face()?.dist;
+        let slack = 1e-9 * nearest_plane.max(1.0);
+        let mut best: Option<(f64, &EpaFaceExtended, SimplexClosest)> = None;
+        for face in self
+            .faces
+            .iter()
+            .filter(|f| f.dist <= nearest_plane + slack)
+        {
+            let corners = face.indices.map(|index| self.vertices[index]);
+            let closest = closest_point_to_origin(&corners);
+            let reach = len_sq3(closest.point);
+            if best
+                .as_ref()
+                .is_none_or(|(smallest, _, _)| reach < *smallest)
+            {
+                best = Some((reach, face, closest));
+            }
+        }
+        let (_, face, closest) = best?;
+        let mut point_a = [0.0; 3];
+        let mut point_b = [0.0; 3];
+        for (&index, &weight) in face.indices.iter().zip(closest.weights.iter()) {
+            point_a = add3(point_a, scale3(self.support_a[index], weight));
+            point_b = add3(point_b, scale3(self.support_b[index], weight));
+        }
+        Some(EpaResult {
+            depth: face.dist,
+            normal: neg3(face.normal),
+            point_a,
+            point_b,
+        })
     }
 
     /// Find the face closest to the origin.
@@ -499,11 +595,14 @@ impl ExpandingPolytope {
 pub struct EpaResult {
     /// Penetration depth (positive = overlapping).
     pub depth: f64,
-    /// Contact normal (unit, from B to A).
+    /// Contact normal (unit, from B to A): the direction in which shape A has to
+    /// move to separate from shape B.
     pub normal: [f64; 3],
-    /// Closest point on shape A.
+    /// Contact point on shape A: its deepest point inside shape B.
     pub point_a: [f64; 3],
-    /// Closest point on shape B.
+    /// Contact point on shape B: its deepest point inside shape A.
+    ///
+    /// `point_a - point_b == -normal * depth`.
     pub point_b: [f64; 3],
 }
 
@@ -522,61 +621,78 @@ impl EpaExpander {
     }
 
     /// Run EPA on the given polytope with support function `support`.
-    pub fn expand<F>(&self, polytope: &mut ExpandingPolytope, support: F) -> EpaResult
+    ///
+    /// A polytope with faces must enclose the origin (for example the
+    /// tetrahedron of support points of the Minkowski difference around it that
+    /// [`GjkSolver::query`] ends on for generic overlapping shapes). Each step
+    /// expands along the normal of the face nearest to the origin until the
+    /// support point lies within `tol` of that face's plane; the depth, normal
+    /// and contact points are then those of the nearest part of the boundary
+    /// (see [`ExpandingPolytope::nearest_result`]). If `max_iter` steps are not
+    /// enough, the nearest part of the polytope reached so far is reported; its
+    /// depth is a lower bound of the true penetration depth.
+    ///
+    /// A polytope without faces comes from a simplex that spans no volume: GJK
+    /// ends on a segment or a triangle through the origin when the
+    /// configuration is symmetric (two spheres, for instance). Its vertices are
+    /// then completed to a tetrahedron of support points of the Minkowski
+    /// difference, which does not have to enclose the origin (the expansion
+    /// first grows toward it), and the expansion proceeds from there with the
+    /// same `max_iter` and `tol`. `polytope` itself is left unchanged in that
+    /// case.
+    ///
+    /// Returns `None` when no penetration can be derived: the Minkowski
+    /// difference is flat, so it has no volume to penetrate, or the shapes do
+    /// not overlap.
+    pub fn expand<F>(&self, polytope: &mut ExpandingPolytope, support: F) -> Option<EpaResult>
     where
         F: Fn([f64; 3]) -> ([f64; 3], [f64; 3], [f64; 3]),
     {
+        if polytope.faces.is_empty() {
+            return self.expand_from_vertices(polytope, &support);
+        }
         for _ in 0..self.max_iter {
-            let face = match polytope.closest_face() {
-                Some(f) => f.clone(),
-                None => break,
-            };
+            let face = polytope.closest_face()?.clone();
             let (new_v, sa, sb) = support(face.normal);
             let new_dist = dot3(face.normal, new_v);
             if new_dist - face.dist < self.tol {
-                // Converged: compute contact points from barycentric coords
-                let a = polytope.vertices[face.indices[0]];
-                let b = polytope.vertices[face.indices[1]];
-                let c = polytope.vertices[face.indices[2]];
-                let p = add3(
-                    scale3(a, 1.0 / 3.0),
-                    add3(scale3(b, 1.0 / 3.0), scale3(c, 1.0 / 3.0)),
-                );
-                let pa = add3(
-                    scale3(polytope.support_a[face.indices[0]], 1.0 / 3.0),
-                    add3(
-                        scale3(polytope.support_a[face.indices[1]], 1.0 / 3.0),
-                        scale3(polytope.support_a[face.indices[2]], 1.0 / 3.0),
-                    ),
-                );
-                let pb = add3(
-                    scale3(polytope.support_b[face.indices[0]], 1.0 / 3.0),
-                    add3(
-                        scale3(polytope.support_b[face.indices[1]], 1.0 / 3.0),
-                        scale3(polytope.support_b[face.indices[2]], 1.0 / 3.0),
-                    ),
-                );
-                let _ = p;
-                return EpaResult {
-                    depth: face.dist,
-                    normal: face.normal,
-                    point_a: pa,
-                    point_b: pb,
-                };
+                break;
             }
             polytope.expand(new_v, sa, sb);
         }
-        let face = polytope.closest_face().cloned().unwrap_or(EpaFaceExtended {
-            indices: [0, 1, 2],
-            normal: [0.0, 0.0, 1.0],
-            dist: 0.0,
-        });
-        EpaResult {
-            depth: face.dist,
-            normal: face.normal,
-            point_a: [0.0; 3],
-            point_b: [0.0; 3],
-        }
+        polytope.nearest_result()
+    }
+
+    /// Penetration of the shapes behind `support`, started from the vertices of
+    /// a polytope that has no faces; see [`EpaExpander::expand`].
+    fn expand_from_vertices<F>(
+        &self,
+        polytope: &ExpandingPolytope,
+        support: &F,
+    ) -> Option<EpaResult>
+    where
+        F: Fn([f64; 3]) -> ([f64; 3], [f64; 3], [f64; 3]),
+    {
+        let oracle = |direction: [f64; 3]| {
+            let (w, a, b) = support(direction);
+            SupportPoint { w, a, b }
+        };
+        let known: Vec<SupportPoint> = polytope
+            .vertices
+            .iter()
+            .zip(&polytope.support_a)
+            .zip(&polytope.support_b)
+            .map(|((&w, &a), &b)| SupportPoint { w, a, b })
+            .collect();
+        let seed =
+            <[SupportPoint; 4]>::try_from(complete_tetrahedron(&known, &oracle).as_slice()).ok()?;
+        let found = expand_polytope(seed, &oracle, self.tol, self.max_iter)?;
+        Some(EpaResult {
+            depth: found.depth,
+            normal: neg3(found.normal),
+            point_a: found.contact_a,
+            point_b: found.contact_b,
+        })
     }
 }
 
@@ -589,21 +705,33 @@ impl EpaExpander {
 pub struct GjkResult {
     /// Minimum distance between the two shapes (0 = intersecting).
     pub distance: f64,
-    /// Closest point on shape A.
+    /// Closest point on shape A. For intersecting shapes, a point shared by both
+    /// shapes (it coincides with `point_b`).
     pub point_a: [f64; 3],
-    /// Closest point on shape B.
+    /// Closest point on shape B. For intersecting shapes, a point shared by both
+    /// shapes (it coincides with `point_a`).
     pub point_b: [f64; 3],
-    /// Whether the shapes intersect.
+    /// Whether the shapes intersect (overlap or touch).
     pub intersect: bool,
-    /// Final simplex.
+    /// Final simplex. For separated shapes these are the vertices that support
+    /// the closest point. For intersecting shapes it is the simplex that proved
+    /// the overlap: in general a tetrahedron that encloses the origin (ready to
+    /// seed [`ExpandingPolytope::from_simplex`]), but a segment or triangle
+    /// through the origin when the configuration is symmetric (for example two
+    /// spheres, whose support points stay in one plane through the origin).
+    /// [`EpaExpander::expand`] completes such a short simplex from the support
+    /// function, so the simplex seeds the penetration query in either case.
     pub simplex: SimplexManager,
 }
 
-/// Full GJK solver with simplex management, EPA fallback, and warm start.
+/// Full GJK solver with simplex management and warm start; `epa` holds the
+/// settings of the expansion that turns the final simplex of an overlapping
+/// query into a penetration depth.
 pub struct GjkSolver {
     /// Maximum GJK iterations.
     pub max_iter: usize,
-    /// Convergence tolerance.
+    /// Relative convergence tolerance: the iteration stops once the distance is
+    /// known to within this fraction of itself (`|v|^2 - v.w <= tol |v|^2`).
     pub tol: f64,
     /// Warm-start cache.
     pub cache: GjkCache,
@@ -623,67 +751,65 @@ impl GjkSolver {
     }
 
     /// Run GJK between two convex shapes.
+    ///
+    /// `support(d)` returns `(w, sa, sb)` for the Minkowski difference `A - B`:
+    /// the support point `sa` of shape A along `d`, the support point `sb` of
+    /// shape B along `-d`, and `w = sa - sb`.
+    ///
+    /// Each iteration takes the point `v` of the simplex nearest to the origin
+    /// together with its barycentric weights, drops the vertices that do not
+    /// support `v`, and fetches the support point `w` along `-v`. The iteration
+    /// stops when `w` cannot improve on `v`, `|v|^2 - v.w <= tol |v|^2`, or when
+    /// `w` repeats a simplex vertex.
+    ///
+    /// * Separated shapes: `distance` is `|v|`, `point_a` and `point_b` are the
+    ///   barycentric blends `sum(l_i * sa_i)` and `sum(l_i * sb_i)` (their
+    ///   difference is exactly `v`), and the cache remembers the separating
+    ///   direction `-v` as the first search direction of the next query.
+    /// * Overlapping or touching shapes: `intersect` is `true`, `distance` is
+    ///   `0`, both witnesses are a point shared by the two shapes, `simplex` is
+    ///   the final simplex, and the cache is reset.
+    ///
+    /// If `max_iter` is exhausted first, the best simplex found so far is
+    /// reported; its distance is an upper bound on the true distance and is
+    /// never `0` unless the shapes really touch.
     pub fn query<F>(&mut self, support: F) -> GjkResult
     where
         F: Fn([f64; 3]) -> ([f64; 3], [f64; 3], [f64; 3]),
     {
-        let mut simplex = SimplexManager::new();
-        let mut dir = self.cache.initial_dir();
-
-        let (v, sa, sb) = support(dir);
-        simplex.add(v, sa, sb);
-        dir = neg3(v);
-
-        for _ in 0..self.max_iter {
-            if len_sq3(dir) < 1e-24 {
-                break;
-            }
-            let (w, wa, wb) = support(dir);
-            if dot3(w, dir) < dot3(simplex.vertices[0], dir) - self.tol {
-                // No intersection
-                let (closest, _) = simplex.closest_to_origin();
-                self.cache.update(closest);
-                return GjkResult {
-                    distance: len3(closest),
-                    point_a: simplex.support_a[0],
-                    point_b: simplex.support_b[0],
-                    intersect: false,
-                    simplex,
-                };
-            }
-            simplex.add(w, wa, wb);
-            let (closest, contains) = simplex.closest_to_origin();
-            if contains {
+        let vertex_support = |direction: [f64; 3]| -> SimplexVertex {
+            let (w, sa, sb) = support(direction);
+            SimplexVertex { w, sa, sb }
+        };
+        let settings = DistanceSettings::new(self.max_iter, self.tol);
+        let solution = solve_with(&vertex_support, self.cache.initial_dir(), &settings);
+        let simplex = SimplexManager::from_vertices(&solution.simplex);
+        match solution.outcome {
+            DistanceOutcome::Overlapping { point_a, point_b } => {
                 self.cache.reset();
-                return GjkResult {
+                GjkResult {
                     distance: 0.0,
-                    point_a: [0.0; 3],
-                    point_b: [0.0; 3],
+                    point_a,
+                    point_b,
                     intersect: true,
                     simplex,
-                };
+                }
             }
-            if len_sq3(closest) < self.tol * self.tol {
-                self.cache.update(dir);
-                return GjkResult {
-                    distance: len3(closest),
-                    point_a: simplex.support_a[0],
-                    point_b: simplex.support_b[0],
+            DistanceOutcome::Separated {
+                distance,
+                point_a,
+                point_b,
+                ..
+            } => {
+                self.cache.update(sub3(point_b, point_a));
+                GjkResult {
+                    distance,
+                    point_a,
+                    point_b,
                     intersect: false,
                     simplex,
-                };
+                }
             }
-            dir = neg3(closest);
-            simplex.reduce_to_closest();
-        }
-
-        let (closest, _) = simplex.closest_to_origin();
-        GjkResult {
-            distance: len3(closest),
-            point_a: simplex.support_a.first().copied().unwrap_or([0.0; 3]),
-            point_b: simplex.support_b.first().copied().unwrap_or([0.0; 3]),
-            intersect: false,
-            simplex,
         }
     }
 }
@@ -924,25 +1050,39 @@ impl GjkRaycast {
 }
 
 // ---------------------------------------------------------------------------
-// GJK Time of Impact (Bilateral Advancement)
+// GJK Time of Impact (Conservative Advancement)
 // ---------------------------------------------------------------------------
+
+/// Closing speeds (along the separating axis) at or below this value never
+/// close the gap: the shapes are treated as separating.
+const MIN_CLOSING_SPEED: f64 = 1e-12;
+
+/// Witness distances below this fraction of the (unit-offset) coordinate scale
+/// are rounding noise: their direction is not used as a contact normal.
+const NORMAL_NOISE_FLOOR: f64 = 1e-9;
 
 /// Result of a TOI computation.
 #[derive(Clone, Debug)]
 pub struct ToiGjkResult {
     /// Time of impact ∈ \[0, dt\], or None if no impact.
     pub toi: Option<f64>,
-    /// Contact point at TOI.
+    /// Contact point at TOI: the point of shape A closest to shape B (zero when
+    /// there is no impact).
     pub contact_point: [f64; 3],
-    /// Contact normal at TOI.
+    /// Unit contact normal at TOI, pointing from shape A toward shape B (zero
+    /// when there is no impact).
+    ///
+    /// Shapes that already overlap at the start have no separating direction;
+    /// their normal is the direction opposite to the relative velocity of B
+    /// (the way B has to be pushed back), or zero if that velocity is zero.
     pub contact_normal: [f64; 3],
 }
 
-/// GJK time-of-impact solver using bilateral advancement.
+/// GJK time-of-impact solver using conservative advancement.
 pub struct GjkTimeOfImpact {
-    /// Maximum iterations.
+    /// Maximum number of advancement steps (one GJK distance query each).
     pub max_iter: usize,
-    /// Tolerance.
+    /// Distance at which the shapes count as touching (absolute length).
     pub tol: f64,
 }
 
@@ -954,43 +1094,103 @@ impl GjkTimeOfImpact {
 
     /// Compute TOI for two shapes moving linearly.
     ///
-    /// `support` returns Minkowski diff support for shapes at blended configurations.
-    /// `vel_rel` relative velocity of B w.r.t. A.
-    pub fn compute<F>(&self, support: F, _vel_rel: [f64; 3], dt: f64) -> ToiGjkResult
+    /// `support(d, t)` returns the support triple `(w, sa, sb)` of the Minkowski
+    /// difference `A - B` along `d` with both shapes placed where they are at
+    /// time `t` (`0 <= t <= dt`), exactly like the closure of
+    /// [`GjkSolver::query`]. `vel_rel` is the velocity of B relative to A
+    /// (`v_B - v_A`) and must be the constant relative velocity of the motion
+    /// that `support` encodes; the advancement is conservative only for such a
+    /// linear relative motion.
+    ///
+    /// Conservative advancement: starting at `t = 0`, GJK measures the distance
+    /// `d` between the shapes at `t`, with the closest points `pa` on A and `pb`
+    /// on B and the unit separating axis `n = (pb - pa) / d`. Along `n` the
+    /// shapes approach at the speed `mu = -vel_rel . n`, so they cannot touch
+    /// before `t + d / mu` (the certified lower bound of `d` is used, which never
+    /// overshoots). The loop stops with
+    ///
+    /// * `Some(t)` when `d <= tol` (or the shapes overlap), reporting `pa` and
+    ///   `n`; shapes that overlap at `t = 0` hit at `0`,
+    /// * `None` when `mu <= 1e-12` (the shapes never approach along `n`, so
+    ///   they stay apart) or the advanced time passes `dt`, or `dt` or
+    ///   `vel_rel` is not finite,
+    /// * `Some(t)` with the last conservative time when `max_iter` steps do not
+    ///   suffice to get within `tol`; the shapes cannot touch before that time.
+    pub fn compute<F>(&self, support: F, vel_rel: [f64; 3], dt: f64) -> ToiGjkResult
     where
         F: Fn([f64; 3], f64) -> ([f64; 3], [f64; 3], [f64; 3]),
     {
-        let mut t0 = 0.0;
-        let mut t1 = dt;
-        let mut dir = [1.0, 0.0, 0.0_f64];
-
-        for _ in 0..self.max_iter {
-            let (v, _sa, _sb) = support(dir, t0);
-            let dist = dot3(v, dir);
-            if dist < self.tol {
-                return ToiGjkResult {
-                    toi: Some(t0),
-                    contact_point: v,
-                    contact_normal: norm3(dir),
-                };
-            }
-            let t_mid = 0.5 * (t0 + t1);
-            let (v1, _, _) = support(dir, t_mid);
-            let d1 = dot3(v1, dir);
-            if d1 < dist {
-                t1 = t_mid;
-            } else {
-                t0 = t_mid;
-            }
-            dir = norm3(v);
-            if (t1 - t0).abs() < self.tol {
-                break;
-            }
-        }
-        ToiGjkResult {
+        let no_impact = ToiGjkResult {
             toi: None,
             contact_point: [0.0; 3],
             contact_normal: [0.0; 3],
+        };
+        if !dt.is_finite() || dt < 0.0 || !vel_rel.iter().all(|c| c.is_finite()) {
+            return no_impact;
+        }
+        let tolerance = if self.tol.is_finite() {
+            self.tol.max(0.0)
+        } else {
+            0.0
+        };
+        let settings = DistanceSettings::default();
+
+        let mut t = 0.0_f64;
+        let mut direction = [1.0, 0.0, 0.0];
+        let mut normal = neg3(norm3(vel_rel));
+        let mut have_normal = false;
+        let mut contact = [0.0; 3];
+        for _ in 0..self.max_iter.max(1) {
+            let at_time = |d: [f64; 3]| -> SimplexVertex {
+                let (w, sa, sb) = support(d, t);
+                SimplexVertex { w, sa, sb }
+            };
+            let solution = solve_with(&at_time, direction, &settings);
+            match solution.outcome {
+                DistanceOutcome::Overlapping { point_a, .. } => {
+                    return ToiGjkResult {
+                        toi: Some(t),
+                        contact_point: point_a,
+                        contact_normal: normal,
+                    };
+                }
+                DistanceOutcome::Separated {
+                    distance,
+                    lower_bound,
+                    point_a,
+                    point_b,
+                } => {
+                    // The direction of a witness difference that has shrunk to
+                    // rounding noise is meaningless; the previous step's normal
+                    // (the shapes were approaching along it) stands.
+                    if !have_normal || distance > NORMAL_NOISE_FLOOR * (1.0 + len3(point_a)) {
+                        normal = scale3(sub3(point_b, point_a), 1.0 / distance);
+                        have_normal = true;
+                    }
+                    contact = point_a;
+                    if distance <= tolerance {
+                        return ToiGjkResult {
+                            toi: Some(t),
+                            contact_point: contact,
+                            contact_normal: normal,
+                        };
+                    }
+                    let closing_speed = -dot3(vel_rel, normal);
+                    if closing_speed <= MIN_CLOSING_SPEED {
+                        return no_impact;
+                    }
+                    t += lower_bound / closing_speed;
+                    if !t.is_finite() || t > dt {
+                        return no_impact;
+                    }
+                    direction = normal;
+                }
+            }
+        }
+        ToiGjkResult {
+            toi: Some(t),
+            contact_point: contact,
+            contact_normal: normal,
         }
     }
 }
@@ -1170,59 +1370,6 @@ mod tests {
     }
 
     #[test]
-    fn test_gjk_solver_separated_spheres() {
-        // Two unit spheres separated by 3 units: minimum distance = 3 - 1 - 1 = 1
-        // We use the MinkowskiDiffSupport directly to verify the support function
-        let center_a = [0.0_f64; 3];
-        let center_b = [3.0_f64, 0.0, 0.0];
-        let r = 1.0_f64;
-        // Support in direction +x: s_A(+x) = (1,0,0), s_B(-x) = (3-1,0,0) = (2,0,0)
-        // Minkowski diff support = (1,0,0) - (2,0,0) = (-1,0,0) → dist = 1 ≥ 0 means separated
-        let d = [1.0_f64, 0.0, 0.0];
-        let dn = norm3(d);
-        let sa = add3(center_a, scale3(dn, r));
-        let sb = sub3(center_b, scale3(neg3(dn), r));
-        let v = sub3(sa, sb);
-        // v · d = (-1,0,0)·(1,0,0) = -1 < 0 → shapes are separated
-        assert!(
-            dot3(v, d) <= 0.0,
-            "Minkowski support check: shapes are separated"
-        );
-        // Verify: the minimum distance between the shapes is 1.0
-        let min_dist = len3(sub3(center_b, center_a)) - 2.0 * r;
-        assert!((min_dist - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_gjk_solver_overlapping() {
-        // Two unit spheres at same center → intersecting
-        let center = [0.0_f64; 3];
-        let r = 1.0_f64;
-        let support = |d: [f64; 3]| {
-            let dn = if len3(d) < 1e-12 {
-                [1.0, 0.0, 0.0]
-            } else {
-                norm3(d)
-            };
-            let sa = scale3(dn, r);
-            let sb = add3(center, scale3(dn, -r));
-            (sub3(sa, sb), sa, sb)
-        };
-        let mut gjk = GjkSolver::new(64, 1e-8);
-        let result = gjk.query(support);
-        // May or may not detect intersection depending on initial dir — just check no panic
-        let _ = result.intersect;
-    }
-
-    #[test]
-    fn test_toi_gjk_no_panic() {
-        let toi = GjkTimeOfImpact::new(32, 1e-6);
-        let support = |_d: [f64; 3], _t: f64| ([1.0_f64, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0_f64; 3]);
-        let result = toi.compute(support, [0.0; 3], 1.0);
-        let _ = result;
-    }
-
-    #[test]
     fn test_feature_pair_creation() {
         let fp = FeaturePair::new(FeaturePairType::EdgeEdge, 0, 1, [0.0; 3], [0.0, 0.0, 1.0]);
         assert_eq!(fp.feature_type, FeaturePairType::EdgeEdge);
@@ -1253,3 +1400,6 @@ mod tests {
 
 #[cfg(test)]
 mod regression_tests;
+
+#[cfg(test)]
+mod solver_tests;

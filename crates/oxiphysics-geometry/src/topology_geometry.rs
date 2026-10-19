@@ -14,6 +14,13 @@
 //! - Betti numbers ([`BettiNumbers`])
 //! - Topological noise removal ([`TopologicalNoise`])
 
+mod contour_tree;
+mod graph;
+mod morse;
+
+#[cfg(test)]
+mod critical_point_tests;
+
 /// Simplicial complex: vertices, edges, triangles, tetrahedra.
 ///
 /// A simplicial complex is a set of simplices that satisfies the condition
@@ -436,11 +443,16 @@ impl UnionFind {
 ///
 /// The Reeb graph tracks the evolution of connected components
 /// of level sets f^{-1}(c) as c varies.
+///
+/// It is computed as the contour tree of the function (see
+/// [`ReebGraph::compute`]), which is the Reeb graph for functions on simply
+/// connected domains.
 #[derive(Debug, Clone)]
 pub struct ReebGraph {
-    /// Nodes of the Reeb graph (critical points)
+    /// Nodes of the Reeb graph (critical points), in ascending order of the
+    /// function value (ties in ascending vertex order).
     pub nodes: Vec<ReebNode>,
-    /// Arcs connecting nodes
+    /// Arcs connecting nodes, sorted by `(source, target)`.
     pub arcs: Vec<ReebArc>,
 }
 
@@ -467,11 +479,15 @@ pub enum CriticalPointKind {
 }
 
 /// An arc in the Reeb graph connecting two nodes.
+///
+/// The arc is a family of level-set components between two critical points;
+/// `source` is the lower end and `target` the higher end, so `source < target`
+/// in the ascending node order of [`ReebGraph::nodes`].
 #[derive(Debug, Clone)]
 pub struct ReebArc {
-    /// Source node index
+    /// Source node index (the lower critical point)
     pub source: usize,
-    /// Target node index
+    /// Target node index (the higher critical point)
     pub target: usize,
 }
 
@@ -484,83 +500,38 @@ impl ReebGraph {
         }
     }
 
-    /// Computes the Reeb graph of a scalar function on a set of vertices.
+    /// Computes the Reeb graph of a scalar function on a mesh given by its
+    /// vertices and edges.
+    ///
+    /// The result is the contour tree of the function, built from the join
+    /// tree (components of the sublevel sets) and the split tree (components
+    /// of the superlevel sets) by the algorithm of Carr, Snoeyink and Axen
+    /// (2003).  For a function on a simply connected domain (a disc, a sphere
+    /// or a ball) this is exactly the Reeb graph.  Loops of the domain are not
+    /// visible to the join and split trees, so on a domain with loops (a torus,
+    /// or a graph with cycles that no triangle fills) the cycles of the Reeb
+    /// graph are not represented and the result is a tree.
+    ///
+    /// Vertices are ordered by value and, for equal values, by index, so
+    /// plateaus are resolved consistently.  `NaN` sorts above every number.
+    /// The nodes are the critical points:
+    ///
+    /// * [`CriticalPointKind::Minimum`]: no arc below,
+    /// * [`CriticalPointKind::Maximum`]: no arc above,
+    /// * [`CriticalPointKind::Saddle`]: any other vertex with more than one arc
+    ///   (a join saddle has several arcs below, a split saddle several above).
+    ///
+    /// Regular vertices (one arc below and one above) are contracted into the
+    /// arcs.  Each arc runs from the lower node to the higher node.  Every
+    /// connected component of the mesh gives one tree; vertices without an
+    /// incident edge are ignored, and so are edges with an index outside
+    /// `values`, self loops and repeated edges.
     ///
     /// # Arguments
     /// * `values` - Scalar function values at each vertex
     /// * `edges` - Edge connectivity of the mesh
     pub fn compute(values: &[f64], edges: &[[usize; 2]]) -> Self {
-        let n = values.len();
-        if n == 0 {
-            return Self::new();
-        }
-
-        // Sort vertices by function value
-        let mut sorted_idx: Vec<usize> = (0..n).collect();
-        sorted_idx.sort_by(|&a, &b| {
-            values[a]
-                .partial_cmp(&values[b])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let mut nodes = Vec::new();
-        let mut arcs = Vec::new();
-
-        // Build adjacency
-        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-        for &[i, j] in edges {
-            adj[i].push(j);
-            adj[j].push(i);
-        }
-
-        // Classify critical points
-        for &v in &sorted_idx {
-            let fv = values[v];
-            let lower_nbrs: Vec<usize> = adj[v]
-                .iter()
-                .filter(|&&u| values[u] < fv)
-                .cloned()
-                .collect();
-            let upper_nbrs: Vec<usize> = adj[v]
-                .iter()
-                .filter(|&&u| values[u] > fv)
-                .cloned()
-                .collect();
-
-            let kind = if lower_nbrs.is_empty() {
-                CriticalPointKind::Minimum
-            } else if upper_nbrs.is_empty() {
-                CriticalPointKind::Maximum
-            } else {
-                CriticalPointKind::Saddle
-            };
-
-            if matches!(
-                kind,
-                CriticalPointKind::Minimum | CriticalPointKind::Maximum | CriticalPointKind::Saddle
-            ) {
-                // Only add if truly critical (for simplicity, add min/max always)
-                if matches!(
-                    kind,
-                    CriticalPointKind::Minimum | CriticalPointKind::Maximum
-                ) {
-                    let node_idx = nodes.len();
-                    nodes.push(ReebNode {
-                        value: fv,
-                        kind,
-                        vertex_idx: v,
-                    });
-                    if node_idx > 0 {
-                        arcs.push(ReebArc {
-                            source: node_idx - 1,
-                            target: node_idx,
-                        });
-                    }
-                }
-            }
-        }
-
-        Self { nodes, arcs }
+        contour_tree::compute(values, edges)
     }
 
     /// Returns the number of critical points.
@@ -604,9 +575,14 @@ impl Default for ReebGraph {
 /// Decomposes a manifold based on gradient flow between critical points.
 #[derive(Debug, Clone)]
 pub struct MorseComplex {
-    /// List of critical points
+    /// The critical points, in ascending order of the function value (ties in
+    /// ascending vertex order).
     pub critical_points: Vec<MorseCriticalPoint>,
-    /// Gradient flow connections (unstable/stable manifolds)
+    /// Gradient flow connections (the separatrices): pairs
+    /// `(saddle, extremum)` of indices into `critical_points`.  The extremum
+    /// is the minimum reached by steepest descent from a lower link component
+    /// of the saddle or the maximum reached by steepest ascent from an upper
+    /// link component.  Sorted, without duplicates.
     pub connections: Vec<(usize, usize)>,
 }
 
@@ -619,6 +595,10 @@ pub struct MorseCriticalPoint {
     pub value: f64,
     /// Morse index (0=minimum, 1=saddle, 2=maximum for 2-manifold)
     pub morse_index: usize,
+    /// Multiplicity: `k - 1` for a saddle whose link splits into `k`
+    /// components of lower (or upper) neighbours (a monkey saddle counts as
+    /// two simple saddles); `1` for a minimum or a maximum.
+    pub multiplicity: usize,
 }
 
 impl MorseComplex {
@@ -632,61 +612,28 @@ impl MorseComplex {
 
     /// Computes the Morse complex of a scalar function on a mesh.
     ///
+    /// The mesh is read as the clique complex of `edges`: two neighbours of a
+    /// vertex are linked iff they are joined by an edge, so the edges must be
+    /// those of a triangulation (for a grid, include one diagonal per cell).
+    /// A 4-connected grid without diagonals has no link edges at all, and every
+    /// vertex with two or more lower neighbours would count as a saddle.
+    ///
+    /// Vertices are ordered by value and, for equal values, by index.  A vertex
+    /// is a minimum when it has no lower neighbour, a maximum when it has no
+    /// upper neighbour, and otherwise a saddle of multiplicity
+    /// `max(k_lower, k_upper) - 1` when its lower neighbours form `k_lower` and
+    /// its upper neighbours `k_upper` link components and one of them exceeds
+    /// one; a vertex with a single lower and a single upper component is
+    /// regular and is not a critical point.  On a closed surface
+    /// `minima - saddles + maxima` is the Euler characteristic.  Vertices
+    /// without an incident edge are ignored, and so are edges with an index
+    /// outside `values`, self loops and repeated edges.
+    ///
     /// # Arguments
     /// * `values` - Scalar function values at each vertex
     /// * `edges` - Edge connectivity
     pub fn compute(values: &[f64], edges: &[[usize; 2]]) -> Self {
-        let n = values.len();
-        if n == 0 {
-            return Self::new();
-        }
-        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-        for &[i, j] in edges {
-            adj[i].push(j);
-            adj[j].push(i);
-        }
-
-        let mut critical_points = Vec::new();
-
-        for v in 0..n {
-            let fv = values[v];
-            let n_lower = adj[v].iter().filter(|&&u| values[u] < fv).count();
-            let n_upper = adj[v].iter().filter(|&&u| values[u] > fv).count();
-
-            let morse_index = if n_lower == 0 && n_upper > 0 {
-                Some(0) // minimum
-            } else if n_upper == 0 && n_lower > 0 {
-                Some(2) // maximum
-            } else if n_lower > 0 && n_upper > 0 {
-                // Check if lower link is disconnected (saddle)
-                Some(1)
-            } else {
-                None
-            };
-
-            if let Some(idx) = morse_index {
-                critical_points.push(MorseCriticalPoint {
-                    vertex_idx: v,
-                    value: fv,
-                    morse_index: idx,
-                });
-            }
-        }
-
-        // Build connections between consecutive critical points
-        critical_points.sort_by(|a, b| {
-            a.value
-                .partial_cmp(&b.value)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let connections: Vec<(usize, usize)> = (0..critical_points.len().saturating_sub(1))
-            .map(|i| (i, i + 1))
-            .collect();
-
-        Self {
-            critical_points,
-            connections,
-        }
+        morse::compute(values, edges)
     }
 
     /// Returns the number of minima.
@@ -697,12 +644,13 @@ impl MorseComplex {
             .count()
     }
 
-    /// Returns the number of saddles.
+    /// Returns the number of saddles, each counted with its multiplicity.
     pub fn n_saddles(&self) -> usize {
         self.critical_points
             .iter()
             .filter(|c| c.morse_index == 1)
-            .count()
+            .map(|c| c.multiplicity)
+            .sum()
     }
 
     /// Returns the number of maxima.
@@ -713,12 +661,18 @@ impl MorseComplex {
             .count()
     }
 
-    /// Verifies Morse inequalities: saddles + 2 ≤ maxima + minima (approx).
+    /// Weak sanity check of the Morse relation: `minima - saddles + maxima`
+    /// is not negative.
+    ///
+    /// On a closed surface this alternating sum is the Euler characteristic,
+    /// which is non-negative for the sphere, the projective plane and the
+    /// torus but negative for surfaces of higher genus, so `false` does not
+    /// prove that the complex is wrong.  Compare the alternating sum with the
+    /// known Euler characteristic for an exact check.
     pub fn morse_relation_holds(&self) -> bool {
         let nm = self.n_minima();
         let ns = self.n_saddles();
         let nmax = self.n_maxima();
-        // Morse inequality: m_0 - m_1 + m_2 ≥ χ (here approximate)
         nm as i64 - ns as i64 + nmax as i64 >= 0
     }
 }

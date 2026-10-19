@@ -324,10 +324,305 @@ mod tests {
     }
     #[test]
     fn test_sorm_curvatures_len() {
+        // n variables give n - 1 principal curvatures (the old code returned n
+        // diagonal Hessian entries).
         let g = LimitState::new(vec![10.0, 5.0], vec![2.0, 2.0], |x| x[0] - x[1]);
         let form = FormAnalysis::solve(&g);
         let sorm = SormAnalysis::solve(&g, &form);
+        assert_eq!(sorm.curvatures.len(), 1);
+        assert!(
+            sorm.curvatures[0].abs() < 1e-6,
+            "linear g: {:?}",
+            sorm.curvatures
+        );
+        assert!((sorm.correction_factor - 1.0).abs() < 1e-6);
+        let single = LimitState::new(vec![5.0], vec![1.0], |x| x[0] - 2.0);
+        let single_form = FormAnalysis::solve(&single);
+        assert!(
+            SormAnalysis::solve(&single, &single_form)
+                .curvatures
+                .is_empty()
+        );
+        let three = LimitState::new(vec![4.0, 5.0, 6.0], vec![1.0, 1.0, 1.0], |x| {
+            x[0] + x[1] + x[2] - 3.0
+        });
+        let three_form = FormAnalysis::solve(&three);
+        assert_eq!(SormAnalysis::solve(&three, &three_form).curvatures.len(), 2);
+    }
+    /// A FORM result with the design point `u_star` (no iteration performed).
+    fn form_at(u_star: Vec<f64>) -> FormResult {
+        let beta = u_star.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let alpha = u_star.iter().map(|u| -u / beta).collect();
+        FormResult {
+            beta,
+            pf: phi(-beta),
+            design_point: u_star,
+            alpha,
+            iterations: 0,
+        }
+    }
+    #[test]
+    fn test_sorm_recovers_axis_aligned_paraboloid_curvatures_in_u_space() {
+        // g = beta - u_3 + (k1 u_1^2 + k2 u_2^2) / 2 with u_i = (x_i - mu_i) / sigma_i.
+        // Non-unit sigma and non-zero mu: the previous code divided the Hessian
+        // by sigma_i sigma_j in x-space but multiplied the gradient by sigma,
+        // mixing the two spaces.
+        let beta = 2.5;
+        let (k1, k2) = (0.05, 0.2);
+        let mean = vec![10.0, -3.0, 2.0];
+        let sigma = vec![2.0, 0.5, 1.5];
+        let (m, s) = (mean.clone(), sigma.clone());
+        let g = LimitState::new(mean, sigma, move |x| {
+            let u: Vec<f64> = x
+                .iter()
+                .zip(m.iter().zip(s.iter()))
+                .map(|(xi, (mi, si))| (xi - mi) / si)
+                .collect();
+            beta - u[2] + 0.5 * (k1 * u[0] * u[0] + k2 * u[1] * u[1])
+        });
+        let sorm = SormAnalysis::solve(&g, &form_at(vec![0.0, 0.0, beta]));
         assert_eq!(sorm.curvatures.len(), 2);
+        assert!(
+            (sorm.curvatures[0] - k1).abs() < 2e-6,
+            "{:?}",
+            sorm.curvatures
+        );
+        assert!(
+            (sorm.curvatures[1] - k2).abs() < 2e-6,
+            "{:?}",
+            sorm.curvatures
+        );
+        let factor = 1.0 / ((1.0 + beta * k1) * (1.0 + beta * k2)).sqrt();
+        assert!((sorm.correction_factor - factor).abs() < 1e-5);
+        assert!((sorm.pf_breitung - phi(-beta) * factor).abs() < 1e-8);
+    }
+    #[test]
+    fn test_sorm_equal_curvatures_recover_kappa_for_every_dimension() {
+        // g = beta - u_n + (kappa / 2) sum_{i<n} u_i^2 has n - 1 curvatures kappa.
+        let (beta, kappa) = (2.0, 0.15);
+        for n in 2..=5 {
+            let mean: Vec<f64> = (0..n).map(|i| 1.0 + i as f64).collect();
+            let sigma: Vec<f64> = (0..n).map(|i| 0.5 + 0.3 * i as f64).collect();
+            let (m, s) = (mean.clone(), sigma.clone());
+            let g = LimitState::new(mean, sigma, move |x| {
+                let u: Vec<f64> = (0..x.len()).map(|i| (x[i] - m[i]) / s[i]).collect();
+                let last = u.len() - 1;
+                beta - u[last] + 0.5 * kappa * u[..last].iter().map(|v| v * v).sum::<f64>()
+            });
+            let mut u_star = vec![0.0; n];
+            u_star[n - 1] = beta;
+            let sorm = SormAnalysis::solve(&g, &form_at(u_star));
+            assert_eq!(sorm.curvatures.len(), n - 1);
+            for k in &sorm.curvatures {
+                assert!((k - kappa).abs() < 2e-6, "n = {n}: {:?}", sorm.curvatures);
+            }
+        }
+    }
+    #[test]
+    fn test_sorm_rotates_the_hessian_into_the_tangent_plane() {
+        // The design-point direction a = (1, 2, 2) / 3 is not a coordinate axis.
+        // G = beta - a.u + [k1 (t1.u)^2 + k2 (t2.u)^2 + gamma (a.u - beta)^2] / 2
+        // with t1, t2 orthonormal and orthogonal to a, so the principal
+        // curvatures are exactly k1 and k2 whatever gamma (a curvature along the
+        // gradient direction) is.  Diagonal Hessian entries would give mixtures.
+        let a = [1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0];
+        let t1 = [2.0 / 3.0, 1.0 / 3.0, -2.0 / 3.0];
+        let t2 = [2.0 / 3.0, -2.0 / 3.0, 1.0 / 3.0];
+        let (beta, k1, k2, gamma) = (2.2, 0.04, 0.18, 0.3);
+        let dot3 = |p: &[f64; 3], u: &[f64]| p[0] * u[0] + p[1] * u[1] + p[2] * u[2];
+        for scale in [1.0, 7.5, 0.01] {
+            let mean = vec![1.0, -2.0, 0.5];
+            let sigma = vec![0.8, 1.7, 2.2];
+            let (m, s) = (mean.clone(), sigma.clone());
+            let g = LimitState::new(mean, sigma, move |x| {
+                let u: Vec<f64> = (0..3).map(|i| (x[i] - m[i]) / s[i]).collect();
+                let along = dot3(&a, &u);
+                scale
+                    * (beta - along
+                        + 0.5
+                            * (k1 * dot3(&t1, &u).powi(2)
+                                + k2 * dot3(&t2, &u).powi(2)
+                                + gamma * (along - beta).powi(2)))
+            });
+            let u_star = vec![beta * a[0], beta * a[1], beta * a[2]];
+            let sorm = SormAnalysis::solve(&g, &form_at(u_star));
+            assert_eq!(sorm.curvatures.len(), 2);
+            assert!(
+                (sorm.curvatures[0] - k1).abs() < 5e-6 && (sorm.curvatures[1] - k2).abs() < 5e-6,
+                "scale {scale}: {:?}",
+                sorm.curvatures
+            );
+        }
+    }
+    #[test]
+    fn test_sorm_curvature_sign_convention_matches_failure_domain_convexity() {
+        let beta = 2.0;
+        let build = |kappa: f64| {
+            LimitState::new(vec![0.0, 0.0], vec![1.0, 1.0], move |x| {
+                beta - x[1] + 0.5 * kappa * x[0] * x[0]
+            })
+        };
+        let convex = SormAnalysis::solve(&build(0.2), &form_at(vec![0.0, beta]));
+        let concave = SormAnalysis::solve(&build(-0.2), &form_at(vec![0.0, beta]));
+        assert!(convex.curvatures[0] > 0.0 && convex.correction_factor < 1.0);
+        assert!(concave.curvatures[0] < 0.0 && concave.correction_factor > 1.0);
+        assert!(convex.pf_breitung < phi(-beta));
+        assert!(concave.pf_breitung > phi(-beta));
+    }
+    /// Composite Simpson rule with `n` (even) intervals.
+    fn simpson(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+        let h = (b - a) / n as f64;
+        let mut sum = f(a) + f(b);
+        for i in 1..n {
+            let weight = if i % 2 == 1 { 4.0 } else { 2.0 };
+            sum += weight * f(a + i as f64 * h);
+        }
+        sum * h / 3.0
+    }
+    /// Exact failure probability of `u_n >= beta + kappa u_1^2 / 2`.
+    fn exact_pf_one_curvature(beta: f64, kappa: f64) -> f64 {
+        simpson(
+            |u| phi_pdf(u) * phi(-(beta + 0.5 * kappa * u * u)),
+            -10.0,
+            10.0,
+            4000,
+        )
+    }
+    #[test]
+    fn test_tvedt_is_closer_to_the_exact_probability_than_breitung() {
+        // One curvature: Pf = integral of phi(u) Phi(-beta - kappa u^2 / 2) du.
+        for &beta in &[2.0, 2.5] {
+            for &kappa in &[0.1, 0.2, -0.1] {
+                let exact = exact_pf_one_curvature(beta, kappa);
+                let breitung = phi(-beta) / (1.0 + beta * kappa).sqrt();
+                let tvedt = SormAnalysis::tvedt_pf(beta, &[kappa]);
+                let err_b = (breitung / exact - 1.0).abs();
+                let err_t = (tvedt / exact - 1.0).abs();
+                assert!(
+                    err_b > 5e-3,
+                    "beta {beta}, kappa {kappa}: Breitung error {err_b}"
+                );
+                assert!(
+                    err_t < 3e-3,
+                    "beta {beta}, kappa {kappa}: Tvedt error {err_t}"
+                );
+                assert!(
+                    err_t < 0.25 * err_b,
+                    "beta {beta}, kappa {kappa}: {err_t} vs {err_b}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_tvedt_two_equal_curvatures_matches_chi_square_integral() {
+        // u_1^2 + u_2^2 = s is chi-square(2): density exp(-s / 2) / 2.
+        let (beta, kappa) = (2.0, 0.1);
+        let exact = simpson(
+            |s| 0.5 * (-0.5 * s).exp() * phi(-(beta + 0.5 * kappa * s)),
+            0.0,
+            120.0,
+            24000,
+        );
+        let breitung = phi(-beta) / (1.0 + beta * kappa);
+        let tvedt = SormAnalysis::tvedt_pf(beta, &[kappa, kappa]);
+        assert!((breitung / exact - 1.0).abs() > 2e-2);
+        assert!(
+            (tvedt / exact - 1.0).abs() < 2e-3,
+            "tvedt {tvedt}, exact {exact}"
+        );
+    }
+    /// Exact failure probability of `u_n >= beta + (k1 u_1^2 + k2 u_2^2) / 2`
+    /// (nested composite Simpson rule over `[-9, 9]^2`).
+    fn exact_pf_two_curvatures(beta: f64, k1: f64, k2: f64) -> f64 {
+        simpson(
+            |u1| {
+                phi_pdf(u1)
+                    * simpson(
+                        |u2| phi_pdf(u2) * phi(-(beta + 0.5 * (k1 * u1 * u1 + k2 * u2 * u2))),
+                        -9.0,
+                        9.0,
+                        180,
+                    )
+            },
+            -9.0,
+            9.0,
+            180,
+        )
+    }
+    #[test]
+    fn test_tvedt_distinct_and_mixed_sign_curvatures_match_two_dimensional_integral() {
+        // The factor Re prod_j (1 + (beta + i) kappa_j)^(-1/2) couples the
+        // curvatures through the phase of each term; equal curvatures alone
+        // cannot expose an error in how distinct (or opposite) ones combine.
+        for &(beta, k1, k2) in &[
+            (2.5, 0.2, 0.05),
+            (2.5, 0.12, -0.06),
+            (2.0, 0.1, -0.05),
+            (3.0, 0.15, -0.1),
+        ] {
+            let exact = exact_pf_two_curvatures(beta, k1, k2);
+            let breitung = phi(-beta) / ((1.0 + beta * k1) * (1.0 + beta * k2)).sqrt();
+            let tvedt = SormAnalysis::tvedt_pf(beta, &[k1, k2]);
+            let err_breitung = (breitung / exact - 1.0).abs();
+            let err_tvedt = (tvedt / exact - 1.0).abs();
+            assert!(
+                err_tvedt < 2e-3,
+                "beta {beta}, kappa ({k1}, {k2}): Tvedt error {err_tvedt}"
+            );
+            assert!(
+                err_tvedt < 0.5 * err_breitung,
+                "beta {beta}, kappa ({k1}, {k2}): Tvedt {err_tvedt} vs Breitung {err_breitung}"
+            );
+            // The result does not depend on the order of the curvatures.
+            let swapped = SormAnalysis::tvedt_pf(beta, &[k2, k1]);
+            assert!(
+                (tvedt - swapped).abs() <= 1e-13 * tvedt,
+                "{tvedt} vs {swapped}"
+            );
+        }
+    }
+    #[test]
+    fn test_tvedt_reduces_to_breitung_at_zero_and_is_nan_outside_validity() {
+        let beta = 2.7;
+        assert!((SormAnalysis::tvedt_pf(beta, &[0.0, 0.0]) - phi(-beta)).abs() < 1e-14);
+        // 1 + beta kappa <= 0: outside the asymptotic range.
+        assert!(SormAnalysis::tvedt_pf(2.0, &[-0.5]).is_nan());
+        assert!(
+            SormAnalysis::tvedt_pf(2.0, &[-0.4]).is_nan(),
+            "1 + 3 kappa < 0"
+        );
+        let pf = SormAnalysis::tvedt_pf(3.0, &[0.3, -0.1, 0.05]);
+        assert!(pf.is_finite() && (0.0..=1.0).contains(&pf));
+    }
+    #[test]
+    fn test_sorm_end_to_end_form_then_sorm_matches_exact_probability() {
+        // x-space limit state with non-trivial mean/sigma whose standard-normal
+        // image is G(u) = beta - u_2 + kappa u_1^2 / 2.
+        let (beta, kappa) = (2.5, 0.1);
+        let mean = vec![5.0, -1.0];
+        let sigma = vec![0.5, 2.0];
+        let (m, s) = (mean.clone(), sigma.clone());
+        let g = LimitState::new(mean, sigma, move |x| {
+            let u1 = (x[0] - m[0]) / s[0];
+            let u2 = (x[1] - m[1]) / s[1];
+            beta - u2 + 0.5 * kappa * u1 * u1
+        });
+        let form = FormAnalysis::solve(&g);
+        assert!((form.beta - beta).abs() < 1e-5, "beta = {}", form.beta);
+        let sorm = SormAnalysis::solve(&g, &form);
+        assert_eq!(sorm.curvatures.len(), 1);
+        assert!(
+            (sorm.curvatures[0] - kappa).abs() < 1e-5,
+            "{:?}",
+            sorm.curvatures
+        );
+        let exact = exact_pf_one_curvature(beta, kappa);
+        assert!((sorm.pf_breitung / exact - 1.0).abs() < 3e-2);
+        let tvedt = SormAnalysis::tvedt_pf(sorm.beta, &sorm.curvatures);
+        assert!(
+            (tvedt / exact - 1.0).abs() < 3e-3,
+            "tvedt {tvedt}, exact {exact}"
+        );
     }
     #[test]
     fn test_sorm_beta_matches_form() {

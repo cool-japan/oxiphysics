@@ -2,6 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::classic::NcType;
 use super::functions::*;
 use std::io::Write;
 
@@ -34,16 +35,53 @@ pub struct NetCdfVariable {
     pub data: Vec<f64>,
     /// Per-variable attributes.
     pub attributes: Vec<VariableAttribute>,
+    /// External type used when the variable is stored in a binary NetCDF
+    /// file ([`write_cdf`](super::classic::write_cdf)) and the CDL keyword
+    /// used by [`write_ncf_text`].  `data` always holds the values as `f64`;
+    /// for [`NcType::Char`] it holds the character byte codes.
+    pub nc_type: NcType,
 }
 impl NetCdfVariable {
-    /// Create a new variable with the given name, dimensions, and data.
+    /// Create a new `double` variable with the given name, dimensions, and
+    /// data.
     pub fn new(name: &str, dims: Vec<String>, data: Vec<f64>) -> Self {
         NetCdfVariable {
             name: name.to_string(),
             dims,
             data,
             attributes: Vec::new(),
+            nc_type: NcType::Double,
         }
+    }
+    /// Create an `NC_CHAR` variable whose data are the bytes of `text`.
+    pub fn text(name: &str, dims: Vec<String>, text: &str) -> Self {
+        let data = text.bytes().map(f64::from).collect();
+        NetCdfVariable::new(name, dims, data).with_nc_type(NcType::Char)
+    }
+    /// Set the external type used for binary output.
+    pub fn with_nc_type(mut self, nc_type: NcType) -> Self {
+        self.nc_type = nc_type;
+        self
+    }
+    /// The data as text when this is an `NC_CHAR` variable whose data are
+    /// byte codes (trailing NUL padding removed, invalid UTF-8 replaced).
+    pub fn as_text(&self) -> Option<String> {
+        if self.nc_type != NcType::Char {
+            return None;
+        }
+        let bytes = self
+            .data
+            .iter()
+            .map(|&v| {
+                if v.fract() == 0.0 && (0.0..=255.0).contains(&v) {
+                    Some(v as u8)
+                } else {
+                    None
+                }
+            })
+            .collect::<Option<Vec<u8>>>()?;
+        let end = bytes.iter().rposition(|&b| b != 0).map_or(0, |p| p + 1);
+        Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
     }
     /// Add an attribute to this variable.
     pub fn add_attribute(&mut self, key: &str, value: &str) {

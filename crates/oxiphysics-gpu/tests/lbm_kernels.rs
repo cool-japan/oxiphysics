@@ -95,6 +95,7 @@ fn test_lbm_soa_to_gpu_buffer_roundtrip() {
 
 #[cfg(feature = "wgpu-backend")]
 mod gpu_tests {
+    use oxiphysics_gpu::compute_preference::ComputePreference;
     use oxiphysics_gpu::lbm_gpu::{LbmConfig, LbmSimulation};
 
     /// Macro: skip GPU-dependent tests gracefully when no adapter is available.
@@ -122,6 +123,7 @@ mod gpu_tests {
             force_x: 0.0,
             force_y: 0.0,
             force_z: 0.0,
+            compute: ComputePreference::Auto,
         };
         let mut sim = LbmSimulation::new(cfg);
         sim.set_solid_mask(vec![false; nx * ny * nz])

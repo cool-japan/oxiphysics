@@ -13,7 +13,7 @@ use crate::narrowphase::gjk::{Gjk, GjkResult};
 use crate::types::Contact;
 use oxiphysics_core::Transform;
 use oxiphysics_core::math::Vec3;
-use oxiphysics_geometry::{BoxShape, Sphere, Torus};
+use oxiphysics_geometry::{BoxShape, Capsule, Cylinder, Sphere, Torus};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6};
 
 fn assert_close(actual: Vec3, expected: Vec3, tol: f64, what: &str) {
@@ -265,6 +265,145 @@ fn box_box_sat_separated_boxes_have_no_contact() {
     let ta = Transform::from_position(Vec3::zeros());
     let tb = Transform::from_position(Vec3::new(2.1, 0.0, 0.0));
     assert!(box_box_sat(&cube, &ta, &cube, &tb).is_none());
+}
+
+// ── sphere_sphere / capsule_capsule / cylinder_cylinder ─────────────────────
+
+/// The solver pushes body A along `+normal` only while the bodies approach
+/// along the normal, i.e. while `(v_a - v_b) . normal < 0`.
+fn approach_speed_along(c: &Contact, v_a: Vec3, v_b: Vec3) -> f64 {
+    -(v_a - v_b).dot(&c.normal)
+}
+
+#[test]
+fn sphere_sphere_normal_points_from_b_towards_a() {
+    let big = Sphere::new(1.0);
+    let small = Sphere::new(0.5);
+    let ta = Transform::from_position(Vec3::new(0.0, 0.0, 0.0));
+    let tb = Transform::from_position(Vec3::new(1.2, 0.0, 0.0));
+    let c = sphere_sphere(&big, &ta, &small, &tb).expect("overlap");
+    // B sits on the +x side of A, so the normal from B towards A is -x.
+    assert_close(c.normal, Vec3::new(-1.0, 0.0, 0.0), 1e-12, "normal");
+    assert!((c.depth - 0.3).abs() < 1e-12, "depth {}", c.depth);
+    assert_close(c.point_a, Vec3::new(1.0, 0.0, 0.0), 1e-12, "A facing B");
+    assert_close(c.point_b, Vec3::new(0.7, 0.0, 0.0), 1e-12, "B facing A");
+    assert_witness_gap(&c, 1e-12);
+    // Approaching bodies: A moves +x, B moves -x.
+    let closing = approach_speed_along(&c, Vec3::new(1.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0));
+    assert!(closing > 1.99, "closing speed {closing}");
+
+    // Exchanging the arguments mirrors the contact.
+    let m = sphere_sphere(&small, &tb, &big, &ta).expect("overlap");
+    assert_close(m.normal, -c.normal, 1e-12, "mirrored normal");
+    assert_close(m.point_a, c.point_b, 1e-12, "mirrored point_a");
+    assert_close(m.point_b, c.point_a, 1e-12, "mirrored point_b");
+}
+
+#[test]
+fn sphere_sphere_oblique_and_coincident_cases() {
+    let a = Sphere::new(0.8);
+    let b = Sphere::new(0.6);
+    let ta = Transform::from_position(Vec3::new(1.0, -2.0, 0.5));
+    let tb = Transform::from_position(Vec3::new(1.6, -1.2, 1.3));
+    let c = sphere_sphere(&a, &ta, &b, &tb).expect("overlap");
+    let offset = ta.position - tb.position;
+    assert_close(c.normal, offset / offset.norm(), 1e-12, "normal");
+    assert!((c.depth - (1.4 - offset.norm())).abs() < 1e-12);
+    assert!(((c.point_a - ta.position).norm() - 0.8).abs() < 1e-12);
+    assert!(((c.point_b - tb.position).norm() - 0.6).abs() < 1e-12);
+    assert_witness_gap(&c, 1e-12);
+    // Coincident centres: no direction, +Y by convention.
+    let same = Transform::from_position(Vec3::new(3.0, 3.0, 3.0));
+    let c = sphere_sphere(&a, &same, &b, &same).expect("overlap");
+    assert_close(c.normal, Vec3::new(0.0, 1.0, 0.0), 1e-12, "normal");
+    assert!((c.depth - 1.4).abs() < 1e-12);
+}
+
+#[test]
+fn capsule_capsule_normals_point_from_b_towards_a() {
+    // Two parallel upright capsules side by side.
+    let a = Capsule::new(0.6, 1.0);
+    let b = Capsule::new(0.6, 1.0);
+    let ta = Transform::from_position(Vec3::zeros());
+    let tb = Transform::from_position(Vec3::new(1.0, 0.0, 0.0));
+    let c = capsule_capsule(&a, &ta, &b, &tb).expect("overlap");
+    assert_close(c.normal, Vec3::new(-1.0, 0.0, 0.0), 1e-12, "normal");
+    assert!((c.depth - 0.2).abs() < 1e-12, "depth {}", c.depth);
+    assert!((c.point_a.x - 0.6).abs() < 1e-12 && (c.point_b.x - 0.4).abs() < 1e-12);
+    assert_witness_gap(&c, 1e-12);
+    let closing = approach_speed_along(&c, Vec3::new(2.0, 0.0, 0.0), Vec3::zeros());
+    assert!(closing > 1.99, "closing speed {closing}");
+
+    // A crosses B: B lies on a horizontal axis 0.6 above (+z) A's vertical axis.
+    let a = Capsule::new(0.5, 2.0);
+    let b = Capsule::new(0.4, 2.0);
+    let tb = Transform::from_axis_angle(
+        Vec3::new(0.0, 0.0, 0.6),
+        Vec3::new(0.0, 0.0, 1.0),
+        FRAC_PI_2,
+    );
+    let c = capsule_capsule(&a, &ta, &b, &tb).expect("crossing capsules overlap");
+    assert_close(c.normal, Vec3::new(0.0, 0.0, -1.0), 1e-9, "normal");
+    assert!((c.depth - 0.3).abs() < 1e-9, "depth {}", c.depth);
+    assert_close(c.point_a, Vec3::new(0.0, 0.0, 0.5), 1e-9, "A facing B");
+    assert_close(c.point_b, Vec3::new(0.0, 0.0, 0.2), 1e-9, "B facing A");
+    assert_witness_gap(&c, 1e-9);
+    // Swapped roles mirror the contact.
+    let m = capsule_capsule(&b, &tb, &a, &ta).expect("overlap");
+    assert_close(m.normal, -c.normal, 1e-9, "mirrored normal");
+    assert_close(m.point_a, c.point_b, 1e-9, "mirrored point_a");
+}
+
+#[test]
+fn cylinder_cylinder_normals_point_from_b_towards_a() {
+    let a = Cylinder::new(0.5, 2.0);
+    let b = Cylinder::new(0.5, 2.0);
+    let ta = Transform::from_position(Vec3::zeros());
+    let tb = Transform::from_axis_angle(
+        Vec3::new(0.0, 0.0, 0.4),
+        Vec3::new(0.0, 0.0, 1.0),
+        FRAC_PI_2,
+    );
+    let c = cylinder_cylinder(&a, &ta, &b, &tb).expect("crossing cylinders overlap");
+    assert_close(c.normal, Vec3::new(0.0, 0.0, -1.0), 1e-9, "normal");
+    assert!((c.depth - 0.6).abs() < 1e-9, "depth {}", c.depth);
+    assert_witness_gap(&c, 1e-9);
+    assert_close(c.point_a, Vec3::new(0.0, 0.0, 0.5), 1e-9, "A facing B");
+
+    // The precise test agrees, in both of its branches.
+    let precise = cylinder_cylinder_precise(&a, &ta, &b, &tb);
+    let p = precise.contact.expect("crossing cylinders overlap");
+    assert_close(p.normal, c.normal, 1e-9, "precise normal");
+    assert!((p.depth - c.depth).abs() < 1e-9);
+    assert_close(p.point_a, c.point_a, 1e-9, "precise point_a");
+    assert_close(p.point_b, c.point_b, 1e-9, "precise point_b");
+
+    let parallel_b = Transform::from_position(Vec3::new(0.8, 0.0, 0.0));
+    let parallel = cylinder_cylinder_precise(&a, &ta, &b, &parallel_b);
+    assert_eq!(parallel.mode, CylinderContactMode::Parallel);
+    let p = parallel.contact.expect("side by side");
+    assert_close(
+        p.normal,
+        Vec3::new(-1.0, 0.0, 0.0),
+        1e-12,
+        "parallel normal",
+    );
+    assert!((p.depth - 0.2).abs() < 1e-12, "depth {}", p.depth);
+    assert_close(p.point_a, Vec3::new(0.5, 0.0, 0.0), 1e-12, "A facing B");
+    assert_close(p.point_b, Vec3::new(0.3, 0.0, 0.0), 1e-12, "B facing A");
+    assert_witness_gap(&p, 1e-12);
+    let plain = cylinder_cylinder(&a, &ta, &b, &parallel_b).expect("side by side");
+    assert_close(plain.normal, p.normal, 1e-12, "plain parallel normal");
+    // The same pair with the roles exchanged.
+    let swapped = cylinder_cylinder_precise(&b, &parallel_b, &a, &ta)
+        .contact
+        .expect("side by side");
+    assert_close(
+        swapped.normal,
+        Vec3::new(1.0, 0.0, 0.0),
+        1e-12,
+        "swapped normal",
+    );
 }
 
 // ── torus_plane ─────────────────────────────────────────────────────────────

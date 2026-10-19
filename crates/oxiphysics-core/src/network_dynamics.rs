@@ -17,7 +17,7 @@
 //! - [`NetworkRobustness`]: percolation threshold, giant component fraction
 //! - [`SmallWorld`]: Watts-Strogatz rewiring, clustering coefficient, path length
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -916,24 +916,67 @@ impl PageRank {
 /// Modularity Q = (1/2m) Σ_{ij} \[A_{ij} - k_i k_j / 2m\] δ(c_i, c_j)
 pub struct CommunityDetection;
 
+/// Adjacency-entry totals of one community, see [`CommunityDetection::modularity`].
+#[derive(Default, Clone, Copy)]
+struct CommunityTotals {
+    /// Adjacency entries `u → v` with both ends in the community.
+    internal: usize,
+    /// Adjacency entries leaving the community's nodes (sum of out-degrees).
+    out_degree: usize,
+    /// Adjacency entries entering the community's nodes (sum of in-degrees).
+    in_degree: usize,
+}
+
 impl CommunityDetection {
     /// Computes modularity Q for a partition given by `communities` (node → community id).
+    ///
+    /// With `E` the number of adjacency entries (`2m` for an undirected graph,
+    /// whose adjacency is symmetric, and `m` for a directed one), `L_c` the
+    /// entries inside community `c` and `D_c^out`, `D_c^in` the summed out- and
+    /// in-degrees of its nodes,
+    ///
+    /// `Q = Σ_c [ L_c / E − D_c^out · D_c^in / E² ]`.
+    ///
+    /// This is the Newman modularity `Σ_c [ L_c/m − (D_c / 2m)² ]` of an
+    /// undirected graph (where `D_c^out = D_c^in = D_c`) and the Leicht–Newman
+    /// modularity `Σ_c [ L_c/m − D_c^out D_c^in / m² ]` of a directed one.  It is
+    /// computed in one pass over the adjacency lists, summing the communities
+    /// in increasing label order so the result is reproducible.
+    ///
+    /// Community labels are arbitrary `usize` values.  Edge weights are ignored:
+    /// every adjacency entry counts as one edge, as in the other analyses of this
+    /// module.  A graph without edges has modularity 0; the result is `NaN`
+    /// if `communities.len() != graph.n` or an edge points to a node outside the
+    /// graph.
     pub fn modularity(graph: &NetworkGraph, communities: &[usize]) -> f64 {
-        let m = graph.edge_count() as f64;
-        if m == 0.0 {
+        if communities.len() != graph.n {
+            return f64::NAN;
+        }
+        let entries: usize = graph.adj.iter().map(Vec::len).sum();
+        if entries == 0 {
             return 0.0;
         }
-        let n = graph.n;
-        let degree: Vec<f64> = (0..n).map(|u| graph.adj[u].len() as f64).collect();
-        let mut q = 0.0f64;
-        for u in 0..n {
-            for &(v, _) in &graph.adj[u] {
-                if communities[u] == communities[v] {
-                    q += 1.0 - degree[u] * degree[v] / (2.0 * m);
+        let mut totals: BTreeMap<usize, CommunityTotals> = BTreeMap::new();
+        for (neighbours, &source) in graph.adj.iter().zip(communities) {
+            for &(v, _) in neighbours {
+                let Some(&target) = communities.get(v) else {
+                    return f64::NAN;
+                };
+                totals.entry(source).or_default().out_degree += 1;
+                totals.entry(target).or_default().in_degree += 1;
+                if source == target {
+                    totals.entry(source).or_default().internal += 1;
                 }
             }
         }
-        q / (2.0 * m)
+        let total = entries as f64;
+        totals
+            .values()
+            .map(|t| {
+                t.internal as f64 / total
+                    - (t.out_degree as f64 / total) * (t.in_degree as f64 / total)
+            })
+            .sum()
     }
 
     /// Greedy modularity maximization (Clauset-Newman-Moore simplified).
@@ -1603,10 +1646,161 @@ mod tests {
 
     #[test]
     fn test_modularity_trivial_all_same_community() {
-        let g = NetworkGraph::ring(6);
-        let communities = vec![0usize; 6]; // all in one community
+        // A single community holding every node has Q = 0 for any graph.
+        for g in [NetworkGraph::ring(6), NetworkGraph::complete(5)] {
+            let communities = vec![0usize; g.n];
+            let q = CommunityDetection::modularity(&g, &communities);
+            assert!(q.abs() < 1e-12, "Q should be 0, got {}", q);
+        }
+    }
+
+    /// Two disjoint 4-cliques on nodes 0..4 and 4..8.
+    fn two_disjoint_k4() -> NetworkGraph {
+        let mut g = NetworkGraph::new(8, false);
+        for block in [0usize, 4] {
+            for i in 0..4 {
+                for j in (i + 1)..4 {
+                    g.add_edge(block + i, block + j, 1.0);
+                }
+            }
+        }
+        g
+    }
+
+    #[test]
+    fn test_modularity_known_partitions() {
+        // Two disjoint K4, one community each: Q = 2 (1/2 - 1/4) = 1/2.
+        let g = two_disjoint_k4();
+        let split = [0usize, 0, 0, 0, 1, 1, 1, 1];
+        assert!((CommunityDetection::modularity(&g, &split) - 0.5).abs() < 1e-12);
+        // Community labels are arbitrary, not necessarily contiguous.
+        let relabelled = [17usize, 17, 17, 17, 3, 3, 3, 3];
+        assert!((CommunityDetection::modularity(&g, &relabelled) - 0.5).abs() < 1e-12);
+        // Singletons on ring(6): 6 * (-(2/12)^2) = -1/6.
+        let ring = NetworkGraph::ring(6);
+        let singletons: Vec<usize> = (0..6).collect();
+        let q = CommunityDetection::modularity(&ring, &singletons);
+        assert!((q + 1.0 / 6.0).abs() < 1e-12, "got {q}");
+        // Two K4 joined by a bridge, one community per clique:
+        // m = 13, L_c = 6, D_c = 13, Q = 2 (6/13 - 1/4).
+        let mut bridged = two_disjoint_k4();
+        bridged.add_edge(3, 4, 1.0);
+        let q = CommunityDetection::modularity(&bridged, &split);
+        assert!((q - (12.0 / 13.0 - 0.5)).abs() < 1e-12, "got {q}");
+    }
+
+    #[test]
+    fn test_modularity_edge_cases() {
+        // No edges: Q = 0 by convention.
+        let empty = NetworkGraph::new(3, false);
+        assert_eq!(CommunityDetection::modularity(&empty, &[0, 1, 2]), 0.0);
+        // A partition of the wrong length is rejected instead of panicking.
+        let ring = NetworkGraph::ring(4);
+        assert!(CommunityDetection::modularity(&ring, &[0, 0, 1]).is_nan());
+        // An undirected self-loop is stored twice (degree 2, one edge): two
+        // loop-only nodes in separate communities give 2 (1/2 - 1/4) = 1/2.
+        let mut loops = NetworkGraph::new(2, false);
+        loops.add_edge(0, 0, 1.0);
+        loops.add_edge(1, 1, 1.0);
+        assert!((CommunityDetection::modularity(&loops, &[0, 1]) - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_modularity_directed_graphs() {
+        // A directed cycle in one community: Q = 0.
+        let mut cycle = NetworkGraph::new(3, true);
+        cycle.add_edge(0, 1, 1.0);
+        cycle.add_edge(1, 2, 1.0);
+        cycle.add_edge(2, 0, 1.0);
+        assert!(CommunityDetection::modularity(&cycle, &[0, 0, 0]).abs() < 1e-12);
+        // Two reciprocal pairs, one community each: Q = 2 (2/4 - (2/4)^2) = 1/2.
+        let mut pairs = NetworkGraph::new(4, true);
+        for (u, v) in [(0, 1), (1, 0), (2, 3), (3, 2)] {
+            pairs.add_edge(u, v, 1.0);
+        }
+        assert!((CommunityDetection::modularity(&pairs, &[0, 0, 1, 1]) - 0.5).abs() < 1e-12);
+        // Directed star 0 -> {1, 2, 3}, one community per node pair {0,1}, {2,3}:
+        // m = 3; A: L = 1, out = 3, in = 1; B: L = 0, out = 0, in = 2.
+        // Q = (1/3 - 3 * 1 / 9) + (0 - 0) = 0.
+        let mut star = NetworkGraph::new(4, true);
+        for v in 1..4 {
+            star.add_edge(0, v, 1.0);
+        }
+        assert!(CommunityDetection::modularity(&star, &[0, 0, 1, 1]).abs() < 1e-12);
+    }
+
+    /// Dense-matrix evaluation of
+    /// `Q = (1/E) Σ_ij [A_ij - k_i^out k_j^in / E] δ(c_i, c_j)`.
+    fn modularity_reference(graph: &NetworkGraph, communities: &[usize]) -> f64 {
+        let n = graph.n;
+        let mut a = vec![vec![0.0f64; n]; n];
+        for (u, neighbours) in graph.adj.iter().enumerate() {
+            for &(v, _) in neighbours {
+                a[u][v] += 1.0;
+            }
+        }
+        let total: f64 = a.iter().flatten().sum();
+        if total == 0.0 {
+            return 0.0;
+        }
+        let k_out: Vec<f64> = a.iter().map(|row| row.iter().sum()).collect();
+        let k_in: Vec<f64> = (0..n).map(|j| (0..n).map(|i| a[i][j]).sum()).collect();
+        let mut q = 0.0;
+        for i in 0..n {
+            for j in 0..n {
+                if communities[i] == communities[j] {
+                    q += a[i][j] - k_out[i] * k_in[j] / total;
+                }
+            }
+        }
+        q / total
+    }
+
+    #[test]
+    fn test_modularity_matches_dense_definition_on_random_graphs() {
+        for (seed, directed) in [(1u64, false), (2, false), (3, true), (4, true), (5, true)] {
+            let n = 14;
+            let mut rng = Lcg::new(seed);
+            let mut g = NetworkGraph::new(n, directed);
+            for u in 0..n {
+                for v in 0..n {
+                    let keep = directed || u < v;
+                    if keep && rng.next_f64() < 0.25 {
+                        g.add_edge(u, v, 1.0);
+                    }
+                }
+                if !directed && rng.next_f64() < 0.1 {
+                    g.add_edge(u, u, 1.0);
+                }
+            }
+            for _ in 0..5 {
+                let communities: Vec<usize> =
+                    (0..n).map(|_| 3 + 7 * rng.next_range(0, 4)).collect();
+                let fast = CommunityDetection::modularity(&g, &communities);
+                let dense = modularity_reference(&g, &communities);
+                assert!(
+                    (fast - dense).abs() < 1e-12,
+                    "seed {seed}: fast {fast} vs dense {dense}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_greedy_modularity_recovers_bridged_cliques() {
+        let mut g = two_disjoint_k4();
+        g.add_edge(3, 4, 1.0);
+        let communities = CommunityDetection::greedy_modularity(&g);
+        assert_eq!(CommunityDetection::n_communities(&communities), 2);
+        assert!(communities[..4].iter().all(|&c| c == communities[0]));
+        assert!(communities[4..].iter().all(|&c| c == communities[4]));
+        assert_ne!(communities[0], communities[4]);
         let q = CommunityDetection::modularity(&g, &communities);
-        assert!(q <= 1.0, "Q should be <= 1, got {}", q);
+        assert!((q - (12.0 / 13.0 - 0.5)).abs() < 1e-12, "got {q}");
+        // Every merge of a complete graph raises Q, so one community remains.
+        let complete = NetworkGraph::complete(6);
+        let merged = CommunityDetection::greedy_modularity(&complete);
+        assert!(merged.iter().all(|&c| c == merged[0]));
     }
 
     #[test]

@@ -1141,44 +1141,33 @@ pub(super) fn ray_triangle_intersect(
     let t = f * vec3_dot(e2, q);
     if t > 1e-15 { Some(t) } else { None }
 }
-/// Boolean union of two meshes (retains all faces from both).
+/// Run the conforming mesh boolean [`crate::mesh_boolean::mesh_boolean`] on two
+/// [`ProcessMesh`]es and wrap the result.
 ///
-/// This is a surface-union approximation: faces of mesh A that lie inside B
-/// are removed, and vice-versa.
-pub fn mesh_union(a: &ProcessMesh, b: &ProcessMesh) -> BooleanResult {
-    let offset_b = a.verts.len();
-    let mut verts = a.verts.clone();
-    verts.extend_from_slice(&b.verts);
-    let faces_a: Vec<Face> = a
-        .faces
-        .iter()
-        .filter(|&&[i, j, k]| {
-            let centroid = vec3_scale(
-                vec3_add(vec3_add(a.verts[i], a.verts[j]), a.verts[k]),
-                1.0 / 3.0,
-            );
-            !point_in_mesh(centroid, b)
-        })
-        .cloned()
-        .collect();
-    let faces_b: Vec<Face> = b
-        .faces
-        .iter()
-        .filter(|&&[i, j, k]| {
-            let centroid = vec3_scale(
-                vec3_add(vec3_add(b.verts[i], b.verts[j]), b.verts[k]),
-                1.0 / 3.0,
-            );
-            !point_in_mesh(centroid, a)
-        })
-        .map(|&[i, j, k]| [i + offset_b, j + offset_b, k + offset_b])
-        .collect();
-    let mut faces = faces_a;
-    faces.extend(faces_b);
+/// Both operands must be closed, consistently (outward) oriented triangle
+/// meshes. Per-vertex normals and UVs are not carried over: the output
+/// contains new seam vertices, so the result has neither.
+pub(super) fn process_mesh_boolean(
+    a: &ProcessMesh,
+    b: &ProcessMesh,
+    op: crate::mesh_boolean::MeshBooleanOp,
+) -> BooleanResult {
+    use crate::mesh_boolean::{SimpleMesh, mesh_boolean};
+    let sa = SimpleMesh::from_data(a.verts.clone(), a.faces.clone());
+    let sb = SimpleMesh::from_data(b.verts.clone(), b.faces.clone());
+    let out = mesh_boolean(&sa, &sb, op);
     let mut result = BooleanResult {
-        mesh: ProcessMesh::new(verts, faces),
+        mesh: ProcessMesh::new(out.vertices, out.triangles),
         is_exact: false,
     };
     result.is_exact = result.is_topologically_exact();
     result
+}
+/// Boolean union `A ∪ B` of two closed, outward-oriented meshes.
+///
+/// Faces are split along the intersection curves and re-triangulated, so the
+/// result is the closed boundary of the union (see
+/// [`crate::mesh_boolean::mesh_boolean`]).
+pub fn mesh_union(a: &ProcessMesh, b: &ProcessMesh) -> BooleanResult {
+    process_mesh_boolean(a, b, crate::mesh_boolean::MeshBooleanOp::Union)
 }

@@ -116,6 +116,20 @@ impl VinetEos {
         }
         0.5 * (lo + hi)
     }
+    /// Isothermal bulk modulus `K(V) = -V dP/dV` (Pa) at specific volume `v` (m³/kg).
+    ///
+    /// Analytic derivative of the Vinet pressure.  With `x = (V/V₀)^(1/3)` and
+    /// `η = (3/2)(K₀' - 1)`:
+    ///
+    /// `K = K₀ · x⁻² · exp(η(1 - x)) · [2 - x + η x (1 - x)]`
+    ///
+    /// which reduces to `K₀` at `V = V₀` (`x = 1`).  The modulus turns negative
+    /// where the Vinet curve rolls over under strong expansion.
+    pub fn bulk_modulus(&self, v: f64) -> f64 {
+        let x = (v / self.v0).cbrt();
+        let eta = 1.5 * (self.k0_prime - 1.0);
+        self.k0 * (eta * (1.0 - x)).exp() / (x * x) * (2.0 - x + eta * x * (1.0 - x))
+    }
 }
 /// Jones-Wilkins-Lee equation of state for detonation products.
 ///
@@ -565,27 +579,69 @@ impl MieGruneisenEos {
     pub fn compression(&self, density: f64) -> f64 {
         1.0 - self.rho0 / density
     }
-    /// Hugoniot pressure (reference Rankine-Hugoniot curve).
+    /// Hugoniot pressure (reference Rankine-Hugoniot curve) of the linear shock
+    /// relation `U_s = c₀ + s·U_p`.
+    ///
+    /// `p_H = ρ₀ c₀² η / (1 − s η)²` with the volumetric compression
+    /// `η = 1 − ρ₀/ρ` (= `U_p/U_s`).  It is 0 for `ρ ≤ ρ₀` and `+∞` at and
+    /// beyond the Hugoniot pole `s·η ≥ 1`.
     pub fn hugoniot_pressure(&self, density: f64) -> f64 {
-        let mu = density / self.rho0 - 1.0;
-        if mu <= 0.0 {
+        if density <= self.rho0 {
             return 0.0;
         }
-        let denom = (1.0 - self.s * mu).powi(2);
-        if denom.abs() < f64::EPSILON {
-            return 0.0;
+        let eta = self.compression(density);
+        let denom = 1.0 - self.s * eta;
+        if denom <= 0.0 {
+            return f64::INFINITY;
         }
-        self.rho0 * self.c0 * self.c0 * mu / denom
+        self.rho0 * self.c0 * self.c0 * eta / (denom * denom)
     }
     /// Pressure from density and specific internal energy (J/kg).
+    ///
+    /// Returns `+∞` beyond the Hugoniot pole, where the reference curve (and the
+    /// model) diverges.
     pub fn pressure_from_energy(&self, density: f64, energy: f64) -> f64 {
         let ph = self.hugoniot_pressure(density);
+        if ph.is_infinite() {
+            return ph;
+        }
         let eh = if density > self.rho0 {
             ph * 0.5 * (1.0 / self.rho0 - 1.0 / density)
         } else {
             0.0
         };
         ph + self.gamma_0 * density * (energy - eh)
+    }
+    /// Analytic slope `dP/dρ` (m²/s²) of the zero-energy pressure curve
+    /// `P(ρ) = pressure_from_energy(ρ, 0)`.
+    ///
+    /// With `η = 1 − ρ₀/ρ`, `P(ρ) = P_H − Γ₀ ρ e_H` and
+    /// `e_H = ½ P_H (1/ρ₀ − 1/ρ)`:
+    ///
+    /// - `P_H′ = ρ₀ c₀² (ρ₀/ρ²)(1 + sη) / (1 − sη)³`
+    /// - `e_H′ = ½ P_H′ (1/ρ₀ − 1/ρ) + ½ P_H / ρ²`
+    /// - `dP/dρ = P_H′ − Γ₀ (e_H + ρ e_H′)`
+    ///
+    /// The curve has a kink at `ρ₀` (it is identically zero below): the
+    /// right-hand slope `c₀²` is returned at `ρ₀` and 0 below it.  Beyond the
+    /// Hugoniot pole `s·η ≥ 1` the slope is `+∞`.
+    pub fn pressure_density_derivative(&self, density: f64) -> f64 {
+        if density < self.rho0 {
+            return 0.0;
+        }
+        let eta = self.compression(density);
+        let one_minus_s_eta = 1.0 - self.s * eta;
+        if one_minus_s_eta <= 0.0 {
+            return f64::INFINITY;
+        }
+        let rho0_c0_sq = self.rho0 * self.c0 * self.c0;
+        let ph = rho0_c0_sq * eta / (one_minus_s_eta * one_minus_s_eta);
+        let ph_prime = rho0_c0_sq * (self.rho0 / (density * density)) * (1.0 + self.s * eta)
+            / (one_minus_s_eta * one_minus_s_eta * one_minus_s_eta);
+        let volume_gap = 1.0 / self.rho0 - 1.0 / density;
+        let eh = 0.5 * ph * volume_gap;
+        let eh_prime = 0.5 * ph_prime * volume_gap + 0.5 * ph / (density * density);
+        ph_prime - self.gamma_0 * (eh + density * eh_prime)
     }
 }
 /// Tait equation of state, commonly used for weakly-compressible fluids (e.g. water in SPH).
@@ -663,8 +719,22 @@ impl RedlichKwong {
 }
 /// Van der Waals equation of state for real gases.
 ///
-/// (p + a*ρ²/M²)(1/ρ - b/M) = R*T/M
-/// where a and b are van der Waals constants.
+/// (p + a*ρ²/M²)(M/ρ - b) = R*T
+/// where a and b are van der Waals constants (per mole) and M is the molar mass.
+///
+/// The [`EquationOfState`](super::functions::EquationOfState) implementation
+/// evaluates the isotherm at [`temperature`](Self::temperature) (300 K unless
+/// changed with [`with_temperature`](Self::with_temperature)):
+///
+/// - `pressure` is `P(ρ)` on that isotherm and is `+∞` at and beyond the
+///   covolume density `ρ = M/b`;
+/// - `sound_speed` is the *isothermal* sound speed `√((∂P/∂ρ)_T)`, which is 0
+///   inside the mechanically unstable (spinodal) region where `(∂P/∂ρ)_T ≤ 0`;
+/// - `density_from_pressure` returns the vapour branch of the isotherm: the
+///   largest real root of the cubic `P V³ - (P b + R T) V² + a V - a b = 0`
+///   in the molar volume (the lowest density at that pressure).  Below the
+///   critical temperature the isotherm is not monotone and a pressure inside the
+///   two-phase window has up to three densities; the vapour one is returned.
 #[derive(Debug, Clone, Copy)]
 pub struct VanDerWaalsEos {
     /// Attractive interaction constant a (Pa·m⁶/mol²).
@@ -675,16 +745,26 @@ pub struct VanDerWaalsEos {
     pub molar_mass: f64,
     /// Universal gas constant R (8.314 J/(mol·K)).
     pub r_gas: f64,
+    /// Isotherm temperature T (K) used by the `EquationOfState` implementation.
+    pub temperature: f64,
 }
 impl VanDerWaalsEos {
-    /// Create a van der Waals EOS.
+    /// Isotherm temperature (K) assigned by [`VanDerWaalsEos::new`].
+    pub const DEFAULT_TEMPERATURE: f64 = 300.0;
+    /// Create a van der Waals EOS on the 300 K isotherm.
     pub fn new(a: f64, b: f64, molar_mass: f64) -> Self {
         Self {
             a,
             b,
             molar_mass,
             r_gas: 8.314,
+            temperature: Self::DEFAULT_TEMPERATURE,
         }
+    }
+    /// Return a copy that evaluates the `EquationOfState` isotherm at `temperature` (K).
+    pub fn with_temperature(mut self, temperature: f64) -> Self {
+        self.temperature = temperature;
+        self
     }
     /// Carbon dioxide (a=0.3658, b=42.9e-6, M=0.044).
     pub fn co2() -> Self {
@@ -699,13 +779,113 @@ impl VanDerWaalsEos {
         Self::new(0.1370, 38.7e-6, 0.028)
     }
     /// Pressure at given density and temperature.
+    ///
+    /// Returns `+∞` for `ρ ≥ M/b` (the molar volume has reached the covolume
+    /// `b`, where the repulsive core diverges) and 0 for `ρ ≤ 0` (vacuum).
     pub fn pressure_at_temperature(&self, density: f64, temperature: f64) -> f64 {
-        let specific_volume = 1.0 / density;
-        let molar_volume = specific_volume * self.molar_mass;
-        if (molar_volume - self.b).abs() < 1e-15 {
+        if density <= 0.0 {
+            return 0.0;
+        }
+        let molar_volume = self.molar_mass / density;
+        if molar_volume <= self.b {
             return f64::INFINITY;
         }
         self.r_gas * temperature / (molar_volume - self.b) - self.a / (molar_volume * molar_volume)
+    }
+    /// Isothermal pressure derivative `(∂P/∂ρ)_T` (m²/s²) at density `density`.
+    ///
+    /// With `V = M/ρ`: `(∂P/∂ρ)_T = (R T V²/(V - b)² - 2 a/V) / M`.  It tends to
+    /// the ideal-gas value `R T/M` as `ρ → 0`, is `+∞` for `ρ ≥ M/b` and is
+    /// negative inside the spinodal region of a subcritical isotherm.
+    pub fn pressure_density_derivative_at_temperature(
+        &self,
+        density: f64,
+        temperature: f64,
+    ) -> f64 {
+        let rt = self.r_gas * temperature;
+        if density <= 0.0 {
+            return rt / self.molar_mass;
+        }
+        let molar_volume = self.molar_mass / density;
+        if molar_volume <= self.b {
+            return f64::INFINITY;
+        }
+        let ratio = molar_volume / (molar_volume - self.b);
+        (rt * ratio * ratio - 2.0 * self.a / molar_volume) / self.molar_mass
+    }
+    /// Molar volume (m³/mol) of the vapour branch of the isotherm `temperature`
+    /// (K) at `pressure` (Pa).
+    ///
+    /// Solves `P V³ - (P b + R T) V² + a V - a b = 0` for the largest real root
+    /// `V > b` (trigonometric / Cardano solution polished with Newton steps), i.e.
+    /// the gas-like root; below the critical temperature the smaller roots are the
+    /// metastable/unstable and liquid-like states.  Returns `+∞` for
+    /// `pressure ≤ 0` (the vapour branch has no finite volume there) and NaN
+    /// when an input is NaN or the temperature is negative.
+    pub fn vapour_molar_volume(&self, pressure: f64, temperature: f64) -> f64 {
+        if pressure.is_nan() || temperature.is_nan() || temperature < 0.0 {
+            return f64::NAN;
+        }
+        if pressure <= 0.0 {
+            return f64::INFINITY;
+        }
+        // Monic cubic V³ + c2 V² + c1 V + c0 = 0.
+        let rt = self.r_gas * temperature;
+        let c2 = -(self.b + rt / pressure);
+        let c1 = self.a / pressure;
+        let c0 = -self.a * self.b / pressure;
+        // Depressed cubic y³ + p y + q = 0 with V = y - c2/3.
+        let p = c1 - c2 * c2 / 3.0;
+        let q = 2.0 * c2 * c2 * c2 / 27.0 - c2 * c1 / 3.0 + c0;
+        let discriminant = 0.25 * q * q + p * p * p / 27.0;
+        let y = if discriminant > 0.0 {
+            // One real root.  Take the cube root of the larger-magnitude term
+            // and get the other from u·w = -p/3 to avoid cancellation.
+            let root = discriminant.sqrt();
+            let big = if q > 0.0 {
+                -0.5 * q - root
+            } else {
+                -0.5 * q + root
+            };
+            let u = big.cbrt();
+            if u == 0.0 { 0.0 } else { u - p / (3.0 * u) }
+        } else if p < 0.0 {
+            // Three real roots: the largest is the k = 0 trigonometric root.
+            let amplitude = 2.0 * (-p / 3.0).sqrt();
+            let cosine = (3.0 * q / (p * amplitude)).clamp(-1.0, 1.0);
+            amplitude * (cosine.acos() / 3.0).cos()
+        } else {
+            // A non-positive discriminant with p >= 0 forces p = q = 0: the
+            // triple root at the critical point, y = 0.
+            0.0
+        };
+        let mut volume = y - c2 / 3.0;
+        // Newton polish on the cubic; keep a step only if it lowers the residual.
+        let cubic = |v: f64| ((v + c2) * v + c1) * v + c0;
+        let slope = |v: f64| (3.0 * v + 2.0 * c2) * v + c1;
+        for _ in 0..4 {
+            let residual = cubic(volume);
+            let derivative = slope(volume);
+            if residual == 0.0 || derivative == 0.0 || !derivative.is_finite() {
+                break;
+            }
+            let candidate = volume - residual / derivative;
+            if !candidate.is_finite() || cubic(candidate).abs() >= residual.abs() {
+                break;
+            }
+            volume = candidate;
+        }
+        // Physical roots lie strictly above the covolume; rounding must not
+        // push the result onto the pole (a NaN volume is passed through).
+        let floor = self.b * (1.0 + f64::EPSILON);
+        if volume < floor { floor } else { volume }
+    }
+    /// Density (kg/m³) of the vapour branch of the isotherm `temperature` (K) at
+    /// `pressure` (Pa); see [`vapour_molar_volume`](Self::vapour_molar_volume).
+    ///
+    /// Returns 0 for `pressure ≤ 0` and NaN for invalid inputs.
+    pub fn density_at_temperature(&self, pressure: f64, temperature: f64) -> f64 {
+        self.molar_mass / self.vapour_molar_volume(pressure, temperature)
     }
 }
 /// Tillotson equation of state for hypervelocity impact and planetary science.
@@ -854,42 +1034,63 @@ impl SoaveRedlichKwong {
         R_UNIVERSAL * t / (v_mol - self.b) - a_t / (v_mol * (v_mol + self.b))
     }
 }
-/// Stiffened gas EOS: p + p_inf = (γ-1) ρ e.
+/// Stiffened gas EOS: `p + γ p_inf = (γ - 1) ρ (e - e₀)`.
 ///
-/// Generalises ideal gas to account for liquid-like stiffness.
-/// Used for water shock and cavitation in underwater explosions.
+/// Generalises ideal gas to account for liquid-like stiffness (`p_inf = 0` gives
+/// the ideal gas).  Used for water shock and cavitation in underwater explosions.
+///
+/// - [`pressure_from_energy`](Self::pressure_from_energy) is the energy form above.
+/// - The [`EquationOfState`](super::functions::EquationOfState) implementation
+///   is the barotropic isentrope through the reference state `(ρ_ref, P_ref)`:
+///   `P + p_inf = (P_ref + p_inf) (ρ/ρ_ref)^γ`, with sound speed
+///   `c² = γ (P + p_inf)/ρ` and the exact inverse `density_from_pressure`.
 #[derive(Debug, Clone, Copy)]
 pub struct StiffenedGasEos {
     /// Adiabatic index γ.
     pub gamma: f64,
     /// Stiffness pressure p_inf (Pa). For ideal gas, p_inf = 0.
     pub p_inf: f64,
-    /// Reference density ρ₀ (kg/m³).
+    /// Reference density ρ_ref (kg/m³).
     pub reference_density: f64,
-    /// Reference energy e₀ (J/kg).
+    /// Reference energy e₀ (J/kg), the energy offset of the energy form.
     pub reference_energy: f64,
+    /// Reference pressure P_ref (Pa) at the reference density on the isentrope
+    /// used by the `EquationOfState` implementation.
+    pub reference_pressure: f64,
 }
 impl StiffenedGasEos {
-    /// Create a new stiffened gas EOS.
+    /// Reference pressure (Pa) assigned by [`StiffenedGasEos::new`]: one standard atmosphere.
+    pub const DEFAULT_REFERENCE_PRESSURE: f64 = 101_325.0;
+    /// Create a new stiffened gas EOS whose isentrope passes through
+    /// `(reference_density, DEFAULT_REFERENCE_PRESSURE)`.
     pub fn new(gamma: f64, p_inf: f64, reference_density: f64, reference_energy: f64) -> Self {
         Self {
             gamma,
             p_inf,
             reference_density,
             reference_energy,
+            reference_pressure: Self::DEFAULT_REFERENCE_PRESSURE,
         }
     }
-    /// Water (Noble-Abel stiffened gas): γ=6.59, p_inf=4.02e8 Pa.
-    pub fn water() -> Self {
-        Self::new(6.59, 4.02e8, 1000.0, 0.0)
+    /// Return a copy whose isentrope passes through `(reference_density, reference_pressure)` (Pa).
+    pub fn with_reference_pressure(mut self, reference_pressure: f64) -> Self {
+        self.reference_pressure = reference_pressure;
+        self
     }
-    /// Air treated as stiffened gas (reduces to ideal gas with p_inf=0).
+    /// Water (Noble-Abel stiffened gas): γ=6.59, p_inf=4.02e8 Pa, referenced to
+    /// 1000 kg/m³ at 1 bar.
+    pub fn water() -> Self {
+        Self::new(6.59, 4.02e8, 1000.0, 0.0).with_reference_pressure(1.0e5)
+    }
+    /// Air treated as stiffened gas (reduces to ideal gas with p_inf=0),
+    /// referenced to 1.225 kg/m³ at 101 325 Pa.
     pub fn air() -> Self {
         Self::new(1.4, 0.0, 1.225, 0.0)
     }
-    /// Pressure from density and internal energy.
+    /// Pressure from density and internal energy:
+    /// `p = (γ - 1) ρ (e - e₀) - γ p_inf`.
     pub fn pressure_from_energy(&self, density: f64, energy: f64) -> f64 {
-        (self.gamma - 1.0) * density * (energy - self.reference_energy) - self.p_inf
+        (self.gamma - 1.0) * density * (energy - self.reference_energy) - self.gamma * self.p_inf
     }
 }
 /// Noble-Abel equation of state for dense propellant gases.

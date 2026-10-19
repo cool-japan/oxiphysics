@@ -206,12 +206,36 @@ impl LorentzForce {
 // SPH operators
 // ============================================================================
 
+/// Kernel gradient ∇_i W(**x**_i − **x**_j, h_i) = W′(r) r̂_{ij} of the pair
+/// (`pi`, `pj`) with r_{ij} = **x**_i − **x**_j, taken from a central finite
+/// difference of the scalar kernel, or `None` when the two particles coincide.
+fn finite_difference_kernel_gradient(
+    pi: &MhdParticle,
+    pj: &MhdParticle,
+    kernel: &impl Fn(f64, f64) -> f64,
+) -> Option<[f64; 3]> {
+    let rij = sub3(pi.pos, pj.pos);
+    let r = len3(rij);
+    if r < 1e-300 {
+        return None;
+    }
+    let dr = 1e-6 * pi.h.max(1e-10);
+    let dw_dr = (kernel(r + dr, pi.h) - kernel(r - dr, pi.h)) / (2.0 * dr);
+    Some(scale3(rij, dw_dr / r))
+}
+
 /// SPH estimate of ∇ × **B** at particle `i`, yielding current density proxy.
 ///
-/// Uses the standard SPH curl approximation:
-/// (∇ × **B**)_i ≈ Σ_j (m_j/ρ_j) **B**_j × ∇W(r_{ij}, h_i)
+/// Uses the difference form of the SPH curl,
 ///
-/// The kernel gradient is evaluated along the unit vector r̂_{ij}.
+/// ```text
+/// (∇ × B)_i ≈ Σ_j (m_j/ρ_j) ∇_iW(r_ij, h_i) × (B_j − B_i),     r_ij = x_i − x_j,
+/// ```
+///
+/// which is exact for a uniform field irrespective of the particle
+/// distribution.  The product order matters: with ∇_iW taken at r_ij = x_i − x_j
+/// the sum Σ_j V_j B_j × ∇_iW would be the *negated* curl.  The kernel gradient
+/// is evaluated along the unit vector r̂_{ij}.
 ///
 /// # Arguments
 /// * `particles` – slice of MHD particles
@@ -224,19 +248,13 @@ pub fn curl_b(particles: &[MhdParticle], i: usize, kernel: impl Fn(f64, f64) -> 
         if j == i {
             continue;
         }
-        let rij = sub3(pi.pos, pj.pos);
-        let r = len3(rij);
-        if r < 1e-300 {
+        let Some(grad_w) = finite_difference_kernel_gradient(pi, pj, &kernel) else {
             continue;
-        }
-        // Finite-difference kernel gradient: dW/dr · r̂/r
-        let dr = 1e-6 * pi.h.max(1e-10);
-        let dw_dr = (kernel(r + dr, pi.h) - kernel(r - dr, pi.h)) / (2.0 * dr);
-        let grad_w = scale3(rij, dw_dr / r);
-        // contribution: (m_j / rho_j) * B_j × grad_W
+        };
+        // contribution: (m_j / rho_j) * ∇_iW_ij × (B_j − B_i)
         let factor = pj.mass / (pj.rho + 1e-300);
-        let bj_cross_gw = cross3(pj.b, grad_w);
-        result = add3(result, scale3(bj_cross_gw, factor));
+        let gradw_cross_db = cross3(grad_w, sub3(pj.b, pi.b));
+        result = add3(result, scale3(gradw_cross_db, factor));
     }
     result
 }
@@ -258,14 +276,9 @@ pub fn div_b(particles: &[MhdParticle], i: usize, kernel: impl Fn(f64, f64) -> f
         if j == i {
             continue;
         }
-        let rij = sub3(pi.pos, pj.pos);
-        let r = len3(rij);
-        if r < 1e-300 {
+        let Some(grad_w) = finite_difference_kernel_gradient(pi, pj, &kernel) else {
             continue;
-        }
-        let dr = 1e-6 * pi.h.max(1e-10);
-        let dw_dr = (kernel(r + dr, pi.h) - kernel(r - dr, pi.h)) / (2.0 * dr);
-        let grad_w = scale3(rij, dw_dr / r);
+        };
         let db = sub3(pj.b, pi.b);
         let factor = pj.mass / (pj.rho + 1e-300);
         result += factor * dot3(db, grad_w);
@@ -275,8 +288,17 @@ pub fn div_b(particles: &[MhdParticle], i: usize, kernel: impl Fn(f64, f64) -> f
 
 /// Right-hand side of the ideal MHD induction equation: d**B**/dt = ∇×(**v**×**B**).
 ///
-/// Uses the identity ∇×(**v**×**B**) = (**B**·∇)**v** - (**v**·∇)**B** and an SPH
-/// approximation analogous to the curl operator above.
+/// The curl of the electromotive field **E** = **v**×**B** is evaluated
+/// directly with the difference form of the SPH curl used by [`curl_b`],
+///
+/// ```text
+/// (∇ × (v × B))_i ≈ Σ_j (m_j/ρ_j) ∇_iW(r_ij, h_i) × ((v × B)_j − (v × B)_i),
+/// ```
+///
+/// with r_ij = x_i − x_j.  Unlike the expanded form
+/// (**B**·∇)**v** − (**v**·∇)**B**, which is only equal to ∇×(**v**×**B**) when
+/// ∇·**B** = ∇·**v** = 0, this keeps the compressive terms
+/// **v**(∇·**B**) − **B**(∇·**v**) as well.
 ///
 /// # Arguments
 /// * `particles` – slice of MHD particles
@@ -288,25 +310,21 @@ pub fn induction_equation_rhs(
     kernel: impl Fn(f64, f64) -> f64,
 ) -> [f64; 3] {
     let pi = &particles[i];
+    let vxb_i = cross3(pi.vel, pi.b);
     let mut result = [0.0f64; 3];
     for (j, pj) in particles.iter().enumerate() {
         if j == i {
             continue;
         }
-        let rij = sub3(pi.pos, pj.pos);
-        let r = len3(rij);
-        if r < 1e-300 {
+        let Some(grad_w) = finite_difference_kernel_gradient(pi, pj, &kernel) else {
             continue;
-        }
-        let dr = 1e-6 * pi.h.max(1e-10);
-        let dw_dr = (kernel(r + dr, pi.h) - kernel(r - dr, pi.h)) / (2.0 * dr);
-        let grad_w = scale3(rij, dw_dr / r);
-        // vxB at particle j
+        };
+        // v × B at particle j
         let vxb_j = cross3(pj.vel, pj.b);
         let factor = pj.mass / (pj.rho + 1e-300);
-        // SPH curl contribution
-        let contrib = cross3(grad_w, vxb_j);
-        result = add3(result, scale3(contrib, -factor));
+        // SPH curl contribution: ∇_iW_ij × ((v×B)_j − (v×B)_i)
+        let contrib = cross3(grad_w, sub3(vxb_j, vxb_i));
+        result = add3(result, scale3(contrib, factor));
     }
     result
 }
@@ -1118,6 +1136,162 @@ mod tests {
         let rhs = induction_equation_rhs(&particles, 0, simple_kernel);
         for &r in &rhs {
             assert!(r.abs() < 1e-10);
+        }
+    }
+
+    fn lattice_centre_index(particles: &[MhdParticle]) -> usize {
+        particles
+            .iter()
+            .position(|p| p.pos.iter().all(|c| c.abs() < 1e-12))
+            .expect("lattice has a centre particle")
+    }
+
+    #[test]
+    fn test_curl_b_rotational_field_has_positive_axial_curl() {
+        // B = (−y, x, 0) has ∇×B = (0, 0, 2).  The former implementation summed
+        // B_j × ∇W, which is the negated curl (−2 on the z axis).
+        let s = 0.1;
+        let particles = lattice(7, s, |pos| [-pos[1], pos[0], 0.0]);
+        let kernel = CubicSplineKernel;
+        let mut checked = 0;
+        for (i, p) in particles.iter().enumerate() {
+            if !is_interior(p, s) {
+                continue;
+            }
+            let curl = curl_b(&particles, i, |r, h| kernel.w(r, h));
+            assert!(
+                (curl[2] - 2.0).abs() < 0.1,
+                "curl_z = {} at {:?}, expected 2",
+                curl[2],
+                p.pos
+            );
+            assert!(
+                curl[0].abs() < 0.1 && curl[1].abs() < 0.1,
+                "curl = {curl:?}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 27);
+        let centre = lattice_centre_index(&particles);
+        assert!(curl_b(&particles, centre, |r, h| kernel.w(r, h))[2] > 1.9);
+    }
+
+    #[test]
+    fn test_curl_b_reversed_rotation_flips_the_sign() {
+        // Reversing the rotation direction flips the sign of the curl: B = (y, −x, 0).
+        let s = 0.1;
+        let particles = lattice(7, s, |pos| [pos[1], -pos[0], 0.0]);
+        let kernel = CubicSplineKernel;
+        let centre = lattice_centre_index(&particles);
+        let curl = curl_b(&particles, centre, |r, h| kernel.w(r, h));
+        assert!((curl[2] + 2.0).abs() < 0.1, "curl_z = {}", curl[2]);
+    }
+
+    #[test]
+    fn test_curl_b_uniform_field_vanishes_on_irregular_particles() {
+        // The difference form annihilates a constant field for any particle
+        // distribution; the former B_j × ∇W sum did not on an irregular cloud.
+        let b = [0.3, -0.2, 0.1];
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [0.07, 0.01, -0.02],
+            [-0.05, 0.04, 0.03],
+            [0.02, -0.09, 0.05],
+            [0.11, 0.02, 0.0],
+        ];
+        let particles: Vec<MhdParticle> = positions
+            .iter()
+            .map(|&pos| MhdParticle::new(pos, [0.0; 3], b, 1000.0, 1e5, 1.0, 0.1))
+            .collect();
+        let kernel = CubicSplineKernel;
+        for i in 0..particles.len() {
+            let curl = curl_b(&particles, i, |r, h| kernel.w(r, h));
+            for (component, value) in curl.iter().enumerate() {
+                assert!(value.abs() < 1e-9, "curl[{component}] at {i} = {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_induction_rhs_matches_curl_of_v_cross_b() {
+        // v = (1, 0, 0), B = (0, sin kx, 0): v × B = (0, 0, sin kx) and
+        // ∇×(v × B) = (0, −k cos kx, 0).  The former implementation returned the
+        // negated curl (+k cos kx).
+        let (s, k) = (0.1, 2.0);
+        let mut particles = lattice(7, s, |pos| [0.0, (k * pos[0]).sin(), 0.0]);
+        for p in particles.iter_mut() {
+            p.vel = [1.0, 0.0, 0.0];
+        }
+        let kernel = CubicSplineKernel;
+        let mut checked = 0;
+        for (i, p) in particles.iter().enumerate() {
+            if !is_interior(p, s) {
+                continue;
+            }
+            let rhs = induction_equation_rhs(&particles, i, |r, h| kernel.w(r, h));
+            let expected_y = -k * (k * p.pos[0]).cos();
+            assert!(
+                (rhs[1] - expected_y).abs() < 0.05 * k,
+                "rhs_y = {} at x = {}, expected {expected_y}",
+                rhs[1],
+                p.pos[0]
+            );
+            assert!(
+                rhs[0].abs() < 0.05 * k && rhs[2].abs() < 0.05 * k,
+                "rhs = {rhs:?}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 27);
+    }
+
+    #[test]
+    fn test_induction_rhs_uniform_fields_vanish_on_irregular_particles() {
+        // v × B is uniform for uniform v and B, so its curl is exactly zero.
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [0.06, -0.02, 0.01],
+            [-0.04, 0.05, 0.02],
+            [0.03, 0.08, -0.05],
+        ];
+        let particles: Vec<MhdParticle> = positions
+            .iter()
+            .map(|&pos| {
+                MhdParticle::new(
+                    pos,
+                    [1.0, 2.0, -0.5],
+                    [0.2, 0.1, -0.3],
+                    1000.0,
+                    1e5,
+                    1.0,
+                    0.1,
+                )
+            })
+            .collect();
+        let kernel = CubicSplineKernel;
+        for i in 0..particles.len() {
+            let rhs = induction_equation_rhs(&particles, i, |r, h| kernel.w(r, h));
+            for (component, value) in rhs.iter().enumerate() {
+                assert!(value.abs() < 1e-9, "rhs[{component}] at {i} = {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_induction_rhs_keeps_the_compressive_terms() {
+        // v = (x, 0, 0), B = (b0, 0, 0) is parallel: v × B = 0 so the curl is 0
+        // even though (B·∇)v − (v·∇)B = (b0, 0, 0) is not: the expanded form
+        // is only valid for solenoidal v, B.  The direct curl of v × B is exact.
+        let s = 0.1;
+        let mut particles = lattice(7, s, |_| [0.5, 0.0, 0.0]);
+        for p in particles.iter_mut() {
+            p.vel = [p.pos[0], 0.0, 0.0];
+        }
+        let kernel = CubicSplineKernel;
+        let centre = lattice_centre_index(&particles);
+        let rhs = induction_equation_rhs(&particles, centre, |r, h| kernel.w(r, h));
+        for (component, value) in rhs.iter().enumerate() {
+            assert!(value.abs() < 1e-12, "rhs[{component}] = {value}");
         }
     }
 

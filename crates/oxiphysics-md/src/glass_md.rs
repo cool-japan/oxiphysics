@@ -1026,7 +1026,7 @@ mod tests {
         let temps: [f64; 5] = [600.0, 700.0, 800.0, 1000.0, 1300.0];
         let vis: Vec<f64> = temps.iter().map(|&t| (-10.0 + 20000.0 / t).exp()).collect();
         let (a, b, t0) = VogelFulcherTammann::fit_vft(&temps, &vis).unwrap();
-        assert!(t0 >= 0.0 && t0 < 1.0e-3, "T0 = {t0}");
+        assert!((0.0..1.0e-3).contains(&t0), "T0 = {t0}");
         assert!((a + 10.0).abs() < 1.0e-5, "A = {a}");
         assert!((b - 20000.0).abs() < 1.0e-2, "B = {b}");
     }

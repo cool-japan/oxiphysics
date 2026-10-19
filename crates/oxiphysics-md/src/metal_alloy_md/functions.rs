@@ -706,58 +706,6 @@ pub fn common_neighbor_analysis(system: &AlloySystem, cutoff: f64) -> Vec<&'stat
     }
     labels
 }
-/// Elastic constants (C11, C12, C44) in GPa from EAM potential.
-///
-/// Uses numerical differentiation of the energy with respect to strain.
-pub fn elastic_constants_eam(params: &EamParams) -> (f64, f64, f64) {
-    let a = params.lattice_a;
-    let n_cells = 3;
-    let box_len = n_cells as f64 * a;
-    let positions = generate_crystal_positions(a, n_cells, CrystalStructure::FCC);
-    let compute_energy = |strain: [[f64; 3]; 3]| -> f64 {
-        let mut sys = AlloySystem::new(
-            vec![params.clone()],
-            SimBox::new(
-                box_len * (1.0 + strain[0][0]),
-                box_len * (1.0 + strain[1][1]),
-                box_len * (1.0 + strain[2][2]),
-            ),
-            MixingRule::Geometric,
-            0.001,
-        );
-        for pos in &positions {
-            let p = [
-                pos[0] * (1.0 + strain[0][0]) + pos[1] * strain[0][1] + pos[2] * strain[0][2],
-                pos[0] * strain[1][0] + pos[1] * (1.0 + strain[1][1]) + pos[2] * strain[1][2],
-                pos[0] * strain[2][0] + pos[1] * strain[2][1] + pos[2] * (1.0 + strain[2][2]),
-            ];
-            sys.add_atom(sys.sim_box.wrap(p), 0);
-        }
-        for atom in &mut sys.atoms {
-            atom.rho_bar = 0.0;
-        }
-        let pairs = sys.build_neighbor_list();
-        for &(i, j, _dr, r) in &pairs {
-            sys.atoms[i].rho_bar += sys.species[0].electron_density(r);
-            sys.atoms[j].rho_bar += sys.species[0].electron_density(r);
-        }
-        sys.potential_energy()
-    };
-    let e0 = compute_energy([[0.0; 3]; 3]);
-    let vol = box_len * box_len * box_len;
-    let eps = 0.001;
-    let ep = compute_energy([[eps, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]);
-    let em = compute_energy([[-eps, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]);
-    let c11_ev = (ep + em - 2.0 * e0) / (vol * eps * eps);
-    let ep2 = compute_energy([[eps, 0.0, 0.0], [0.0, eps, 0.0], [0.0, 0.0, 0.0]]);
-    let em2 = compute_energy([[-eps, 0.0, 0.0], [0.0, -eps, 0.0], [0.0, 0.0, 0.0]]);
-    let c12_ev = (ep2 + em2 - 2.0 * e0) / (2.0 * vol * eps * eps) - c11_ev / 2.0;
-    let es_p = compute_energy([[0.0, eps, 0.0], [eps, 0.0, 0.0], [0.0, 0.0, 0.0]]);
-    let es_m = compute_energy([[0.0, -eps, 0.0], [-eps, 0.0, 0.0], [0.0, 0.0, 0.0]]);
-    let c44_ev = (es_p + es_m - 2.0 * e0) / (4.0 * vol * eps * eps);
-    let conv = 160.2176634;
-    (c11_ev * conv, c12_ev * conv, c44_ev * conv)
-}
 /// Compute enthalpy of mixing for a binary alloy at given composition.
 ///
 /// ΔH_mix = E(alloy) - x_A * E(pure_A) - x_B * E(pure_B)
@@ -835,28 +783,4 @@ pub fn heat_of_mixing(
     let e_b = pure_b.potential_energy() / pos_b.len() as f64;
     let x_a = 1.0 - x_b;
     e_alloy - x_a * e_a - x_b * e_b
-}
-/// Estimate linear thermal expansion coefficient from lattice constant variation.
-///
-/// Runs short NVT-like simulation at two temperatures, measures lattice expansion.
-/// Returns α in 1/K.
-pub fn thermal_expansion_coefficient(
-    params: &EamParams,
-    _t_low: f64,
-    _t_high: f64,
-    n_cells: usize,
-) -> f64 {
-    let a = params.lattice_a;
-    let vol = a * a * a / 4.0;
-    let (c11, c12, _c44) = elastic_constants_eam(params);
-    let bulk_mod = (c11 + 2.0 * c12) / 3.0;
-    let _gamma = 2.0;
-    let kb = 8.617333e-5;
-    let cv = 3.0 * kb;
-    let b_ev = bulk_mod / 160.2176634;
-    let _n_cells_val = n_cells;
-    if b_ev.abs() < 1e-20 {
-        return 1e-5;
-    }
-    2.0 * cv / (3.0 * b_ev.abs() * vol)
 }

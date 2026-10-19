@@ -282,7 +282,16 @@ impl TwoWayCoupling {
         }
     }
     /// BGK collision with body force (Guo forcing scheme).
+    ///
+    /// The velocity entering the equilibrium is the half-force corrected
+    /// `u = (Σ c f + F/2) / ρ`, and the populations are updated with
+    ///
+    /// `f_i += -(f_i - f_i^eq) / τ + (1 - 1/(2τ)) w_i [ (c_i - u)/cs² + (c_i·u) c_i/cs⁴ ]·F`.
+    ///
+    /// The source term adds the momentum `F` (and no mass) per collision, so a
+    /// node at rest gains exactly `F` in `Σ c f`.
     pub fn collide_with_force(&mut self) {
+        let guo_prefactor = 1.0 - 1.0 / (2.0 * self.tau);
         for k in 0..self.n_nodes {
             let rho: f64 = self.f[k].iter().sum();
             let fx = self.body_force[k][0];
@@ -297,18 +306,17 @@ impl TwoWayCoupling {
                 (ux + 0.5 * fx) / rho.max(1e-15),
                 (uy + 0.5 * fy) / rho.max(1e-15),
             ];
+            let u2 = u[0] * u[0] + u[1] * u[1];
+            let uf = u[0] * fx + u[1] * fy;
             for i in 0..9 {
                 let w = D2Q9_WEIGHTS[i];
                 let c = D2Q9_VELOCITIES[i];
                 let eu = c[0] as f64 * u[0] + c[1] as f64 * u[1];
-                let u2 = u[0] * u[0] + u[1] * u[1];
                 let feq =
                     w * rho * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u2 / (2.0 * CS2));
                 let ec = c[0] as f64 * fx + c[1] as f64 * fy;
-                let eu_sum = c[0] as f64 * u[0] + c[1] as f64 * u[1];
-                let fi =
-                    w * ((1.0 - 1.0 / (2.0 * self.tau)) * (ec / CS2 + eu_sum * ec / (CS2 * CS2)));
-                self.f[k][i] -= (self.f[k][i] - feq) / self.tau + fi;
+                let fi = guo_prefactor * w * ((ec - uf) / CS2 + eu * ec / (CS2 * CS2));
+                self.f[k][i] += -(self.f[k][i] - feq) / self.tau + fi;
             }
         }
     }
@@ -571,11 +579,13 @@ impl HybridLbmNs {
 }
 /// Grid refinement interface: fine-to-coarse rescaling with buffer layers.
 ///
-/// Implements the Filippova-Hänel / Rohde-Dünweg rescaling algorithm
-/// for distribution functions at grid refinement interfaces.
+/// Implements the Dupuis-Chopard rescaling of the non-equilibrium populations
+/// at grid refinement interfaces under acoustic scaling (`dt ∝ dx`, hence
+/// `τ_f - 1/2 = r (τ_c - 1/2)`).
 ///
 /// References:
 /// - Filippova, O. & Hänel, D. (1998). *J. Comput. Phys.* 147, 219–228.
+/// - Dupuis, A. & Chopard, B. (2003). *Phys. Rev. E* 67, 066707.
 /// - Rohde, M. et al. (2006). *Comput. Fluids* 35, 1121–1134.
 #[derive(Debug, Clone)]
 pub struct GridRefinementInterface {
@@ -583,7 +593,7 @@ pub struct GridRefinementInterface {
     pub refinement_ratio: usize,
     /// Relaxation time on coarse grid τ_c.
     pub tau_coarse: f64,
-    /// Relaxation time on fine grid τ_f = τ_c / r + 0.5 (1 - 1/r).
+    /// Relaxation time on fine grid τ_f = r (τ_c - 1/2) + 1/2.
     pub tau_fine: f64,
     /// Buffer layer width in coarse cells.
     pub buffer_width: usize,
@@ -606,8 +616,7 @@ impl GridRefinementInterface {
         tau_coarse: f64,
         buffer_width: usize,
     ) -> Self {
-        let r = refinement_ratio as f64;
-        let tau_fine = (tau_coarse - 0.5) / r + 0.5;
+        let tau_fine = fine_relaxation_time(tau_coarse, refinement_ratio);
         let f_eq: [f64; 9] = D2Q9_WEIGHTS.map(|w| w * 1.0);
         Self {
             refinement_ratio,
@@ -618,24 +627,24 @@ impl GridRefinementInterface {
             f_fine_iface: vec![f_eq; n_iface * refinement_ratio],
         }
     }
-    /// Rescale distribution from coarse to fine grid (Filippova-Hänel).
+    /// Rescale distribution from coarse to fine grid (Dupuis-Chopard).
     ///
-    /// f_f = f_eq(ρ,u) + (f_c - f_eq_c) * τ_c / τ_f
+    /// f_f = f_eq(ρ,u) + (f_c - f_eq(ρ,u)) * τ_f / (r τ_c)
     pub fn coarse_to_fine_rescale(&self, f_c: &[f64; 9], rho: f64, u: [f64; 2]) -> [f64; 9] {
         let feq_c = lbm_equilibrium(rho, u);
-        let scale = self.tau_coarse / self.tau_fine;
+        let scale = coarse_to_fine_scale(self.tau_coarse, self.tau_fine, self.refinement_ratio);
         let mut f_f = [0.0f64; 9];
         for alpha in 0..9 {
             f_f[alpha] = feq_c[alpha] + (f_c[alpha] - feq_c[alpha]) * scale;
         }
         f_f
     }
-    /// Rescale distribution from fine to coarse grid.
+    /// Rescale distribution from fine to coarse grid (Dupuis-Chopard).
     ///
-    /// f_c = f_eq(ρ,u) + (f_f - f_eq_f) * τ_f / τ_c
+    /// f_c = f_eq(ρ,u) + (f_f - f_eq(ρ,u)) * r τ_c / τ_f
     pub fn fine_to_coarse_rescale(&self, f_f: &[f64; 9], rho: f64, u: [f64; 2]) -> [f64; 9] {
         let feq_f = lbm_equilibrium(rho, u);
-        let scale = self.tau_fine / self.tau_coarse;
+        let scale = fine_to_coarse_scale(self.tau_coarse, self.tau_fine, self.refinement_ratio);
         let mut f_c = [0.0f64; 9];
         for alpha in 0..9 {
             f_c[alpha] = feq_f[alpha] + (f_f[alpha] - feq_f[alpha]) * scale;
@@ -1188,9 +1197,13 @@ impl AdaptiveMesh {
     }
     /// Refine node `idx` into four children (NW, NE, SW, SE).
     ///
+    /// `tau_parent` is the BGK relaxation time of the parent cell.  The
+    /// children (half the spacing and time step) use `2 (τ_p - 1/2) + 1/2` and
+    /// inherit the parent's populations through the Dupuis-Chopard rescaling.
+    ///
     /// Returns the indices of the four child nodes, or `None` if already at
     /// `max_level` or if the node is not a leaf.
-    pub fn refine(&mut self, idx: usize) -> Option<[usize; 4]> {
+    pub fn refine(&mut self, idx: usize, tau_parent: f64) -> Option<[usize; 4]> {
         if !self.nodes[idx].is_leaf() {
             return None;
         }
@@ -1215,8 +1228,11 @@ impl AdaptiveMesh {
         let parent_f = self.nodes[idx].f;
         let parent_rho = self.nodes[idx].rho;
         let parent_u = self.nodes[idx].u;
+        let tau_child = fine_relaxation_time(tau_parent, 2);
         for mut child in children {
-            child.f = coarse_to_fine_pop(&parent_f, parent_rho, parent_u, child.u);
+            child.f = coarse_to_fine_pop(
+                &parent_f, parent_rho, parent_u, parent_u, tau_parent, tau_child, 2,
+            );
             child.rho = parent_rho;
             child.u = parent_u;
             self.nodes.push(child);
@@ -1319,36 +1335,24 @@ impl PatchedGrid {
             }
         }
     }
-    /// Restrict fine grid values to coarse grid (volume averaging).
+    /// Restrict fine grid values to coarse grid by injection.
+    ///
+    /// The grids are vertex-centred: coarse node `(xc, yc)` coincides with fine
+    /// node `(xc * ratio, yc * ratio)`, the node `prolongate` interpolates
+    /// from.  Each coarse node takes the value of its coincident fine node, so
+    /// `restrict` after `prolongate` reproduces `f_coarse` exactly and a
+    /// uniform fine field restricts to the same uniform field (no `ratio²`
+    /// density factor).
     pub fn restrict(&mut self) {
         let r = self.ratio;
-        let nxc = self.nx_coarse;
-        let nyc = self.ny_coarse;
-        let nxf = self.nx_fine;
-        let r2 = (r * r) as f64;
-        for yc in 0..nyc {
-            for xc in 0..nxc {
-                let kc = yc * nxc + xc;
-                let mut sum = [0.0_f64; 9];
-                let mut count = 0usize;
-                let xf_start = xc * r;
-                let yf_start = yc * r;
-                let xf_end = ((xc + 1) * r).min(self.nx_fine);
-                let yf_end = ((yc + 1) * r).min(self.ny_fine);
-                for yf in yf_start..yf_end {
-                    for xf in xf_start..xf_end {
-                        let kf = yf * nxf + xf;
-                        for (s, &ff) in sum.iter_mut().zip(self.f_fine[kf].iter()) {
-                            *s += ff;
-                        }
-                        count += 1;
-                    }
-                }
-                if count > 0 {
-                    let scale = count as f64 / r2;
-                    for (fc, &s) in self.f_coarse[kc].iter_mut().zip(sum.iter()) {
-                        *fc = s / scale.max(1.0);
-                    }
+        for yc in 0..self.ny_coarse {
+            for xc in 0..self.nx_coarse {
+                let kf = yc * r * self.nx_fine + xc * r;
+                let kc = yc * self.nx_coarse + xc;
+                if let (Some(&f_fine), Some(f_coarse)) =
+                    (self.f_fine.get(kf), self.f_coarse.get_mut(kc))
+                {
+                    *f_coarse = f_fine;
                 }
             }
         }
@@ -1650,11 +1654,11 @@ pub struct SpaceTimeLbm {
 impl SpaceTimeLbm {
     /// Create a new space-time LBM coupling.
     ///
-    /// `tau_coarse` is the coarse relaxation time; `tau_fine` is derived via
-    /// the Filippova-Hänel rescaling: τ_f = τ_c/2 + 0.5*(1 - 1/ratio).
+    /// `tau_coarse` is the coarse relaxation time; `tau_fine` follows from
+    /// acoustic scaling: τ_f = ratio (τ_c - 1/2) + 1/2.
     pub fn new(n_coarse: usize, ratio: usize, tau_coarse: f64) -> Self {
         let n_fine = n_coarse * ratio;
-        let tau_fine = tau_coarse / 2.0 + 0.5 * (1.0 - 1.0 / ratio as f64);
+        let tau_fine = fine_relaxation_time(tau_coarse, ratio);
         let f_init: [f64; 9] = D2Q9_WEIGHTS.map(|w| w * 1.0);
         Self {
             f_coarse_n: vec![f_init; n_coarse],

@@ -5,6 +5,7 @@
 use oxiphysics_core::math::Vec3;
 use std::io::Write;
 
+use super::mixed::{fixed_rows, mixed_rows};
 use super::types::{
     XdmfAttribute, XdmfFieldDescriptor, XdmfMeshPatch, XdmfMeshTimeSeries, XdmfTopologyType,
     XdmfUniformGrid,
@@ -313,6 +314,15 @@ pub fn xdmf_tensor6_attribute(name: &str, tensors: &[[f64; 6]]) -> String {
 /// `nodes` are 3-D point coordinates; `connectivity` is a flat list of
 /// node indices, grouped by element (length must be a multiple of
 /// `topo.nodes_per_element()`).
+///
+/// For [`XdmfTopologyType::Mixed`] there is no fixed element size, so
+/// `connectivity` is an XDMF mixed stream instead: one `[cell type, node
+/// ids...]` entry per element (`Triangle = 4`, `Quadrilateral = 5`,
+/// `Tetrahedron = 6`, `Pyramid = 7`, `Wedge = 8`, `Hexahedron = 9`; see
+/// [`xdmf_mixed_element_count`](super::mixed::xdmf_mixed_element_count)). It is
+/// validated before anything is written: an unknown cell-type code or an
+/// element that runs past the end of the stream returns an
+/// [`std::io::ErrorKind::InvalidInput`] error.
 pub fn write_xdmf_unstructured<W: Write>(
     writer: &mut W,
     topo: XdmfTopologyType,
@@ -322,7 +332,23 @@ pub fn write_xdmf_unstructured<W: Write>(
 ) -> std::io::Result<()> {
     let n_nodes = nodes.len();
     let npe = topo.nodes_per_element();
-    let n_elements = connectivity.len().checked_div(npe).unwrap_or(0);
+    let (n_elements, data_type, dimensions, rows) = if topo == XdmfTopologyType::Mixed {
+        let rows = mixed_rows(connectivity)?;
+        (
+            rows.len(),
+            " DataType=\"Int\"",
+            connectivity.len().to_string(),
+            rows,
+        )
+    } else {
+        let n_elements = connectivity.len().checked_div(npe).unwrap_or(0);
+        (
+            n_elements,
+            "",
+            format!("{n_elements} {npe}"),
+            fixed_rows(connectivity, npe),
+        )
+    };
     writeln!(writer, "<?xml version=\"1.0\"?>")?;
     writeln!(writer, "<Xdmf Version=\"3.0\">")?;
     writeln!(writer, "  <Domain>")?;
@@ -335,12 +361,10 @@ pub fn write_xdmf_unstructured<W: Write>(
     )?;
     writeln!(
         writer,
-        "        <DataItem Format=\"XML\" Dimensions=\"{} {}\">",
-        n_elements, npe
+        "        <DataItem Format=\"XML\"{data_type} Dimensions=\"{dimensions}\">"
     )?;
-    for chunk in connectivity.chunks(npe) {
-        let row: Vec<String> = chunk.iter().map(|&i| i.to_string()).collect();
-        writeln!(writer, "          {}", row.join(" "))?;
+    for row in &rows {
+        writeln!(writer, "          {row}")?;
     }
     writeln!(writer, "        </DataItem>")?;
     writeln!(writer, "      </Topology>")?;
@@ -747,7 +771,7 @@ mod tests {
     fn mesh_series_to_xml_contains_temporal() {
         let mut ms = XdmfMeshTimeSeries::new();
         ms.add_step(make_tri_step(0.0));
-        let xml = ms.to_xml();
+        let xml = ms.to_xml().unwrap();
         assert!(xml.contains("Temporal"));
         assert!(xml.contains("Triangle"));
         assert!(xml.contains("0 1 2"));
@@ -759,7 +783,7 @@ mod tests {
             .push(("temperature".into(), vec![300.0, 310.0, 305.0]));
         let mut ms = XdmfMeshTimeSeries::new();
         ms.add_step(step);
-        let xml = ms.to_xml();
+        let xml = ms.to_xml().unwrap();
         assert!(xml.contains("temperature"));
         assert!(xml.contains("310"));
     }
@@ -772,7 +796,7 @@ mod tests {
         ));
         let mut ms = XdmfMeshTimeSeries::new();
         ms.add_step(step);
-        let xml = ms.to_xml();
+        let xml = ms.to_xml().unwrap();
         assert!(xml.contains("velocity"));
         assert!(xml.contains("Vector"));
     }
@@ -1415,7 +1439,7 @@ mod tests_xdmf_new {
             node_scalars: vec![("T".to_string(), vec![300.0, 310.0, 320.0])],
             node_vectors: vec![("v".to_string(), vec![[1.0, 0.0, 0.0]; 3])],
         });
-        let xml = ms.to_xml();
+        let xml = ms.to_xml().unwrap();
         assert!(xdmf_is_well_formed(&xml));
         assert!(xml.contains("MeshTimeSeries"));
         assert!(xml.contains("Time Value=\"0.5\""));

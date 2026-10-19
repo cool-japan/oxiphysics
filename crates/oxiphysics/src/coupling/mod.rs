@@ -10,13 +10,73 @@
 //! ## Design
 //!
 //! Each simulation domain (FEM, SPH, MD, …) implements `CouplingDomain`.
-//! Two domains are linked by a `DomainCoupler` that calls
-//! `sample_interface` on both sides, computes interface forces, and calls
-//! `apply_interface_force` to push those forces back.
+//! Two domains are linked by a `DomainCoupler`.  The coupler owns the
+//! interface geometry ([`DomainCoupler::interface_sites`]); on every step the
+//! runtime samples *both* domains at exactly those sites
+//! (`sample_interface`), hands the two state lists to the coupler, and pushes
+//! the forces it returns back with `apply_interface_force`.
+//!
+//! ## Sign and unit convention
+//!
+//! The penalty couplers shipped here ([`fem_sph::FemSphCoupler`] and
+//! [`md_continuum_adapter::MdContinuumAdapter`]) act as a spring-damper
+//! between the two sides of every interface site:
+//!
+//! ```text
+//! f   = k (x_a - x_b) + c (v_a - v_b)        [N]   (k in N/m, c in N·s/m)
+//! F_a = -f      F_b = +f                           (Newton's third law)
+//! ```
+//!
+//! so the force on side A pulls it towards B and damps the relative velocity.
+//! Forces are in newtons; a domain that integrates them itself turns them into
+//! a velocity change with `Δv = F · dt / m`, which is why
+//! [`CouplingDomain::apply_interface_force`] receives the step length.
 //!
 //! A `CouplingRuntime` owns all domains and couplers. A *schedule* is a
 //! list of `(coupler_idx, domain_a_idx, domain_b_idx)` triples evaluated
 //! in order on every `CouplingRuntime::step` call.
+//!
+//! ## Example
+//!
+//! An MD particle at `x = 1` and a continuum node at `x = 0` are tied together
+//! by an over-damped penalty spring.  The coupler owns the interface (one
+//! site; its `id` is the local index of the particle / node in each domain), and
+//! the runtime closes the gap between the two without overshooting:
+//!
+//! ```
+//! use oxiphysics::coupling::md_continuum_adapter::{
+//!     MdContinuumAdapter, MockContinuumDomain, MockMdDomain,
+//! };
+//! use oxiphysics::coupling::{CouplingRuntime, InterfaceSite};
+//!
+//! let md = MockMdDomain::from_particles(vec![[1.0, 0.0, 0.0]], vec![[0.0; 3]], vec![1.0]);
+//! let continuum = MockContinuumDomain::from_nodes(vec![[0.0; 3]], vec![[0.0; 3]], vec![1.0]);
+//! let sites = vec![InterfaceSite {
+//!     id: 0,
+//!     position: [0.5, 0.0, 0.0],
+//! }];
+//!
+//! let mut runtime = CouplingRuntime::new();
+//! let md_idx = runtime.add_domain(Box::new(md));
+//! let continuum_idx = runtime.add_domain(Box::new(continuum));
+//! // k = 100 N/m, c = 40 N·s/m: over-damped for two 1 kg masses.
+//! let coupler = runtime.add_coupler(Box::new(MdContinuumAdapter::new(sites.clone(), 100.0, 40.0)));
+//! runtime.schedule_pair(coupler, md_idx, continuum_idx);
+//!
+//! let position = |runtime: &CouplingRuntime, idx: usize| {
+//!     let domain = runtime.domain(idx).expect("domain is registered");
+//!     domain.sample_interface(&sites).states[0].position[0]
+//! };
+//! let mut gap = position(&runtime, md_idx) - position(&runtime, continuum_idx);
+//! assert_eq!(gap, 1.0);
+//! for _ in 0..50 {
+//!     let reports = runtime.step(0.002);
+//!     assert_eq!(reports[0].site_count, 1);
+//!     let new_gap = position(&runtime, md_idx) - position(&runtime, continuum_idx);
+//!     assert!(new_gap < gap && new_gap > 0.0);
+//!     gap = new_gap;
+//! }
+//! ```
 
 pub mod conservation;
 pub mod fem_sph;
@@ -62,6 +122,17 @@ pub struct InterfaceForce {
     pub id: u64,
     /// Force vector in world coordinates.
     pub force: [f64; 3],
+}
+
+impl InterfaceSite {
+    /// The domain-local node / particle index denoted by [`id`](Self::id).
+    ///
+    /// `None` when the id does not fit in `usize` (possible on 32-bit targets),
+    /// in which case no local node can carry it.
+    #[inline]
+    pub(crate) fn local_index(id: u64) -> Option<usize> {
+        usize::try_from(id).ok()
+    }
 }
 
 /// Owned list of [`InterfaceState`] entries — heap-allocated, not `Copy`.
@@ -115,7 +186,9 @@ pub struct CouplingReport {
     pub momentum_a_to_b: [f64; 3],
     /// Total momentum exchanged from domain B to domain A (`[fx, fy, fz] * dt`).
     pub momentum_b_to_a: [f64; 3],
-    /// RMS position mismatch across all sites at the end of this step.
+    /// RMS position mismatch across all sites, measured on the states that
+    /// were sampled at the start of this step (before the coupling forces of
+    /// this step were applied).
     pub rms_position_error: f64,
 }
 
@@ -152,11 +225,15 @@ pub trait CouplingDomain: Send + Sync {
     /// entries, in the same order as `sites`.
     fn sample_interface(&self, sites: &[InterfaceSite]) -> InterfaceStateVec;
 
-    /// Apply the given interface forces to this domain's degrees of freedom.
+    /// Apply the given interface forces (newtons) to this domain's degrees of
+    /// freedom for a coupling step of duration `dt` (seconds).
     ///
-    /// Forces are typically accumulated into the domain's internal force
-    /// vector for the next integration step.
-    fn apply_interface_force(&mut self, forces: &InterfaceForceVec);
+    /// A production domain typically accumulates the forces into its internal
+    /// force vector for its next integration step and may ignore `dt`.  A
+    /// domain that integrates the forces right away (such as the mock domains
+    /// in this module) uses it to convert force into a velocity change,
+    /// `Δv = F · dt / m`.
+    fn apply_interface_force(&mut self, forces: &InterfaceForceVec, dt: f64);
 }
 
 /// A coupler that computes interface forces between two coupled domains.
@@ -166,6 +243,15 @@ pub trait CouplingDomain: Send + Sync {
 /// and produces two sets of forces (one for each side) together with a
 /// diagnostic [`CouplingReport`].
 pub trait DomainCoupler: Send + Sync {
+    /// The interface sites this coupler exchanges data across.
+    ///
+    /// [`CouplingRuntime::step`] samples both coupled domains at exactly these
+    /// sites and passes the results to [`step`](DomainCoupler::step); element
+    /// `i` of `state_a` and element `i` of `state_b` therefore describe the same
+    /// physical interface site.  Each domain interprets
+    /// [`InterfaceSite::id`] as its own local node / particle index.
+    fn interface_sites(&self) -> &[InterfaceSite];
+
     /// Compute coupling forces and return a [`CouplingReport`].
     ///
     /// `dt` — the physical time step duration (seconds).
@@ -269,33 +355,22 @@ impl CouplingRuntime {
         let mut reports = Vec::with_capacity(schedule.len());
 
         for (coupler_idx, idx_a, idx_b) in schedule {
-            // Collect the interface sites that the coupler knows about.
-            // We drive the coupler with a fixed set of sites derived from the
-            // coupler's own state (it owns the InterfaceSite list).  Here we
-            // let the coupler tell us what sites it needs by sampling from the
-            // domain objects.
-            //
-            // For the generic runtime, we define the site list as the union
-            // of positions currently held by domain A.  Real couplers supply
-            // their own site geometry — here we just need *something* to pass.
-            //
-            // We collect the states first with immutable refs, then apply
-            // forces with mutable refs, using split_at_mut to satisfy the
-            // borrow checker when idx_a != idx_b.
-
-            let (state_a, state_b) = if idx_a == idx_b {
-                // Degenerate: same domain on both sides (self-coupling).
-                let s = self.domains[idx_a].sample_interface(&[]);
-                (
-                    InterfaceStateVec {
-                        states: s.states.clone(),
-                    },
-                    InterfaceStateVec { states: s.states },
-                )
-            } else {
-                let sa = self.domains[idx_a].sample_interface(&[]);
-                let sb = self.domains[idx_b].sample_interface(&[]);
-                (sa, sb)
+            // The coupler owns the interface geometry: sample both domains at
+            // exactly its sites so that state_a[i] and state_b[i] describe the
+            // same interface site.  The sites are only borrowed (they live in
+            // `self.couplers`, the domains in `self.domains`), so nothing is
+            // copied.  The states are collected with shared borrows first;
+            // the forces are applied afterwards with mutable ones.
+            let (state_a, state_b) = {
+                let sites = self.couplers[coupler_idx].interface_sites();
+                let state_a = self.domains[idx_a].sample_interface(sites);
+                let state_b = if idx_a == idx_b {
+                    // Degenerate: same domain on both sides (self-coupling).
+                    state_a.clone()
+                } else {
+                    self.domains[idx_b].sample_interface(sites)
+                };
+                (state_a, state_b)
             };
 
             let (forces_a, forces_b, report) =
@@ -303,16 +378,16 @@ impl CouplingRuntime {
 
             // Apply forces back — need two mutable borrows on distinct elements.
             if idx_a == idx_b {
-                self.domains[idx_a].apply_interface_force(&forces_a);
+                self.domains[idx_a].apply_interface_force(&forces_a, dt);
             } else if idx_a < idx_b {
                 let (left, right) = self.domains.split_at_mut(idx_b);
-                left[idx_a].apply_interface_force(&forces_a);
-                right[0].apply_interface_force(&forces_b);
+                left[idx_a].apply_interface_force(&forces_a, dt);
+                right[0].apply_interface_force(&forces_b, dt);
             } else {
                 // idx_b < idx_a
                 let (left, right) = self.domains.split_at_mut(idx_a);
-                left[idx_b].apply_interface_force(&forces_b);
-                right[0].apply_interface_force(&forces_a);
+                left[idx_b].apply_interface_force(&forces_b, dt);
+                right[0].apply_interface_force(&forces_a, dt);
             }
 
             reports.push(report);
@@ -324,6 +399,15 @@ impl CouplingRuntime {
     /// Return the number of registered domains.
     pub fn domain_count(&self) -> usize {
         self.domains.len()
+    }
+
+    /// Borrow the registered domain with index `idx` (as returned by
+    /// [`add_domain`](Self::add_domain)), or `None` if there is no such domain.
+    ///
+    /// Useful to inspect a domain's state between steps, e.g. by calling
+    /// [`CouplingDomain::sample_interface`] on it.
+    pub fn domain(&self, idx: usize) -> Option<&dyn CouplingDomain> {
+        self.domains.get(idx).map(|domain| &**domain)
     }
 
     /// Return the number of registered couplers.

@@ -5,6 +5,7 @@
 use std::f64::consts::PI;
 
 use super::functions::vec3_norm;
+use crate::error::{Error, Result};
 
 /// Regular and irregular wave load models.
 ///
@@ -1628,21 +1629,43 @@ impl RadiationDampingMatrix {
         vel.iter().zip(fv.iter()).map(|(v, f)| v * f).sum()
     }
 }
+/// Newmark-β parameter of the average-acceleration scheme used by
+/// [`PartitionedFsiCoupling`].
+const NEWMARK_BETA: f64 = 0.25;
+/// Newmark-γ parameter of the average-acceleration scheme.
+const NEWMARK_GAMMA: f64 = 0.5;
+/// Lower bound of the Aitken relaxation factor.
+const AITKEN_OMEGA_MIN: f64 = 1.0e-3;
+
 /// Partitioned FSI coupling scheme (weakly or strongly coupled).
 ///
 /// In a partitioned approach the fluid and structural solvers are called
 /// separately and exchange boundary-condition information at the interface.
+/// Here the structure (mass, damping and stiffness at the interface) is
+/// advanced with the Newmark-β average-acceleration scheme (β = ¼, γ = ½) from
+/// the state committed at the end of the previous step, and the interface
+/// displacement iterate is relaxed with Aitken's dynamic relaxation.
+///
+/// A time step runs [`sub_iterate`](Self::sub_iterate) with the fluid force of
+/// the current iterate until the residual drops below `displacement_tol`, then
+/// commits the step with [`advance_step`](Self::advance_step);
+/// [`solve_step`](Self::solve_step) does both.
 pub struct PartitionedFsiCoupling {
     /// Maximum number of sub-iterations per time step (strongly coupled).
     pub max_iterations: u32,
     /// Convergence tolerance on interface displacement (metres).
     pub displacement_tol: f64,
-    /// Under-relaxation factor ω ∈ (0, 1].
+    /// Under-relaxation factor ω ∈ (0, 1] of the first sub-iteration of every
+    /// step.  From the second sub-iteration on, Aitken's formula chooses ω.
     pub relaxation: f64,
-    /// Current interface displacement (metres).
+    /// Current interface displacement iterate (metres).
     pub interface_displacement: f64,
-    /// Current interface velocity (m/s).
+    /// Interface velocity implied by the current displacement iterate through
+    /// the Newmark relations (m/s).
     pub interface_velocity: f64,
+    /// Interface acceleration implied by the current displacement iterate
+    /// through the Newmark relations (m/s²).
+    pub interface_acceleration: f64,
     /// Fluid force on interface (N).
     pub fluid_force: f64,
     /// Structural stiffness at interface (N/m).
@@ -1651,40 +1674,224 @@ pub struct PartitionedFsiCoupling {
     pub structural_damping: f64,
     /// Structural mass at interface (kg).
     pub structural_mass: f64,
+    /// Displacement committed at the end of the previous step (metres).
+    pub step_displacement: f64,
+    /// Velocity committed at the end of the previous step (m/s).
+    pub step_velocity: f64,
+    /// Acceleration committed at the end of the previous step (m/s²).
+    pub step_acceleration: f64,
+    /// Aitken relaxation factor used by the latest sub-iteration.
+    pub omega: f64,
+    /// Displacement residual of the previous sub-iteration of the current
+    /// step; `None` before the first one.
+    pub previous_residual: Option<f64>,
 }
 impl PartitionedFsiCoupling {
     /// Create a partitioned FSI coupler.
     pub fn new(structural_mass: f64, structural_stiffness: f64, structural_damping: f64) -> Self {
+        let relaxation = 0.5;
         Self {
             max_iterations: 20,
             displacement_tol: 1e-6,
-            relaxation: 0.5,
+            relaxation,
             interface_displacement: 0.0,
             interface_velocity: 0.0,
+            interface_acceleration: 0.0,
             fluid_force: 0.0,
             structural_stiffness,
             structural_damping,
             structural_mass,
+            step_displacement: 0.0,
+            step_velocity: 0.0,
+            step_acceleration: 0.0,
+            omega: relaxation,
+            previous_residual: None,
         }
     }
-    /// Perform one sub-iteration using Aitken acceleration.
+    /// Start (or restart) a run from the given interface state.
     ///
-    /// `fluid_force` is the new fluid force predicted for this sub-iteration.
-    /// Returns the displacement residual.
-    pub fn sub_iterate(&mut self, fluid_force: f64, dt: f64) -> f64 {
+    /// `fluid_force` is the force acting at that state; together with the
+    /// structural properties it fixes the initial acceleration
+    /// `a₀ = (F₀ − c v₀ − k d₀) / m`.  The state becomes both the committed
+    /// state of the previous step and the current iterate.
+    pub fn set_initial_state(&mut self, displacement: f64, velocity: f64, fluid_force: f64) {
+        let acceleration = if self.structural_mass > 0.0 {
+            (fluid_force
+                - self.structural_damping * velocity
+                - self.structural_stiffness * displacement)
+                / self.structural_mass
+        } else {
+            0.0
+        };
+        self.step_displacement = displacement;
+        self.step_velocity = velocity;
+        self.step_acceleration = acceleration;
+        self.interface_displacement = displacement;
+        self.interface_velocity = velocity;
+        self.interface_acceleration = acceleration;
         self.fluid_force = fluid_force;
-        let beta = 0.25_f64;
-        let gamma = 0.5_f64;
-        let k = self.structural_stiffness;
-        let c = self.structural_damping;
-        let m = self.structural_mass;
-        let k_eff = k + gamma / (beta * dt) * c + 1.0 / (beta * dt * dt) * m;
-        let d_new = (fluid_force) / k_eff.max(1e-15);
-        let residual = (d_new - self.interface_displacement).abs();
-        self.interface_displacement =
-            self.relaxation * d_new + (1.0 - self.relaxation) * self.interface_displacement;
-        self.interface_velocity = (d_new) / dt;
-        residual
+        self.reset_aitken();
+    }
+    /// Relaxation factor of the first sub-iteration, kept inside `(0, 1]`.
+    fn initial_omega(&self) -> f64 {
+        if self.relaxation.is_finite() && self.relaxation > 0.0 {
+            self.relaxation.min(1.0)
+        } else {
+            0.5
+        }
+    }
+    fn reset_aitken(&mut self) {
+        self.previous_residual = None;
+        self.omega = self.initial_omega();
+    }
+    /// Newmark effective stiffness `k + γ c / (β Δt) + m / (β Δt²)`.
+    fn effective_stiffness(&self, dt: f64) -> f64 {
+        self.structural_stiffness
+            + NEWMARK_GAMMA / (NEWMARK_BETA * dt) * self.structural_damping
+            + self.structural_mass / (NEWMARK_BETA * dt * dt)
+    }
+    /// Newmark effective load: the fluid force plus the inertial and damping
+    /// terms that carry the committed displacement, velocity and acceleration
+    /// into the new step.
+    fn effective_force(&self, fluid_force: f64, dt: f64) -> f64 {
+        let (beta, gamma) = (NEWMARK_BETA, NEWMARK_GAMMA);
+        let (d, v, a) = (
+            self.step_displacement,
+            self.step_velocity,
+            self.step_acceleration,
+        );
+        let inertial = self.structural_mass
+            * (d / (beta * dt * dt) + v / (beta * dt) + (1.0 / (2.0 * beta) - 1.0) * a);
+        let damping = self.structural_damping
+            * (gamma * d / (beta * dt)
+                + (gamma / beta - 1.0) * v
+                + dt * (gamma / (2.0 * beta) - 1.0) * a);
+        fluid_force + inertial + damping
+    }
+    /// Velocity and acceleration at the end of the step for the displacement
+    /// `displacement`, from the Newmark relations and the committed state.
+    fn newmark_kinematics(&self, displacement: f64, dt: f64) -> (f64, f64) {
+        let (beta, gamma) = (NEWMARK_BETA, NEWMARK_GAMMA);
+        let (v, a) = (self.step_velocity, self.step_acceleration);
+        let change = displacement - self.step_displacement;
+        let acceleration =
+            change / (beta * dt * dt) - v / (beta * dt) - (1.0 / (2.0 * beta) - 1.0) * a;
+        let velocity = gamma / (beta * dt) * change
+            - (gamma / beta - 1.0) * v
+            - dt * (gamma / (2.0 * beta) - 1.0) * a;
+        (velocity, acceleration)
+    }
+    /// Aitken relaxation factor for the new residual:
+    /// `ω_k = −ω_{k−1} r_{k−1} (r_k − r_{k−1}) / (r_k − r_{k−1})²`, clamped to
+    /// `(0, 1]`.  The first sub-iteration of a step uses the initial factor.
+    fn aitken_factor(&self, residual: f64) -> f64 {
+        let Some(previous) = self.previous_residual else {
+            return self.initial_omega();
+        };
+        let change = residual - previous;
+        let denominator = change * change;
+        if denominator.is_nan() || denominator <= 0.0 {
+            return self.omega;
+        }
+        let omega = -self.omega * previous * change / denominator;
+        if omega.is_finite() {
+            omega.clamp(AITKEN_OMEGA_MIN, 1.0)
+        } else {
+            self.omega
+        }
+    }
+    /// Perform one sub-iteration of the coupling with Aitken relaxation.
+    ///
+    /// `fluid_force` is the fluid force on the interface predicted for the
+    /// current iterate.  The structure answers with the displacement `d̃` that
+    /// the Newmark step to the end of the time step gives under that force,
+    /// `d̃ = F_eff / k_eff`; the residual is `r = d̃ − d`, and the iterate moves
+    /// to `d + ω r`.  The first sub-iteration of a step uses
+    /// [`relaxation`](Self::relaxation) for ω and later ones Aitken's formula.
+    /// The interface velocity and acceleration follow from the new iterate.
+    ///
+    /// Returns the magnitude of the displacement residual.  For a time step
+    /// that is not positive and finite, or a structure without effective
+    /// stiffness, nothing changes and the result is infinite, so the iteration
+    /// never counts as converged.
+    pub fn sub_iterate(&mut self, fluid_force: f64, dt: f64) -> f64 {
+        if !(dt.is_finite() && dt > 0.0) {
+            return f64::INFINITY;
+        }
+        let k_eff = self.effective_stiffness(dt);
+        if !(k_eff.is_finite() && k_eff > 0.0) {
+            return f64::INFINITY;
+        }
+        self.fluid_force = fluid_force;
+        let predicted = self.effective_force(fluid_force, dt) / k_eff;
+        let residual = predicted - self.interface_displacement;
+        let omega = self.aitken_factor(residual);
+        self.interface_displacement += omega * residual;
+        self.omega = omega;
+        self.previous_residual = Some(residual);
+        let (velocity, acceleration) = self.newmark_kinematics(self.interface_displacement, dt);
+        self.interface_velocity = velocity;
+        self.interface_acceleration = acceleration;
+        residual.abs()
+    }
+    /// Commit the current iterate as the state at the end of the time step of
+    /// length `dt`: the displacement, and the velocity and acceleration the
+    /// Newmark relations give for it, become the history of the next step and
+    /// the Aitken history starts afresh.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::General`] when `dt` is not positive and finite.
+    pub fn advance_step(&mut self, dt: f64) -> Result<()> {
+        if !(dt.is_finite() && dt > 0.0) {
+            return Err(Error::general(format!(
+                "time step must be positive and finite, got {dt}"
+            )));
+        }
+        let (velocity, acceleration) = self.newmark_kinematics(self.interface_displacement, dt);
+        self.step_displacement = self.interface_displacement;
+        self.step_velocity = velocity;
+        self.step_acceleration = acceleration;
+        self.interface_velocity = velocity;
+        self.interface_acceleration = acceleration;
+        self.reset_aitken();
+        Ok(())
+    }
+    /// Advance one time step of length `dt` with a strongly coupled iteration.
+    ///
+    /// `fluid_force(d, v)` returns the fluid force on the interface for the
+    /// interface displacement `d` and velocity `v` of the current iterate.  The
+    /// sub-iterations run until the residual is below
+    /// [`displacement_tol`](Self::displacement_tol), at most
+    /// [`max_iterations`](Self::max_iterations) times; the step is then
+    /// committed with [`advance_step`](Self::advance_step).
+    ///
+    /// Returns the number of sub-iterations used.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::General`] when `dt` is not positive and finite, and
+    /// [`Error::SolverNotConverged`] when the iteration does not converge; the
+    /// step is then not committed.
+    pub fn solve_step<F>(&mut self, dt: f64, mut fluid_force: F) -> Result<u32>
+    where
+        F: FnMut(f64, f64) -> f64,
+    {
+        if !(dt.is_finite() && dt > 0.0) {
+            return Err(Error::general(format!(
+                "time step must be positive and finite, got {dt}"
+            )));
+        }
+        let mut residual = f64::INFINITY;
+        for iteration in 1..=self.max_iterations {
+            let force = fluid_force(self.interface_displacement, self.interface_velocity);
+            residual = self.sub_iterate(force, dt);
+            if self.is_converged(residual) {
+                self.advance_step(dt)?;
+                return Ok(iteration);
+            }
+        }
+        Err(Error::solver_not_converged(self.max_iterations, residual))
     }
     /// Check convergence.
     pub fn is_converged(&self, residual: f64) -> bool {

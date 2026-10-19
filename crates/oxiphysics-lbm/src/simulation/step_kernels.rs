@@ -12,7 +12,8 @@
 //!
 //! * [`collide_field`] — fused BGK collision with the Guo forcing scheme and
 //!   an optional per-cell Smagorinsky relaxation time.
-//! * [`smagorinsky_tau`] — local relaxation time of the Smagorinsky model.
+//! * `smagorinsky_tau` — local relaxation time of the Smagorinsky model (shared
+//!   with the 2-D and channel-flow LES collisions of [`crate::turbulence`]).
 //! * [`rescale_field`] — re-expresses the populations in the lattice units of
 //!   a different time step (used when the caller changes `dt` between steps).
 //! * [`build_wall_links_3d`], [`apply_wall_links`], [`reset_solid_cells`] —
@@ -20,6 +21,7 @@
 
 use super::types::GuoForceParams;
 use crate::lattice::{CS2, Lattice};
+pub(super) use crate::turbulence::smagorinsky_tau;
 
 /// Largest number of discrete velocities supported (D3Q27).
 pub(super) const MAX_Q: usize = 27;
@@ -32,6 +34,8 @@ const RHO_FLOOR: f64 = 1e-15;
 /// velocities stored as floating-point triples (`c_z = 0` for D2Q9).
 #[derive(Debug, Clone)]
 pub(super) struct LatticeTable {
+    /// Number of spatial dimensions of the lattice (2 or 3).
+    pub(super) dim: usize,
     /// Number of discrete velocities.
     pub(super) q: usize,
     /// Quadrature weights `w_i`.
@@ -75,11 +79,29 @@ impl LatticeTable {
             })
             .collect();
         Self {
+            dim,
             q,
             weights,
             velocities,
             opposite,
         }
+    }
+
+    /// Drop the components of a force or velocity vector that lie outside the
+    /// lattice.
+    ///
+    /// A two-dimensional lattice has no z direction (`c_z = 0` for every
+    /// velocity).  A z component of the force would still enter the
+    /// force-shifted velocity `u = (sum f_i c_i + F/2) / rho` and spoil the
+    /// moments of the equilibrium (`sum_i w_i c_iz^2 = 0`, not `c_s^2`) and of
+    /// the Guo source, so mass would no longer be conserved.  Such components
+    /// are therefore ignored.
+    pub(super) fn restrict_to_lattice(&self, vector: [f64; 3]) -> [f64; 3] {
+        let mut restricted = vector;
+        for component in restricted.iter_mut().skip(self.dim) {
+            *component = 0.0;
+        }
+        restricted
     }
 }
 
@@ -92,7 +114,8 @@ pub(super) struct CollisionSetup {
     /// `c > 0`.
     pub(super) smagorinsky_cs: Option<f64>,
     /// Body force per unit volume acting during this step, in lattice units
-    /// (all zeros when no force is applied).
+    /// (all zeros when no force is applied).  The z component is ignored on
+    /// two-dimensional lattices.
     pub(super) force: [f64; 3],
 }
 
@@ -115,27 +138,6 @@ fn moments(pop: &[f64], velocities: &[[f64; 3]]) -> (f64, [f64; 3]) {
         mom[2] += fi * c[2];
     }
     (rho, mom)
-}
-
-/// Relaxation time of the Smagorinsky sub-grid-scale model in lattice units.
-///
-/// With the filter width equal to the lattice spacing, the eddy viscosity is
-/// `nu_t = (C_s)^2 |S|` and the non-equilibrium momentum flux satisfies
-/// `Pi_neq = -2 rho c_s^2 tau_eff S`, so that `|S| = ||Pi_neq|| /
-/// (sqrt(2) rho c_s^2 tau_eff)` where `||Pi_neq||` is the Frobenius norm.
-/// Requiring `tau_eff = tau_0 + C_s^2 |S| / c_s^2` gives the quadratic
-/// `tau_eff (tau_eff - tau_0) = C_s^2 ||Pi_neq|| / (sqrt(2) rho c_s^4)` whose
-/// positive root is returned.
-///
-/// # Arguments
-/// * `tau0`       – molecular relaxation time `1 / omega`
-/// * `cs_smag`    – Smagorinsky constant `C_s`
-/// * `pi_norm`    – Frobenius norm of the non-equilibrium momentum flux
-/// * `rho`        – local density
-pub(super) fn smagorinsky_tau(tau0: f64, cs_smag: f64, pi_norm: f64, rho: f64) -> f64 {
-    let discriminant = tau0 * tau0
-        + 4.0 * cs_smag * cs_smag * pi_norm / (std::f64::consts::SQRT_2 * rho * CS2 * CS2);
-    0.5 * (tau0 + discriminant.sqrt())
 }
 
 /// Local relaxation frequency of a cell.
@@ -183,7 +185,7 @@ pub(super) fn collide_cell(pop: &mut [f64], table: &LatticeTable, setup: &Collis
     if rho.is_nan() || rho <= RHO_FLOOR {
         return;
     }
-    let force = setup.force;
+    let force = table.restrict_to_lattice(setup.force);
     let inv_rho = 1.0 / rho;
     let u = [
         (mom[0] + 0.5 * force[0]) * inv_rho,
@@ -291,6 +293,7 @@ pub(super) fn rescale_field(
     solid: Option<&[bool]>,
 ) {
     let q = table.q;
+    let force_prev = table.restrict_to_lattice(force_prev);
     let mut pop = [0.0f64; MAX_Q];
 
     // Mean density of the fluid cells: the reference of the pressure scaling.

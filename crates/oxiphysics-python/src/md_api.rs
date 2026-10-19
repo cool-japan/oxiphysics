@@ -772,23 +772,31 @@ mod tests {
             ..PyMdConfig::default()
         };
         let mut sim = PyMdSimulation::new(cfg);
-        // Place two atoms very close — LJ will repel them
+        // 0.9 sigma apart: inside the potential minimum at 2^(1/6) sigma, so repulsive.
         sim.add_atom(vec![5.0, 5.0, 5.0], 0);
-        sim.add_atom(vec![5.1, 5.0, 5.0], 0); // 0.1σ apart — strong repulsion
-        let x0_0 = sim.position(0).expect("atom 0")[0];
-        let x0_1 = sim.position(1).expect("atom 1")[0];
-        for _ in 0..5 {
-            sim.step(0.0001);
-        }
-        let x1_0 = sim.position(0).expect("atom 0")[0];
-        let x1_1 = sim.position(1).expect("atom 1")[0];
-        // After repulsion atom 0 moves left and atom 1 moves right (approx)
-        let sep0 = (x0_1 - x0_0).abs();
-        let sep1 = (x1_1 - x1_0).abs();
+        sim.add_atom(vec![5.9, 5.0, 5.0], 0);
+        sim.ensure_forces();
         assert!(
-            sep1 > sep0 || sim.potential_energy() < 0.0 || sim.total_energy().is_finite(),
-            "LJ should change atom separation"
+            sim.potential_energy() > 1.0,
+            "a compressed pair stores repulsive energy, got {}",
+            sim.potential_energy()
         );
+        // Newton's third law: the two forces cancel and push the atoms apart.
+        let (f0, f1) = (sim.atoms[0].force, sim.atoms[1].force);
+        for k in 0..3 {
+            assert!((f0[k] + f1[k]).abs() < 1e-12, "force sum {k}");
+        }
+        assert!(f0[0] < 0.0 && f1[0] > 0.0, "forces {f0:?} {f1:?}");
+        let separation =
+            |sim: &PyMdSimulation| (sim.atoms[1].position[0] - sim.atoms[0].position[0]).abs();
+        let before = separation(&sim);
+        sim.run(0.001, 20);
+        assert!(
+            separation(&sim) > before,
+            "repulsion must widen the gap: {before} -> {}",
+            separation(&sim)
+        );
+        assert!(sim.total_energy().is_finite());
     }
 
     #[test]

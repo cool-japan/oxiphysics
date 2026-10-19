@@ -12,24 +12,38 @@ use super::functions::EquationOfState;
 use super::types::StiffenedGasEos;
 
 impl EquationOfState for StiffenedGasEos {
+    /// Pressure on the isentrope through the reference state `(ρ_ref, P_ref)`:
+    /// `P = (P_ref + p∞) (ρ/ρ_ref)^γ - p∞`.
+    ///
+    /// Non-positive densities give the zero-density limit `-p∞`.
     fn pressure(&self, density: f64) -> f64 {
-        let cv = 4186.0;
-        let e = cv * 288.15;
-        self.pressure_from_energy(density, e)
+        let stiffened_reference = self.reference_pressure + self.p_inf;
+        let compression = if density <= 0.0 {
+            0.0
+        } else {
+            density / self.reference_density
+        };
+        stiffened_reference * compression.powf(self.gamma) - self.p_inf
     }
+    /// Isentropic sound speed `c = √(γ (P + p∞) / ρ)`; 0 for non-positive densities.
     fn sound_speed(&self, density: f64) -> f64 {
-        let p = self.pressure(density);
-        if density.abs() < f64::EPSILON {
+        if density <= 0.0 {
             return 0.0;
         }
-        (self.gamma * (p + self.p_inf) / density).sqrt()
+        let stiffened_pressure = self.pressure(density) + self.p_inf;
+        (self.gamma * stiffened_pressure / density).sqrt()
     }
+    /// Exact inverse of [`pressure`](Self::pressure):
+    /// `ρ = ρ_ref ((P + p∞)/(P_ref + p∞))^(1/γ)`.
+    ///
+    /// Pressures at or below `-p∞` lie beyond the zero-density limit of the
+    /// isentrope and give density 0.
     fn density_from_pressure(&self, pressure: f64) -> f64 {
-        let cv = 4186.0;
-        let e = cv * 288.15;
-        if (self.gamma - 1.0).abs() < f64::EPSILON {
-            return self.reference_density;
+        let stiffened_pressure = pressure + self.p_inf;
+        if stiffened_pressure <= 0.0 {
+            return 0.0;
         }
-        (pressure + self.p_inf) / ((self.gamma - 1.0) * (e - self.reference_energy))
+        let stiffened_reference = self.reference_pressure + self.p_inf;
+        self.reference_density * (stiffened_pressure / stiffened_reference).powf(1.0 / self.gamma)
     }
 }

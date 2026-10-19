@@ -2,7 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::types::LammpsAtom;
 use crate::{Error, Result};
+use oxiphysics_core::math::Vec3;
+use std::io::Write;
 
 #[cfg(test)]
 mod tests {
@@ -539,31 +542,138 @@ Total wall time: 0:02:30
         assert!((l[2] - 10.0).abs() < 1e-10);
     }
 }
+/// Size in bytes of one atom record of the binary dump and restart formats:
+/// `id: i32`, `type: i32`, then `x y z vx vy vz` as six `f64`.
+pub(super) const ATOM_RECORD_BYTES: usize = 4 + 4 + 6 * 8;
+/// Take the next `N` bytes at `*pos` and advance past them.
+///
+/// The end offset is computed with `checked_add`, so an offset close to
+/// `usize::MAX` is an error and never an overflow.  `what` names the value in
+/// the error message.
+fn take_array<const N: usize>(data: &[u8], pos: &mut usize, what: &str) -> Result<[u8; N]> {
+    let start = *pos;
+    let end = start.checked_add(N).ok_or_else(|| {
+        Error::Parse(format!(
+            "binary LAMMPS data: offset {start} overflows while reading {what}"
+        ))
+    })?;
+    let bytes = data
+        .get(start..end)
+        .and_then(|slice| <[u8; N]>::try_from(slice).ok())
+        .ok_or_else(|| {
+            Error::Parse(format!(
+                "binary LAMMPS data: unexpected end of data reading {what} at offset {start} \
+                 (need {N} bytes, {} available)",
+                data.len().saturating_sub(start)
+            ))
+        })?;
+    *pos = end;
+    Ok(bytes)
+}
+/// Read a little-endian `i32` at `*pos` and advance.
 pub(super) fn read_i32_le(data: &[u8], pos: &mut usize) -> Result<i32> {
-    if *pos + 4 > data.len() {
-        return Err(Error::Parse("EOF reading i32".into()));
-    }
-    let v = i32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
-    *pos += 4;
-    Ok(v)
+    take_array(data, pos, "an i32").map(i32::from_le_bytes)
 }
+/// Read a little-endian `i64` at `*pos` and advance.
 pub(super) fn read_i64_le(data: &[u8], pos: &mut usize) -> Result<i64> {
-    if *pos + 8 > data.len() {
-        return Err(Error::Parse("EOF reading i64".into()));
-    }
-    let b = &data[*pos..*pos + 8];
-    let v = i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
-    *pos += 8;
-    Ok(v)
+    take_array(data, pos, "an i64").map(i64::from_le_bytes)
 }
+/// Read a little-endian `f64` at `*pos` and advance.
 pub(super) fn read_f64_le(data: &[u8], pos: &mut usize) -> Result<f64> {
-    if *pos + 8 > data.len() {
-        return Err(Error::Parse("EOF reading f64".into()));
+    take_array(data, pos, "an f64").map(f64::from_le_bytes)
+}
+/// Validate a record count read from a binary file.
+///
+/// The count is untrusted: a negative value would become an enormous `usize`
+/// and a large positive one would request an allocation the file cannot
+/// possibly back.  The count is accepted only when it is non-negative and
+/// `count * record_bytes` fits in the `remaining` bytes of the file, so it is
+/// safe to pass to `Vec::with_capacity` afterwards.
+pub(super) fn checked_record_count(
+    count: i64,
+    record_bytes: usize,
+    remaining: usize,
+    what: &str,
+) -> Result<usize> {
+    let n = usize::try_from(count)
+        .map_err(|_| Error::Parse(format!("binary LAMMPS data: negative {what} count {count}")))?;
+    let capacity = remaining.checked_div(record_bytes).unwrap_or(0);
+    if n > capacity {
+        return Err(Error::Parse(format!(
+            "binary LAMMPS data: {what} count {n} exceeds the {remaining} remaining bytes \
+             ({record_bytes} bytes per record)"
+        )));
     }
-    let b = &data[*pos..*pos + 8];
-    let v = f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
-    *pos += 8;
-    Ok(v)
+    Ok(n)
+}
+/// Read one atom record (see [`ATOM_RECORD_BYTES`]) at `*pos` and advance.
+///
+/// A negative id or type is corrupt data and reported as an error.
+pub(super) fn read_atom_record(data: &[u8], pos: &mut usize) -> Result<LammpsAtom> {
+    let id = usize::try_from(read_i32_le(data, pos)?)
+        .map_err(|_| Error::Parse("binary LAMMPS data: negative atom id".into()))?;
+    let type_id = usize::try_from(read_i32_le(data, pos)?)
+        .map_err(|_| Error::Parse("binary LAMMPS data: negative atom type".into()))?;
+    let position = Vec3::new(
+        read_f64_le(data, pos)?,
+        read_f64_le(data, pos)?,
+        read_f64_le(data, pos)?,
+    );
+    let velocity = Vec3::new(
+        read_f64_le(data, pos)?,
+        read_f64_le(data, pos)?,
+        read_f64_le(data, pos)?,
+    );
+    Ok(LammpsAtom {
+        id,
+        type_id,
+        position,
+        velocity,
+    })
+}
+/// Check that every atom id and type fits the `i32` fields of the binary
+/// formats, so a writer can fail before it emits a single byte.
+pub(super) fn check_atoms_fit_binary_format(atoms: &[LammpsAtom]) -> Result<()> {
+    for atom in atoms {
+        i32_field(atom.id, "atom id")?;
+        i32_field(atom.type_id, "atom type")?;
+    }
+    Ok(())
+}
+/// Write one atom record (see [`ATOM_RECORD_BYTES`]).
+///
+/// The format stores the id and type as `i32`; a value that does not fit is an
+/// error instead of being silently wrapped into a different atom.
+pub(super) fn write_atom_record<W: Write>(writer: &mut W, atom: &LammpsAtom) -> Result<()> {
+    writer.write_all(&i32_field(atom.id, "atom id")?.to_le_bytes())?;
+    writer.write_all(&i32_field(atom.type_id, "atom type")?.to_le_bytes())?;
+    for value in [
+        atom.position.x,
+        atom.position.y,
+        atom.position.z,
+        atom.velocity.x,
+        atom.velocity.y,
+        atom.velocity.z,
+    ] {
+        writer.write_all(&value.to_le_bytes())?;
+    }
+    Ok(())
+}
+/// Convert a size or id to the `i32` the binary formats store.
+pub(super) fn i32_field(value: usize, what: &str) -> Result<i32> {
+    i32::try_from(value).map_err(|_| {
+        Error::General(format!(
+            "binary LAMMPS data: {what} {value} does not fit the 32-bit field of the format"
+        ))
+    })
+}
+/// Convert an atom count to the `i64` the binary formats store.
+pub(super) fn i64_field(value: usize, what: &str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| {
+        Error::General(format!(
+            "binary LAMMPS data: {what} {value} does not fit the 64-bit field of the format"
+        ))
+    })
 }
 /// Parse a line in `atom_style full` format used by OVITO:
 /// `atom_id mol_id atom_type charge x y z`

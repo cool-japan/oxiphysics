@@ -10,11 +10,13 @@
 
 use crate::traits::Constraint;
 use oxiphysics_core::BodyHandle;
+use oxiphysics_core::math::Vec3;
 use oxiphysics_rigid::RigidBodySet;
 
-use super::functions::{
-    JOINT_BAUMGARTE, apply_angular_impulse, apply_pair_impulse, read_body, small_rotation_quat,
+use super::constraint_math::{
+    apply_orientation_correction, solve_angular_rows, solve_point_velocity,
 };
+use super::functions::{JOINT_BAUMGARTE, read_body};
 use super::types::UniversalJoint;
 
 impl Constraint for UniversalJoint {
@@ -31,50 +33,16 @@ impl Constraint for UniversalJoint {
         self.r_b = b.rotation * self.local_anchor_b;
         self.world_axis_a = (a.rotation * self.local_axis_a).normalize();
         self.world_axis_b = (b.rotation * self.local_axis_b).normalize();
-        self.constrained_axis = self.world_axis_a.cross(&self.world_axis_b).normalize();
+        self.constrained_axis = self
+            .world_axis_a
+            .cross(&self.world_axis_b)
+            .try_normalize(1e-12)
+            .unwrap_or_else(Vec3::zeros);
         let _ = b;
     }
     fn solve_velocity(&mut self, bodies: &mut RigidBodySet, _dt: f64) {
-        let a = match read_body(bodies, self.body_a) {
-            Some(p) => p,
-            None => return,
-        };
-        let b = match read_body(bodies, self.body_b) {
-            Some(p) => p,
-            None => return,
-        };
-        let va = a.vel + a.ang_vel.cross(&self.r_a);
-        let vb = b.vel + b.ang_vel.cross(&self.r_b);
-        let dv = va - vb;
-        let k = a.inv_mass + b.inv_mass;
-        if k > 1e-12 {
-            let impulse = -dv / k;
-            apply_pair_impulse(
-                bodies,
-                self.body_a,
-                self.body_b,
-                impulse,
-                &self.r_a,
-                &self.r_b,
-            );
-        }
-        let a2 = match read_body(bodies, self.body_a) {
-            Some(p) => p,
-            None => return,
-        };
-        let b2 = match read_body(bodies, self.body_b) {
-            Some(p) => p,
-            None => return,
-        };
-        let d_omega = a2.ang_vel - b2.ang_vel;
-        let constrained_component = d_omega.dot(&self.constrained_axis) * self.constrained_axis;
-        if constrained_component.norm_squared() > 1e-20 {
-            let ang_k = a2.inv_inertia + b2.inv_inertia;
-            if let Some(ang_k_inv) = ang_k.try_inverse() {
-                let ang_impulse = -(ang_k_inv * constrained_component);
-                apply_angular_impulse(bodies, self.body_a, self.body_b, ang_impulse);
-            }
-        }
+        solve_point_velocity(bodies, self.body_a, self.body_b, &self.r_a, &self.r_b);
+        solve_angular_rows(bodies, self.body_a, self.body_b, &[self.constrained_axis]);
     }
     fn solve_position(&mut self, bodies: &mut RigidBodySet, _dt: f64) {
         let a = match read_body(bodies, self.body_a) {
@@ -98,20 +66,24 @@ impl Constraint for UniversalJoint {
                 body.transform.position += correction * (b.inv_mass / k);
             }
         }
-        let angular_err = self.angular_error();
-        if angular_err.abs() > 1e-6 {
-            let ang_correction = self.constrained_axis * (angular_err * JOINT_BAUMGARTE);
-            let ang_k = a.inv_inertia + b.inv_inertia;
-            if let Some(ang_k_inv) = ang_k.try_inverse() {
-                let delta = ang_k_inv * ang_correction;
-                if let Some(body) = bodies.get_mut(self.body_a) {
-                    let dq = small_rotation_quat(&(-delta * 0.5));
-                    body.transform.rotation = dq * body.transform.rotation;
-                }
-                if let Some(body) = bodies.get_mut(self.body_b) {
-                    let dq = small_rotation_quat(&(delta * 0.5));
-                    body.transform.rotation = dq * body.transform.rotation;
-                }
+        // The free axes must stay perpendicular.  Rotating B by +ε about
+        // a × b opens the angle between the axes by ε, so a deviation
+        // δ = asin(a·b) from the perpendicular is removed by rotating B by +δ
+        // about that axis, i.e. a world-frame error vector of −δ·(a × b)/|a × b|.
+        let axis_a = (a.rotation * self.local_axis_a).normalize();
+        let axis_b = (b.rotation * self.local_axis_b).normalize();
+        let swing_axis = axis_a.cross(&axis_b);
+        let sine = swing_axis.norm();
+        if sine > 1e-9 {
+            let deviation = axis_a.dot(&axis_b).clamp(-1.0, 1.0).asin();
+            if deviation.abs() > 1e-6 {
+                apply_orientation_correction(
+                    bodies,
+                    self.body_a,
+                    self.body_b,
+                    swing_axis * (-deviation / sine),
+                    JOINT_BAUMGARTE,
+                );
             }
         }
     }

@@ -6,9 +6,10 @@ use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Real, Vec3};
 use oxiphysics_geometry::Shape;
 
+use super::distance::converge_distance;
 use super::types::{
-    CcdResult, Gjk, GjkDistanceResult, GjkResult, MprResult, Simplex, SpeculativeContact,
-    SupportPoint,
+    CcdResult, Gjk, GjkDistanceResult, GjkResult, GjkSearch, MprResult, Simplex,
+    SpeculativeContact, SupportPoint,
 };
 use oxiphysics_geometry::Sphere;
 
@@ -434,54 +435,34 @@ pub fn estimate_penetration_depth(
 }
 /// Perform a precise GJK distance query tracking closest-point witnesses.
 ///
-/// Unlike the basic `Gjk::query`, this variant accumulates barycentric
-/// weights at each step to reconstruct world-space witness points accurately.
+/// For a separated pair this is the converged result of [`Gjk::query`] (the true
+/// distance and the closest points on both shapes) together with the number of
+/// GJK iterations spent. For an overlapping pair, or when the iteration budget
+/// runs out, the distance is the sentinel `-1.0` and the witnesses are the shape
+/// origins; use EPA for the penetration contact.
 pub fn gjk_distance_query(
     shape_a: &dyn Shape,
     transform_a: &Transform,
     shape_b: &dyn Shape,
     transform_b: &Transform,
 ) -> GjkDistanceResult {
-    let mut simplex = Simplex::new();
-    let mut direction = transform_b.position - transform_a.position;
-    if direction.norm_squared() < TOLERANCE {
-        direction = Vec3::new(1.0, 0.0, 0.0);
-    }
-    let first = support(shape_a, transform_a, shape_b, transform_b, &direction);
-    simplex.push(first);
-    direction = -first.point;
-    let mut iterations = 0usize;
-    for _ in 0..MAX_ITERATIONS {
-        iterations += 1;
-        let new_pt = support(shape_a, transform_a, shape_b, transform_b, &direction);
-        if new_pt.point.dot(&direction) < -TOLERANCE {
-            let (closest_md, bary) = simplex.closest_point_to_origin();
-            let dist = closest_md.norm();
-            let (closest_a, closest_b) = barycentric_witnesses(&simplex, &bary);
-            return GjkDistanceResult {
-                distance: dist,
-                closest_a,
-                closest_b,
-                iterations,
-            };
+    let (outcome, iterations) = Gjk::search(shape_a, transform_a, shape_b, transform_b);
+    match outcome {
+        GjkSearch::Separated(simplex) => {
+            let pair = converge_distance(shape_a, transform_a, shape_b, transform_b, &simplex);
+            GjkDistanceResult {
+                distance: pair.distance,
+                closest_a: pair.point_a,
+                closest_b: pair.point_b,
+                iterations: iterations + pair.iterations,
+            }
         }
-        simplex.push(new_pt);
-        if let Some(new_dir) = do_simplex(&mut simplex) {
-            direction = new_dir;
-        } else {
-            return GjkDistanceResult {
-                distance: -1.0,
-                closest_a: transform_a.position,
-                closest_b: transform_b.position,
-                iterations,
-            };
-        }
-    }
-    GjkDistanceResult {
-        distance: -1.0,
-        closest_a: transform_a.position,
-        closest_b: transform_b.position,
-        iterations,
+        GjkSearch::Overlap(_) => GjkDistanceResult {
+            distance: -1.0,
+            closest_a: transform_a.position,
+            closest_b: transform_b.position,
+            iterations,
+        },
     }
 }
 /// Reconstruct world-space witness points from a simplex and barycentric coordinates.

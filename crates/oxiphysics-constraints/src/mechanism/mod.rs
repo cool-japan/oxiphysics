@@ -1,5 +1,7 @@
 //! Auto-generated module structure
 
+#[cfg(test)]
+mod four_bar_tests;
 pub mod functions;
 pub mod gear_constraint;
 pub mod types;

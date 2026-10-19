@@ -20,6 +20,13 @@ impl Default for AbaqusParseState {
             elem_set_section: None,
             material_name: None,
             in_elastic: false,
+            in_boundary: false,
+            in_cload: false,
+            generate: false,
+            in_step: false,
+            node_collect_set: None,
+            element_collect_set: None,
+            pending_element: None,
         }
     }
 }

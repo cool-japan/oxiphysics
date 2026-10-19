@@ -11,7 +11,9 @@
 //! - Simo–Reissner rod (extensible, shearable)
 //! - Discrete Cosserat rod: chain of rigid frames connected by elastic joints
 //! - Strain measures: stretching, shearing, bending, twisting
-//! - Elastic energy (Kirchhoff model: bending + twist stiffness)
+//! - Elastic energy: stretch/shear (Simo–Reissner) plus bending/twist (Kirchhoff)
+//!   stiffness; the nodal forces and moments of the discrete rod are its exact
+//!   gradient and couple bending to the node positions through the shear strain
 //! - Geometric exactness: finite rotations via rotation matrices
 //! - Buckling load estimation (Euler buckling extended to rods)
 //! - Tendon-driven rod actuation
@@ -163,6 +165,16 @@ impl DirectorTriad {
         ]
     }
 
+    /// Build a frame from the rotation matrix (row-major) whose columns are
+    /// `d1`, `d2`, `d3` (the inverse of [`to_rotation_matrix`](Self::to_rotation_matrix)).
+    pub fn from_rotation_matrix(r: [f64; 9]) -> Self {
+        Self {
+            d1: [r[0], r[3], r[6]],
+            d2: [r[1], r[4], r[7]],
+            d3: [r[2], r[5], r[8]],
+        }
+    }
+
     /// Apply a Rodrigues rotation `R` to all three directors.
     pub fn rotate(&self, r: [f64; 9]) -> Self {
         Self {
@@ -179,10 +191,14 @@ impl DirectorTriad {
 
 /// Compute the Darboux vector κ = (κ₁, κ₂, τ) from adjacent director triads.
 ///
-/// The Darboux vector encodes the curvatures κ₁, κ₂ and twist τ of the rod.
-/// Given two adjacent frames at arc-length positions s and s+Δs:
+/// The Darboux vector encodes the curvatures κ₁, κ₂ and twist τ of the rod.  Given
+/// two adjacent frames at arc-length positions s and s+Δs, it is the rotation
+/// vector of the relative rotation divided by Δs,
 ///
-/// ω ≈ (R(s)ᵀ · (R(s+Δs) − R(s))) / Δs  mapped to its axial vector.
+/// κ = log(R(s)ᵀ · R(s+Δs)) / Δs,
+///
+/// which is exact for a segment of constant curvature (a frame that turns
+/// uniformly about the axis κ obeys `R(s+Δs) = R(s) · exp(Δs [κ]×)`).
 ///
 /// Returns `[kappa1, kappa2, tau]` in the material frame.
 ///
@@ -191,17 +207,11 @@ impl DirectorTriad {
 /// * `frame_b` – Director triad at s+Δs.
 /// * `ds` – Arc-length increment Δs \[m\].
 pub fn darboux_vector(frame_a: &DirectorTriad, frame_b: &DirectorTriad, ds: f64) -> [f64; 3] {
-    // Relative rotation dR = Ra^T * Rb.
-    let ra = frame_a.to_rotation_matrix();
-    let rb = frame_b.to_rotation_matrix();
-    let ra_t = mat3_transpose(ra);
-    let dr = mat3_mul(ra_t, rb);
-    // Extract axial vector of skew-symmetric part of dR: (dR - I).
-    // ω × = (dR - I) / ds  → axial: [dr[7]-dr[5], dr[2]-dr[6], dr[3]-dr[1]] / (2*ds)
-    let wx = (dr[7] - dr[5]) / (2.0 * ds);
-    let wy = (dr[2] - dr[6]) / (2.0 * ds);
-    let wz = (dr[3] - dr[1]) / (2.0 * ds);
-    [wx, wy, wz]
+    let phi = coupling::relative_rotation_vector(
+        frame_a.to_rotation_matrix(),
+        frame_b.to_rotation_matrix(),
+    );
+    scale3(phi, 1.0 / ds)
 }
 
 /// Stretch-shear strain vector γ = Rᵀ · ∂r/∂s − e₃.
@@ -527,16 +537,11 @@ impl DiscreteCosseratRod {
         darboux_vector(&self.nodes[i].frame, &self.nodes[i + 1].frame, ds)
     }
 
-    /// Compute elastic energy of the full rod.
+    /// Total elastic energy of the rod \[J\]: the stretch / shear energy
+    /// ([`stretch_shear_energy`](Self::stretch_shear_energy)) plus the bending / twist
+    /// energy ([`bending_twist_energy`](Self::bending_twist_energy)).
     pub fn elastic_energy(&self) -> f64 {
-        let mut energy = 0.0;
-        for i in 0..self.num_segments() {
-            let kappa = self.darboux(i);
-            let kappa0 = self.intrinsic_kappa[i];
-            let ds = self.rest_lengths[i];
-            energy += kirchhoff_energy_density(&self.props, kappa, kappa0) * ds;
-        }
-        energy
+        self.stretch_shear_energy() + self.bending_twist_energy()
     }
 
     /// Apply gravity to all free nodes.
@@ -553,46 +558,6 @@ impl DiscreteCosseratRod {
                 node.apply_force(gravity_force);
             }
         }
-    }
-
-    /// Elastic restoring moments the joints exert on every node, in the global
-    /// frame.
-    ///
-    /// The Darboux vector `κ = axial(Rₐᵀ R_b) / ds` of segment `i` is the rotation
-    /// that takes frame `i` to frame `i + 1`, expressed in frame `i`.  The joint
-    /// moment `M = R_i · EI (κ − κ₀)` therefore turns node `i` *towards* node
-    /// `i + 1` (`+M`) and node `i + 1` back towards node `i` (`−M`): action and
-    /// reaction, so the moments of all nodes sum to zero and a curvature mismatch
-    /// relaxes instead of producing a net torque.
-    pub fn elastic_moments(&self) -> Vec<[f64; 3]> {
-        let mut moments = vec![[0.0_f64; 3]; self.nodes.len()];
-        for i in 0..self.num_segments() {
-            let moment_local =
-                internal_moment(&self.props, self.darboux(i), self.intrinsic_kappa[i]);
-            let moment_global =
-                mat3_mul_vec(self.nodes[i].frame.to_rotation_matrix(), moment_local);
-            moments[i] = add3(moments[i], moment_global);
-            moments[i + 1] = sub3(moments[i + 1], moment_global);
-        }
-        moments
-    }
-
-    /// Elastic stretch forces on every node (Simo–Reissner axial law along the
-    /// centreline): a stretched segment draws its end nodes together.
-    pub fn elastic_forces(&self) -> Vec<[f64; 3]> {
-        let mut forces = vec![[0.0_f64; 3]; self.nodes.len()];
-        for i in 0..self.num_segments() {
-            let ds = self.rest_lengths[i];
-            let dr = sub3(self.nodes[i + 1].position, self.nodes[i].position);
-            let dr_norm = norm3(dr);
-            if dr_norm > 1e-30 {
-                let stretch = (dr_norm - ds) / ds;
-                let f_dir = scale3(normalize3(dr), self.props.ea * stretch);
-                forces[i] = add3(forces[i], f_dir);
-                forces[i + 1] = sub3(forces[i + 1], f_dir);
-            }
-        }
-        forces
     }
 
     /// Angular acceleration (global frame) of a node with frame `frame` and angular
@@ -633,13 +598,16 @@ impl DiscreteCosseratRod {
 
     /// Semi-implicit Euler integration step.
     ///
-    /// Computes elastic restoring forces/moments from curvature mismatch
-    /// ([`elastic_forces`](Self::elastic_forces), [`elastic_moments`](Self::elastic_moments))
-    /// and integrates the equations of motion: nodal masses are `ρA ds`, nodal
-    /// rotary inertias the cross-section inertias `ρI₁ ds`, `ρI₂ ds`, `ρJ ds`.
+    /// Computes the elastic restoring loads ([`elastic_loads`](Self::elastic_loads):
+    /// stretch / shear forces, bending / twist joint moments and the couples of the
+    /// stretch / shear force pairs) and integrates the equations of motion: nodal
+    /// masses are `ρA ds`, nodal rotary inertias the cross-section inertias
+    /// `ρI₁ ds`, `ρI₂ ds`, `ρJ ds`.
     ///
-    /// The explicit scheme is only stable for time steps well below the period of
-    /// the stiffest rotational mode, `2π sqrt(ρI ds² / EI)`.
+    /// The explicit scheme is only stable for time steps well below the periods of
+    /// the stiffest modes of the rod (up to factors of order one): stretch / shear
+    /// `2π sqrt(ρA ds² / EA)`, bending `2π sqrt(ρI ds² / EI)` and the frame-shear
+    /// mode in which a frame turns against the tangent, `2π sqrt(ρI / GA)`.
     ///
     /// # Arguments
     /// * `dt` – Time step \[s\].
@@ -650,9 +618,9 @@ impl DiscreteCosseratRod {
             return;
         }
 
-        // Elastic restoring moments and forces at each joint / segment.
-        let elastic_moments = self.elastic_moments();
-        let elastic_forces = self.elastic_forces();
+        // Elastic restoring forces and moments: stretch / shear forces, bending / twist
+        // joint moments and the couples of the stretch / shear force pairs.
+        let (elastic_forces, elastic_moments) = self.elastic_loads();
 
         // Lumped node length (shared by the mass and the rotary inertia).
         let node_length = self.rest_lengths.iter().sum::<f64>() / n_seg as f64;
@@ -695,6 +663,12 @@ impl DiscreteCosseratRod {
         }
     }
 }
+
+mod coupling;
+pub use coupling::{midpoint_frame, midpoint_rotation};
+
+#[cfg(test)]
+mod coupling_tests;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Buckling of rods
@@ -1481,15 +1455,17 @@ mod tests {
         );
     }
 
-    // 30. DiscreteCosseratRod step: free end node moves under gravity.
+    // 30. DiscreteCosseratRod step: free end node moves under gravity.  The rod is
+    // soft and light so that explicit stepping at dt = 1e-4 s is far inside the
+    // stability limit set by the stiffest (frame-shear) mode, sqrt(G / rho) / r.
     #[test]
     fn test_rod_step_gravity() {
-        let props = CosseratRodProperties::circular(0.005, 1e9, 0.4e9, 1000.0);
+        let props = CosseratRodProperties::circular(0.01, 1.0e6, 4.0e5, 1000.0);
         let mut rod = DiscreteCosseratRod::straight(4, 0.4, props);
         let initial_pos = rod.nodes[4].position;
         let g = [0.0, -9.81, 0.0];
-        let dt = 1e-3;
-        for _ in 0..50 {
+        let dt = 1e-4;
+        for _ in 0..500 {
             rod.apply_gravity(g);
             rod.step(dt, 0.01);
         }
@@ -1547,7 +1523,9 @@ mod tests {
         let theta = 0.05_f64;
         rotate_frame(&mut rod, 2, [1.0, 0.0, 0.0], theta);
         let moments = rod.elastic_moments();
-        let unit = ei * theta.sin() / 0.1;
+        // The Darboux vector is the rotation vector over the segment length:
+        // kappa = theta / ds, the moment EI kappa.
+        let unit = ei * theta / 0.1;
         // Nodes 1 and 3 turn towards node 2; node 2 turns back by both reactions.
         assert!(
             (moments[1][0] - unit).abs() < 1e-9 * unit,
@@ -1572,10 +1550,15 @@ mod tests {
     }
 
     // 33. Rotating an interior frame: the curvature mismatch relaxes with damping
-    // and the elastic torques never add up to a net torque.
+    // and the joint moments never add up to a net torque.  The stretch / shear
+    // stiffness is switched off so that the joints are isolated (the coupled
+    // relaxation is covered by `coupling_tests`).
     #[test]
     fn test_interior_rotation_relaxes_without_net_torque() {
-        let props = relaxation_props();
+        let mut props = relaxation_props();
+        props.ea = 0.0;
+        props.ga1 = 0.0;
+        props.ga2 = 0.0;
         let mut rod = DiscreteCosseratRod::straight(4, 0.4, props);
         rotate_frame(&mut rod, 2, [0.0, 1.0, 0.0], 0.05);
         let initial_energy = rod.elastic_energy();
@@ -1649,10 +1632,15 @@ mod tests {
     // 35. A torque-free spinning node conserves its angular momentum (gyroscopic term).
     #[test]
     fn test_torque_free_spin_conserves_angular_momentum() {
+        // No joint stiffness at all: the spinning node exchanges no torque with its
+        // neighbours and only the gyroscopic Euler update is under test.
         let mut props = relaxation_props();
         props.ei1 = 0.0;
         props.ei2 = 0.0;
         props.gj = 0.0;
+        props.ea = 0.0;
+        props.ga1 = 0.0;
+        props.ga2 = 0.0;
         let node_length = 0.1;
         let mut rod = DiscreteCosseratRod::straight(2, 0.2, props);
         rod.nodes[1].omega = [20.0, 0.0, 30.0];

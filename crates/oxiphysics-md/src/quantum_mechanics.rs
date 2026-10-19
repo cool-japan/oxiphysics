@@ -727,16 +727,36 @@ impl DensityMatrix {
     /// dρ/dt = -i/ℏ \[H, ρ\]
     ///
     /// `h` is the Hamiltonian matrix, `dt` the time step in consistent units.
+    /// This is [`DensityMatrix::evolve_lindblad`] without dissipation channels.
     pub fn evolve_unitary(&mut self, h: &HamiltonianMatrix, dt: f64) {
+        self.evolve_lindblad(h, &[], dt);
+    }
+
+    /// Evolve under the Lindblad master equation with a classical RK4 step.
+    ///
+    /// ```text
+    /// dρ/dt = -i/ℏ [H, ρ] + Σ_c γ_c ( L_c ρ L_c† − ½ {L_c† L_c, ρ} ),   L_c = |0⟩⟨k_c|
+    /// ```
+    ///
+    /// `channels` lists the decay channels as `(gamma, jump_op_idx)` pairs: the
+    /// rate `γ_c` (inverse time units of `dt`) and the index `k_c` of the state
+    /// that decays into the ground state `|0⟩` (see
+    /// [`DensityMatrix::lindblad_rate`]).  Channels with an out-of-range index
+    /// are ignored.  The unitary and the dissipative part are integrated
+    /// together, so the step is fourth-order accurate in `dt` for the full
+    /// generator.  The generator maps Hermitian matrices to Hermitian traceless
+    /// ones, hence every RK4 stage and the updated `ρ` keep the trace and the
+    /// Hermiticity (up to rounding); positivity is only guaranteed for time
+    /// steps small compared with `1/γ` and `ℏ/|H|`.
+    pub fn evolve_lindblad(&mut self, h: &HamiltonianMatrix, channels: &[(f64, usize)], dt: f64) {
         let n = self.n;
-        // Compute commutator [H, rho] as complex
-        let k1 = self.von_neumann_rhs(h);
+        let k1 = lindblad_rhs_impl(h, &self.rho, n, channels);
         let rho1 = add_complex_matrix(&self.rho, &scale_complex_matrix(&k1, dt / 2.0), n);
-        let k2 = von_neumann_rhs_impl(h, &rho1, n);
+        let k2 = lindblad_rhs_impl(h, &rho1, n, channels);
         let rho2 = add_complex_matrix(&self.rho, &scale_complex_matrix(&k2, dt / 2.0), n);
-        let k3 = von_neumann_rhs_impl(h, &rho2, n);
+        let k3 = lindblad_rhs_impl(h, &rho2, n, channels);
         let rho3 = add_complex_matrix(&self.rho, &scale_complex_matrix(&k3, dt), n);
-        let k4 = von_neumann_rhs_impl(h, &rho3, n);
+        let k4 = lindblad_rhs_impl(h, &rho3, n, channels);
 
         for (i, rho_row) in self.rho.iter_mut().enumerate() {
             for (j, rho_ij) in rho_row.iter_mut().enumerate() {
@@ -749,44 +769,78 @@ impl DensityMatrix {
         }
     }
 
-    /// Apply Lindblad dissipation: dρ/dt = γ(L ρ L† - ½{L†L, ρ}).
+    /// Time derivative `D(ρ) = γ (L ρ L† − ½ {L†L, ρ})` of one Lindblad decay
+    /// channel with the jump operator `L = |0⟩⟨k|` (`k = jump_op_idx`), i.e.
+    /// decay of state `k` into the ground state `|0⟩` at rate `gamma`.
     ///
-    /// `gamma` is the dissipation rate, `jump_op_idx` selects the
-    /// lowering operator |0><jump_op_idx| (decay to ground state).
-    pub fn lindblad_dissipation(&mut self, gamma: f64, jump_op_idx: usize) {
-        let n = self.n;
-        if jump_op_idx >= n {
-            return;
-        }
-        // L = |0><jump_op_idx| (decay from jump_op_idx -> 0)
-        // L ρ L† contribution
-        let rho_kk = self.rho[jump_op_idx][jump_op_idx];
-        // L†L = |jump_op_idx><jump_op_idx|
-        let mut drho = vec![vec![(0.0_f64, 0.0_f64); n]; n];
-
-        // L ρ L† = rho[jump_op_idx][jump_op_idx] * |0><0|
-        drho[0][0].0 += gamma * rho_kk.0;
-
-        // -1/2 {L†L, ρ} = -1/2 (L†L ρ + ρ L†L)
-        // L†L = |jump_op_idx><jump_op_idx|
-        for (j, drho_kj) in drho[jump_op_idx].iter_mut().enumerate() {
-            let re = -0.5 * gamma * (self.rho[jump_op_idx][j].0 + self.rho[j][jump_op_idx].0);
-            let im = -0.5 * gamma * (self.rho[jump_op_idx][j].1 + self.rho[j][jump_op_idx].1);
-            drho_kj.0 += re;
-            drho_kj.1 += im;
-        }
-
-        for (rho_row, drho_row) in self.rho.iter_mut().zip(drho.iter()) {
-            for (rho_ij, &drho_ij) in rho_row.iter_mut().zip(drho_row.iter()) {
-                rho_ij.0 += drho_ij.0;
-                rho_ij.1 += drho_ij.1;
-            }
-        }
+    /// With `L ρ L† = ρ_kk |0⟩⟨0|` and `L†L = |k⟩⟨k|` the matrix elements are
+    ///
+    /// ```text
+    /// D_00 += γ ρ_kk                        (population arrives in |0⟩)
+    /// D_kj −= ½ γ ρ_kj   for every j        (row k of  −½ L†L ρ)
+    /// D_ik −= ½ γ ρ_ik   for every i        (column k of −½ ρ L†L)
+    /// ```
+    ///
+    /// so `D_kk = −γ ρ_kk` and `D` is Hermitian whenever `ρ` is (row *and*
+    /// column `k` are updated), with `Tr D = 0` for every `k` (including `k = 0`,
+    /// where `L = |0⟩⟨0|` is a pure-dephasing operator).  An out-of-range
+    /// `jump_op_idx` yields the zero matrix.
+    pub fn lindblad_rate(&self, gamma: f64, jump_op_idx: usize) -> Vec<Vec<(f64, f64)>> {
+        let mut rate = vec![vec![(0.0_f64, 0.0_f64); self.n]; self.n];
+        add_lindblad_rate(&mut rate, &self.rho, self.n, gamma, jump_op_idx);
+        rate
     }
 
-    /// Compute the von Neumann RHS: -i/ℏ \[H, ρ\].
-    fn von_neumann_rhs(&self, h: &HamiltonianMatrix) -> Vec<Vec<(f64, f64)>> {
-        von_neumann_rhs_impl(h, &self.rho, self.n)
+    /// Apply Lindblad dissipation for a time step `dt`:
+    /// `dρ/dt = γ (L ρ L† − ½ {L†L, ρ})` with `L = |0⟩⟨k|` integrated over `dt`.
+    ///
+    /// `gamma` is the decay rate (inverse time units of `dt`), `jump_op_idx` the
+    /// index `k` of the decaying state (decay into the ground state `|0⟩`).
+    /// The channel matrix [`DensityMatrix::lindblad_rate`] is diagonal in the
+    /// matrix-element basis, so the dissipator alone is solved *exactly* rather
+    /// than by a first-order Euler update:
+    ///
+    /// ```text
+    /// ρ_kk(dt) = ρ_kk e^{−γ dt}            ρ_00(dt) = ρ_00 + ρ_kk (1 − e^{−γ dt})
+    /// ρ_kj(dt) = ρ_kj e^{−γ dt / 2}        ρ_jk(dt) = ρ_jk e^{−γ dt / 2}   (j ≠ k)
+    /// ```
+    ///
+    /// All other elements are unchanged.  The map is trace preserving,
+    /// Hermiticity preserving and positivity preserving for every `dt ≥ 0`,
+    /// however large `γ dt` is.  For `k = 0` (pure dephasing of `|0⟩`) only the
+    /// coherences of state 0 decay.  An out-of-range `jump_op_idx` leaves `ρ`
+    /// unchanged.  To combine dissipation with coherent dynamics in one
+    /// time-stepping scheme use [`DensityMatrix::evolve_lindblad`].
+    pub fn lindblad_dissipation(&mut self, gamma: f64, jump_op_idx: usize, dt: f64) {
+        let n = self.n;
+        let k = jump_op_idx;
+        if k >= n {
+            return;
+        }
+        let coherence_decay = (-0.5 * gamma * dt).exp();
+        let population_decay = (-gamma * dt).exp();
+        let rho_kk = self.rho[k][k];
+        for j in 0..n {
+            if j != k {
+                let row_element = self.rho[k][j];
+                self.rho[k][j] = (
+                    row_element.0 * coherence_decay,
+                    row_element.1 * coherence_decay,
+                );
+                let column_element = self.rho[j][k];
+                self.rho[j][k] = (
+                    column_element.0 * coherence_decay,
+                    column_element.1 * coherence_decay,
+                );
+            }
+        }
+        if k != 0 {
+            self.rho[k][k] = (rho_kk.0 * population_decay, rho_kk.1 * population_decay);
+            // 1 − e^{−γ dt} computed without cancellation for small γ dt.
+            let transferred = -(-gamma * dt).exp_m1();
+            self.rho[0][0].0 += rho_kk.0 * transferred;
+            self.rho[0][0].1 += rho_kk.1 * transferred;
+        }
     }
 }
 
@@ -810,6 +864,44 @@ fn von_neumann_rhs_impl(
         }
     }
     result
+}
+
+/// Right-hand side of the Lindblad master equation: the von Neumann term plus
+/// the dissipators of all `(gamma, jump_op_idx)` channels.
+fn lindblad_rhs_impl(
+    h: &HamiltonianMatrix,
+    rho: &[Vec<(f64, f64)>],
+    n: usize,
+    channels: &[(f64, usize)],
+) -> Vec<Vec<(f64, f64)>> {
+    let mut rhs = von_neumann_rhs_impl(h, rho, n);
+    for &(gamma, jump_op_idx) in channels {
+        add_lindblad_rate(&mut rhs, rho, n, gamma, jump_op_idx);
+    }
+    rhs
+}
+
+/// Add the dissipator `γ (L ρ L† − ½ {L†L, ρ})`, `L = |0⟩⟨k|`, to `acc`.
+fn add_lindblad_rate(
+    acc: &mut [Vec<(f64, f64)>],
+    rho: &[Vec<(f64, f64)>],
+    n: usize,
+    gamma: f64,
+    k: usize,
+) {
+    if k >= n {
+        return;
+    }
+    // L ρ L† = ρ_kk |0⟩⟨0|
+    acc[0][0].0 += gamma * rho[k][k].0;
+    acc[0][0].1 += gamma * rho[k][k].1;
+    // −½ {L†L, ρ} with L†L = |k⟩⟨k|: row k from L†L ρ and column k from ρ L†L.
+    for j in 0..n {
+        acc[k][j].0 -= 0.5 * gamma * rho[k][j].0;
+        acc[k][j].1 -= 0.5 * gamma * rho[k][j].1;
+        acc[j][k].0 -= 0.5 * gamma * rho[j][k].0;
+        acc[j][k].1 -= 0.5 * gamma * rho[j][k].1;
+    }
 }
 
 /// Add two complex matrices element-wise.
@@ -1074,6 +1166,9 @@ fn factorial(n: usize) -> f64 {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod lindblad_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1412,12 +1507,15 @@ mod tests {
 
     #[test]
     fn test_density_matrix_lindblad_decay() {
+        // Mixed state 50/50: after a decay step the ground-state population must grow by
+        // exactly ρ_11 (1 − e^{−γ dt}) and the excited one shrink by the same amount.
         let mut dm = DensityMatrix::mixed(2);
-        let _pop_before = dm.population(1);
-        dm.lindblad_dissipation(0.1, 1);
-        // after decay the ground state pop should increase
-        let pop0 = dm.population(0);
-        assert!(pop0 >= 0.5 - 1e-10);
+        let (gamma, dt) = (0.1, 3.0);
+        dm.lindblad_dissipation(gamma, 1, dt);
+        let transferred = 0.5 * (1.0 - (-gamma * dt).exp());
+        assert!((dm.population(0) - (0.5 + transferred)).abs() < 1e-14);
+        assert!((dm.population(1) - (0.5 - transferred)).abs() < 1e-14);
+        assert!((dm.trace() - 1.0).abs() < 1e-14);
     }
 
     // --- ZeroPointEnergy ---

@@ -208,9 +208,12 @@ impl ImpulseSolver {
         };
         let j_t1 = j_t1_raw * scale;
         let j_t2 = j_t2_raw * scale;
+        // `friction_vec` already opposes the relative tangential velocity
+        // `v_rel = v_a - v_b`, so it is the impulse acting on body A and its
+        // reaction acts on body B (same convention as `resolve_collision`).
         let friction_vec = add3(scale3(t1, j_t1), scale3(t2, j_t2));
-        apply_impulse_b(a, manifold.contact_point, friction_vec);
-        apply_impulse_a(b, manifold.contact_point, friction_vec);
+        apply_impulse_a(a, manifold.contact_point, friction_vec);
+        apply_impulse_b(b, manifold.contact_point, friction_vec);
     }
     /// Propagate an impulse through a serial chain of rigid bodies.
     ///
@@ -320,9 +323,16 @@ pub struct SequentialImpulseSolverConfig {
 }
 /// Accumulated impulse for a single contact pair, cached between frames for
 /// warm-starting.
+///
+/// The impulses are expressed in the contact frame of the constraint that
+/// created the entry (normal from `key.0` to `key.1`, tangents derived from
+/// that normal).  A constraint that names the same two bodies in the opposite
+/// order has the reversed normal, hence the opposite first tangent and an
+/// unchanged second tangent; [`WarmStartSolver::solve`] converts the cached
+/// tangential impulses accordingly.
 #[derive(Debug, Clone)]
 pub struct ImpulseCache {
-    /// Key: (body_a index, body_b index)
+    /// Key: (body_a index, body_b index) of the constraint that wrote the entry.
     pub key: (usize, usize),
     /// Accumulated normal impulse.
     pub lambda_n: f64,
@@ -349,8 +359,12 @@ impl ImpulseCache {
     }
 }
 /// Collision manifold describing the contact geometry.
+///
+/// Convention used throughout this module: the normal points from body A
+/// towards body B, so the bodies are approaching when
+/// `(v_a - v_b) . normal > 0`.
 pub struct CollisionManifold {
-    /// Collision normal (unit vector, pointing from B to A).
+    /// Collision normal (unit vector, pointing from A to B).
     pub normal: [f64; 3],
     /// Penetration depth.
     pub depth: f64,
@@ -373,11 +387,23 @@ impl WarmStartSolver {
             cache: Vec::new(),
         }
     }
-    /// Look up the cache entry for a body pair.
-    fn find_cache(&self, a: usize, b: usize) -> Option<&ImpulseCache> {
-        self.cache
-            .iter()
-            .find(|e| e.key == (a, b) || e.key == (b, a))
+    /// Cached impulses `[λ_n, λ_t1, λ_t2]` for a constraint between `a` and `b`.
+    ///
+    /// An entry that was stored for the swapped pair `(b, a)` describes the
+    /// same physical contact with the normal reversed: the first tangent
+    /// flips sign and the second tangent is unchanged, so the impulse the
+    /// entry applied to body `b` is `λ_n·n' + λ_t1·t1' - λ_t2·t2'` in the
+    /// frame `(n', t1', t2')` of the swapped constraint.
+    fn find_cache(&self, a: usize, b: usize) -> Option<[f64; 3]> {
+        self.cache.iter().find_map(|e| {
+            if e.key == (a, b) {
+                Some([e.lambda_n, e.lambda_t1, e.lambda_t2])
+            } else if e.key == (b, a) {
+                Some([e.lambda_n, e.lambda_t1, -e.lambda_t2])
+            } else {
+                None
+            }
+        })
     }
     /// Look up the mutable cache entry, creating it if absent.
     fn get_or_insert_cache(&mut self, a: usize, b: usize) -> &mut ImpulseCache {
@@ -385,15 +411,14 @@ impl WarmStartSolver {
             .cache
             .iter()
             .position(|e| e.key == (a, b) || e.key == (b, a));
-        match pos {
-            Some(i) => &mut self.cache[i],
+        let index = match pos {
+            Some(i) => i,
             None => {
                 self.cache.push(ImpulseCache::new(a, b));
-                self.cache
-                    .last_mut()
-                    .expect("collection should not be empty")
+                self.cache.len() - 1
             }
-        }
+        };
+        &mut self.cache[index]
     }
     /// Remove cached entries for body pairs that are no longer in contact.
     pub fn prune_cache(&mut self, active_pairs: &[(usize, usize)]) {
@@ -409,41 +434,56 @@ impl WarmStartSolver {
     /// 2. Apply warm-start impulses from the cache.
     /// 3. Iterate `config.velocity_iterations` times.
     /// 4. Update the cache with the new accumulated impulses.
+    ///
+    /// The contact normal of every constraint points from body A to body B and
+    /// the body indices may be given in any order.  A constraint whose indices
+    /// are equal or out of range is skipped in every phase (and never enters
+    /// the impulse cache).
     pub fn solve(&mut self, bodies: &mut [RigidBodyState], constraints: &mut [ContactConstraint]) {
         for c in constraints.iter_mut() {
-            let (a_slice, b_slice) = bodies.split_at(c.body_b);
-            let a = &a_slice[c.body_a];
-            let b = &b_slice[0];
-            c.prepare(a, b, self.config.baumgarte, self.config.dt);
+            if let Some((a, b)) = pair_ref(bodies, c.body_a, c.body_b) {
+                c.prepare(a, b, self.config.baumgarte, self.config.dt);
+            }
         }
         if self.config.warm_start {
             for c in constraints.iter_mut() {
-                if let Some(cached) = self.find_cache(c.body_a, c.body_b) {
-                    c.accumulated_normal_impulse = cached.lambda_n;
-                    c.accumulated_friction_impulse[0] = cached.lambda_t1;
-                    c.accumulated_friction_impulse[1] = cached.lambda_t2;
+                if pair_ref(bodies, c.body_a, c.body_b).is_none() {
+                    continue;
                 }
-                let (a_slice, b_slice) = bodies.split_at_mut(c.body_b);
-                let a = &mut a_slice[c.body_a];
-                let b = &mut b_slice[0];
-                c.warm_start(a, b);
+                if let Some([lambda_n, lambda_t1, lambda_t2]) = self.find_cache(c.body_a, c.body_b)
+                {
+                    c.accumulated_normal_impulse = lambda_n;
+                    c.accumulated_friction_impulse = [lambda_t1, lambda_t2];
+                }
+                if let Some((a, b)) = pair_mut(bodies, c.body_a, c.body_b) {
+                    c.warm_start(a, b);
+                }
             }
         }
         for _ in 0..self.config.velocity_iterations {
             for c in constraints.iter_mut() {
-                let (a_slice, b_slice) = bodies.split_at_mut(c.body_b);
-                let a = &mut a_slice[c.body_a];
-                let b = &mut b_slice[0];
-                c.solve_normal(a, b);
-                c.solve_friction_t1(a, b);
-                c.solve_friction_t2(a, b);
+                if let Some((a, b)) = pair_mut(bodies, c.body_a, c.body_b) {
+                    c.solve_normal(a, b);
+                    c.solve_friction_t1(a, b);
+                    c.solve_friction_t2(a, b);
+                }
             }
         }
         for c in constraints.iter() {
+            if pair_ref(bodies, c.body_a, c.body_b).is_none() {
+                continue;
+            }
             let entry = self.get_or_insert_cache(c.body_a, c.body_b);
+            // An entry owned by the swapped pair stores the second tangent
+            // impulse with the opposite sign (see `find_cache`).
+            let swapped = entry.key == (c.body_b, c.body_a);
             entry.lambda_n = c.accumulated_normal_impulse;
             entry.lambda_t1 = c.accumulated_friction_impulse[0];
-            entry.lambda_t2 = c.accumulated_friction_impulse[1];
+            entry.lambda_t2 = if swapped {
+                -c.accumulated_friction_impulse[1]
+            } else {
+                c.accumulated_friction_impulse[1]
+            };
         }
     }
 }
@@ -468,7 +508,7 @@ pub struct ContactConstraint {
     pub body_a: usize,
     /// Index of body B in the body array.
     pub body_b: usize,
-    /// Contact normal (from B to A).
+    /// Contact normal (unit vector, from A to B).
     pub normal: [f64; 3],
     /// Contact point in world space.
     pub contact_point: [f64; 3],
@@ -479,8 +519,16 @@ pub struct ContactConstraint {
     /// Friction coefficient.
     pub friction: f64,
     /// Accumulated normal impulse (for warm-starting and clamping).
+    ///
+    /// A non-negative magnitude along `normal`: it is applied as `-normal·λ`
+    /// to body A and `+normal·λ` to body B.
     pub accumulated_normal_impulse: f64,
     /// Accumulated friction impulse (2D in tangent plane: \[t1, t2\]).
+    ///
+    /// Each component is limited to `±μ·λₙ` and is applied with the same sign
+    /// convention as the normal impulse (`-t·λ` to body A, `+t·λ` to body B),
+    /// so a positive component reduces the relative sliding speed `v_A − v_B`
+    /// along that tangent.
     pub accumulated_friction_impulse: [f64; 2],
     /// Effective mass along normal.
     pub effective_mass_normal: f64,
@@ -582,6 +630,14 @@ impl ContactConstraint {
         apply_impulse_b(a, self.contact_point, impulse_vec);
         apply_impulse_a(b, self.contact_point, impulse_vec);
     }
+    /// Coulomb limit `μ·λₙ` of each accumulated tangential impulse.
+    ///
+    /// A negative or NaN friction coefficient yields a zero limit (a
+    /// frictionless contact) instead of an inverted clamp interval, which
+    /// would make `f64::clamp` panic.
+    fn friction_limit(&self) -> f64 {
+        (self.friction * self.accumulated_normal_impulse).max(0.0)
+    }
     /// Solve one iteration of the friction constraint along tangent1.
     pub fn solve_friction_t1(&mut self, a: &mut RigidBodyState, b: &mut RigidBodyState) {
         if self.effective_mass_t1.abs() < 1e-30 {
@@ -590,7 +646,7 @@ impl ContactConstraint {
         let v_rel = relative_velocity_at_contact(a, b, self.contact_point);
         let v_along_t1 = dot3(v_rel, self.tangent1);
         let dj = v_along_t1 / self.effective_mass_t1;
-        let max_friction = self.friction * self.accumulated_normal_impulse;
+        let max_friction = self.friction_limit();
         let old = self.accumulated_friction_impulse[0];
         self.accumulated_friction_impulse[0] = (old + dj).clamp(-max_friction, max_friction);
         let actual_dj = self.accumulated_friction_impulse[0] - old;
@@ -598,8 +654,8 @@ impl ContactConstraint {
             return;
         }
         let impulse_vec = scale3(self.tangent1, actual_dj);
-        apply_impulse_a(a, self.contact_point, impulse_vec);
-        apply_impulse_b(b, self.contact_point, impulse_vec);
+        apply_impulse_b(a, self.contact_point, impulse_vec);
+        apply_impulse_a(b, self.contact_point, impulse_vec);
     }
     /// Solve one iteration of the friction constraint along tangent2.
     pub fn solve_friction_t2(&mut self, a: &mut RigidBodyState, b: &mut RigidBodyState) {
@@ -609,7 +665,7 @@ impl ContactConstraint {
         let v_rel = relative_velocity_at_contact(a, b, self.contact_point);
         let v_along_t2 = dot3(v_rel, self.tangent2);
         let dj = v_along_t2 / self.effective_mass_t2;
-        let max_friction = self.friction * self.accumulated_normal_impulse;
+        let max_friction = self.friction_limit();
         let old = self.accumulated_friction_impulse[1];
         self.accumulated_friction_impulse[1] = (old + dj).clamp(-max_friction, max_friction);
         let actual_dj = self.accumulated_friction_impulse[1] - old;
@@ -617,8 +673,8 @@ impl ContactConstraint {
             return;
         }
         let impulse_vec = scale3(self.tangent2, actual_dj);
-        apply_impulse_a(a, self.contact_point, impulse_vec);
-        apply_impulse_b(b, self.contact_point, impulse_vec);
+        apply_impulse_b(a, self.contact_point, impulse_vec);
+        apply_impulse_a(b, self.contact_point, impulse_vec);
     }
 }
 /// Applies direct positional correction (pseudo-velocity) to prevent
@@ -646,7 +702,9 @@ impl PositionalCorrector {
     /// # Arguments
     /// * `a` — mutable reference to body A.
     /// * `b` — mutable reference to body B.
-    /// * `normal` — contact normal pointing from B to A.
+    /// * `normal` — contact normal pointing from A to B (the same convention
+    ///   as [`CollisionManifold::normal`]); A is pushed along `-normal` and B
+    ///   along `+normal`.
     /// * `depth` — penetration depth (positive = overlap).
     pub fn correct(
         &self,
@@ -665,7 +723,7 @@ impl PositionalCorrector {
         }
         let correction_mag = self.beta * excess / denom;
         let correction = scale3(normal, correction_mag);
-        a.position = add3(a.position, scale3(correction, a.inv_mass));
-        b.position = sub3(b.position, scale3(correction, b.inv_mass));
+        a.position = sub3(a.position, scale3(correction, a.inv_mass));
+        b.position = add3(b.position, scale3(correction, b.inv_mass));
     }
 }

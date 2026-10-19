@@ -182,10 +182,10 @@ fn attractive_condensate_supports_a_stationary_bright_soliton() {
     let t = dt * steps as f64;
     let mut worst_amplitude: f64 = 0.0;
     let mut worst_phase: f64 = 0.0;
-    for j in 0..nx {
-        worst_amplitude = worst_amplitude.max((gp.amplitude[j] - sech[j]).abs());
-        if sech[j] > 0.1 {
-            worst_phase = worst_phase.max(wrap_phase(gp.phase[j] - 0.5 * t).abs());
+    for ((&amplitude, &phase), &profile) in gp.amplitude.iter().zip(&gp.phase).zip(&sech) {
+        worst_amplitude = worst_amplitude.max((amplitude - profile).abs());
+        if profile > 0.1 {
+            worst_phase = worst_phase.max(wrap_phase(phase - 0.5 * t).abs());
         }
     }
     assert!(worst_amplitude < 1e-4, "profile error {worst_amplitude}");
@@ -217,10 +217,19 @@ fn harmonic_oscillator_ground_state_only_acquires_a_phase() {
         gp.step();
     }
     let t = dt * steps as f64;
-    for j in 0..nx {
-        assert!((gp.amplitude[j] - ground[j]).abs() < 1e-5);
-        if ground[j] > 0.05 {
-            assert!(wrap_phase(gp.phase[j] + 0.5 * t).abs() < 1e-4);
+    for (j, ((&amplitude, &phase), &profile)) in
+        gp.amplitude.iter().zip(&gp.phase).zip(&ground).enumerate()
+    {
+        assert!(
+            (amplitude - profile).abs() < 1e-5,
+            "site {j}: amplitude {amplitude} vs {profile}"
+        );
+        if profile > 0.05 {
+            assert!(
+                wrap_phase(phase + 0.5 * t).abs() < 1e-4,
+                "site {j}: phase {phase} vs {}",
+                -0.5 * t
+            );
         }
     }
 }

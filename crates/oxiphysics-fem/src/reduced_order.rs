@@ -14,6 +14,8 @@
 
 use std::f64::consts::PI;
 
+use crate::analysis::FemError;
+
 /// Dense matrix type used for ROM system matrices (A, B, C in state-space form).
 pub type DenseMat = Vec<Vec<f64>>;
 
@@ -457,17 +459,77 @@ pub struct RomSystem {
     disp: Vec<f64>,
     /// Current reduced velocity (length n_modes).
     vel: Vec<f64>,
-    /// Previous reduced displacement (for Newmark).
-    disp_prev: Vec<f64>,
-    /// Previous reduced velocity (for Newmark).
-    vel_prev: Vec<f64>,
+    /// Current reduced acceleration (length n_modes), consistent with the
+    /// equation of motion at the current time.
+    acc: Vec<f64>,
+    /// Cholesky factor of the effective stiffness of the last Newmark step,
+    /// reused while the effective stiffness is unchanged.
+    newmark_factor: Option<NewmarkFactor>,
+}
+
+/// Effective stiffness of a Newmark step together with its Cholesky factor.
+#[derive(Debug, Clone)]
+struct NewmarkFactor {
+    /// `M_r/(β dt²) + γ C_r/(β dt) + K_r` the factor belongs to.
+    k_eff: Vec<Vec<f64>>,
+    /// Lower triangular `L` with `K_eff = L Lᵀ`.
+    chol: Vec<Vec<f64>>,
+}
+
+/// Cholesky factor `L` (`A = L Lᵀ`) of a symmetric positive-definite matrix, or
+/// `None` when a pivot is not safely positive (the matrix is not positive
+/// definite).
+fn cholesky_spd(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
+    let n = a.len();
+    let mut l = vec![vec![0.0; n]; n];
+    for i in 0..n {
+        for j in 0..=i {
+            let dot_ij: f64 = l[i][..j]
+                .iter()
+                .zip(l[j][..j].iter())
+                .map(|(x, y)| x * y)
+                .sum();
+            let s = a[i][j] - dot_ij;
+            if i == j {
+                if !s.is_finite() || s <= 1.0e-14 * a[i][i].abs() {
+                    return None;
+                }
+                l[i][j] = s.sqrt();
+            } else {
+                l[i][j] = s / l[j][j];
+            }
+        }
+    }
+    Some(l)
+}
+
+/// Solve `L Lᵀ x = b` for a Cholesky factor `L` with positive diagonal.
+fn cholesky_solve(l: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
+    let n = b.len();
+    let mut y = vec![0.0; n];
+    for i in 0..n {
+        let partial: f64 = l[i][..i]
+            .iter()
+            .zip(y[..i].iter())
+            .map(|(a, v)| a * v)
+            .sum();
+        y[i] = (b[i] - partial) / l[i][i];
+    }
+    let mut x = vec![0.0; n];
+    for i in (0..n).rev() {
+        let partial: f64 = ((i + 1)..n).map(|k| l[k][i] * x[k]).sum();
+        x[i] = (y[i] - partial) / l[i][i];
+    }
+    x
 }
 
 impl RomSystem {
     /// Build a reduced system by projecting full mass and stiffness matrices.
     ///
     /// Computes `M_r = Φ^T M Φ` and `K_r = Φ^T K Φ`.  Damping is set to zero
-    /// (call [`Self::set_rayleigh_damping`] to add proportional damping).
+    /// (call [`Self::set_rayleigh_damping`] to add proportional damping).  The
+    /// system starts at rest (zero displacement, velocity and acceleration);
+    /// use [`Self::set_initial_state`] for any other initial condition.
     pub fn project_system(basis: &PodBasis, mass: &[Vec<f64>], stiffness: &[Vec<f64>]) -> Self {
         let r = basis.n_modes;
         // Φ^T M  (r × n_dof)
@@ -486,8 +548,8 @@ impl RomSystem {
             reduced_damping,
             disp: vec![0.0; r],
             vel: vec![0.0; r],
-            disp_prev: vec![0.0; r],
-            vel_prev: vec![0.0; r],
+            acc: vec![0.0; r],
+            newmark_factor: None,
         }
     }
 
@@ -527,97 +589,202 @@ impl RomSystem {
         back_substitute(&lt, &y)
     }
 
-    /// Perform one Newmark-β time step in reduced space.
+    /// Reduced displacement `q` (length `n_modes`).
+    pub fn reduced_displacement(&self) -> &[f64] {
+        &self.disp
+    }
+
+    /// Reduced velocity `q̇` (length `n_modes`).
+    pub fn reduced_velocity(&self) -> &[f64] {
+        &self.vel
+    }
+
+    /// Reduced acceleration `q̈` (length `n_modes`).
+    pub fn reduced_acceleration(&self) -> &[f64] {
+        &self.acc
+    }
+
+    /// Check that the reduced matrices and the state vectors agree with the
+    /// number of modes (the matrices are public and may have been edited).
+    fn check_dimensions(&self) -> Result<usize, FemError> {
+        let r = self.basis.modes.len();
+        let square = |m: &[Vec<f64>]| m.len() == r && m.iter().all(|row| row.len() == r);
+        if !(square(&self.reduced_mass)
+            && square(&self.reduced_stiffness)
+            && square(&self.reduced_damping))
+        {
+            return Err(FemError::InvalidInput(format!(
+                "the reduced mass, stiffness and damping matrices must all be {r}x{r}"
+            )));
+        }
+        if self.disp.len() != r || self.vel.len() != r || self.acc.len() != r {
+            return Err(FemError::InvalidInput(
+                "the reduced state does not match the number of modes".to_string(),
+            ));
+        }
+        Ok(r)
+    }
+
+    /// Length of the full-space vectors the basis acts on.
+    fn n_dof(&self) -> usize {
+        self.basis.modes.first().map_or(0, Vec::len)
+    }
+
+    /// Set the initial state from full-space vectors.
     ///
-    /// The effective system solved at each step is:
+    /// The displacement `u₀`, velocity `v₀` and the external force `f₀` at the
+    /// initial time are projected onto the basis (`q₀ = Φᵀu₀`, ...), and the
+    /// consistent initial acceleration is obtained from the equation of
+    /// motion `M_r q̈₀ = f_r − C_r q̇₀ − K_r q₀`.  The part of the data outside
+    /// the span of the basis is discarded.
+    ///
+    /// # Errors
+    /// * [`FemError::InvalidInput`] if a vector does not have the full-space
+    ///   length or the reduced matrices have inconsistent sizes.
+    /// * [`FemError::SingularSystem`] if `M_r` is not positive definite.
+    pub fn set_initial_state(
+        &mut self,
+        displacement: &[f64],
+        velocity: &[f64],
+        force: &[f64],
+    ) -> Result<(), FemError> {
+        let r = self.check_dimensions()?;
+        let n_dof = self.n_dof();
+        for (name, v) in [
+            ("displacement", displacement),
+            ("velocity", velocity),
+            ("force", force),
+        ] {
+            if v.len() != n_dof {
+                return Err(FemError::InvalidInput(format!(
+                    "the initial {name} has {} entries, expected {n_dof}",
+                    v.len()
+                )));
+            }
+        }
+        let q0 = self.basis.project(displacement);
+        let v0 = self.basis.project(velocity);
+        let f0 = self.basis.project(force);
+        let damping_force = mat_vec(&self.reduced_damping, &v0);
+        let elastic_force = mat_vec(&self.reduced_stiffness, &q0);
+        let residual: Vec<f64> = (0..r)
+            .map(|i| f0[i] - damping_force[i] - elastic_force[i])
+            .collect();
+        let mass_factor = cholesky_spd(&self.reduced_mass).ok_or(FemError::SingularSystem)?;
+        self.acc = cholesky_solve(&mass_factor, &residual);
+        self.disp = q0;
+        self.vel = v0;
+        Ok(())
+    }
+
+    /// Perform one Newmark-β time step of size `dt` in reduced space and
+    /// return the new full-space displacement.
+    ///
+    /// `f_full` is the external force at the **end** of the step.  With the
+    /// predictors `q̃ = qₙ + dt·q̇ₙ + dt²(½ − β)·q̈ₙ` and `ṽ = q̇ₙ + dt(1 − γ)·q̈ₙ`
+    /// the Newmark relations are `q̈ₙ₊₁ = (qₙ₊₁ − q̃)/(β dt²)` and
+    /// `q̇ₙ₊₁ = ṽ + γ·dt·q̈ₙ₊₁`; inserting them into
+    /// `M_r q̈ + C_r q̇ + K_r q = f_r` gives the effective system
+    ///
     /// ```text
-    /// (M_r / (β dt²) + γ C_r / (β dt) + K_r) Δq = f_r - K_r q_n
-    ///   - M_r (q̈_pred) - C_r (q̇_pred)
+    /// (M_r/(β dt²) + γ C_r/(β dt) + K_r) qₙ₊₁
+    ///     = f_r + M_r q̃/(β dt²) + C_r (γ q̃/(β dt) − ṽ),
     /// ```
     ///
-    /// Returns the new full-space displacement vector.
-    pub fn step_newmark(&mut self, f_full: &[f64], dt: f64, beta: f64, gamma: f64) -> Vec<f64> {
-        let r = self.basis.n_modes;
-        // Project force
-        let f_r: Vec<f64> = self.basis.project(f_full);
+    /// which is solved with a Cholesky factorisation.  The factor is cached
+    /// and reused while `dt`, `β`, `γ` and the reduced matrices are unchanged.
+    /// The velocity and acceleration are advanced consistently, so successive
+    /// steps form a proper Newmark integration; `β = ¼, γ = ½` (average
+    /// acceleration) is unconditionally stable and conserves the energy of an
+    /// undamped system.
+    ///
+    /// # Errors
+    /// * [`FemError::InvalidInput`] for a non-positive or non-finite `dt` or
+    ///   `β`, a negative or non-finite `γ`, a force of the wrong length, or
+    ///   reduced matrices of inconsistent size.
+    /// * [`FemError::SingularSystem`] if the effective stiffness is not
+    ///   positive definite.
+    ///
+    /// The state is left unchanged on error.
+    pub fn step_newmark(
+        &mut self,
+        f_full: &[f64],
+        dt: f64,
+        beta: f64,
+        gamma: f64,
+    ) -> Result<Vec<f64>, FemError> {
+        if !(dt.is_finite() && dt > 0.0) {
+            return Err(FemError::InvalidInput(format!(
+                "the time step must be finite and positive, got {dt}"
+            )));
+        }
+        if !(beta.is_finite() && beta > 0.0) {
+            return Err(FemError::InvalidInput(format!(
+                "the Newmark parameter beta must be finite and positive, got {beta}"
+            )));
+        }
+        if !(gamma.is_finite() && gamma >= 0.0) {
+            return Err(FemError::InvalidInput(format!(
+                "the Newmark parameter gamma must be finite and non-negative, got {gamma}"
+            )));
+        }
+        let r = self.check_dimensions()?;
+        let n_dof = self.n_dof();
+        if f_full.len() != n_dof {
+            return Err(FemError::InvalidInput(format!(
+                "the force has {} entries, expected {n_dof}",
+                f_full.len()
+            )));
+        }
+        let f_r = self.basis.project(f_full);
 
-        // Predictors
-        // q̈_n from equation of motion (initial approximation = 0)
-        let acc_n = vec![0.0_f64; r];
-
+        // Predictors from the state at the beginning of the step.
         let disp_pred: Vec<f64> = (0..r)
-            .map(|i| self.disp[i] + dt * self.vel[i] + dt * dt * (0.5 - beta) * acc_n[i])
+            .map(|i| self.disp[i] + dt * self.vel[i] + dt * dt * (0.5 - beta) * self.acc[i])
             .collect();
         let vel_pred: Vec<f64> = (0..r)
-            .map(|i| self.vel[i] + dt * (1.0 - gamma) * acc_n[i])
+            .map(|i| self.vel[i] + dt * (1.0 - gamma) * self.acc[i])
             .collect();
 
-        // Effective stiffness K_eff = M_r/(β dt²) + γ C_r/(β dt) + K_r
+        // Effective stiffness K_eff = c1 M_r + c2 C_r + K_r.
         let c1 = 1.0 / (beta * dt * dt);
         let c2 = gamma / (beta * dt);
         let mut k_eff = vec![vec![0.0; r]; r];
-        for (i, keff_row) in k_eff.iter_mut().enumerate().take(r) {
-            for (j, cell) in keff_row.iter_mut().enumerate().take(r) {
+        for (i, keff_row) in k_eff.iter_mut().enumerate() {
+            for (j, cell) in keff_row.iter_mut().enumerate() {
                 *cell = c1 * self.reduced_mass[i][j]
                     + c2 * self.reduced_damping[i][j]
                     + self.reduced_stiffness[i][j];
             }
         }
 
-        // Effective force
-        let m_disp_pred = mat_vec(&self.reduced_mass, &disp_pred);
-        let c_vel_pred = mat_vec(&self.reduced_damping, &vel_pred);
-        let eff_rhs: Vec<f64> = (0..r)
-            .map(|i| {
-                f_r[i]
-                    - self.reduced_stiffness[0..]
-                        .iter()
-                        .enumerate()
-                        .map(|(j, row)| row[i] * disp_pred[j])
-                        .sum::<f64>()
-                    + c1 * m_disp_pred[i]
-                    - c_vel_pred[i] * c2 / c1
-            })
-            .collect();
+        // Effective force f_eff = f_r + M_r (c1 q̃) + C_r (c2 q̃ - ṽ).
+        let m_term = mat_vec(&self.reduced_mass, &vec_scale(&disp_pred, c1));
+        let c_arg: Vec<f64> = (0..r).map(|i| c2 * disp_pred[i] - vel_pred[i]).collect();
+        let c_term = mat_vec(&self.reduced_damping, &c_arg);
+        let f_eff: Vec<f64> = (0..r).map(|i| f_r[i] + m_term[i] + c_term[i]).collect();
 
-        // More direct approach: effective RHS
-        // f_eff = f_r - K_r*q_pred - C_r*v_pred + M_r/(beta*dt^2)*q_pred
-        let k_q_pred = mat_vec(&self.reduced_stiffness, &disp_pred);
-        let c_v_pred = mat_vec(&self.reduced_damping, &vel_pred);
-        let m_q_pred = mat_vec(&self.reduced_mass, &disp_pred);
-        let f_eff: Vec<f64> = (0..r)
-            .map(|i| {
-                f_r[i] - k_q_pred[i] - c_v_pred[i]
-                    + c1 * m_q_pred[i]
-                    + c2 * self.reduced_mass[i]
-                        .iter()
-                        .zip(vel_pred.iter())
-                        .map(|(m, v)| m * v)
-                        .sum::<f64>()
-            })
-            .collect();
-        let _ = eff_rhs; // superseded by f_eff
+        // Reuse the Cholesky factor of the previous step when K_eff is unchanged.
+        let factor = match self.newmark_factor.take() {
+            Some(cached) if cached.k_eff == k_eff => cached,
+            _ => NewmarkFactor {
+                chol: cholesky_spd(&k_eff).ok_or(FemError::SingularSystem)?,
+                k_eff,
+            },
+        };
+        let q_new = cholesky_solve(&factor.chol, &f_eff);
+        self.newmark_factor = Some(factor);
 
-        // Solve K_eff q_new = f_eff
-        let l = cholesky(&k_eff);
-        let y = forward_substitute(&l, &f_eff);
-        let lt = mat_transpose(&l);
-        let q_new = back_substitute(&lt, &y);
-
-        // Update velocity and acceleration
+        // Acceleration and velocity of the new state.
         let acc_new: Vec<f64> = (0..r).map(|i| c1 * (q_new[i] - disp_pred[i])).collect();
         let vel_new: Vec<f64> = (0..r)
             .map(|i| vel_pred[i] + dt * gamma * acc_new[i])
             .collect();
-
-        // Store state
-        self.disp_prev = self.disp.clone();
-        self.vel_prev = self.vel.clone();
-        self.disp = q_new.clone();
+        self.acc = acc_new;
         self.vel = vel_new;
+        self.disp = q_new;
 
-        // Reconstruct full displacement
-        self.basis.reconstruct(&q_new)
+        Ok(self.basis.reconstruct(&self.disp))
     }
 }
 
@@ -870,6 +1037,9 @@ impl EmpiricalInterpolation {
 // ---------------------------------------------------------------------------
 
 mod balancing;
+#[cfg(test)]
+mod newmark_tests;
+mod schur;
 
 pub use balancing::{
     BalancingTransform, balanced_truncation, balancing_transform, controllability_gramian,
@@ -1109,7 +1279,9 @@ mod tests {
         let stiffness = make_diagonal_matrix(4, 10.0);
         let mut rom = RomSystem::project_system(&basis, &mass, &stiffness);
         let f_full = vec![0.1; 4];
-        let u = rom.step_newmark(&f_full, 0.01, 0.25, 0.5);
+        let u = rom
+            .step_newmark(&f_full, 0.01, 0.25, 0.5)
+            .expect("Newmark step");
         assert_eq!(u.len(), 4);
     }
 
@@ -1125,7 +1297,9 @@ mod tests {
         let mut rom = RomSystem::project_system(&basis, &mass, &stiffness);
         let f_full = vec![0.0; 6];
         for _ in 0..5 {
-            let u = rom.step_newmark(&f_full, 0.001, 0.25, 0.5);
+            let u = rom
+                .step_newmark(&f_full, 0.001, 0.25, 0.5)
+                .expect("Newmark step");
             assert!(u.iter().all(|x| x.is_finite()), "non-finite displacement");
         }
     }

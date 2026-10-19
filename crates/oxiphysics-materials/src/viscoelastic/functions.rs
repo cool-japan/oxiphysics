@@ -877,4 +877,154 @@ mod tests {
             "J(∞) ≈ 1/E: got {j_large}, expected {expected}"
         );
     }
+    // ----- Generalized Maxwell tensorial update (exact integration) ------------
+
+    /// Two-branch Prony chain: E_inf = 1 GPa, branch 1 with E_1 = 2 GPa and
+    /// tau_1 = 2 s, branch 2 with weight 0.5 on E = 1 GPa (E_2 = 0.5 GPa) and tau_2 = 0.5 s.
+    fn prony_chain() -> GeneralizedMaxwell {
+        let mut gm = GeneralizedMaxwell::new(1.0e9);
+        gm.add_element(MaxwellModel::new(2.0e9, 4.0e9), 1.0);
+        gm.add_element(MaxwellModel::new(1.0e9, 5.0e8), 0.5);
+        gm
+    }
+
+    #[test]
+    fn test_voigt_update_step_strain_relaxes_to_equilibrium_modulus() {
+        use crate::constitutive::{ConstitutiveModel, ViscoelasticState};
+        let gm = prony_chain();
+        let eps0 = 1.0e-3;
+        let strain = [eps0, 0.0, 0.0, 0.0, 0.0, 2.0 * eps0];
+        let dt = 1.0e-3;
+        // Step the strain from 0 to eps0 within the first (tiny) increment, then hold.
+        let mut state = ViscoelasticState::default();
+        let mut t = 0.0_f64;
+        let mut checkpoints = Vec::new();
+        for step in 0..20_000_usize {
+            let resp = gm.stress_update(&strain, &state, dt);
+            state = resp.state;
+            t += dt;
+            if matches!(step + 1, 500 | 1000 | 2000 | 5000 | 20_000) {
+                checkpoints.push((t, resp.stress));
+            }
+        }
+        assert_eq!(checkpoints.len(), 5);
+        for (t_k, stress) in checkpoints {
+            let expected = gm.relaxation_modulus(t_k) * eps0;
+            let rel = (stress[0] - expected).abs() / expected;
+            assert!(
+                rel < 1.0e-2,
+                "sigma(t={t_k}) = {} but E(t)*eps0 = {expected} (rel {rel})",
+                stress[0]
+            );
+            // The shear component carries twice the strain, hence twice the stress.
+            assert!(
+                (stress[5] - 2.0 * stress[0]).abs() < 1.0e-9 * stress[0].abs(),
+                "component-wise relaxation: {} vs 2*{}",
+                stress[5],
+                stress[0]
+            );
+        }
+        // t = 20 s = 10 tau_max: only the equilibrium spring still carries load.
+        let final_expected = gm.spring_inf * eps0;
+        let final_stress = gm.stress_update(&strain, &state, dt).stress[0];
+        assert!(
+            (final_stress - final_expected).abs() / final_expected < 1.0e-2,
+            "sigma(10 tau_max) = {final_stress}, E_inf*eps0 = {final_expected}"
+        );
+    }
+
+    #[test]
+    fn test_voigt_update_first_step_is_glassy_not_equilibrium() {
+        // A step strain applied within a very short first increment must give the
+        // instantaneous (glassy) stress E_0 * eps and the glassy tangent, not E_inf * eps.
+        let gm = prony_chain();
+        let eps0 = 2.0e-3;
+        let strain = [eps0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let zero = [0.0_f64; 6];
+        let (stress, tangent, _hist) = gm.voigt_stress_update(&strain, &zero, &[], 1.0e-12);
+        let e_glassy = gm.glassy_modulus();
+        assert!(
+            (stress[0] - e_glassy * eps0).abs() / (e_glassy * eps0) < 1.0e-9,
+            "instantaneous stress {} vs glassy {}",
+            stress[0],
+            e_glassy * eps0
+        );
+        assert!(
+            (tangent[0][0] - e_glassy).abs() / e_glassy < 1.0e-9,
+            "tangent -> glassy modulus as dt -> 0: {} vs {e_glassy}",
+            tangent[0][0]
+        );
+        // Long step: the tangent collapses to the equilibrium modulus.
+        let (_s, tan_long, _h) = gm.voigt_stress_update(&strain, &zero, &[], 1.0e12);
+        assert!(
+            (tan_long[0][0] - gm.spring_inf).abs() / gm.spring_inf < 1.0e-9,
+            "tangent -> E_inf as dt -> inf: {}",
+            tan_long[0][0]
+        );
+    }
+
+    #[test]
+    fn test_voigt_update_constant_strain_rate_is_exact_for_any_step_size() {
+        // sigma(t) = E_inf*r*t + sum_a w_a E_a r tau_a (1 - exp(-t/tau_a)).
+        let gm = prony_chain();
+        let rate = 1.0e-3; // 1/s
+        let t_end = 14.8;
+        let analytic = {
+            let mut sum = gm.spring_inf * rate * t_end;
+            for (m, &w) in gm.maxwell_elements.iter().zip(gm.weights.iter()) {
+                let tau = m.relaxation_time();
+                sum += w * m.elastic_modulus * rate * tau * (1.0 - (-t_end / tau).exp());
+            }
+            sum
+        };
+        for n_steps in [40_usize, 400, 4000] {
+            let dt = t_end / n_steps as f64;
+            let mut prev = [0.0_f64; 6];
+            let mut hist: Vec<[f64; 6]> = Vec::new();
+            let mut stress = [0.0_f64; 6];
+            for k in 1..=n_steps {
+                let e = rate * dt * k as f64;
+                let strain = [e, 0.0, 0.0, 0.0, 0.0, 0.0];
+                let (s, _tan, h) = gm.voigt_stress_update(&strain, &prev, &hist, dt);
+                stress = s;
+                hist = h;
+                prev = strain;
+            }
+            assert!(
+                (stress[0] - analytic).abs() / analytic < 1.0e-10,
+                "n_steps={n_steps}: sigma = {} vs analytic {analytic}",
+                stress[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_voigt_update_branch_with_zero_relaxation_time_carries_no_stress() {
+        let mut gm = GeneralizedMaxwell::new(1.0e9);
+        gm.add_element(MaxwellModel::new(3.0e9, 0.0), 1.0);
+        let strain = [1.0e-3, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let (stress, tangent, hist) = gm.voigt_stress_update(&strain, &[0.0; 6], &[], 1.0e-3);
+        assert!((stress[0] - 1.0e9 * 1.0e-3).abs() < 1.0e-6, "{}", stress[0]);
+        assert!((tangent[0][0] - 1.0e9).abs() < 1.0e-3, "{}", tangent[0][0]);
+        assert_eq!(hist.len(), 1);
+        assert!(hist[0].iter().all(|&h| h == 0.0));
+    }
+
+    #[test]
+    fn test_constitutive_state_tracks_previous_strain() {
+        use crate::constitutive::{ConstitutiveModel, ViscoelasticState};
+        let gm = prony_chain();
+        let strain = [1.0e-3, -5.0e-4, 0.0, 0.0, 0.0, 1.0e-4];
+        let r1 = gm.stress_update(&strain, &ViscoelasticState::default(), 1.0e-3);
+        assert_eq!(r1.state.prev_strain, strain);
+        // Holding the strain must relax the stress (it must not stiffen).
+        let r2 = gm.stress_update(&strain, &r1.state, 0.5);
+        assert!(
+            r2.stress[0] < r1.stress[0],
+            "stress must relax under constant strain: {} -> {}",
+            r1.stress[0],
+            r2.stress[0]
+        );
+        assert_eq!(gm.n_state_vars(), 6 * 2 + 6);
+    }
 }

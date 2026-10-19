@@ -3,8 +3,19 @@
 
 //! GPU-accelerated neural network compute (CPU mock backend).
 //!
-//! Provides layer-wise forward passes, backpropagation gradients, and an
-//! Adam optimizer — all running on the CPU as a mock GPU backend.
+//! Provides layer-wise forward passes, exact backpropagation (weight, bias and
+//! input gradients for every [`LayerType`]), SGD and Adam training — all
+//! running on the CPU as a mock GPU backend.
+//!
+//! # Backpropagation
+//!
+//! [`GpuNeuralNet::forward_with_cache`] records every layer's input and output
+//! in a [`ForwardCache`]; [`BackpropGpu::backward_pass`] then applies the chain
+//! rule layer by layer (Dense `dW = δ xᵀ`, `δ_prev = Wᵀ δ`; ReLU `δ·1[x>0]`;
+//! Sigmoid `δ·s(1−s)`; Tanh `δ·(1−t²)`; Softmax via its Jacobian-vector
+//! product; BatchNorm with trainable γ/β; Conv1D with kernel size and stride).
+
+use thiserror::Error;
 
 // ---------------------------------------------------------------------------
 // Activation helpers (public, free functions)
@@ -35,18 +46,54 @@ pub fn softmax(x: &[f64]) -> Vec<f64> {
 
 /// Mean-squared error: `mean((pred_i - target_i)^2)`.
 ///
-/// Returns `0.0` when `pred` is empty.
+/// Compares the first `min(pred.len(), target.len())` entries; returns `0.0`
+/// when there is nothing to compare.
 pub fn mse_loss(pred: &[f64], target: &[f64]) -> f64 {
-    if pred.is_empty() {
+    let n = pred.len().min(target.len());
+    if n == 0 {
         return 0.0;
     }
-    let n = pred.len().min(target.len());
     let sum: f64 = pred[..n]
         .iter()
         .zip(target[..n].iter())
         .map(|(p, t)| (p - t).powi(2))
         .sum();
     sum / n as f64
+}
+
+// ---------------------------------------------------------------------------
+// NeuralNetError
+// ---------------------------------------------------------------------------
+
+/// Errors reported by the network construction and backpropagation routines.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum NeuralNetError {
+    /// A buffer does not have the length the operation requires.
+    #[error("shape mismatch in {context}: expected {expected}, got {got}")]
+    ShapeMismatch {
+        /// What was being checked (e.g. `"layer 2 weight gradient"`).
+        context: String,
+        /// Required length.
+        expected: usize,
+        /// Actual length.
+        got: usize,
+    },
+    /// A layer was configured with impossible parameters.
+    #[error("invalid layer configuration: {0}")]
+    InvalidLayer(String),
+}
+
+/// Check that `got == expected`, naming `context` in the error otherwise.
+fn expect_len(context: &str, expected: usize, got: usize) -> Result<(), NeuralNetError> {
+    if expected == got {
+        Ok(())
+    } else {
+        Err(NeuralNetError::ShapeMismatch {
+            context: context.to_string(),
+            expected,
+            got,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -58,7 +105,7 @@ pub fn mse_loss(pred: &[f64], target: &[f64]) -> f64 {
 pub enum LayerType {
     /// Fully-connected (dense) layer.
     Dense,
-    /// 1-D convolution layer.
+    /// 1-D convolution layer (see [`Conv1dSpec`] for the geometry).
     Conv1D,
     /// Rectified linear unit activation.
     ReLU,
@@ -75,15 +122,128 @@ pub enum LayerType {
 }
 
 // ---------------------------------------------------------------------------
+// Conv1dSpec
+// ---------------------------------------------------------------------------
+
+/// Geometry of a [`LayerType::Conv1D`] layer.
+///
+/// The layer cross-correlates `in_channels` input channels of `input_len`
+/// samples (channel-major: `x[ic * input_len + t]`) with `out_channels`
+/// filters of `kernel_size` taps, advancing `stride` samples between output
+/// positions and applying no padding:
+///
+/// `y[oc * positions + p] = b[oc] + Σ_ic Σ_k w[(oc * in_channels + ic) * kernel_size + k] · x[ic * input_len + p * stride + k]`
+///
+/// with `positions = (input_len − kernel_size) / stride + 1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Conv1dSpec {
+    /// Number of input channels.
+    pub in_channels: usize,
+    /// Number of output channels (filters).
+    pub out_channels: usize,
+    /// Samples per input channel.
+    pub input_len: usize,
+    /// Taps per filter and channel.
+    pub kernel_size: usize,
+    /// Step between successive kernel positions.
+    pub stride: usize,
+}
+
+impl Conv1dSpec {
+    /// Validate and build a convolution geometry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralNetError::InvalidLayer`] when a channel count, the
+    /// kernel size or the stride is zero, or when the kernel is longer than
+    /// the input.
+    pub fn new(
+        in_channels: usize,
+        out_channels: usize,
+        input_len: usize,
+        kernel_size: usize,
+        stride: usize,
+    ) -> Result<Self, NeuralNetError> {
+        if in_channels == 0 || out_channels == 0 {
+            return Err(NeuralNetError::InvalidLayer(format!(
+                "Conv1D needs positive channel counts, got {in_channels} -> {out_channels}"
+            )));
+        }
+        if kernel_size == 0 || stride == 0 {
+            return Err(NeuralNetError::InvalidLayer(format!(
+                "Conv1D needs a positive kernel size and stride, got kernel {kernel_size}, \
+                 stride {stride}"
+            )));
+        }
+        if kernel_size > input_len {
+            return Err(NeuralNetError::InvalidLayer(format!(
+                "Conv1D kernel size {kernel_size} exceeds the input length {input_len}"
+            )));
+        }
+        Ok(Self {
+            in_channels,
+            out_channels,
+            input_len,
+            kernel_size,
+            stride,
+        })
+    }
+
+    /// Single-channel geometry whose kernel spans the whole input: one output
+    /// position per output channel (the geometry of [`NeuralLayer::new`]).
+    fn full_width(input_len: usize, out_channels: usize) -> Self {
+        Self {
+            in_channels: 1,
+            out_channels,
+            input_len,
+            kernel_size: input_len,
+            stride: 1,
+        }
+    }
+
+    /// Output positions per channel; `0` for a degenerate geometry (zero
+    /// kernel or stride, or a kernel longer than the input).
+    pub fn output_len(&self) -> usize {
+        if self.stride == 0 || self.kernel_size == 0 || self.kernel_size > self.input_len {
+            0
+        } else {
+            (self.input_len - self.kernel_size) / self.stride + 1
+        }
+    }
+
+    /// Length of the flattened input, `in_channels * input_len`.
+    pub fn input_size(&self) -> usize {
+        self.in_channels * self.input_len
+    }
+
+    /// Length of the flattened output, `out_channels * output_len()`.
+    pub fn output_size(&self) -> usize {
+        self.out_channels * self.output_len()
+    }
+
+    /// Number of filter weights, `out_channels * in_channels * kernel_size`.
+    pub fn weight_len(&self) -> usize {
+        self.out_channels * self.in_channels * self.kernel_size
+    }
+}
+
+// ---------------------------------------------------------------------------
 // NeuralLayer
 // ---------------------------------------------------------------------------
+
+/// Variance regulariser of the normalisation layer.
+const BATCH_NORM_EPSILON: f64 = 1e-5;
 
 /// A single layer in a neural network, carrying weights, biases and a type.
 #[derive(Debug, Clone)]
 pub struct NeuralLayer {
-    /// Flattened weight matrix (row-major: `[out, in]`).
+    /// Flattened weight matrix (row-major: `[out, in]`).  For a
+    /// [`LayerType::Conv1D`] layer: the filter bank `[out_ch, in_ch, kernel]`.
+    /// For [`LayerType::BatchNorm`]: the scale γ in the first `input_size`
+    /// entries.
     pub weights: Vec<f64>,
-    /// Bias vector (length = number of output neurons).
+    /// Bias vector (length = number of output neurons; one per output channel
+    /// for `Conv1D`; the shift β for `BatchNorm`).
     pub biases: Vec<f64>,
     /// Computational type of this layer.
     pub layer_type: LayerType,
@@ -91,21 +251,74 @@ pub struct NeuralLayer {
     pub input_size: usize,
     /// Number of output neurons.
     pub output_size: usize,
+    /// Convolution geometry of a [`LayerType::Conv1D`] layer, `None` for every
+    /// other layer type (see [`NeuralLayer::conv_spec`]).
+    pub conv: Option<Conv1dSpec>,
 }
 
 impl NeuralLayer {
     /// Create a new layer with given dimensions and type.
     ///
-    /// Weights and biases are zero-initialised; call the builder helpers to
-    /// set custom values.
+    /// Weights and biases are zero-initialised; assign the public `weights`
+    /// and `biases` fields to set custom values.
+    ///
+    /// A [`LayerType::Conv1D`] layer created here has `output_size` filters
+    /// whose single-channel kernel spans the whole input (one output position
+    /// per filter); use [`NeuralLayer::conv1d`] for a sliding kernel with an
+    /// explicit kernel size, stride and channel counts.
     pub fn new(input_size: usize, output_size: usize, layer_type: LayerType) -> Self {
+        let conv = (layer_type == LayerType::Conv1D)
+            .then(|| Conv1dSpec::full_width(input_size, output_size));
         Self {
             weights: vec![0.0; input_size * output_size],
             biases: vec![0.0; output_size],
             layer_type,
             input_size,
             output_size,
+            conv,
         }
+    }
+
+    /// Create a zero-initialised 1-D convolution layer.
+    ///
+    /// The input is `in_channels` channels of `input_len` samples
+    /// (channel-major); the output is `out_channels` channels of
+    /// `(input_len − kernel_size) / stride + 1` positions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralNetError::InvalidLayer`] for a zero channel count,
+    /// kernel size or stride, or a kernel longer than the input.
+    pub fn conv1d(
+        in_channels: usize,
+        out_channels: usize,
+        input_len: usize,
+        kernel_size: usize,
+        stride: usize,
+    ) -> Result<Self, NeuralNetError> {
+        let spec = Conv1dSpec::new(in_channels, out_channels, input_len, kernel_size, stride)?;
+        Ok(Self {
+            weights: vec![0.0; spec.weight_len()],
+            biases: vec![0.0; out_channels],
+            layer_type: LayerType::Conv1D,
+            input_size: spec.input_size(),
+            output_size: spec.output_size(),
+            conv: Some(spec),
+        })
+    }
+
+    /// Convolution geometry of a `Conv1D` layer; `None` for other layer types.
+    ///
+    /// A `Conv1D` layer whose [`conv`](Self::conv) field is `None` is read as
+    /// the full-width single-channel geometry of [`NeuralLayer::new`].
+    pub fn conv_spec(&self) -> Option<Conv1dSpec> {
+        if self.layer_type != LayerType::Conv1D {
+            return None;
+        }
+        Some(
+            self.conv
+                .unwrap_or_else(|| Conv1dSpec::full_width(self.input_size, self.output_size)),
+        )
     }
 
     /// Execute the forward pass of this layer on `input`.
@@ -119,15 +332,15 @@ impl NeuralLayer {
             LayerType::Tanh => input.iter().map(|&x| x.tanh()).collect(),
             LayerType::Softmax => softmax(input),
             LayerType::BatchNorm => {
-                // Inference-time batch norm: normalise to zero-mean / unit-var
-                // using the stored weights as (gamma, beta) pairs.
+                // Normalise the feature vector to zero-mean / unit-variance and
+                // scale/shift it with the stored (gamma, beta) pairs.
                 let n = input.len();
                 if n == 0 {
                     return Vec::new();
                 }
                 let mean = input.iter().sum::<f64>() / n as f64;
                 let var = input.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n as f64;
-                let std = (var + 1e-5).sqrt();
+                let std = (var + BATCH_NORM_EPSILON).sqrt();
                 input
                     .iter()
                     .enumerate()
@@ -142,7 +355,7 @@ impl NeuralLayer {
                 // At inference time Dropout is a no-op.
                 input.to_vec()
             }
-            LayerType::Dense | LayerType::Conv1D => {
+            LayerType::Dense => {
                 // Matrix–vector multiply: out[j] = sum_i w[j*in + i]*input[i] + bias[j]
                 let in_sz = input.len();
                 let out_sz = self.output_size;
@@ -157,7 +370,239 @@ impl NeuralLayer {
                 }
                 out
             }
+            LayerType::Conv1D => self.conv1d_forward(input),
         }
+    }
+
+    /// Sliding-window cross-correlation of a `Conv1D` layer (see
+    /// [`Conv1dSpec`]).  Missing input samples or weights read as zero.
+    fn conv1d_forward(&self, input: &[f64]) -> Vec<f64> {
+        let Some(spec) = self.conv_spec() else {
+            return Vec::new();
+        };
+        let positions = spec.output_len();
+        let mut out = vec![0.0; spec.out_channels * positions];
+        for oc in 0..spec.out_channels {
+            let bias = self.biases.get(oc).copied().unwrap_or(0.0);
+            for p in 0..positions {
+                let mut acc = bias;
+                for ic in 0..spec.in_channels {
+                    for k in 0..spec.kernel_size {
+                        let w_idx = (oc * spec.in_channels + ic) * spec.kernel_size + k;
+                        let x_idx = ic * spec.input_len + p * spec.stride + k;
+                        let w = self.weights.get(w_idx).copied().unwrap_or(0.0);
+                        let x = input.get(x_idx).copied().unwrap_or(0.0);
+                        acc += w * x;
+                    }
+                }
+                if let Some(slot) = out.get_mut(oc * positions + p) {
+                    *slot = acc;
+                }
+            }
+        }
+        out
+    }
+
+    /// Backward pass of this layer.
+    ///
+    /// `input` and `output` are the values the layer received and produced in
+    /// the forward pass, `grad_output` is `∂L/∂output`.  The weight and bias
+    /// gradients are *added* to `grad_weights` / `grad_biases` (so several
+    /// samples can be accumulated); the returned vector is `∂L/∂input`.
+    ///
+    /// * Dense: `dW[j·in + i] += δ_j x_i`, `db_j += δ_j`, `δ_prev = Wᵀ δ`.
+    /// * Conv1D: the correlation of `δ` with the input per filter tap, with
+    ///   `δ_prev` scattered back through the same windows.
+    /// * ReLU: `δ · 1[x > 0]`; Sigmoid: `δ · s (1 − s)`; Tanh: `δ · (1 − t²)`.
+    /// * Softmax: `s ⊙ (δ − ⟨δ, s⟩)` (the Jacobian-vector product).
+    /// * BatchNorm: `dγ_i += δ_i x̂_i`, `dβ_i += δ_i` and the full
+    ///   normalisation Jacobian for the input gradient.
+    /// * Dropout: the identity (it is a no-op in [`NeuralLayer::forward`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralNetError::ShapeMismatch`] when `output`, `grad_output`,
+    /// `grad_weights` or `grad_biases` do not have the lengths this layer
+    /// produces.
+    pub fn backward(
+        &self,
+        input: &[f64],
+        output: &[f64],
+        grad_output: &[f64],
+        grad_weights: &mut [f64],
+        grad_biases: &mut [f64],
+    ) -> Result<Vec<f64>, NeuralNetError> {
+        expect_len("output gradient", output.len(), grad_output.len())?;
+        expect_len("weight gradient", self.weights.len(), grad_weights.len())?;
+        expect_len("bias gradient", self.biases.len(), grad_biases.len())?;
+        match self.layer_type {
+            LayerType::Dense => {
+                expect_len("dense output", self.output_size, output.len())?;
+                Ok(self.dense_backward(input, grad_output, grad_weights, grad_biases))
+            }
+            LayerType::Conv1D => {
+                let expected = self.conv_spec().map_or(0, |spec| spec.output_size());
+                expect_len("conv1d output", expected, output.len())?;
+                Ok(self.conv1d_backward(input, grad_output, grad_weights, grad_biases))
+            }
+            LayerType::ReLU => {
+                expect_len("activation input", output.len(), input.len())?;
+                Ok(input
+                    .iter()
+                    .zip(grad_output)
+                    .map(|(&x, &g)| if x > 0.0 { g } else { 0.0 })
+                    .collect())
+            }
+            LayerType::Sigmoid => {
+                expect_len("activation input", output.len(), input.len())?;
+                Ok(output
+                    .iter()
+                    .zip(grad_output)
+                    .map(|(&s, &g)| g * s * (1.0 - s))
+                    .collect())
+            }
+            LayerType::Tanh => {
+                expect_len("activation input", output.len(), input.len())?;
+                Ok(output
+                    .iter()
+                    .zip(grad_output)
+                    .map(|(&t, &g)| g * (1.0 - t * t))
+                    .collect())
+            }
+            LayerType::Softmax => {
+                expect_len("activation input", output.len(), input.len())?;
+                let dot: f64 = output.iter().zip(grad_output).map(|(&s, &g)| s * g).sum();
+                Ok(output
+                    .iter()
+                    .zip(grad_output)
+                    .map(|(&s, &g)| s * (g - dot))
+                    .collect())
+            }
+            LayerType::Dropout => {
+                expect_len("dropout input", output.len(), input.len())?;
+                Ok(grad_output.to_vec())
+            }
+            LayerType::BatchNorm => {
+                expect_len("batch-norm input", output.len(), input.len())?;
+                Ok(self.batch_norm_backward(input, grad_output, grad_weights, grad_biases))
+            }
+        }
+    }
+
+    /// Dense-layer backward pass (strides follow [`NeuralLayer::forward`]).
+    fn dense_backward(
+        &self,
+        input: &[f64],
+        grad_output: &[f64],
+        grad_weights: &mut [f64],
+        grad_biases: &mut [f64],
+    ) -> Vec<f64> {
+        let in_sz = input.len();
+        let mut grad_input = vec![0.0; in_sz];
+        for (j, &g) in grad_output.iter().enumerate() {
+            if let Some(gb) = grad_biases.get_mut(j) {
+                *gb += g;
+            }
+            for (i, (&x, gx)) in input.iter().zip(grad_input.iter_mut()).enumerate() {
+                let idx = j * in_sz + i;
+                if let Some(gw) = grad_weights.get_mut(idx) {
+                    *gw += g * x;
+                }
+                if let Some(&w) = self.weights.get(idx) {
+                    *gx += w * g;
+                }
+            }
+        }
+        grad_input
+    }
+
+    /// Convolution backward pass: the exact adjoint of
+    /// [`NeuralLayer::conv1d_forward`].
+    fn conv1d_backward(
+        &self,
+        input: &[f64],
+        grad_output: &[f64],
+        grad_weights: &mut [f64],
+        grad_biases: &mut [f64],
+    ) -> Vec<f64> {
+        let mut grad_input = vec![0.0; input.len()];
+        let Some(spec) = self.conv_spec() else {
+            return grad_input;
+        };
+        let positions = spec.output_len();
+        for oc in 0..spec.out_channels {
+            for p in 0..positions {
+                let g = grad_output.get(oc * positions + p).copied().unwrap_or(0.0);
+                if let Some(gb) = grad_biases.get_mut(oc) {
+                    *gb += g;
+                }
+                for ic in 0..spec.in_channels {
+                    for k in 0..spec.kernel_size {
+                        let w_idx = (oc * spec.in_channels + ic) * spec.kernel_size + k;
+                        let x_idx = ic * spec.input_len + p * spec.stride + k;
+                        let Some(&x) = input.get(x_idx) else {
+                            continue;
+                        };
+                        if let Some(gw) = grad_weights.get_mut(w_idx) {
+                            *gw += g * x;
+                        }
+                        if let (Some(&w), Some(gx)) =
+                            (self.weights.get(w_idx), grad_input.get_mut(x_idx))
+                        {
+                            *gx += w * g;
+                        }
+                    }
+                }
+            }
+        }
+        grad_input
+    }
+
+    /// Backward pass of the feature-wise normalisation layer.
+    ///
+    /// With `x̂ = (x − μ)/σ`, `y = γ x̂ + β` and `σ² = var + ε`:
+    /// `dγ = δ x̂`, `dβ = δ` and
+    /// `dx = (1/σ) (δγ − mean(δγ) − x̂ · mean(δγ ⊙ x̂))`.
+    fn batch_norm_backward(
+        &self,
+        input: &[f64],
+        grad_output: &[f64],
+        grad_weights: &mut [f64],
+        grad_biases: &mut [f64],
+    ) -> Vec<f64> {
+        let n = input.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let count = n as f64;
+        let mean = input.iter().sum::<f64>() / count;
+        let var = input.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / count;
+        let std = (var + BATCH_NORM_EPSILON).sqrt();
+        let normalised: Vec<f64> = input.iter().map(|&x| (x - mean) / std).collect();
+
+        let mut grad_normalised = Vec::with_capacity(n);
+        for (i, (&g, &x_hat)) in grad_output.iter().zip(normalised.iter()).enumerate() {
+            let gamma = self.weights.get(i).copied().unwrap_or(1.0);
+            if let Some(gw) = grad_weights.get_mut(i) {
+                *gw += g * x_hat;
+            }
+            if let Some(gb) = grad_biases.get_mut(i) {
+                *gb += g;
+            }
+            grad_normalised.push(g * gamma);
+        }
+        let mean_grad = grad_normalised.iter().sum::<f64>() / count;
+        let mean_grad_x = grad_normalised
+            .iter()
+            .zip(normalised.iter())
+            .map(|(&g, &x_hat)| g * x_hat)
+            .sum::<f64>()
+            / count;
+        grad_normalised
+            .iter()
+            .zip(normalised.iter())
+            .map(|(&g, &x_hat)| (g - mean_grad - x_hat * mean_grad_x) / std)
+            .collect()
     }
 }
 
@@ -192,6 +637,22 @@ impl GpuNeuralNet {
         current
     }
 
+    /// Run a forward pass that records every layer's input and output, as
+    /// needed by [`BackpropGpu::backward_pass`].
+    ///
+    /// [`ForwardCache::output`] equals [`forward_pass`](Self::forward_pass).
+    pub fn forward_with_cache(&self, input: &[f64]) -> ForwardCache {
+        let mut layer_outputs: Vec<Vec<f64>> = Vec::with_capacity(self.layers.len());
+        for layer in &self.layers {
+            let next = layer.forward(layer_outputs.last().map_or(input, Vec::as_slice));
+            layer_outputs.push(next);
+        }
+        ForwardCache {
+            input: input.to_vec(),
+            layer_outputs,
+        }
+    }
+
     /// Run forward passes for a batch of inputs.
     pub fn batch_forward(&self, inputs: &[Vec<f64>]) -> Vec<Vec<f64>> {
         inputs.iter().map(|inp| self.forward_pass(inp)).collect()
@@ -205,39 +666,158 @@ impl Default for GpuNeuralNet {
 }
 
 // ---------------------------------------------------------------------------
+// ForwardCache
+// ---------------------------------------------------------------------------
+
+/// Activations recorded by [`GpuNeuralNet::forward_with_cache`].
+///
+/// Layer `l` received [`layer_input(l)`](Self::layer_input) and produced
+/// `layer_outputs()[l]`; the network output is the last layer's output (the
+/// input itself for a network without layers).
+#[derive(Debug, Clone)]
+pub struct ForwardCache {
+    /// The network input.
+    input: Vec<f64>,
+    /// `layer_outputs[l]` is the output of layer `l`.
+    layer_outputs: Vec<Vec<f64>>,
+}
+
+impl ForwardCache {
+    /// The network input the cache was recorded for.
+    pub fn input(&self) -> &[f64] {
+        &self.input
+    }
+
+    /// The output of every layer, in network order.
+    pub fn layer_outputs(&self) -> &[Vec<f64>] {
+        &self.layer_outputs
+    }
+
+    /// The input that layer `layer` received, or `None` past the last layer.
+    pub fn layer_input(&self, layer: usize) -> Option<&[f64]> {
+        if layer == 0 {
+            Some(&self.input)
+        } else {
+            self.layer_outputs.get(layer - 1).map(Vec::as_slice)
+        }
+    }
+
+    /// The network output (the input itself for a network without layers).
+    pub fn output(&self) -> &[f64] {
+        self.layer_outputs.last().map_or(&self.input, Vec::as_slice)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BackpropGpu
 // ---------------------------------------------------------------------------
 
-/// Backpropagation state: stores per-layer gradient tensors.
+/// Backpropagation state: stores per-layer weight and bias gradients.
 #[derive(Debug, Clone)]
 pub struct BackpropGpu {
-    /// Per-layer gradient vectors (same shape as the layer's weight vector).
+    /// Per-layer weight gradients (same shape as the layer's weight vector).
     pub gradients: Vec<Vec<f64>>,
+    /// Per-layer bias gradients (same shape as the layer's bias vector).
+    pub bias_gradients: Vec<Vec<f64>>,
 }
 
 impl BackpropGpu {
-    /// Initialise gradient buffers matching the network's weight shapes.
+    /// Initialise gradient buffers matching the network's weight and bias
+    /// shapes.
     pub fn new(net: &GpuNeuralNet) -> Self {
         let gradients = net
             .layers
             .iter()
             .map(|l| vec![0.0; l.weights.len()])
             .collect();
-        Self { gradients }
+        let bias_gradients = net
+            .layers
+            .iter()
+            .map(|l| vec![0.0; l.biases.len()])
+            .collect();
+        Self {
+            gradients,
+            bias_gradients,
+        }
     }
 
-    /// Perform a mock backward pass given the output loss gradient.
-    ///
-    /// This is a simplified implementation: each layer's gradient is set to
-    /// `loss_grad[0]` times the layer's weight magnitudes (a stand-in for
-    /// a real backprop chain rule).
-    pub fn backward_pass(&mut self, loss_grad: &[f64]) {
-        let scale = loss_grad.first().copied().unwrap_or(0.0);
-        for grad_buf in &mut self.gradients {
-            for g in grad_buf.iter_mut() {
-                *g = scale;
-            }
+    /// Reset every gradient to zero.
+    pub fn zero_grad(&mut self) {
+        for buffer in self
+            .gradients
+            .iter_mut()
+            .chain(self.bias_gradients.iter_mut())
+        {
+            buffer.fill(0.0);
         }
+    }
+
+    /// Backpropagate the loss gradient `loss_grad` (`∂L/∂output`) through the
+    /// network, replacing the stored gradients with those of this sample.
+    ///
+    /// `cache` must come from [`GpuNeuralNet::forward_with_cache`] on the same
+    /// `net`.  Returns `∂L/∂input`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralNetError::ShapeMismatch`] when the cache, the gradient
+    /// buffers or `loss_grad` do not match the network.
+    pub fn backward_pass(
+        &mut self,
+        net: &GpuNeuralNet,
+        cache: &ForwardCache,
+        loss_grad: &[f64],
+    ) -> Result<Vec<f64>, NeuralNetError> {
+        self.zero_grad();
+        self.accumulate_backward(net, cache, loss_grad)
+    }
+
+    /// Like [`backward_pass`](Self::backward_pass) but *adds* to the stored
+    /// gradients, which accumulates a mini-batch (call
+    /// [`zero_grad`](Self::zero_grad) before the first sample).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralNetError::ShapeMismatch`] when the cache, the gradient
+    /// buffers or `loss_grad` do not match the network.
+    pub fn accumulate_backward(
+        &mut self,
+        net: &GpuNeuralNet,
+        cache: &ForwardCache,
+        loss_grad: &[f64],
+    ) -> Result<Vec<f64>, NeuralNetError> {
+        let layer_count = net.layers.len();
+        expect_len("gradient buffers", layer_count, self.gradients.len())?;
+        expect_len(
+            "bias gradient buffers",
+            layer_count,
+            self.bias_gradients.len(),
+        )?;
+        expect_len(
+            "cached layer outputs",
+            layer_count,
+            cache.layer_outputs.len(),
+        )?;
+        expect_len("loss gradient", cache.output().len(), loss_grad.len())?;
+
+        let mut grad = loss_grad.to_vec();
+        for index in (0..layer_count).rev() {
+            let (Some(layer), Some(input), Some(output), Some(grad_w), Some(grad_b)) = (
+                net.layers.get(index),
+                cache.layer_input(index),
+                cache.layer_outputs.get(index),
+                self.gradients.get_mut(index),
+                self.bias_gradients.get_mut(index),
+            ) else {
+                return Err(NeuralNetError::ShapeMismatch {
+                    context: format!("layer {index} backward buffers"),
+                    expected: layer_count,
+                    got: index,
+                });
+            };
+            grad = layer.backward(input, output, &grad, grad_w, grad_b)?;
+        }
+        Ok(grad)
     }
 }
 
@@ -329,7 +909,9 @@ pub struct GpuTrainer {
     pub learning_rate: f64,
     /// Which optimiser to use.
     pub optimizer: OptimizerType,
-    /// Adam optimiser instance (only active when `optimizer == Adam`).
+    /// Adam optimiser instance (only active when `optimizer == Adam`); sized
+    /// for every weight and bias of the network, layer by layer
+    /// (`w₀, b₀, w₁, b₁, …`).
     pub adam: Option<AdamOptimizer>,
 }
 
@@ -337,7 +919,11 @@ impl GpuTrainer {
     /// Create a new trainer wrapping `net` with the given optimiser.
     pub fn new(net: GpuNeuralNet, learning_rate: f64, optimizer: OptimizerType) -> Self {
         let backprop = BackpropGpu::new(&net);
-        let total_params: usize = net.layers.iter().map(|l| l.weights.len()).sum();
+        let total_params: usize = net
+            .layers
+            .iter()
+            .map(|l| l.weights.len() + l.biases.len())
+            .sum();
         let adam = if optimizer == OptimizerType::Adam {
             Some(AdamOptimizer::new(
                 total_params,
@@ -363,67 +949,84 @@ impl GpuTrainer {
     /// * `input`  — network input.
     /// * `target` — ground-truth target.
     ///
-    /// Returns the MSE loss before the update.
-    pub fn train_step(&mut self, input: &[f64], target: &[f64]) -> f64 {
+    /// The mean-squared-error gradient `2 (pred − target) / n` is
+    /// backpropagated through the whole network and every weight *and bias*
+    /// is updated with SGD or Adam.  Returns the MSE loss before the update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NeuralNetError::ShapeMismatch`] when the network, the
+    /// gradient buffers or the optimiser were changed after the trainer was
+    /// created so that their shapes no longer agree.
+    pub fn train_step(&mut self, input: &[f64], target: &[f64]) -> Result<f64, NeuralNetError> {
         // Forward
-        let pred = self.net.forward_pass(input);
-        let loss = mse_loss(&pred, target);
+        let cache = self.net.forward_with_cache(input);
+        let pred = cache.output();
+        let loss = mse_loss(pred, target);
 
-        // Compute simple output gradient: 2*(pred - target)/n
+        // Output gradient of the MSE: 2 (pred - target) / n
         let n = pred.len().min(target.len());
-        let loss_grad: Vec<f64> = pred[..n]
-            .iter()
-            .zip(target[..n].iter())
-            .map(|(p, t)| 2.0 * (p - t) / n as f64)
-            .collect();
+        let mut loss_grad = vec![0.0; pred.len()];
+        for ((g, &p), &t) in loss_grad.iter_mut().zip(pred.iter()).zip(target.iter()) {
+            *g = 2.0 * (p - t) / n as f64;
+        }
 
         // Backward
-        self.backprop.backward_pass(&loss_grad);
+        self.backprop.backward_pass(&self.net, &cache, &loss_grad)?;
 
-        // Update weights with SGD or Adam
+        // Update weights and biases with SGD or Adam
         match self.optimizer {
             OptimizerType::Sgd => {
-                for (layer, grads) in self
+                let lr = self.learning_rate;
+                for ((layer, grad_w), grad_b) in self
                     .net
                     .layers
                     .iter_mut()
                     .zip(self.backprop.gradients.iter())
+                    .zip(self.backprop.bias_gradients.iter())
                 {
-                    for (w, &g) in layer.weights.iter_mut().zip(grads.iter()) {
-                        *w -= self.learning_rate * g;
+                    for (w, &g) in layer.weights.iter_mut().zip(grad_w.iter()) {
+                        *w -= lr * g;
+                    }
+                    for (b, &g) in layer.biases.iter_mut().zip(grad_b.iter()) {
+                        *b -= lr * g;
                     }
                 }
             }
             OptimizerType::Adam => {
                 if let Some(adam) = &mut self.adam {
-                    // Flatten all weights into a single buffer, update, scatter back.
-                    let mut all_weights: Vec<f64> = self
+                    // Flatten all weights and biases into a single buffer,
+                    // update, scatter back.
+                    let mut params: Vec<f64> = Vec::with_capacity(adam.m.len());
+                    let mut grads: Vec<f64> = Vec::with_capacity(adam.m.len());
+                    for ((layer, grad_w), grad_b) in self
                         .net
                         .layers
                         .iter()
-                        .flat_map(|l| l.weights.iter().copied())
-                        .collect();
-                    let all_grads: Vec<f64> = self
-                        .backprop
-                        .gradients
-                        .iter()
-                        .flat_map(|g| g.iter().copied())
-                        .collect();
-                    adam.update(&mut all_weights, &all_grads);
-                    // Scatter back
-                    let mut offset = 0;
+                        .zip(self.backprop.gradients.iter())
+                        .zip(self.backprop.bias_gradients.iter())
+                    {
+                        params.extend_from_slice(&layer.weights);
+                        params.extend_from_slice(&layer.biases);
+                        grads.extend_from_slice(grad_w);
+                        grads.extend_from_slice(grad_b);
+                    }
+                    expect_len("Adam parameter buffer", adam.m.len(), params.len())?;
+                    adam.update(&mut params, &grads);
+                    // Scatter back in the same weights-then-biases order.
+                    let mut updated = params.into_iter();
                     for layer in &mut self.net.layers {
-                        let len = layer.weights.len();
-                        layer
-                            .weights
-                            .copy_from_slice(&all_weights[offset..offset + len]);
-                        offset += len;
+                        for value in layer.weights.iter_mut().chain(layer.biases.iter_mut()) {
+                            if let Some(next) = updated.next() {
+                                *value = next;
+                            }
+                        }
                     }
                 }
             }
         }
 
-        loss
+        Ok(loss)
     }
 }
 
@@ -432,395 +1035,4 @@ impl GpuTrainer {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── Activation function tests ────────────────────────────────────────
-
-    #[test]
-    fn test_relu_positive() {
-        assert!((relu(3.0) - 3.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_relu_negative() {
-        assert!((relu(-5.0)).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_relu_zero() {
-        assert!((relu(0.0)).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_sigmoid_zero() {
-        assert!((sigmoid(0.0) - 0.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_sigmoid_large_positive() {
-        assert!((sigmoid(100.0) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_sigmoid_large_negative() {
-        assert!(sigmoid(-100.0) < 1e-6);
-    }
-
-    #[test]
-    fn test_sigmoid_symmetry() {
-        let x = 2.5;
-        assert!((sigmoid(x) + sigmoid(-x) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_softmax_sums_to_one() {
-        let x = vec![1.0, 2.0, 3.0, 4.0];
-        let s = softmax(&x);
-        let sum: f64 = s.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_softmax_monotone() {
-        let x = vec![1.0, 2.0, 3.0];
-        let s = softmax(&x);
-        assert!(s[0] < s[1] && s[1] < s[2]);
-    }
-
-    #[test]
-    fn test_softmax_uniform() {
-        let x = vec![0.0, 0.0, 0.0];
-        let s = softmax(&x);
-        for &v in &s {
-            assert!((v - 1.0 / 3.0).abs() < 1e-12);
-        }
-    }
-
-    #[test]
-    fn test_softmax_empty() {
-        let s = softmax(&[]);
-        assert!(s.is_empty());
-    }
-
-    #[test]
-    fn test_softmax_single() {
-        let s = softmax(&[42.0]);
-        assert!((s[0] - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_softmax_numerical_stability() {
-        // Large values shouldn't overflow
-        let x = vec![1000.0, 1001.0, 1002.0];
-        let s = softmax(&x);
-        let sum: f64 = s.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-10);
-    }
-
-    // ── MSE loss tests ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_mse_loss_perfect() {
-        let pred = vec![1.0, 2.0, 3.0];
-        assert!((mse_loss(&pred, &pred)).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_mse_loss_known() {
-        // mse([0, 0], [1, 1]) = 1.0
-        let pred = vec![0.0, 0.0];
-        let target = vec![1.0, 1.0];
-        assert!((mse_loss(&pred, &target) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_mse_loss_empty() {
-        assert!((mse_loss(&[], &[])).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_mse_loss_positive() {
-        let pred = vec![1.0, 2.0, 3.0];
-        let target = vec![0.0, 0.0, 0.0];
-        assert!(mse_loss(&pred, &target) > 0.0);
-    }
-
-    // ── LayerType / NeuralLayer forward pass tests ───────────────────────
-
-    #[test]
-    fn test_relu_layer_forward() {
-        let layer = NeuralLayer::new(3, 3, LayerType::ReLU);
-        let out = layer.forward(&[-1.0, 0.0, 2.0]);
-        assert_eq!(out, vec![0.0, 0.0, 2.0]);
-    }
-
-    #[test]
-    fn test_sigmoid_layer_forward() {
-        let layer = NeuralLayer::new(1, 1, LayerType::Sigmoid);
-        let out = layer.forward(&[0.0]);
-        assert!((out[0] - 0.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_tanh_layer_forward() {
-        let layer = NeuralLayer::new(1, 1, LayerType::Tanh);
-        let out = layer.forward(&[0.0]);
-        assert!((out[0]).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_softmax_layer_forward() {
-        let layer = NeuralLayer::new(3, 3, LayerType::Softmax);
-        let out = layer.forward(&[1.0, 2.0, 3.0]);
-        let sum: f64 = out.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_dropout_layer_passthrough() {
-        let layer = NeuralLayer::new(4, 4, LayerType::Dropout);
-        let input = vec![1.0, 2.0, 3.0, 4.0];
-        let out = layer.forward(&input);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn test_dense_layer_identity() {
-        // Single neuron with weight=1, bias=0 → identity
-        let mut layer = NeuralLayer::new(1, 1, LayerType::Dense);
-        layer.weights[0] = 1.0;
-        let out = layer.forward(&[5.0]);
-        assert!((out[0] - 5.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_dense_layer_known_output() {
-        // 2-input → 1-output: w=[1,2], b=0.5
-        let mut layer = NeuralLayer::new(2, 1, LayerType::Dense);
-        layer.weights = vec![1.0, 2.0];
-        layer.biases = vec![0.5];
-        // out = 1*3 + 2*4 + 0.5 = 11.5
-        let out = layer.forward(&[3.0, 4.0]);
-        assert!((out[0] - 11.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_dense_layer_multi_out() {
-        let mut layer = NeuralLayer::new(2, 2, LayerType::Dense);
-        // Row 0: w=[1,0], b=0 → out0 = x0
-        // Row 1: w=[0,1], b=0 → out1 = x1
-        layer.weights = vec![1.0, 0.0, 0.0, 1.0];
-        layer.biases = vec![0.0, 0.0];
-        let out = layer.forward(&[7.0, 3.0]);
-        assert!((out[0] - 7.0).abs() < 1e-12);
-        assert!((out[1] - 3.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_batchnorm_layer_zero_mean() {
-        let mut layer = NeuralLayer::new(4, 4, LayerType::BatchNorm);
-        layer.weights = vec![1.0; 4]; // gamma = 1
-        layer.biases = vec![0.0; 4]; // beta = 0
-        let input = vec![1.0, 2.0, 3.0, 4.0];
-        let out = layer.forward(&input);
-        let mean_out: f64 = out.iter().sum::<f64>() / out.len() as f64;
-        assert!(mean_out.abs() < 1e-10);
-    }
-
-    // ── GpuNeuralNet tests ───────────────────────────────────────────────
-
-    #[test]
-    fn test_empty_net_passthrough() {
-        let net = GpuNeuralNet::new();
-        let input = vec![1.0, 2.0, 3.0];
-        let out = net.forward_pass(&input);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn test_single_relu_net() {
-        let mut net = GpuNeuralNet::new();
-        net.add_layer(NeuralLayer::new(3, 3, LayerType::ReLU));
-        let out = net.forward_pass(&[-1.0, 0.0, 2.0]);
-        assert_eq!(out, vec![0.0, 0.0, 2.0]);
-    }
-
-    #[test]
-    fn test_net_dense_then_relu() {
-        let mut net = GpuNeuralNet::new();
-        let mut dense = NeuralLayer::new(2, 2, LayerType::Dense);
-        dense.weights = vec![1.0, 0.0, 0.0, -1.0];
-        dense.biases = vec![0.0, 0.0];
-        net.add_layer(dense);
-        net.add_layer(NeuralLayer::new(2, 2, LayerType::ReLU));
-        let out = net.forward_pass(&[3.0, 4.0]);
-        // dense: [3, -4], relu: [3, 0]
-        assert!((out[0] - 3.0).abs() < 1e-12);
-        assert!((out[1]).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_batch_forward() {
-        let mut net = GpuNeuralNet::new();
-        net.add_layer(NeuralLayer::new(2, 2, LayerType::ReLU));
-        let inputs = vec![vec![-1.0, 2.0], vec![3.0, -4.0]];
-        let outs = net.batch_forward(&inputs);
-        assert_eq!(outs.len(), 2);
-        assert_eq!(outs[0], vec![0.0, 2.0]);
-        assert_eq!(outs[1], vec![3.0, 0.0]);
-    }
-
-    #[test]
-    fn test_net_default() {
-        let net = GpuNeuralNet::default();
-        assert!(net.layers.is_empty());
-    }
-
-    // ── BackpropGpu tests ────────────────────────────────────────────────
-
-    #[test]
-    fn test_backprop_gradient_shape() {
-        let mut net = GpuNeuralNet::new();
-        net.add_layer(NeuralLayer::new(3, 2, LayerType::Dense));
-        let bp = BackpropGpu::new(&net);
-        assert_eq!(bp.gradients.len(), 1);
-        assert_eq!(bp.gradients[0].len(), 6); // 3*2
-    }
-
-    #[test]
-    fn test_backprop_backward_sets_gradients() {
-        let mut net = GpuNeuralNet::new();
-        net.add_layer(NeuralLayer::new(2, 2, LayerType::Dense));
-        let mut bp = BackpropGpu::new(&net);
-        bp.backward_pass(&[1.0]);
-        for &g in &bp.gradients[0] {
-            assert!((g - 1.0).abs() < 1e-12);
-        }
-    }
-
-    #[test]
-    fn test_backprop_zero_loss_grad() {
-        let mut net = GpuNeuralNet::new();
-        net.add_layer(NeuralLayer::new(2, 2, LayerType::Dense));
-        let mut bp = BackpropGpu::new(&net);
-        bp.backward_pass(&[0.0]);
-        for &g in &bp.gradients[0] {
-            assert!((g).abs() < 1e-12);
-        }
-    }
-
-    // ── AdamOptimizer tests ──────────────────────────────────────────────
-
-    #[test]
-    fn test_adam_decreases_loss() {
-        let mut params = vec![1.0, -1.0, 2.0];
-        let mut adam = AdamOptimizer::new(3, 0.1, 0.9, 0.999, 1e-8);
-        // Target: params = 0, grad = 2*params
-        for _ in 0..500 {
-            let grads: Vec<f64> = params.iter().map(|&p| 2.0 * p).collect();
-            adam.update(&mut params, &grads);
-        }
-        for &p in &params {
-            assert!(p.abs() < 0.1, "param={p}");
-        }
-    }
-
-    #[test]
-    fn test_adam_timestep_increments() {
-        let mut adam = AdamOptimizer::new(2, 0.01, 0.9, 0.999, 1e-8);
-        let mut params = vec![1.0, 1.0];
-        let grads = vec![0.1, 0.1];
-        adam.update(&mut params, &grads);
-        assert_eq!(adam.t, 1);
-        adam.update(&mut params, &grads);
-        assert_eq!(adam.t, 2);
-    }
-
-    #[test]
-    fn test_adam_moment_buffers_update() {
-        let mut adam = AdamOptimizer::new(1, 0.01, 0.9, 0.999, 1e-8);
-        let mut params = vec![1.0];
-        adam.update(&mut params, &[0.5]);
-        assert!((adam.m[0] - 0.1 * 0.5).abs() < 1e-12); // (1-0.9)*0.5
-        assert!(adam.v[0] > 0.0);
-    }
-
-    // ── GpuTrainer tests ─────────────────────────────────────────────────
-
-    #[test]
-    fn test_trainer_sgd_reduces_loss() {
-        let mut net = GpuNeuralNet::new();
-        let mut layer = NeuralLayer::new(1, 1, LayerType::Dense);
-        layer.weights = vec![2.0];
-        layer.biases = vec![0.0];
-        net.add_layer(layer);
-        let mut trainer = GpuTrainer::new(net, 0.1, OptimizerType::Sgd);
-        let loss_before = mse_loss(&trainer.net.forward_pass(&[1.0]), &[1.0]);
-        let loss_after = trainer.train_step(&[1.0], &[1.0]);
-        // Perfect prediction → loss=0 before (weights=2 gives 2, target=1 → not zero)
-        // Just verify the call doesn't panic and returns a non-negative number.
-        let _ = loss_before;
-        assert!(loss_after >= 0.0);
-    }
-
-    #[test]
-    fn test_trainer_adam_train_step() {
-        let mut net = GpuNeuralNet::new();
-        let mut layer = NeuralLayer::new(1, 1, LayerType::Dense);
-        layer.weights = vec![0.0];
-        layer.biases = vec![0.0];
-        net.add_layer(layer);
-        let mut trainer = GpuTrainer::new(net, 0.01, OptimizerType::Adam);
-        let loss = trainer.train_step(&[1.0], &[1.0]);
-        assert!(loss >= 0.0);
-    }
-
-    #[test]
-    fn test_conv1d_layer_forward() {
-        let mut layer = NeuralLayer::new(3, 1, LayerType::Conv1D);
-        layer.weights = vec![1.0, 1.0, 1.0];
-        layer.biases = vec![0.0];
-        let out = layer.forward(&[1.0, 2.0, 3.0]);
-        assert!((out[0] - 6.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_softmax_net_output_probabilities() {
-        let mut net = GpuNeuralNet::new();
-        net.add_layer(NeuralLayer::new(3, 3, LayerType::Softmax));
-        let out = net.forward_pass(&[0.0, 1.0, 2.0]);
-        let sum: f64 = out.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-12);
-        for &p in &out {
-            assert!((0.0..=1.0).contains(&p));
-        }
-    }
-
-    #[test]
-    fn test_mse_symmetric() {
-        let a = vec![1.0, 2.0];
-        let b = vec![3.0, 4.0];
-        assert!((mse_loss(&a, &b) - mse_loss(&b, &a)).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_layer_type_debug() {
-        let lt = LayerType::Dense;
-        let s = format!("{lt:?}");
-        assert!(s.contains("Dense"));
-    }
-
-    #[test]
-    fn test_optimizer_type_eq() {
-        assert_eq!(OptimizerType::Sgd, OptimizerType::Sgd);
-        assert_ne!(OptimizerType::Sgd, OptimizerType::Adam);
-    }
-
-    #[test]
-    fn test_sigmoid_vs_exp() {
-        // Verify sigmoid matches the direct formula
-        let x = 1.0_f64;
-        assert!((sigmoid(x) - 1.0 / (1.0 + (-x).exp())).abs() < 1e-12);
-    }
-}
+mod tests;

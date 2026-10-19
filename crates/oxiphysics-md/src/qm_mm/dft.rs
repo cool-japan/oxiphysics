@@ -2,72 +2,79 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Thin wrapper delegating `QmRegion::run()` for `QmMethod::DftB3lyp` to the
-//! Kohn-Sham DFT solver in `crate::quantum_chemistry`.
+//! restricted Kohn–Sham B3LYP/STO-3G solver in `crate::quantum_chemistry`
+//! (grid-based V_xc with B88 + LYP + VWN(RPA) and 20 % exact exchange inside
+//! the SCF).
 //!
-//! **Note:** `DftB3lyp` is implemented at the LDA/VWN level, not true B3LYP.
-//! B3LYP requires exact-exchange HF integrals woven into the KS equations;
-//! that is deferred to a future implementation pass.  The module documentation
-//! clearly states the approximation level.
+//! External point charges are embedded in the core Hamiltonian shared with
+//! the HF solver; the embedding energy and the forces on the charges use the
+//! Kohn-Sham density with the Hellmann–Feynman expression of
+//! [`super::hf`], which is exact for a variational KS energy.
 
 use super::QmRegion;
-use crate::quantum_chemistry::{DensityFunctionalTheory, HartreeFockSolver, XcFunctional};
+use super::embedding::{HARTREE_TO_KCAL, begin_run, finite_difference_forces};
+use super::error::QmError;
+use super::hf::{build_solver, embedding_terms, mulliken_charges};
+use crate::quantum_chemistry::{DensityFunctionalTheory, ScfStatus, XcFunctional};
 
-/// Run a Kohn-Sham LDA/VWN calculation on `region` (used for `QmMethod::DftB3lyp`).
-///
-/// **Approximation level:** LDA (Slater exchange + VWN correlation), not B3LYP.
-/// Populates `region.energy` (kcal/mol) and `region.forces` (kcal/mol/Å).
-pub fn run_dft_lda(region: &mut QmRegion) {
-    let Some(hf_solver) =
-        HartreeFockSolver::from_atoms(&region.atomic_numbers, &region.positions, region.charge)
-    else {
-        return;
-    };
-    let dft = DensityFunctionalTheory::new(hf_solver, XcFunctional::Lda);
-    let result = dft.run_ks_scf();
-    region.energy = result.energy * 627.5094;
-    region.forces = dft_numerical_forces(&region.atomic_numbers, &region.positions, region.charge);
-}
+/// Functional used for `QmMethod::DftB3lyp`.
+const FUNCTIONAL: XcFunctional = XcFunctional::B3lyp;
 
-/// Central-difference numerical forces for the KS-DFT energy.
-///
-/// O(6N) SCF calls — suitable only for small QM regions.
-fn dft_numerical_forces(
-    atomic_numbers: &[u32],
-    positions: &[[f64; 3]],
-    charge: i32,
-) -> Vec<[f64; 3]> {
-    const DELTA: f64 = 0.001;
-    let n = positions.len();
-    let mut forces = vec![[0.0f64; 3]; n];
-    for (i, force) in forces.iter_mut().enumerate() {
-        for (k, f) in force.iter_mut().enumerate() {
-            let e_plus = dft_energy_point(atomic_numbers, positions, charge, i, k, DELTA);
-            let e_minus = dft_energy_point(atomic_numbers, positions, charge, i, k, -DELTA);
-            *f = -(e_plus - e_minus) / (2.0 * DELTA);
-        }
+/// Finite-difference step for the nuclear forces (Å).
+const FD_STEP_ANG: f64 = 0.001;
+
+/// Converged KS-B3LYP energy (Hartree) of a geometry in the external field.
+fn dft_energy(region: &QmRegion, positions_ang: &[[f64; 3]]) -> Result<f64, QmError> {
+    let solver = build_solver(
+        &region.atomic_numbers,
+        positions_ang,
+        region.charge,
+        region.multiplicity,
+        &region.external_charges,
+    )?;
+    let result = DensityFunctionalTheory::new(solver, FUNCTIONAL).run_ks_scf()?;
+    if result.status != ScfStatus::Converged {
+        return Err(QmError::ScfNotConverged);
     }
-    forces
+    Ok(result.energy)
 }
 
-fn dft_energy_point(
-    atomic_numbers: &[u32],
-    positions: &[[f64; 3]],
-    charge: i32,
-    atom: usize,
-    coord: usize,
-    delta: f64,
-) -> f64 {
-    let mut pos = positions.to_vec();
-    pos[atom][coord] += delta;
-    let solver = HartreeFockSolver::from_atoms(atomic_numbers, &pos, charge);
-    solver
-        .map(|s| {
-            DensityFunctionalTheory::new(s, XcFunctional::Lda)
-                .run_ks_scf()
-                .energy
-                * 627.5094
-        })
-        .unwrap_or(0.0)
+/// Run a restricted Kohn–Sham B3LYP/STO-3G calculation on `region`
+/// (used for `QmMethod::DftB3lyp`).
+///
+/// Populates `region.energy`, `region.embedding_energy` (kcal/mol),
+/// `region.forces`, `region.external_charge_forces` (kcal/mol/Å) and
+/// `region.partial_charges` (Mulliken, e).
+///
+/// # Errors
+/// Empty or inconsistent region, element without an STO-3G basis, open shell,
+/// singular overlap matrix, invalid external charge, or SCF non-convergence
+/// (also at a displaced geometry).  The outputs of `region` are then left cleared.
+pub fn run_dft_b3lyp(region: &mut QmRegion) -> Result<(), QmError> {
+    begin_run(region)?;
+    let solver = build_solver(
+        &region.atomic_numbers,
+        &region.positions,
+        region.charge,
+        region.multiplicity,
+        &region.external_charges,
+    )?;
+    let result = DensityFunctionalTheory::new(solver.clone(), FUNCTIONAL).run_ks_scf()?;
+    if result.status != ScfStatus::Converged {
+        return Err(QmError::ScfNotConverged);
+    }
+    let (e_emb, external_forces) = embedding_terms(&solver, &result.density_matrix);
+    let charges = mulliken_charges(&solver, &result.density_matrix);
+    let forces = finite_difference_forces(&region.positions, FD_STEP_ANG, |pos| {
+        dft_energy(region, pos)
+    })?;
+
+    region.energy = (result.energy - e_emb) * HARTREE_TO_KCAL;
+    region.embedding_energy = e_emb * HARTREE_TO_KCAL;
+    region.forces = forces;
+    region.partial_charges = charges;
+    region.external_charge_forces = external_forces;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -75,25 +82,46 @@ mod tests {
     use super::*;
     use crate::qm_mm::{QmMethod, QmRegion};
 
-    #[test]
-    fn h2_dft_energy_negative() {
+    fn h2() -> QmRegion {
         let mut region = QmRegion::new(vec![0, 1], QmMethod::DftB3lyp, 0, 1);
         region.atomic_numbers = vec![1, 1];
         region.set_positions(vec![[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]]);
-        run_dft_lda(&mut region);
-        assert!(
-            region.energy < 0.0,
-            "H2 LDA energy should be negative: {}",
-            region.energy
-        );
-        assert!(region.energy.is_finite(), "H2 LDA energy must be finite");
+        region
     }
 
     #[test]
-    fn unsupported_element_no_panic() {
+    fn h2_dft_energy_negative() {
+        let mut region = h2();
+        run_dft_b3lyp(&mut region).expect("B3LYP H2");
+        assert!(
+            region.energy < 0.0,
+            "H2 B3LYP energy should be negative: {}",
+            region.energy
+        );
+        assert!(region.energy.is_finite(), "H2 B3LYP energy must be finite");
+    }
+
+    #[test]
+    fn unsupported_element_is_an_error() {
         let mut region = QmRegion::new(vec![0], QmMethod::DftB3lyp, 0, 1);
-        region.atomic_numbers = vec![10];
+        region.atomic_numbers = vec![36];
         region.set_positions(vec![[0.0, 0.0, 0.0]]);
-        run_dft_lda(&mut region);
+        assert_eq!(
+            run_dft_b3lyp(&mut region),
+            Err(QmError::UnsupportedElement(36))
+        );
+    }
+
+    #[test]
+    fn external_charges_polarise_the_density() {
+        let mut region = h2();
+        region.external_charges = vec![([3.0, 0.0, 0.0], 1.0)];
+        run_dft_b3lyp(&mut region).expect("embedded B3LYP H2");
+        let q = &region.partial_charges;
+        assert!(q[1] < -1e-3 && q[0] > 1e-3, "charges {q:?}");
+        assert!(region.embedding_energy < 0.0);
+        assert_eq!(region.external_charge_forces.len(), 1);
+        // The positive charge is attracted towards the polarised molecule.
+        assert!(region.external_charge_forces[0][0] < 0.0);
     }
 }

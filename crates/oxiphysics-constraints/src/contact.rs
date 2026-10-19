@@ -588,6 +588,10 @@ impl Constraint for ContactConstraint {
         ]
     }
 
+    fn penetration_estimate(&self) -> f64 {
+        self.penetration.max(0.0)
+    }
+
     fn solve_position(&mut self, bodies: &mut RigidBodySet, _dt: f64) {
         // Baumgarte position correction
         let pos_a = {

@@ -340,53 +340,53 @@ Verified: 330 (critical 4, high 124, medium 151, low 51); 48 further raw finding
 ### Critical (4)
 - [x] **F2480** (critical, bug, easy/small) `d3q19_full.rs:49` — D3Q19_OPP maps edge directions to non-opposites
 - [ ] **F2601** (critical, fabrication, hard/medium) `magnetohydrodynamics_lbm.rs:1064` — MhdLbm shrinks B threefold per step and has no Lorentz coupling
-- [ ] **F2612** (critical, fabrication, hard/medium) `mrt.rs:1339` — CascadedCollision2D::collide reverses momentum; fake back-transform
+- [x] **F2612** (critical, fabrication, hard/medium) `mrt.rs:1339` — CascadedCollision2D::collide reverses momentum; fake back-transform
 - [ ] **F2785** (critical, bug, easy/small) `wall_model.rs:387` — u_tau_newton Jacobian wrong: u_tau collapses to 1e-15 in log layer
 
 ### High (124)
-- [ ] **F2434** (high, fabrication, medium/medium) `biofluid_lbm/types.rs:264` — MicrofluidicsLbm::step never streams; ln(psi) recomputed 16x per cell
+- [x] **F2434** (high, fabrication, medium/medium) `biofluid_lbm/types.rs:264` — MicrofluidicsLbm::step never streams; ln(psi) recomputed 16x per cell
 - [x] **F2435** (high, fabrication, easy/small) `biofluid_lbm/types.rs:291` — MicrofluidicsLbm::step never streams populations
-- [ ] **F2440** (high, bug, medium/small) `boundary_lbm.rs:229` — InterpolatedBc uses wrong Bouzidi coefficients and wrong samples
-- [ ] **F2448** (high, bug, easy/small) `cahn_hilliard_lbm.rs:668` — Variable mobility applied as M(C)∇²μ; Degenerate mobility clamped wrong
-- [ ] **F2451** (high, bug, easy/small) `collision/functions.rs:959` — Regularized f1 lacks −cs²δ Hermite term; mass not conserved
-- [ ] **F2453** (high, bug, medium/medium) `collision/functions.rs:1043` — RawMomentCollision relaxes normal stresses at bulk rate; ghosts discarded
-- [ ] **F2455** (high, bug, medium/small) `collision/functions.rs:1213` — entropic_alpha_d3q19 bisection inverted; ELBM degenerates to feq or ω=2
+- [x] **F2440** (high, bug, medium/small) `boundary_lbm.rs:229` — InterpolatedBc uses wrong Bouzidi coefficients and wrong samples
+- [x] **F2448** (high, bug, easy/small) `cahn_hilliard_lbm.rs:668` — Variable mobility applied as M(C)∇²μ; Degenerate mobility clamped wrong
+- [x] **F2451** (high, bug, easy/small) `collision/functions.rs:959` — Regularized f1 lacks −cs²δ Hermite term; mass not conserved
+- [x] **F2453** (high, bug, medium/medium) `collision/functions.rs:1043` — RawMomentCollision relaxes normal stresses at bulk rate; ghosts discarded
+- [x] **F2455** (high, bug, medium/small) `collision/functions.rs:1213` — entropic_alpha_d3q19 bisection inverted; ELBM degenerates to feq or ω=2
 - [x] **F2456** (high, fabrication, hard/medium) `collision/types.rs:182` — CumulantCollision is not cumulant; does not conserve mass
-- [ ] **F2457** (high, fabrication, hard/medium) `collision/types.rs:318` — KbcCollision is not KBC: gamma is either omega_s or 2
+- [x] **F2457** (high, fabrication, hard/medium) `collision/types.rs:318` — KbcCollision is not KBC: gamma is either omega_s or 2
 - [x] **F2460** (high, fabrication, medium/medium) `collision/types.rs:714` — CentralMomentCollision maps moment k onto population k
-- [ ] **F2462** (high, fabrication, medium/large) `combustion_lbm.rs:946` — CombustionLbm never advects species or temperature with the flow
-- [ ] **F2464** (high, bug, medium/small) `compressible.rs:67` — Compressible equilibrium cubic term uses cs⁴; cs²=γ/3 breaks moments
-- [ ] **F2465** (high, fabrication, hard/medium) `compressible.rs:92` — CompressibleLbm cs²=γ/3 on D2Q9 breaks mass/momentum conservation
-- [ ] **F2467** (high, fabrication, medium/small) `compressible.rs:268` — EulerLbm claims inviscid ω=2 but sets f=feq (ω=1)
-- [ ] **F2468** (high, bug, medium/medium) `compressible.rs:553` — NsCompressibleLbm temperature shrinks by factor cs² per relaxation
-- [ ] **F2469** (high, fabrication, hard/large) `compressible.rs:832` — RayleighTaylorLbm::step only bumps u_y; rho/phase never evolve
-- [ ] **F2471** (high, bug, easy/trivial) `compressible.rs:1076` — cj_pressure_ratio always returns exactly 1.0
-- [ ] **F2472** (high, fabrication, medium/medium) `compressible.rs:1108` — DetonationLbm::step density update is identically zero
-- [ ] **F2474** (high, fabrication, medium/medium) `conjugate_heat.rs:812` — Conjugate solver: interface flux always zero; LBM ignores solid mask
-- [ ] **F2475** (high, fabrication, medium/medium) `curved_boundary.rs:129` — bouzidi_bc/interpolated_bounce_back use arbitrary array slots, not lattice links
-- [ ] **F2476** (high, fabrication, medium/medium) `curved_boundary.rs:136` — bouzidi_bc/interpolated_bounce_back/moving_wall_bc use wrong indices
-- [ ] **F2478** (high, fabrication, hard/large) `curved_boundary.rs:331` — CurvedBoundarySet::apply is a no-op/fabrication for all methods
-- [ ] **F2479** (high, bug, easy/small) `curved_boundary.rs:521` — RotatingCylinder::boundary_set uses inverted SDF and zero wall velocity
-- [ ] **F2482** (high, bug, medium/small) `d3q19_full.rs:284` — Guo forcing injects only (1-ω/2)F momentum per step
+- [x] **F2462** (high, fabrication, medium/large) `combustion_lbm.rs:946` — CombustionLbm never advects species or temperature with the flow
+- [x] **F2464** (high, bug, medium/small) `compressible.rs:67` — Compressible equilibrium cubic term uses cs⁴; cs²=γ/3 breaks moments
+- [x] **F2465** (high, fabrication, hard/medium) `compressible.rs:92` — CompressibleLbm cs²=γ/3 on D2Q9 breaks mass/momentum conservation
+- [x] **F2467** (high, fabrication, medium/small) `compressible.rs:268` — EulerLbm claims inviscid ω=2 but sets f=feq (ω=1)
+- [x] **F2468** (high, bug, medium/medium) `compressible.rs:553` — NsCompressibleLbm temperature shrinks by factor cs² per relaxation
+- [x] **F2469** (high, fabrication, hard/large) `compressible.rs:832` — RayleighTaylorLbm::step only bumps u_y; rho/phase never evolve
+- [x] **F2471** (high, bug, easy/trivial) `compressible.rs:1076` — cj_pressure_ratio always returns exactly 1.0
+- [x] **F2472** (high, fabrication, medium/medium) `compressible.rs:1108` — DetonationLbm::step density update is identically zero
+- [x] **F2474** (high, fabrication, medium/medium) `conjugate_heat.rs:812` — Conjugate solver: interface flux always zero; LBM ignores solid mask
+- [x] **F2475** (high, fabrication, medium/medium) `curved_boundary.rs:129` — bouzidi_bc/interpolated_bounce_back use arbitrary array slots, not lattice links
+- [x] **F2476** (high, fabrication, medium/medium) `curved_boundary.rs:136` — bouzidi_bc/interpolated_bounce_back/moving_wall_bc use wrong indices
+- [x] **F2478** (high, fabrication, hard/large) `curved_boundary.rs:331` — CurvedBoundarySet::apply is a no-op/fabrication for all methods
+- [x] **F2479** (high, bug, easy/small) `curved_boundary.rs:521` — RotatingCylinder::boundary_set uses inverted SDF and zero wall velocity
+- [x] **F2482** (high, bug, medium/small) `d3q19_full.rs:284` — Guo forcing injects only (1-ω/2)F momentum per step
 - [x] **F2483** (high, fabrication, easy/small) `d3q19_full.rs:327` — collide_mrt is per-direction BGK presented as MRT
 - [x] **F2484** (high, bug, easy/small) `d3q19_full.rs:818` — TRT collision updates populations in place, reading stale opposites
 - [x] **F2485** (high, bug, medium/small) `d3q19_full.rs:928` — D3q19Simulation Zou-He density/velocity formulas wrong, outlet forced inflow
-- [ ] **F2490** (high, bug, easy/trivial) `d3q27.rs:389` — D3Q27 collide_mrt (TRT) reads already-overwritten populations in place
+- [x] **F2490** (high, bug, easy/trivial) `d3q27.rs:389` — D3Q27 collide_mrt (TRT) reads already-overwritten populations in place
 - [x] **F2491** (high, fabrication, medium/medium) `d3q27.rs:617` — D3Q27 collide_mrt_full is BGK with s[9]; matrix ignored
-- [ ] **F2502** (high, bug, easy/trivial) `electrokinetic/types.rs:53` — Henry function formula wrong: 1.83–3.5 instead of 1–1.5
-- [ ] **F2504** (high, bug, easy/trivial) `electrokinetic/types.rs:350` — PoissonSolver::solve_poisson_2d source sign inverted
-- [ ] **F2509** (high, fabrication, easy/small) `electrokinetic_lbm.rs:436` — collide_stream discards applied E_y via multiplication by 0.0
-- [ ] **F2510** (high, bug, easy/trivial) `electrokinetics.rs:349` — Nernst-Planck electromigration term has wrong sign
-- [ ] **F2515** (high, fabrication, hard/large) `electrokinetics_lbm.rs:246` — ElectrokineticLBM never solves Poisson; tau from Pa·s viscosity
-- [ ] **F2519** (high, bug, easy/trivial) `electroosmotic_lbm.rs:473` — Nernst-Planck migration velocity omits diffusivity, double-counts z
-- [ ] **F2522** (high, bug, medium/medium) `electrostatic_lbm.rs:132` — PoissonLbm solves wrong equation and drops Dirichlet values
-- [ ] **F2525** (high, stub, hard/large) `electrostatic_lbm.rs:517` — SemiconductorLbm::step only steps Poisson; carriers never evolve
-- [ ] **F2526** (high, bug, medium/medium) `electrostatic_lbm.rs:576` — SpaceChargeLbm f never initialised; first step zeroes concentrations
-- [ ] **F2528** (high, bug, medium/medium) `electrostatic_lbm.rs:826` — PlasmaLbm drives electrons and ions same direction; Ey dropped
-- [ ] **F2529** (high, fabrication, medium/small) `entropic.rs:162` — find_entropic_alpha always returns 2; root search is dead code
-- [ ] **F2530** (high, fabrication, medium/small) `entropic.rs:364` — Entropic/KBC/EOR collisions ignore nu; always inviscid omega=2
-- [ ] **F2531** (high, fabrication, hard/large) `entropic.rs:664` — KbcD2Q9 ignores nu; alpha is almost always 2, giving an inviscid mirror
-- [ ] **F2537** (high, bug, easy/trivial) `forcing.rs:597` — Boussinesq buoyancy sign wrong; test enshrines downward force
+- [x] **F2502** (high, bug, easy/trivial) `electrokinetic/types.rs:53` — Henry function formula wrong: 1.83–3.5 instead of 1–1.5
+- [x] **F2504** (high, bug, easy/trivial) `electrokinetic/types.rs:350` — PoissonSolver::solve_poisson_2d source sign inverted
+- [x] **F2509** (high, fabrication, easy/small) `electrokinetic_lbm.rs:436` — collide_stream discards applied E_y via multiplication by 0.0
+- [x] **F2510** (high, bug, easy/trivial) `electrokinetics.rs:349` — Nernst-Planck electromigration term has wrong sign
+- [x] **F2515** (high, fabrication, hard/large) `electrokinetics_lbm.rs:246` — ElectrokineticLBM never solves Poisson; tau from Pa·s viscosity
+- [x] **F2519** (high, bug, easy/trivial) `electroosmotic_lbm.rs:473` — Nernst-Planck migration velocity omits diffusivity, double-counts z
+- [x] **F2522** (high, bug, medium/medium) `electrostatic_lbm.rs:132` — PoissonLbm solves wrong equation and drops Dirichlet values
+- [x] **F2525** (high, stub, hard/large) `electrostatic_lbm.rs:517` — SemiconductorLbm::step only steps Poisson; carriers never evolve
+- [x] **F2526** (high, bug, medium/medium) `electrostatic_lbm.rs:576` — SpaceChargeLbm f never initialised; first step zeroes concentrations
+- [x] **F2528** (high, bug, medium/medium) `electrostatic_lbm.rs:826` — PlasmaLbm drives electrons and ions same direction; Ey dropped
+- [x] **F2529** (high, fabrication, medium/small) `entropic.rs:162` — find_entropic_alpha always returns 2; root search is dead code
+- [x] **F2530** (high, fabrication, medium/small) `entropic.rs:364` — Entropic/KBC/EOR collisions ignore nu; always inviscid omega=2
+- [x] **F2531** (high, fabrication, hard/large) `entropic.rs:664` — KbcD2Q9 ignores nu; alpha is almost always 2, giving an inviscid mirror
+- [x] **F2537** (high, bug, easy/trivial) `forcing.rs:597` — Boussinesq buoyancy sign wrong; test enshrines downward force
 - [ ] **F2540** (high, bug, medium/small) `free_surface.rs:427` — Gas-side reconstruction overwrites the wrong population direction
 - [ ] **F2541** (high, bug, medium/small) `free_surface.rs:501` — VOF mass exchange applies pre-stream formula to post-stream data
 - [ ] **F2545** (high, fabrication, medium/medium) `geophysical_lbm.rs:335` — ShallowWaterLbm ignores gravity; uses Navier-Stokes equilibrium
@@ -401,19 +401,19 @@ Verified: 330 (critical 4, high 124, medium 151, low 51); 48 further raw finding
 - [ ] **F2593** (high, bug, easy/trivial) `lbm_optimization.rs:100` — optimal_relaxation uses Λ=τ⁺τ⁻, returns unstable omega_minus
 - [ ] **F2598** (high, bug, easy/small) `magnetohydrodynamics_lbm.rs:202` — LorentzForce::compute has inverted Jz and drops in-plane Jx,Jy
 - [ ] **F2602** (high, fabrication, medium/medium) `microfluidics_lbm.rs:425` — ElectroosmosisLBM::step never streams; EO profile cannot form
-- [ ] **F2606** (high, fabrication, medium/large) `mixing_lbm/types.rs:581` — MixingLBM never streams, wrong weights, scalar mass lost
-- [ ] **F2607** (high, fabrication, medium/medium) `mixing_lbm/types.rs:590` — Mixing LBMs: no streaming, wrong D2Q9 weights, scalar mass lost
-- [ ] **F2608** (high, bug, easy/small) `mrt.rs:284` — D3Q19 mrt_transform_matrix is singular; public inverse returns garbage
-- [ ] **F2609** (high, fabrication, easy/small) `mrt.rs:613` — Root-exported MrtD3Q19 collide_cell is plain BGK
-- [ ] **F2611** (high, bug, easy/trivial) `mrt.rs:1139` — TrtCollision2D magic parameter Λ=τ⁺τ⁻ gives unstable s⁻>2
-- [ ] **F2625** (high, bug, easy/trivial) `multiphase/types.rs:289` — Rayleigh-Plesset acceleration divides 1.5Ṙ² inertia term by density
-- [ ] **F2626** (high, bug, easy/small) `multiphase/types.rs:403` — MultiComponentSC A–A self-interaction uses psi_B; g_bb never used
-- [ ] **F2628** (high, fabrication, medium/small) `multiphase_lbm.rs:277` — phase_diagram claims Maxwell construction but returns spinodal heuristics
-- [ ] **F2630** (high, bug, easy/trivial) `multiscale/types.rs:311` — TwoWayCoupling subtracts Guo force and omits −u·F term
-- [ ] **F2632** (high, bug, medium/small) `multiscale/types.rs:610` — Grid-refinement tau_fine and non-equilibrium rescaling are inverted
-- [ ] **F2636** (high, bug, easy/trivial) `multiscale/types.rs:1350` — PatchedGrid::restrict sums r² fine cells instead of averaging
-- [ ] **F2639** (high, fabrication, medium/medium) `multiscale_lbm.rs:312` — AdaptiveLbm::step relaxes toward zero equilibrium; fine grids never advance
-- [ ] **F2640** (high, fabrication, medium/large) `multiscale_lbm.rs:420` — Multiscale 'LBM' types relax toward zero; fake macro projection
+- [x] **F2606** (high, fabrication, medium/large) `mixing_lbm/types.rs:581` — MixingLBM never streams, wrong weights, scalar mass lost
+- [x] **F2607** (high, fabrication, medium/medium) `mixing_lbm/types.rs:590` — Mixing LBMs: no streaming, wrong D2Q9 weights, scalar mass lost
+- [x] **F2608** (high, bug, easy/small) `mrt.rs:284` — D3Q19 mrt_transform_matrix is singular; public inverse returns garbage
+- [x] **F2609** (high, fabrication, easy/small) `mrt.rs:613` — Root-exported MrtD3Q19 collide_cell is plain BGK
+- [x] **F2611** (high, bug, easy/trivial) `mrt.rs:1139` — TrtCollision2D magic parameter Λ=τ⁺τ⁻ gives unstable s⁻>2
+- [x] **F2625** (high, bug, easy/trivial) `multiphase/types.rs:289` — Rayleigh-Plesset acceleration divides 1.5Ṙ² inertia term by density
+- [x] **F2626** (high, bug, easy/small) `multiphase/types.rs:403` — MultiComponentSC A–A self-interaction uses psi_B; g_bb never used
+- [x] **F2628** (high, fabrication, medium/small) `multiphase_lbm.rs:277` — phase_diagram claims Maxwell construction but returns spinodal heuristics
+- [x] **F2630** (high, bug, easy/trivial) `multiscale/types.rs:311` — TwoWayCoupling subtracts Guo force and omits −u·F term
+- [x] **F2632** (high, bug, medium/small) `multiscale/types.rs:610` — Grid-refinement tau_fine and non-equilibrium rescaling are inverted
+- [x] **F2636** (high, bug, easy/trivial) `multiscale/types.rs:1350` — PatchedGrid::restrict sums r² fine cells instead of averaging
+- [x] **F2639** (high, fabrication, medium/medium) `multiscale_lbm.rs:312` — AdaptiveLbm::step relaxes toward zero equilibrium; fine grids never advance
+- [x] **F2640** (high, fabrication, medium/large) `multiscale_lbm.rs:420` — Multiscale 'LBM' types relax toward zero; fake macro projection
 - [ ] **F2643** (high, fabrication, hard/medium) `neural_lbm.rs:280` — PhysicsInformedLbm: feq=ρ/q, no streaming, untrained net, fake residual
 - [ ] **F2645** (high, fabrication, hard/medium) `neural_lbm.rs:496` — DMD is fake: normalised snapshots as modes, Rayleigh quotients
 - [ ] **F2646** (high, bug, easy/small) `non_newtonian/bingham.rs:50` — Bingham yield test compares viscous stress only, freezing yielded cells
@@ -426,31 +426,31 @@ Verified: 330 (critical 4, high 124, medium 151, low 51); 48 further raw finding
 - [ ] **F2664** (high, bug, medium/medium) `particle_laden_lbm.rs:467` — DEM contact: reversed damping and friction signs, overlap-based tangential force
 - [ ] **F2673** (high, fabrication, hard/medium) `phase_field_lbm.rs:254` — CahnHilliardLbm has no chemical-potential diffusion or surface tension
 - [ ] **F2684** (high, fabrication, hard/medium) `plasma_lbm.rs:420` — PlasmaLbm::step fakes the Poisson E-field and skips the continuity update
-- [ ] **F2685** (high, bug, medium/small) `polymer_lbm.rs:348` — Oldroyd-B/FENE-P stretching uses transposed velocity gradient; solver passes zeros
-- [ ] **F2687** (high, fabrication, medium/medium) `polymer_lbm.rs:892` — PolymerLbmGrid2D evolves conformation with zero velocity gradients
-- [ ] **F2696** (high, bug, medium/small) `porous_media/types.rs:714` — PorousMediaDriver Guo forcing lacks the −u term; Forchheimer force ignored
-- [ ] **F2701** (high, bug, easy/trivial) `porous_media_lbm.rs:568` — PorousLBM Guo forcing term does not sum to zero; creates mass
-- [ ] **F2703** (high, fabrication, hard/medium) `quantum_lbm.rs:317` — GrossPitaevskiiLbm::step does not solve the Gross-Pitaevskii equation
-- [ ] **F2704** (high, fabrication, hard/medium) `quantum_lbm.rs:350` — GrossPitaevskiiLbm: inconsistent lattice and fabricated phase update
-- [ ] **F2705** (high, bug, medium/medium) `quantum_lbm.rs:598` — SuperfluidLbm mutual friction has wrong sign; slip grows exponentially
+- [x] **F2685** (high, bug, medium/small) `polymer_lbm.rs:348` — Oldroyd-B/FENE-P stretching uses transposed velocity gradient; solver passes zeros
+- [x] **F2687** (high, fabrication, medium/medium) `polymer_lbm.rs:892` — PolymerLbmGrid2D evolves conformation with zero velocity gradients
+- [x] **F2696** (high, bug, medium/small) `porous_media/types.rs:714` — PorousMediaDriver Guo forcing lacks the −u term; Forchheimer force ignored
+- [x] **F2701** (high, bug, easy/trivial) `porous_media_lbm.rs:568` — PorousLBM Guo forcing term does not sum to zero; creates mass
+- [x] **F2703** (high, fabrication, hard/medium) `quantum_lbm.rs:317` — GrossPitaevskiiLbm::step does not solve the Gross-Pitaevskii equation
+- [x] **F2704** (high, fabrication, hard/medium) `quantum_lbm.rs:350` — GrossPitaevskiiLbm: inconsistent lattice and fabricated phase update
+- [x] **F2705** (high, bug, medium/medium) `quantum_lbm.rs:598` — SuperfluidLbm mutual friction has wrong sign; slip grows exponentially
 - [ ] **F2712** (high, bug, easy/small) `reactive/lbm_reactive.rs:120` — Reaction rate multiplies all species concentrations, including products
 - [ ] **F2714** (high, bug, easy/small) `reactive_flow.rs:269` — step_chemistry dimensionally wrong: no 1/(rho·cp), ignores fuel_stoich
 - [ ] **F2722** (high, bug, medium/medium) `sedimentation/types.rs:867` — LbmDemSolver feeds SI density/gravity into lattice; one-way coupling
 - [ ] **F2724** (high, fabrication, easy/small) `sedimentation/types.rs:1355` — Sedimentation3D::step not a flux divergence; phi grows everywhere
 - [ ] **F2725** (high, bug, easy/trivial) `sedimentation/types.rs:1627` — SediLbm::mixture_omega lowers viscosity as particle loading rises
-- [ ] **F2727** (high, bug, medium/medium) `simulation/types.rs:225` — LbmSimulation::step ignores dt; 3D drops body_force/Smagorinsky
-- [ ] **F2728** (high, bug, easy/small) `simulation/types.rs:275` — 2D Guo forcing omits -u/cs² term, injects mass every step
-- [ ] **F2729** (high, missing-feature, medium/medium) `simulation/types.rs:290` — 3D LbmSimulation silently ignores body force, Smagorinsky, boundaries
-- [ ] **F2731** (high, fabrication, easy/small) `simulation/types.rs:641` — EnsembleRunner perturbation overwritten; all members identical
-- [ ] **F2737** (high, bug, easy/trivial) `solidification_lbm.rs:341` — PhaseChangeLbm::apply_mould_wall bounce-back is a no-op double swap
+- [x] **F2727** (high, bug, medium/medium) `simulation/types.rs:225` — LbmSimulation::step ignores dt; 3D drops body_force/Smagorinsky
+- [x] **F2728** (high, bug, easy/small) `simulation/types.rs:275` — 2D Guo forcing omits -u/cs² term, injects mass every step
+- [x] **F2729** (high, missing-feature, medium/medium) `simulation/types.rs:290` — 3D LbmSimulation silently ignores body force, Smagorinsky, boundaries
+- [x] **F2731** (high, fabrication, easy/small) `simulation/types.rs:641` — EnsembleRunner perturbation overwritten; all members identical
+- [x] **F2737** (high, bug, easy/trivial) `solidification_lbm.rs:341` — PhaseChangeLbm::apply_mould_wall bounce-back is a no-op double swap
 - [x] **F2741** (high, perf, medium/medium) `streaming.rs:37` — stream_2d/stream_3d allocate full q×n buffer every step
-- [ ] **F2744** (high, bug, medium/small) `streaming.rs:326` — stream_swap_2d streams wrong populations; AA pattern semantics wrong
+- [x] **F2744** (high, bug, medium/small) `streaming.rs:326` — stream_swap_2d streams wrong populations; AA pattern semantics wrong
 - [x] **F2745** (high, bug, medium/small) `streaming.rs:336` — stream_swap_2d streams half the populations the wrong way
-- [ ] **F2746** (high, bug, easy/trivial) `streaming.rs:672` — Half-way moving-wall bounce-back momentum term has wrong sign
+- [x] **F2746** (high, bug, easy/trivial) `streaming.rs:672` — Half-way moving-wall bounce-back momentum term has wrong sign
 - [x] **F2749** (high, bug, easy/trivial) `thermal/functions.rs:81` — D3Q7 thermal equilibrium advects scalar at half the fluid speed
-- [ ] **F2751** (high, bug, easy/trivial) `thermal/types.rs:663` — BoussinesqCoupling buoyancy sign makes hot fluid sink
-- [ ] **F2755** (high, bug, easy/small) `traffic_flow_lbm.rs:1051` — TrafficLbm feeds physical speed (m/s) into lattice equilibrium
-- [ ] **F2756** (high, bug, easy/small) `turbulence/functions.rs:48` — Smagorinsky tau_eff divides by cs^4 twice, ~6x eddy viscosity
+- [x] **F2751** (high, bug, easy/trivial) `thermal/types.rs:663` — BoussinesqCoupling buoyancy sign makes hot fluid sink
+- [x] **F2755** (high, bug, easy/small) `traffic_flow_lbm.rs:1051` — TrafficLbm feeds physical speed (m/s) into lattice equilibrium
+- [x] **F2756** (high, bug, easy/small) `turbulence/functions.rs:48` — Smagorinsky tau_eff divides by cs^4 twice, ~6x eddy viscosity
 - [x] **F2764** (high, bug, easy/small) `turbulence_model/functions.rs:775` — eigenvalues_3x3_symmetric wrong cubic constant; Sigma SGS ν_t ≡ 0
 - [ ] **F2769** (high, bug, medium/small) `turbulence_model/types.rs:576` — Dynamic Smagorinsky M sign inconsistent; Cs^2 clamps to zero
 - [x] **F2771** (high, fabrication, easy/small) `turbulence_model/types.rs:1002` — AmdModel::eddy_viscosity always returns zero
@@ -459,15 +459,15 @@ Verified: 330 (critical 4, high 124, medium 151, low 51); 48 further raw finding
 - [x] **F2779** (high, bug, easy/small) `turbulent_dispersion_lbm.rs:737` — DispersionLBM::advance accumulates diffusivity and nullifies collision
 - [x] **F2782** (high, fabrication, hard/medium) `viscoelastic_lbm.rs:380` — ViscoelasticLbm uses |u| as shear rate; stress term is a mass source
 - [ ] **F2787** (high, fabrication, easy/small) `wall_model.rs:901` — Werner-Wengle wall stress formula fabricated with wrong dimensions
-- [ ] **F2789** (high, bug, medium/small) `zou_he/functions.rs:88` — D3Q19 Zou-He omits edge populations in transverse correction
-- [ ] **F2790** (high, bug, medium/medium) `zou_he/functions.rs:106` — D3Q19 Zou-He faces use D2Q9 coefficients and omit edge terms
-- [ ] **F2791** (high, bug, medium/medium) `zou_he/functions.rs:291` — D3Q19 Zou-He faces pair mirror populations instead of opposites
-- [ ] **F2793** (high, bug, easy/small) `zou_he/functions.rs:615` — zou_he_pressure_left/right_d3q19 triple-count populations, mirror pairs
-- [ ] **F2794** (high, bug, easy/small) `zou_he/functions.rs:630` — D3Q19 pressure_left/right triple-count density and inject 4/3 momentum
-- [ ] **F2795** (high, bug, medium/small) `zou_he/functions.rs:768` — D3Q27 Zou-He inlet/outlet inject zero momentum, wrong density
-- [ ] **F2796** (high, bug, medium/small) `zou_he/functions.rs:775` — D3Q27 Zou-He reduces to plain bounce-back with wrong density
-- [ ] **F2798** (high, bug, easy/small) `zou_he/functions_2.rs:39` — D3Q19 moving-wall bounce-back quadratic in u_wall, wrong pairs
-- [ ] **F2799** (high, bug, easy/small) `zou_he/functions_2.rs:46` — Moving-wall bounce-back squares wall velocity; wrong pair (16,17)
+- [x] **F2789** (high, bug, medium/small) `zou_he/functions.rs:88` — D3Q19 Zou-He omits edge populations in transverse correction
+- [x] **F2790** (high, bug, medium/medium) `zou_he/functions.rs:106` — D3Q19 Zou-He faces use D2Q9 coefficients and omit edge terms
+- [x] **F2791** (high, bug, medium/medium) `zou_he/functions.rs:291` — D3Q19 Zou-He faces pair mirror populations instead of opposites
+- [x] **F2793** (high, bug, easy/small) `zou_he/functions.rs:615` — zou_he_pressure_left/right_d3q19 triple-count populations, mirror pairs
+- [x] **F2794** (high, bug, easy/small) `zou_he/functions.rs:630` — D3Q19 pressure_left/right triple-count density and inject 4/3 momentum
+- [x] **F2795** (high, bug, medium/small) `zou_he/functions.rs:768` — D3Q27 Zou-He inlet/outlet inject zero momentum, wrong density
+- [x] **F2796** (high, bug, medium/small) `zou_he/functions.rs:775` — D3Q27 Zou-He reduces to plain bounce-back with wrong density
+- [x] **F2798** (high, bug, easy/small) `zou_he/functions_2.rs:39` — D3Q19 moving-wall bounce-back quadratic in u_wall, wrong pairs
+- [x] **F2799** (high, bug, easy/small) `zou_he/functions_2.rs:46` — Moving-wall bounce-back squares wall velocity; wrong pair (16,17)
 
 ### Medium (151)
 - [ ] **F2422** (medium, missing-feature, medium/medium) `crates/oxiphysics-lbm/Cargo.toml:13` — No parallel or serde features for the LBM solver

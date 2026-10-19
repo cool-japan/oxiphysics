@@ -326,22 +326,41 @@ const RK45_B5: [f64; 6] = [
     -2187.0 / 6784.0,
     11.0 / 84.0,
 ];
-const RK45_E: [f64; 6] = [
+/// Differences `b_i - b̂_i` between the 5th-order Dormand-Prince weights and the
+/// embedded 4th-order weights `b̂ = (5179/57600, 0, 7571/16695, 393/640,
+/// -92097/339200, 187/2100, 1/40)`.
+///
+/// The seventh entry multiplies the FSAL stage `k7 = f(t + h, y_new)`.  Without
+/// it the remaining six entries sum to `1/40` instead of `0`, which would turn
+/// the embedded estimate into an `O(h)` quantity for any right-hand side.
+const RK45_E: [f64; 7] = [
     71.0 / 57600.0,
     0.0,
     -71.0 / 16695.0,
     71.0 / 1920.0,
     -17253.0 / 339200.0,
     22.0 / 525.0,
+    -1.0 / 40.0,
 ];
-/// Perform one RK45 step. Returns (y_new, error_estimate).
-pub fn rk45_step<F>(f: &F, t: f64, y: &[f64], h: f64) -> (Vec<f64>, Vec<f64>)
+/// One Dormand-Prince 5(4) step whose first stage `k1 = f(t, y)` is supplied by
+/// the caller.
+///
+/// Returns `(y_new, error_estimate, k_last)`.  `k_last = f(t + h, y_new)` is the
+/// seventh (FSAL) stage: it is part of the error estimate and, when the step is
+/// accepted, is exactly the first stage of the next step.
+fn rk45_step_from_k1<F>(
+    f: &F,
+    t: f64,
+    y: &[f64],
+    h: f64,
+    k1: &[f64],
+) -> (Vec<f64>, Vec<f64>, Vec<f64>)
 where
     F: Fn(f64, &[f64]) -> Vec<f64>,
 {
     let n = y.len();
-    let mut k = Vec::with_capacity(6);
-    k.push(f(t, y));
+    let mut k: Vec<Vec<f64>> = Vec::with_capacity(6);
+    k.push(k1.to_vec());
     for stage in 1..6 {
         let t_s = t + RK45_C[stage] * h;
         let y_s: Vec<f64> = (0..n)
@@ -352,12 +371,40 @@ where
     let y_new: Vec<f64> = (0..n)
         .map(|i| y[i] + h * (0..6).map(|j| RK45_B5[j] * k[j][i]).sum::<f64>())
         .collect();
+    let k_last = f(t + h, &y_new);
     let err: Vec<f64> = (0..n)
-        .map(|i| h * (0..6).map(|j| RK45_E[j] * k[j][i]).sum::<f64>())
+        .map(|i| {
+            let six_stages: f64 = (0..6).map(|j| RK45_E[j] * k[j][i]).sum();
+            h * (six_stages + RK45_E[6] * k_last[i])
+        })
         .collect();
+    (y_new, err, k_last)
+}
+/// Perform one Dormand-Prince RK45 step.  Returns `(y_new, error_estimate)`.
+///
+/// `y_new` is the 5th-order solution at `t + h`.  `error_estimate` is the
+/// componentwise difference `y_new - ŷ_new` to the embedded 4th-order solution,
+/// formed from all seven stages (including `k7 = f(t + h, y_new)`), so it is
+/// an `O(h^5)` quantity that vanishes for a constant right-hand side.
+pub fn rk45_step<F>(f: &F, t: f64, y: &[f64], h: f64) -> (Vec<f64>, Vec<f64>)
+where
+    F: Fn(f64, &[f64]) -> Vec<f64>,
+{
+    let k1 = f(t, y);
+    let (y_new, err, _k_last) = rk45_step_from_k1(f, t, y, h, &k1);
     (y_new, err)
 }
-/// Adaptive RK45 integrator.
+/// Adaptive Dormand-Prince RK45 integrator with error control.
+///
+/// Integrates `y' = f(t, y)` from `t0` to `t_end`.  A step is accepted when the
+/// RMS norm of `err_i / (atol + rtol * max(|y_i|, |y_new_i|))` is at most one.
+/// The FSAL property is used: after an accepted step the derivative at the new
+/// point is reused as the first stage of the next step, so an accepted step
+/// costs six evaluations of `f`.
+///
+/// Returns the accepted `(t, y)` pairs, starting with `(t0, y0)`.  The run stops
+/// early if the step size has shrunk so far that `t + h == t` or after 100 000
+/// attempted steps.
 pub fn rk45_adaptive<F>(
     f: F,
     t0: f64,
@@ -375,10 +422,16 @@ where
     let mut result = vec![(t, y.clone())];
     let max_steps = 100_000;
     let mut steps = 0;
+    let mut k1 = f(t, &y);
     while t < t_end - 1e-12 && steps < max_steps {
         h = h.min(t_end - t);
-        let (y_new, err) = rk45_step(&f, t, &y, h);
-        let err_norm = {
+        if t + h <= t {
+            break;
+        }
+        let (y_new, err, k_last) = rk45_step_from_k1(&f, t, &y, h, &k1);
+        let err_norm = if y.is_empty() {
+            0.0
+        } else {
             let n = y.len() as f64;
             let sum: f64 = err
                 .iter()
@@ -391,14 +444,19 @@ where
                 .sum();
             (sum / n).sqrt()
         };
+        // A NaN error (non-finite right-hand side) rejects the step and shrinks it.
+        let factor = if err_norm.is_nan() {
+            0.1
+        } else {
+            0.9 * err_norm.powf(-0.2)
+        };
         if err_norm <= 1.0 {
             t += h;
             y = y_new;
+            k1 = k_last;
             result.push((t, y.clone()));
-            let factor = 0.9 * err_norm.powf(-0.2);
             h *= factor.clamp(0.1, 5.0);
         } else {
-            let factor = 0.9 * err_norm.powf(-0.2);
             h *= factor.clamp(0.1, 1.0);
         }
         steps += 1;

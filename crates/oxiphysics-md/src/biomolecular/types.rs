@@ -3,7 +3,8 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::{
-    compute_sasa, dist3, hbond_angle, hbond_score, jacobi3, mat3_det, mat3_mul_t,
+    amide_h_position, compute_sasa, dist3, hbond_angle, hbond_score, jacobi3, kabsch_sander_hbond,
+    mat3_det, mat3_mul_t,
 };
 
 /// CHARMM improper dihedral energy parameters.
@@ -848,7 +849,10 @@ impl WaterModel {
 }
 /// Protein folding simulation.
 ///
-/// Runs temperature quench simulation, tracking contact fraction Q and RMSD.
+/// Runs Langevin molecular dynamics of a structure-based (Gō) model whose global
+/// minimum is the reference structure, e.g. a temperature quench, tracking the native
+/// contact fraction Q and the RMSD; see [`super::folding_dynamics`] for the potential,
+/// the BAOAB integrator and the units (Å, ps, kcal/mol, amu).
 #[derive(Debug, Clone)]
 pub struct ProteinFolding {
     /// Topology.
@@ -867,12 +871,24 @@ pub struct ProteinFolding {
     pub step_count: usize,
     /// Q factor history.
     pub q_history: Vec<f64>,
+    /// Bead velocities in Å/ps, one per topology atom (at rest initially).
+    pub velocities: Vec<[f64; 3]>,
+    /// Langevin friction coefficient γ in ps⁻¹ (default 1.0).
+    pub gamma: f64,
+    /// State of the Xoshiro256 noise generator; see [`ProteinFolding::with_seed`].
+    pub rng_state: [u64; 4],
+    /// Native-contact well depth ε in kcal/mol, the energy scale of the Gō model
+    /// (default 1.0).
+    pub contact_epsilon: f64,
+    /// Mass of every bead in amu (default 110, the mean residue mass).
+    pub bead_mass: f64,
 }
 impl ProteinFolding {
     /// Create a new protein folding simulation.
     pub fn new(topology: ProteinTopology, temperature: f64, contact_cutoff: f64, dt: f64) -> Self {
         let ref_positions = topology.positions.clone();
         let native_contacts = Self::find_contacts(&ref_positions, contact_cutoff);
+        let n_atoms = topology.positions.len();
         Self {
             topology,
             temperature,
@@ -882,6 +898,14 @@ impl ProteinFolding {
             ref_positions,
             step_count: 0,
             q_history: Vec::new(),
+            velocities: vec![[0.0; 3]; n_atoms],
+            gamma: super::folding_dynamics::DEFAULT_FRICTION,
+            rng_state: oxiphysics_core::random::Xoshiro256::new(
+                super::folding_dynamics::DEFAULT_FOLDING_SEED,
+            )
+            .state,
+            contact_epsilon: super::folding_dynamics::DEFAULT_CONTACT_EPSILON,
+            bead_mass: super::folding_dynamics::DEFAULT_BEAD_MASS,
         }
     }
     /// Find contact pairs within cutoff.
@@ -898,19 +922,30 @@ impl ProteinFolding {
         }
         contacts
     }
-    /// Compute Q (fraction of native contacts formed).
+    /// Compute Q, the fraction of native contacts formed.
+    ///
+    /// A native contact `(i, j)` is formed while its current separation is at most
+    /// [`super::folding_dynamics::CONTACT_FORMED_FACTOR`] (1.2) times its separation
+    /// `r0_ij` in the reference structure, the standard definition of `Q` for Gō
+    /// models.  Q is `1.0` for the native structure (and without native contacts)
+    /// and falls towards `0` as the chain unfolds.
     pub fn contact_fraction_q(&self) -> f64 {
         if self.native_contacts.is_empty() {
             return 1.0;
         }
-        let mut formed = 0;
-        let cutoff = self.contact_cutoff * 1.2;
+        let mut formed = 0usize;
         for &[i, j] in &self.native_contacts {
-            if i < self.topology.positions.len() && j < self.topology.positions.len() {
-                let d = dist3(self.topology.positions[i], self.topology.positions[j]);
-                if d < cutoff {
-                    formed += 1;
-                }
+            let (Some(&x_i), Some(&x_j), Some(&ref_i), Some(&ref_j)) = (
+                self.topology.positions.get(i),
+                self.topology.positions.get(j),
+                self.ref_positions.get(i),
+                self.ref_positions.get(j),
+            ) else {
+                continue;
+            };
+            let native_distance = dist3(ref_i, ref_j);
+            if dist3(x_i, x_j) <= super::folding_dynamics::CONTACT_FORMED_FACTOR * native_distance {
+                formed += 1;
             }
         }
         formed as f64 / self.native_contacts.len() as f64
@@ -934,12 +969,6 @@ impl ProteinFolding {
     /// Apply temperature quench (reduce temperature).
     pub fn quench(&mut self, target_temp: f64, rate: f64) {
         self.temperature = self.temperature * (1.0 - rate) + target_temp * rate;
-    }
-    /// Advance one MD step (simplified Langevin).
-    pub fn step(&mut self) {
-        self.step_count += 1;
-        let q = self.contact_fraction_q();
-        self.q_history.push(q);
     }
 }
 /// Radius of gyration tensor.
@@ -1083,20 +1112,29 @@ impl SecondaryStructure {
             hbond_matrix,
         }
     }
-    /// Compute DSSP H-bond energy between residues i and j.
+    /// Compute the DSSP (Kabsch-Sander) H-bond energy in kcal/mol between the
+    /// carbonyl `C=O` of residue `i` (acceptor) and the amide `N-H` of residue
+    /// `j` (donor).
+    ///
+    /// The amide hydrogen is rebuilt with [`amide_h_position`] and the energy
+    /// follows from [`kabsch_sander_hbond`].
+    ///
+    /// Returns `0.0` for out-of-range indices, for a residue paired with itself
+    /// or with a chain neighbour (`|i - j| < 2`), and for a donor without a
+    /// hydrogen (the first residue or missing carbonyl coordinates).
     pub fn hbond_energy(&self, i: usize, j: usize) -> f64 {
-        if i >= self.n_pos.len() || j >= self.n_pos.len() || i == j {
+        if i.abs_diff(j) < 2 {
             return 0.0;
         }
-        let r_on = dist3(self.o_pos[i], self.n_pos[j]);
-        let r_ch = dist3(self.c_pos[i], self.n_pos[j]);
-        let r_oh = dist3(self.o_pos[i], self.ca_pos[j]);
-        let r_cn = dist3(self.c_pos[i], self.n_pos[j]);
-        0.084
-            * (1.0 / r_on.max(0.1) + 1.0 / r_ch.max(0.1)
-                - 1.0 / r_oh.max(0.1)
-                - 1.0 / r_cn.max(0.1))
-            * 332.0
+        let (Some(&o_pos), Some(&c_pos), Some(&n_pos)) =
+            (self.o_pos.get(i), self.c_pos.get(i), self.n_pos.get(j))
+        else {
+            return 0.0;
+        };
+        match amide_h_position(self, j) {
+            Some(h_pos) => kabsch_sander_hbond(o_pos, c_pos, n_pos, h_pos),
+            None => 0.0,
+        }
     }
     /// Assign secondary structure labels.
     pub fn assign(&mut self) {

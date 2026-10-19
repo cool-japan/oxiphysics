@@ -384,8 +384,10 @@ mod tests {
         let exact = states.exact_f();
         let mut rng = StdRng::seed_from_u64(20_260_613);
         let n_replicates = 200;
-        let mut estimates = vec![Vec::with_capacity(n_replicates); 3];
-        let mut predicted = vec![Vec::with_capacity(n_replicates); 3];
+        let mut estimates: Vec<Vec<f64>> =
+            (0..3).map(|_| Vec::with_capacity(n_replicates)).collect();
+        let mut predicted: Vec<Vec<f64>> =
+            (0..3).map(|_| Vec::with_capacity(n_replicates)).collect();
         for _ in 0..n_replicates {
             let (u_kn, n_k) = states.sample(&mut rng, 100);
             let f = solve_mbar(&u_kn, &n_k);
@@ -490,7 +492,7 @@ mod tests {
             row.truncate(240);
         }
         let n_k = vec![120, 120, 0];
-        let mut ln_n = vec![f64::NEG_INFINITY; 3];
+        let mut ln_n = [f64::NEG_INFINITY; 3];
         ln_n[0] = 120.0_f64.ln();
         ln_n[1] = 120.0_f64.ln();
         // Self-consistent iteration restricted to the sampled states, state 2 follows.

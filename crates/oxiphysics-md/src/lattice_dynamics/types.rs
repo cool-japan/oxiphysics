@@ -4,6 +4,7 @@
 
 use std::f64::consts::PI;
 
+use super::force_constants::DynamicalMatrix;
 use super::functions::*;
 use super::functions::{HBAR, KB};
 
@@ -152,10 +153,13 @@ impl PhononDispersion {
     }
     /// Check that acoustic modes vanish at Γ (q = 0).
     ///
-    /// Returns true if frequencies at the first k-point are all < tolerance.
+    /// Returns true if the three lowest frequencies (the acoustic branches; the
+    /// frequencies of a k-point are in ascending order) at the first k-point
+    /// are all < tolerance.  Optical branches of a crystal with several atoms
+    /// per cell do not vanish at Γ and are not tested.
     pub fn acoustic_modes_at_gamma(&self, tol: f64) -> bool {
         if let Some(fs) = self.frequencies.first() {
-            fs.iter().all(|&w| w < tol)
+            fs.iter().take(3).all(|&w| w < tol)
         } else {
             true
         }
@@ -321,111 +325,6 @@ impl GruneisenParameter {
             return 0.0;
         }
         self.macroscopic_gruneisen() * cv / self.volume
-    }
-}
-/// Full 3N × 3N mass-weighted dynamical matrix from interatomic force constants.
-///
-/// The dynamical matrix D(q) is constructed from the force constant matrix Φ:
-///
-/// D_{αβ}^{ss'}(q) = (1/√(M_s M_s')) Σ_l Φ_{αβ}^{ss'}(0l) exp(i q · R_l)
-///
-/// where the sum is over lattice vectors R_l, s/s' are sublattice indices,
-/// and α/β are Cartesian components.
-///
-/// For a mono-atomic lattice with isotropic spring constants this reduces to
-/// a diagonal matrix whose diagonal elements are the phonon frequencies squared.
-#[derive(Debug, Clone)]
-pub struct DynamicalMatrix {
-    /// Number of atoms per unit cell.
-    pub n_atoms: usize,
-    /// Atomic masses (kg or amu), length n_atoms.
-    pub masses: Vec<f64>,
-    /// Force constant matrix (3N × 3N, row-major flat array).
-    pub force_constants: Vec<f64>,
-    /// Lattice vectors.
-    pub lattice: LatticeVectors,
-}
-impl DynamicalMatrix {
-    /// Construct the dynamical matrix for a mono-atomic cubic crystal.
-    ///
-    /// Uses the nearest-neighbour isotropic spring constant `k_spring` and the
-    /// given mass to build a simple diagonal Γ-point dynamical matrix.
-    ///
-    /// # Arguments
-    /// * `k_spring`    – harmonic spring constant (energy / length²)
-    /// * `mass`        – atomic mass
-    /// * `coordination`– number of nearest neighbours (e.g. 6 for simple cubic)
-    /// * `lattice`     – primitive lattice vectors
-    pub fn new_cubic(
-        k_spring: f64,
-        mass: f64,
-        coordination: usize,
-        lattice: LatticeVectors,
-    ) -> Self {
-        let d = k_spring * coordination as f64 / mass;
-        let mut fc = vec![0.0_f64; 9];
-        fc[0] = d;
-        fc[4] = d;
-        fc[8] = d;
-        Self {
-            n_atoms: 1,
-            masses: vec![mass],
-            force_constants: fc,
-            lattice,
-        }
-    }
-    /// Compute eigenvalues (ω²) of the 3×3 Γ-point dynamical matrix via
-    /// the diagonal approximation.
-    ///
-    /// Returns three phonon frequencies ω_i = √(max(0, D_ii)).
-    pub fn phonon_frequencies_gamma(&self) -> Vec<f64> {
-        if self.force_constants.len() < 9 {
-            return vec![0.0; 3];
-        }
-        let fc = &self.force_constants;
-        vec![
-            fc[0].max(0.0).sqrt(),
-            fc[4].max(0.0).sqrt(),
-            fc[8].max(0.0).sqrt(),
-        ]
-    }
-    /// Evaluate the (diagonal) dynamical matrix at wave vector q.
-    ///
-    /// For the isotropic cubic model the q-dependence enters through a
-    /// structure factor:
-    ///
-    /// D_diag(q) = D_0 · (1 − cos(q · a)) averaged over nearest-neighbour bonds.
-    ///
-    /// This simplified formula handles the Γ-point (q → 0) limit correctly.
-    ///
-    /// # Arguments
-    /// * `q` – wave vector as 3-vector (rad / lattice_parameter units)
-    pub fn at_q(&self, q: [f64; 3]) -> Vec<f64> {
-        if self.force_constants.len() < 9 {
-            return vec![0.0; 3];
-        }
-        let a = norm3(self.lattice.a1).max(f64::EPSILON);
-        let sx = (q[0] * a / 2.0).sin();
-        let sy = (q[1] * a / 2.0).sin();
-        let sz = (q[2] * a / 2.0).sin();
-        let factor = (4.0 / 3.0) * (sx * sx + sy * sy + sz * sz);
-        let d0 = self.force_constants[0];
-        let freq_sq = (d0 * factor).max(0.0);
-        vec![freq_sq.sqrt(), freq_sq.sqrt(), freq_sq.sqrt()]
-    }
-    /// Acoustic mode at Γ: ω(Γ) = 0 for acoustic branches.
-    ///
-    /// Verifies that the acoustic branch vanishes at q = 0.
-    pub fn acoustic_at_gamma(&self) -> bool {
-        let omegas = self.at_q([0.0, 0.0, 0.0]);
-        omegas.iter().all(|&w| w.abs() < 1e-8)
-    }
-    /// Estimate the maximum phonon frequency (zone boundary).
-    pub fn max_frequency(&self) -> f64 {
-        self.phonon_frequencies_gamma()
-            .iter()
-            .cloned()
-            .fold(0.0_f64, f64::max)
     }
 }
 /// Phonon thermodynamic properties from a set of normal-mode frequencies.

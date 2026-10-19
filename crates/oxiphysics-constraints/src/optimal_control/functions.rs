@@ -699,6 +699,13 @@ mod tests {
         let rc = RobustControl::new(n, m, p, a, b, c, d);
         let bound = rc.h_inf_upper_bound();
         assert!(bound.is_finite(), "H-inf bound should be finite: {bound}");
+        // G(s) = 1 / (s + 1): the supremum of |G(jw)| is its DC gain 1, and the
+        // certified upper bound exceeds it by a few 1e-6 at most.
+        assert!(
+            (1.0..1.0 + 1e-5).contains(&bound),
+            "H-inf norm of 1/(s+1) is 1, got {bound}"
+        );
+        assert!((rc.h_inf_norm() - 1.0).abs() < 1e-5);
     }
     #[test]
     fn test_robust_small_gain_stable() {
@@ -714,6 +721,10 @@ mod tests {
             rc.small_gain_stable(0.01),
             "Should be stable with small gamma"
         );
+        // G(s) = 1 / (s + 10) has H-infinity norm 0.1: the loop gain gamma / 10
+        // crosses 1 at gamma = 10.
+        assert!(rc.small_gain_stable(9.0));
+        assert!(!rc.small_gain_stable(11.0));
     }
     #[test]
     fn test_mat_eye() {

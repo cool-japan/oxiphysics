@@ -10,9 +10,9 @@
 //!
 //! All vectors are plain `[f64; 3]` — no nalgebra dependency.
 
-// ── lint allowances ──────────────────────────────────────────────────────────
-
 use std::f64::consts::PI;
+
+use crate::{Error, Result};
 
 // ── vector helpers ────────────────────────────────────────────────────────────
 
@@ -201,19 +201,58 @@ impl Default for CreasePattern {
 
 // ── Miura-ori ─────────────────────────────────────────────────────────────────
 
+/// Dimensions of the folded Miura-ori cell (Schenk & Guest, PNAS 2013).
+///
+/// Around one vertex the four creases of a rigidly folded Miura-ori are
+///
+/// * `c1 = ( L, 0, H)` and `c3 = (-L, 0, H)`: the two halves of the straight
+///   crease line (edge length `a`), which rise out of the reference plane,
+/// * `c2 = ( V,  S, 0)` and `c4 = ( V, -S, 0)`: the two halves of the zigzag
+///   crease line (edge length `b`), which stay in the reference plane,
+///
+/// so `L`, `S` and `H` are the extents of the cell along x, y and z and `V`
+/// is the zigzag amplitude.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MiuraCellDimensions {
+    /// `S`: y-extent (advance along the zigzag) of one `b`-edge.
+    pub s: f64,
+    /// `L`: x-extent of one `a`-edge.
+    pub l: f64,
+    /// `H`: height of the folded cell, the z-extent of one `a`-edge.
+    pub h: f64,
+    /// `V`: x-extent (zigzag amplitude) of one `b`-edge.
+    pub v: f64,
+}
+
 /// Miura-ori unit cell descriptor.
 ///
-/// Defines geometry of a single Miura-ori parallelogram unit cell used to
-/// tile a sheet.
+/// A Miura-ori sheet tiles the plane with parallelogram facets of side
+/// lengths `a` (along the straight creases, the x-direction) and `b` (along
+/// the zigzag creases, the y-direction) and acute sector angle `gamma`.
+/// One unit cell is one period of the folded pattern: `2 × 2` facets.
+///
+/// `fold_angle` is the angle `θ` between the facets and the reference plane
+/// (`θ = 0` flat, `θ = π/2` flat-folded).  With `φ` the elevation of the
+/// straight creases (`sin φ = sin θ sin γ`) the cell dimensions are
+///
+/// ```text
+/// H = a sin θ sin γ
+/// S = b cos θ tan γ / sqrt(1 + cos²θ tan²γ)
+/// L = a sqrt(1 - sin²θ sin²γ)
+/// V = b / sqrt(1 + cos²θ tan²γ)
+/// ```
+///
+/// (Schenk & Guest, "Geometry of Miura-folded metamaterials", PNAS 2013),
+/// and the projected cell is `2L × 2S`.
 #[derive(Debug, Clone)]
 pub struct MiuraOriUnit {
-    /// Length of cell along the x-direction.
+    /// Side length `a` of a facet along the x-direction (straight creases).
     pub a: f64,
-    /// Length of cell along the y-direction.
+    /// Side length `b` of a facet along the zigzag (y-direction) creases.
     pub b: f64,
-    /// Acute angle of the parallelogram (radians).
+    /// Acute angle of the parallelogram facets (radians).
     pub gamma: f64,
-    /// Current fold angle (θ), radians. 0 = flat, π/2 = fully folded.
+    /// Current fold angle (θ), radians, in \[0, π/2\].  0 = flat, π/2 = flat-folded.
     pub fold_angle: f64,
 }
 
@@ -228,41 +267,77 @@ impl MiuraOriUnit {
         }
     }
 
-    /// Projected width of the unit cell at current fold angle.
+    /// Dimensions `S`, `L`, `H`, `V` of the folded cell at the current fold angle.
+    pub fn dimensions(&self) -> MiuraCellDimensions {
+        let (sin_t, cos_t) = self.fold_angle.sin_cos();
+        let (sin_g, cos_g) = self.gamma.sin_cos();
+        // Elevation of the straight creases: sin φ = sin θ sin γ.
+        let l = self.a * (1.0 - sin_t * sin_t * sin_g * sin_g).max(0.0).sqrt();
+        let h = self.a * sin_t * sin_g;
+        // 1 + cos²θ tan²γ = (cos²γ + cos²θ sin²γ) / cos²γ, which also stays
+        // well defined for γ = π/2 (where tan γ is infinite).
+        let planar = cos_g * cos_g + cos_t * cos_t * sin_g * sin_g;
+        let norm = planar.sqrt();
+        // Only |cos γ| enters: a facet angle γ and its supplement describe the
+        // same parallelogram.  For rectangular facets (γ = π/2) folded flat
+        // (θ = π/2) the expression is 0/0; its limit is the unfolded zigzag
+        // with S = b and V = 0.
+        let (s, v) = if norm > 0.0 {
+            (self.b * cos_t * sin_g / norm, self.b * cos_g.abs() / norm)
+        } else {
+            (self.b, 0.0)
+        };
+        MiuraCellDimensions { s, l, h, v }
+    }
+
+    /// Projected width of the unit cell (x-extent, one period `2L`).
     ///
-    /// W = a * sin(fold_angle) * sin(gamma)
+    /// `W = 2 a sqrt(1 - sin²θ sin²γ)`; it equals `2a` for the flat sheet.
     pub fn projected_width(&self) -> f64 {
-        self.a * self.fold_angle.sin() * self.gamma.sin()
+        2.0 * self.dimensions().l
     }
 
-    /// Projected height of the unit cell at current fold angle.
+    /// Projected height of the unit cell (y-extent, one zigzag period `2S`).
     ///
-    /// H = b * cos(fold_angle)
+    /// `2S = 2 b cos θ tan γ / sqrt(1 + cos²θ tan²γ)`; it equals `2 b sin γ`
+    /// for the flat sheet and vanishes for the flat-folded state `θ = π/2`.
     pub fn projected_height(&self) -> f64 {
-        self.b * self.fold_angle.cos().abs()
+        2.0 * self.dimensions().s
     }
 
-    /// Poisson ratio of the Miura-ori sheet (νxy).
+    /// Out-of-plane height `H = a sin θ sin γ` of the folded cell.
+    pub fn height(&self) -> f64 {
+        self.dimensions().h
+    }
+
+    /// In-plane Poisson ratio `ν = -(dS/S) / (dL/L)` of the Miura-ori sheet
+    /// (strain of the y-extent over strain of the x-extent).
     ///
-    /// The Miura-ori sheet has a negative Poisson ratio.
-    /// ν = -d(ln W)/d(ln H).
+    /// From `d ln S / dθ = -tan θ / (1 + cos²θ tan²γ)` and
+    /// `d ln L / dθ = -sin θ cos θ sin²γ / (1 - sin²θ sin²γ)` the θ-derivatives
+    /// combine, using `1 - sin²θ sin²γ = cos²γ + cos²θ sin²γ`, to
+    ///
+    /// ```text
+    /// ν = -cos²γ / (cos²θ sin²γ) = -1 / (cos²θ tan²γ)
+    /// ```
+    ///
+    /// which is negative for every fold angle (the sheet is auxetic) and
+    /// independent of the edge lengths `a` and `b`.  The value is `NaN` where
+    /// the strains are undefined: for the flat-folded state `θ = π/2` and for
+    /// a degenerate facet angle (`sin γ = 0`).
     pub fn poisson_ratio(&self) -> f64 {
-        // ν = -(∂W/W) / (∂H/H) evaluated at current fold_angle
-        // W ∝ sin(θ), H ∝ cos(θ)
-        // dW/dθ = cos(θ), dH/dθ = -sin(θ)
-        // ν = -(dW/W)/(dH/H) = -(cos(θ)/sin(θ)) / (-sin(θ)/cos(θ))
-        //   = cos²(θ)/sin²(θ) * ... simplified:
-        let s = self.fold_angle.sin();
-        let c = self.fold_angle.cos();
-        if s.abs() < 1e-10 || c.abs() < 1e-10 {
+        let (sin_g, cos_g) = self.gamma.sin_cos();
+        let cos_t = self.fold_angle.cos();
+        let denominator = cos_t * cos_t * sin_g * sin_g;
+        if denominator < 1e-24 {
             return f64::NAN;
         }
-        (c * c) / (s * s)
+        -(cos_g * cos_g) / denominator
     }
 
-    /// Advance fold by `delta_theta` radians, clamping to \[0, π\].
+    /// Advance fold by `delta_theta` radians, clamping to \[0, π/2\].
     pub fn fold_step(&mut self, delta_theta: f64) {
-        self.fold_angle = (self.fold_angle + delta_theta).clamp(0.0, PI);
+        self.fold_angle = (self.fold_angle + delta_theta).clamp(0.0, PI / 2.0);
     }
 }
 
@@ -287,19 +362,21 @@ impl MiuraOriSheet {
         }
     }
 
-    /// Total projected width of the sheet.
+    /// Total projected width of the sheet: `nx` unit cells of width `2L`.
+    ///
+    /// The sideways overhang `V` of the zigzag boundary is not included.
     pub fn total_width(&self) -> f64 {
         self.nx as f64 * self.unit.projected_width()
     }
 
-    /// Total projected height of the sheet.
+    /// Total projected height of the sheet: `ny` unit cells of height `2S`.
     pub fn total_height(&self) -> f64 {
         self.ny as f64 * self.unit.projected_height()
     }
 
-    /// Apply a uniform fold angle to the entire sheet.
+    /// Apply a uniform fold angle (clamped to \[0, π/2\]) to the entire sheet.
     pub fn set_fold_angle(&mut self, theta: f64) {
-        self.unit.fold_angle = theta.clamp(0.0, PI);
+        self.unit.fold_angle = theta.clamp(0.0, PI / 2.0);
     }
 
     /// Fold uniformly by `delta_theta` radians.
@@ -933,25 +1010,127 @@ pub fn snap_through_critical_force(k: f64, x_c: f64) -> f64 {
 
 // ── vertex fold angle solver ──────────────────────────────────────────────────
 
-/// Solve for the fold angles of a 4-crease origami vertex (degree-4 vertex)
-/// given the sector angles and one driving fold angle.
+/// Folding branch of a flat-foldable degree-4 vertex.
 ///
-/// Uses the rigid-foldability relationship from Huffman (1976):
-///   tan(ρ₁/2) = R · tan(ρ₀/2)
-/// where R depends on the sector angles α₀, α₁, α₂, α₃.
+/// A degree-4 vertex whose sector angles satisfy `α0 + α2 = α1 + α3 = π` can
+/// be folded rigidly along two different one-parameter motions that both
+/// start from the flat state.  The branch selects the relation between the
+/// fold angles of the opposite creases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Degree4Branch {
+    /// `ρ2 = ρ0` and `ρ3 = -ρ1`, with
+    /// `tan(ρ1/2) = -cos((α0+α1)/2) / cos((α0-α1)/2) · tan(ρ0/2)`.
+    A,
+    /// `ρ2 = -ρ0` and `ρ3 = ρ1`, with
+    /// `tan(ρ1/2) = sin((α0+α1)/2) / sin((α0-α1)/2) · tan(ρ0/2)`.
+    B,
+}
+
+/// Product of two 3×3 matrices (row-major).
+fn mat3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut out = [[0.0f64; 3]; 3];
+    for (i, out_row) in out.iter_mut().enumerate() {
+        for (j, entry) in out_row.iter_mut().enumerate() {
+            *entry = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    out
+}
+
+/// Closure matrix of a degree-4 origami vertex.
 ///
-/// Returns `[rho0, rho1, rho2, rho3]` fold angles in radians.
-pub fn degree4_vertex_fold_angles(rho0: f64, alpha: [f64; 4]) -> [f64; 4] {
-    // Simplified single-DOF coupling for symmetric degree-4 vertex.
-    // For general case: see Lang (2017) Twists, Tilings and Tessellations.
-    let ta = rho0.tan() * 0.5;
-    // Ratio depends on first and third sector angle.
-    let r = (alpha[0] / 2.0).cos() / ((alpha[0] / 2.0).sin() + 1e-15) * (alpha[2] / 2.0).sin()
-        / ((alpha[2] / 2.0).cos() + 1e-15);
-    let rho1 = 2.0 * (ta * r).atan();
-    let rho2 = rho0; // Symmetric
-    let rho3 = rho1;
-    [rho0, rho1, rho2, rho3]
+/// Walking once around the vertex, each crease `i` contributes a rotation
+/// about the crease direction by its fold angle `ρ_i`, and each sector `i`
+/// (between crease `i` and crease `i + 1`) a rotation about the sheet normal
+/// by its sector angle `α_i`:
+///
+/// ```text
+/// M = R_x(ρ0) R_z(α0) R_x(ρ1) R_z(α1) R_x(ρ2) R_z(α2) R_x(ρ3) R_z(α3)
+/// ```
+///
+/// The fold angles describe a rigid folding of the vertex exactly when `M` is
+/// the identity (Belcastro & Hull, 2002).
+pub fn degree4_vertex_closure(alpha: [f64; 4], rho: [f64; 4]) -> [[f64; 3]; 3] {
+    let mut m = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    for (&sector, &fold) in alpha.iter().zip(rho.iter()) {
+        m = mat3_mul(m, rotation_matrix_axis_angle([1.0, 0.0, 0.0], fold));
+        m = mat3_mul(m, rotation_matrix_axis_angle([0.0, 0.0, 1.0], sector));
+    }
+    m
+}
+
+/// Solve for the fold angles of a flat-foldable degree-4 origami vertex.
+///
+/// `alpha = [α0, α1, α2, α3]` are the sector angles in order around the
+/// vertex (`α_i` lies between crease `i` and crease `i + 1`), `rho0` is the
+/// driving fold angle of crease 0, and the returned `[ρ0, ρ1, ρ2, ρ3]` are the
+/// fold angles of the creases on the selected rigid-folding `branch`
+/// (see [`Degree4Branch`]); they satisfy the closure condition
+/// `degree4_vertex_closure(alpha, ρ) = I`.
+///
+/// Flat-foldability requires every sector angle to lie in `(0, π)`, the
+/// sector angles to sum to `2π` (developable vertex) and Kawasaki's condition
+/// `α0 + α2 = π`.  For such a vertex the closure condition reduces to the
+/// half-angle relations of Huffman (1976) documented on [`Degree4Branch`].
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidParameter`] if `rho0` is not finite or outside
+/// `[-π, π]`, a sector angle is outside `(0, π)`, the sector angles do not sum
+/// to `2π`, or Kawasaki's condition is violated (tolerance `1e-9`).
+pub fn degree4_vertex_fold_angles(
+    rho0: f64,
+    alpha: [f64; 4],
+    branch: Degree4Branch,
+) -> Result<[f64; 4]> {
+    const TOLERANCE: f64 = 1e-9;
+    if !rho0.is_finite() || rho0.abs() > PI {
+        return Err(Error::InvalidParameter(format!(
+            "degree-4 vertex: driving fold angle must be finite and within [-π, π], got {rho0}"
+        )));
+    }
+    if let Some(bad) = alpha
+        .iter()
+        .find(|&&sector| !(sector.is_finite() && sector > 0.0 && sector < PI))
+    {
+        return Err(Error::InvalidParameter(format!(
+            "degree-4 vertex: sector angles must lie in (0, π), got {bad}"
+        )));
+    }
+    let total: f64 = alpha.iter().sum();
+    if (total - 2.0 * PI).abs() > TOLERANCE {
+        return Err(Error::InvalidParameter(format!(
+            "degree-4 vertex: sector angles must sum to 2π (developable vertex), got {total}"
+        )));
+    }
+    let kawasaki = alpha[0] + alpha[2];
+    if (kawasaki - PI).abs() > TOLERANCE {
+        return Err(Error::InvalidParameter(format!(
+            "degree-4 vertex is not flat-foldable: Kawasaki's condition α0 + α2 = π is violated (α0 + α2 = {kawasaki})"
+        )));
+    }
+    let half_tan = (0.5 * rho0).tan();
+    let half_sum = 0.5 * (alpha[0] + alpha[1]);
+    let half_diff = 0.5 * (alpha[0] - alpha[1]);
+    match branch {
+        Degree4Branch::A => {
+            // |α0 - α1| < π, so cos((α0 - α1)/2) > 0.
+            let rho1 = 2.0 * (-half_sum.cos() / half_diff.cos() * half_tan).atan();
+            Ok([rho0, rho1, rho0, -rho1])
+        }
+        Degree4Branch::B => {
+            // sin((α0 - α1)/2) vanishes for α0 = α1; atan2 with a non-negative
+            // denominator evaluates the quotient without dividing by zero.
+            let numerator = half_sum.sin() * half_tan;
+            let denominator = half_diff.sin();
+            let rho1 = if denominator < 0.0 {
+                2.0 * (-numerator).atan2(-denominator)
+            } else {
+                2.0 * numerator.atan2(denominator)
+            };
+            Ok([rho0, rho1, -rho0, rho1])
+        }
+    }
 }
 
 // ── panel normal ──────────────────────────────────────────────────────────────
@@ -991,6 +1170,18 @@ mod tests {
     use super::*;
 
     const EPS: f64 = 1e-9;
+
+    /// Crease vectors `[c1, c2, c3, c4]` of one vertex of the folded Miura-ori
+    /// in counter-clockwise order of the flat sheet.
+    fn miura_vertex_creases(unit: &MiuraOriUnit) -> [[f64; 3]; 4] {
+        let d = unit.dimensions();
+        [
+            [d.l, 0.0, d.h],
+            [d.v, d.s, 0.0],
+            [-d.l, 0.0, d.h],
+            [d.v, -d.s, 0.0],
+        ]
+    }
 
     // 1. vec3_add basic
     #[test]
@@ -1093,22 +1284,27 @@ mod tests {
         assert_eq!(cp.count_valley(), 1);
     }
 
-    // 9. MiuraOriUnit projected dimensions
+    // 9. MiuraOriUnit projected dimensions: the flat sheet has its maximal extent
     #[test]
     fn test_miura_projected_dimensions() {
         let unit = MiuraOriUnit::new(1.0, 1.0, PI / 4.0);
-        // At fold_angle = 0: width = 0, height = 1
-        assert!(unit.projected_width().abs() < EPS);
-        assert!((unit.projected_height() - 1.0).abs() < EPS);
+        // Flat (θ = 0): width = 2a, height = 2 b sin γ, no out-of-plane height.
+        assert!((unit.projected_width() - 2.0).abs() < EPS);
+        assert!((unit.projected_height() - 2.0 * (PI / 4.0).sin()).abs() < EPS);
+        assert!(unit.height().abs() < EPS);
     }
 
-    // 10. MiuraOriUnit fold changes dimensions
+    // 10. MiuraOriUnit fold changes dimensions: both in-plane extents shrink
     #[test]
     fn test_miura_fold_step() {
         let mut unit = MiuraOriUnit::new(1.0, 1.0, PI / 4.0);
+        let (w0, h0) = (unit.projected_width(), unit.projected_height());
         unit.fold_step(PI / 4.0);
         assert!(unit.projected_width() > 0.0);
-        assert!(unit.projected_height() < 1.0);
+        assert!(unit.projected_width() < w0);
+        assert!(unit.projected_height() > 0.0);
+        assert!(unit.projected_height() < h0);
+        assert!(unit.height() > 0.0);
     }
 
     // 11. MiuraOriSheet total dimensions scale with cell count
@@ -1360,25 +1556,309 @@ mod tests {
         assert!((c[1] - 1.0).abs() < EPS);
     }
 
-    // 32. degree4_vertex_fold_angles symmetric case
+    // 32. degree4_vertex_fold_angles: both branches close the vertex
     #[test]
-    fn test_degree4_vertex_fold() {
-        let alpha = [PI / 4.0; 4];
-        let angles = degree4_vertex_fold_angles(PI / 6.0, alpha);
-        // rho0 and rho2 should be equal in symmetric case
-        assert!((angles[0] - angles[2]).abs() < EPS);
-        assert!((angles[1] - angles[3]).abs() < EPS);
+    fn test_degree4_vertex_closure_both_branches() {
+        let cases = [(1.1, 0.7), (0.7, 1.1), (1.0, 1.0), (2.2, 0.4), (0.3, 2.9)];
+        for &(a0, a1) in &cases {
+            let alpha = [a0, a1, PI - a0, PI - a1];
+            for &rho0 in &[0.3, 1.2, 2.0, -0.8, 3.0, -PI] {
+                for branch in [Degree4Branch::A, Degree4Branch::B] {
+                    let rho = degree4_vertex_fold_angles(rho0, alpha, branch)
+                        .expect("flat-foldable vertex");
+                    assert_eq!(rho[0], rho0);
+                    let m = degree4_vertex_closure(alpha, rho);
+                    for (i, row) in m.iter().enumerate() {
+                        for (j, &value) in row.iter().enumerate() {
+                            let expected = if i == j { 1.0 } else { 0.0 };
+                            assert!(
+                                (value - expected).abs() < 1e-10,
+                                "{branch:?} a=({a0},{a1}) rho0={rho0}: M[{i}][{j}] = {value}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    // 33. MiuraOriUnit Poisson ratio sign
+    // 32a. closure holds on a deterministic random sweep of sector angles and
+    // driving fold angles, on both branches
+    #[test]
+    fn test_degree4_vertex_closure_random_sweep() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next_unit = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..2000 {
+            let a0 = 0.05 + (PI - 0.1) * next_unit();
+            let a1 = 0.05 + (PI - 0.1) * next_unit();
+            let alpha = [a0, a1, PI - a0, PI - a1];
+            let rho0 = (2.0 * next_unit() - 1.0) * (PI - 0.01);
+            for branch in [Degree4Branch::A, Degree4Branch::B] {
+                let rho = degree4_vertex_fold_angles(rho0, alpha, branch).expect("flat-foldable");
+                let m = degree4_vertex_closure(alpha, rho);
+                for (i, row) in m.iter().enumerate() {
+                    for (j, &value) in row.iter().enumerate() {
+                        let expected = if i == j { 1.0 } else { 0.0 };
+                        assert!(
+                            (value - expected).abs() < 1e-9,
+                            "{branch:?} a=({a0},{a1}) rho0={rho0}: M[{i}][{j}] = {value}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // 32b. fold angles agree with an independent numerical solve of the closure
+    #[test]
+    fn test_degree4_vertex_matches_numerical_closure_solution() {
+        let alpha = [1.1, 0.7, PI - 1.1, PI - 0.7];
+        // (rho0, branch A rho1, branch B rho1) from a Newton solve of
+        // R_x(ρ0) R_z(α0) ... R_x(ρ3) R_z(α3) = I.
+        let reference = [
+            (0.3, -0.191132, 1.074808),
+            (1.2, -0.818796, 2.431568),
+            (2.0, -1.558512, 2.818729),
+        ];
+        for &(rho0, rho1_a, rho1_b) in &reference {
+            let a = degree4_vertex_fold_angles(rho0, alpha, Degree4Branch::A).unwrap();
+            assert!((a[1] - rho1_a).abs() < 2e-6, "A: {} vs {rho1_a}", a[1]);
+            assert!((a[2] - rho0).abs() < EPS && (a[3] + a[1]).abs() < EPS);
+            let b = degree4_vertex_fold_angles(rho0, alpha, Degree4Branch::B).unwrap();
+            assert!((b[1] - rho1_b).abs() < 2e-6, "B: {} vs {rho1_b}", b[1]);
+            assert!((b[2] + rho0).abs() < EPS && (b[3] - b[1]).abs() < EPS);
+        }
+    }
+
+    // 32c. the flat state is the common start of both branches
+    #[test]
+    fn test_degree4_vertex_flat_state() {
+        let alpha = [1.1, 0.7, PI - 1.1, PI - 0.7];
+        for branch in [Degree4Branch::A, Degree4Branch::B] {
+            let rho = degree4_vertex_fold_angles(0.0, alpha, branch).unwrap();
+            for r in rho {
+                assert!(
+                    r.abs() < EPS,
+                    "{branch:?}: flat vertex must have zero folds"
+                );
+            }
+        }
+    }
+
+    // 32d. Maekawa: three creases fold one way, one the other way
+    #[test]
+    fn test_degree4_vertex_maekawa_pattern() {
+        // α0 + α1 < π: branch A gives signs (+, -, +, +) for ρ0 > 0.
+        let alpha = [1.1, 0.7, PI - 1.1, PI - 0.7];
+        let rho = degree4_vertex_fold_angles(0.9, alpha, Degree4Branch::A).unwrap();
+        let positive = rho.iter().filter(|&&r| r > 0.0).count();
+        let negative = rho.iter().filter(|&&r| r < 0.0).count();
+        assert_eq!((positive, negative), (3, 1));
+        // Branch B (α0 + α1 < π, α0 > α1): (+, +, -, +).
+        let rho = degree4_vertex_fold_angles(0.9, alpha, Degree4Branch::B).unwrap();
+        let positive = rho.iter().filter(|&&r| r > 0.0).count();
+        let negative = rho.iter().filter(|&&r| r < 0.0).count();
+        assert_eq!((positive, negative), (3, 1));
+    }
+
+    // 32e. non-flat-foldable or malformed input is rejected
+    #[test]
+    fn test_degree4_vertex_rejects_invalid_input() {
+        // Sectors sum to π, not 2π (the former "symmetric" test vertex).
+        let alpha = [PI / 4.0; 4];
+        assert!(degree4_vertex_fold_angles(PI / 6.0, alpha, Degree4Branch::A).is_err());
+        // Sum is 2π but α0 + α2 ≠ π: developable, not flat-foldable.
+        let alpha = [1.0, 2.0, 1.5, 2.0 * PI - 4.5];
+        assert!(degree4_vertex_fold_angles(0.5, alpha, Degree4Branch::B).is_err());
+        // Sector angle of 0 or π (sum 2π and Kawasaki's condition still hold).
+        let alpha = [0.0, 1.0, PI, PI - 1.0];
+        assert!(degree4_vertex_fold_angles(0.5, alpha, Degree4Branch::A).is_err());
+        let alpha = [PI, 1.0, 0.0, PI - 1.0];
+        assert!(degree4_vertex_fold_angles(0.5, alpha, Degree4Branch::A).is_err());
+        // Driving angle not finite or outside [-π, π].
+        let alpha = [1.1, 0.7, PI - 1.1, PI - 0.7];
+        for bad in [f64::NAN, f64::INFINITY, 3.5, -4.0] {
+            assert!(degree4_vertex_fold_angles(bad, alpha, Degree4Branch::A).is_err());
+        }
+        match degree4_vertex_fold_angles(0.5, [PI / 4.0; 4], Degree4Branch::A) {
+            Err(Error::InvalidParameter(message)) => {
+                assert!(message.contains("2π"), "message: {message}")
+            }
+            other => panic!("expected InvalidParameter, got {other:?}"),
+        }
+    }
+
+    // 32f. the old formula broke at ρ0 = π/2 (tan diverges); the new one does not
+    #[test]
+    fn test_degree4_vertex_is_regular_at_right_angle_fold() {
+        let alpha = [1.1, 0.7, PI - 1.1, PI - 0.7];
+        for branch in [Degree4Branch::A, Degree4Branch::B] {
+            let rho = degree4_vertex_fold_angles(PI / 2.0, alpha, branch).unwrap();
+            assert!(rho.iter().all(|r| r.is_finite()));
+            let m = degree4_vertex_closure(alpha, rho);
+            for (i, row) in m.iter().enumerate() {
+                for (j, &value) in row.iter().enumerate() {
+                    let expected = if i == j { 1.0 } else { 0.0 };
+                    assert!((value - expected).abs() < 1e-10);
+                }
+            }
+        }
+    }
+
+    // 33. MiuraOriUnit Poisson ratio is negative (auxetic) for every fold angle
     #[test]
     fn test_miura_poisson_ratio() {
         let mut unit = MiuraOriUnit::new(1.0, 1.0, PI / 4.0);
+        for k in 1..=29 {
+            unit.fold_angle = 0.05 + (1.5 - 0.05) * k as f64 / 29.0;
+            let nu = unit.poisson_ratio();
+            assert!(nu < 0.0, "Miura-ori must be auxetic, got ν = {nu}");
+        }
+        // ν = -1 / (cos²θ tan²γ): at γ = π/4, θ = π/4 this is -2.
         unit.fold_angle = PI / 4.0;
-        let nu = unit.poisson_ratio();
-        // Should be positive (Miura-ori has auxetic behavior, but our simplified
-        // formula gives positive, representing the magnitude)
-        assert!(nu > 0.0, "poisson ratio should be positive, got {nu}");
+        assert!((unit.poisson_ratio() + 2.0).abs() < 1e-12);
+    }
+
+    // 33b. ν = -(dS/S)/(dL/L) against central differences of the cell dimensions
+    #[test]
+    fn test_miura_poisson_ratio_matches_finite_differences() {
+        let h = 1e-6;
+        for &(a, b, gamma) in &[(1.0, 1.0, PI / 4.0), (2.0, 0.7, 1.1), (0.3, 1.9, 0.5)] {
+            for &theta in &[0.1, 0.4, 0.9, 1.3] {
+                let mut unit = MiuraOriUnit::new(a, b, gamma);
+                unit.fold_angle = theta;
+                let mut plus = unit.clone();
+                plus.fold_angle = theta + h;
+                let mut minus = unit.clone();
+                minus.fold_angle = theta - h;
+                let d_ln_s =
+                    (plus.projected_height().ln() - minus.projected_height().ln()) / (2.0 * h);
+                let d_ln_l =
+                    (plus.projected_width().ln() - minus.projected_width().ln()) / (2.0 * h);
+                let numeric = -d_ln_s / d_ln_l;
+                let analytic = unit.poisson_ratio();
+                assert!(
+                    (numeric - analytic).abs() < 1e-5 * (1.0 + analytic.abs()),
+                    "a={a} b={b} γ={gamma} θ={theta}: numeric {numeric} vs analytic {analytic}"
+                );
+                // ν does not depend on the edge lengths.
+                let reference = MiuraOriUnit {
+                    a: 1.0,
+                    b: 1.0,
+                    gamma,
+                    fold_angle: theta,
+                };
+                assert!((reference.poisson_ratio() - analytic).abs() < 1e-12);
+            }
+        }
+    }
+
+    // 33c. degenerate states give NaN instead of a bogus finite value
+    #[test]
+    fn test_miura_poisson_ratio_degenerate_states() {
+        let mut unit = MiuraOriUnit::new(1.0, 1.0, PI / 4.0);
+        unit.fold_angle = PI / 2.0;
+        assert!(unit.poisson_ratio().is_nan(), "flat-folded state");
+        let degenerate = MiuraOriUnit::new(1.0, 1.0, 0.0);
+        assert!(degenerate.poisson_ratio().is_nan(), "sin γ = 0");
+        // Rectangular facets (γ = π/2) fold like a plain accordion: ν = 0.
+        let mut rect = MiuraOriUnit::new(1.0, 1.0, PI / 2.0);
+        rect.fold_angle = 0.8;
+        assert!(rect.poisson_ratio().abs() < 1e-12);
+    }
+
+    // 33d. dimensions at the flat and flat-folded limits
+    #[test]
+    fn test_miura_dimension_limits() {
+        let (a, b, gamma) = (1.3, 0.8, 1.0);
+        let mut unit = MiuraOriUnit::new(a, b, gamma);
+        let flat = unit.dimensions();
+        assert!((flat.l - a).abs() < EPS);
+        assert!((flat.s - b * gamma.sin()).abs() < EPS);
+        assert!((flat.v - b * gamma.cos()).abs() < EPS);
+        assert!(flat.h.abs() < EPS);
+        unit.fold_angle = PI / 2.0;
+        let folded = unit.dimensions();
+        assert!((folded.l - a * gamma.cos()).abs() < EPS);
+        assert!(folded.s.abs() < EPS);
+        assert!((folded.h - a * gamma.sin()).abs() < EPS);
+        assert!((folded.v - b).abs() < EPS);
+        // fold_step saturates at the flat-folded state.
+        unit.fold_angle = 0.0;
+        unit.fold_step(10.0);
+        assert!((unit.fold_angle - PI / 2.0).abs() < EPS);
+        unit.fold_step(-10.0);
+        assert!(unit.fold_angle.abs() < EPS);
+    }
+
+    // 33e. the folded cell is a rigid folding of the flat vertex with facet tilt θ
+    #[test]
+    fn test_miura_vertex_is_rigid_and_facets_tilt_by_theta() {
+        let (a, b, gamma) = (1.3, 0.8, 1.0);
+        for &theta in &[0.0, 0.2, 0.7, 1.2, 1.5] {
+            let mut unit = MiuraOriUnit::new(a, b, gamma);
+            unit.fold_angle = theta;
+            let creases = miura_vertex_creases(&unit);
+            let lengths = [a, b, a, b];
+            for (crease, &length) in creases.iter().zip(lengths.iter()) {
+                assert!((vec3_norm(*crease) - length).abs() < 1e-12);
+            }
+            // Sector angles of the flat sheet are preserved: γ, π-γ, π-γ, γ.
+            let sectors = [gamma, PI - gamma, PI - gamma, gamma];
+            for i in 0..4 {
+                let u = vec3_normalize(creases[i]);
+                let v = vec3_normalize(creases[(i + 1) % 4]);
+                let angle = vec3_dot(u, v).clamp(-1.0, 1.0).acos();
+                assert!((angle - sectors[i]).abs() < 1e-10, "θ={theta} sector {i}");
+                // Every facet is inclined by θ against the reference plane.
+                let normal = vec3_normalize(vec3_cross(creases[i], creases[(i + 1) % 4]));
+                assert!(
+                    (normal[2] - theta.cos()).abs() < 1e-10,
+                    "θ={theta} facet {i}"
+                );
+            }
+        }
+    }
+
+    // 33f. closed-form branch B reproduces the dihedral angles of the folded Miura vertex
+    #[test]
+    fn test_degree4_branch_b_matches_miura_geometry() {
+        let (a, b, gamma) = (1.3, 0.8, 1.0);
+        let alpha = [gamma, PI - gamma, PI - gamma, gamma];
+        for &theta in &[0.1, 0.5, 0.9, 1.3] {
+            let mut unit = MiuraOriUnit::new(a, b, gamma);
+            unit.fold_angle = theta;
+            let creases = miura_vertex_creases(&unit);
+            // Oriented facet normals: facet i lies between crease i and crease i+1.
+            let normals: Vec<[f64; 3]> = (0..4)
+                .map(|i| vec3_normalize(vec3_cross(creases[i], creases[(i + 1) % 4])))
+                .collect();
+            // |fold angle| of crease i = angle between the facets on either side.
+            let geometric: Vec<f64> = (0..4)
+                .map(|i| {
+                    let before = normals[(i + 3) % 4];
+                    vec3_dot(before, normals[i]).clamp(-1.0, 1.0).acos()
+                })
+                .collect();
+            // The facets on either side of a zigzag crease are tilted by +θ and
+            // -θ against the reference plane, so the zigzag creases fold by 2θ.
+            assert!((geometric[1] - 2.0 * theta).abs() < 1e-9);
+            assert!((geometric[3] - 2.0 * theta).abs() < 1e-9);
+            let solved = degree4_vertex_fold_angles(geometric[0], alpha, Degree4Branch::B).unwrap();
+            for i in 0..4 {
+                assert!(
+                    (solved[i].abs() - geometric[i]).abs() < 1e-9,
+                    "θ={theta} crease {i}: solved {} vs geometric {}",
+                    solved[i].abs(),
+                    geometric[i]
+                );
+            }
+        }
     }
 
     // 34. total_compliant_hinge_energy

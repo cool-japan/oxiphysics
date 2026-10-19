@@ -13,8 +13,14 @@ use oxiphysics_geometry::{BoxShape, Capsule, Cone, ConvexHull, Cylinder, Sphere,
 use super::types::{CylinderContactMode, CylinderContactResult};
 
 /// Sphere-sphere collision test.
+///
+/// The returned [`Contact`] follows the crate convention: `normal` points from
+/// sphere B towards sphere A, `point_a` is the point of A's surface facing B,
+/// `point_b` the point of B's surface facing A, and
+/// `point_b - point_a == normal * depth`. Coincident centres have no
+/// direction; the normal is then +Y.
 pub fn sphere_sphere(s1: &Sphere, t1: &Transform, s2: &Sphere, t2: &Transform) -> Option<Contact> {
-    let diff = t2.position - t1.position;
+    let diff = t1.position - t2.position;
     let dist = diff.norm();
     let combined_radius = s1.radius + s2.radius;
     if dist >= combined_radius {
@@ -26,8 +32,8 @@ pub fn sphere_sphere(s1: &Sphere, t1: &Transform, s2: &Sphere, t2: &Transform) -
         Vec3::new(0.0, 1.0, 0.0)
     };
     let depth = combined_radius - dist;
-    let point_a = t1.position + normal * s1.radius;
-    let point_b = t2.position - normal * s2.radius;
+    let point_a = t1.position - normal * s1.radius;
+    let point_b = t2.position + normal * s2.radius;
     Some(Contact::new(point_a, point_b, normal, depth))
 }
 /// Sphere-box collision test.
@@ -193,6 +199,12 @@ pub fn sphere_capsule(
     Some(Contact::new(point_a, point_b, normal, depth))
 }
 /// Capsule-capsule collision test.
+///
+/// The returned [`Contact`] follows the crate convention: `normal` points from
+/// capsule B towards capsule A (from the closest point of B's axis to the
+/// closest point of A's axis), `point_a` and `point_b` are the points of the two
+/// surfaces facing each other, and `point_b - point_a == normal * depth`.
+/// Intersecting axes have no direction; the normal is then +Y.
 pub fn capsule_capsule(
     c1: &Capsule,
     t1: &Transform,
@@ -206,7 +218,7 @@ pub fn capsule_capsule(
     let a2 = t2.position + up2 * c2.half_height;
     let b2 = t2.position - up2 * c2.half_height;
     let (p1, p2) = closest_points_segments(&a1, &b1, &a2, &b2);
-    let diff = p2 - p1;
+    let diff = p1 - p2;
     let dist = diff.norm();
     let combined = c1.radius + c2.radius;
     if dist >= combined {
@@ -218,8 +230,8 @@ pub fn capsule_capsule(
         Vec3::new(0.0, 1.0, 0.0)
     };
     let depth = combined - dist;
-    let point_a = p1 + normal * c1.radius;
-    let point_b = p2 - normal * c2.radius;
+    let point_a = p1 - normal * c1.radius;
+    let point_b = p2 + normal * c2.radius;
     Some(Contact::new(point_a, point_b, normal, depth))
 }
 /// Cylinder-cylinder collision test.
@@ -227,6 +239,11 @@ pub fn capsule_capsule(
 /// Both cylinders are assumed to be oriented along the Y-axis in their local frames.
 /// This uses a segment-segment closest-points approach for the cylinder axes,
 /// then checks radial overlap.
+///
+/// The returned [`Contact`] follows the crate convention: `normal` points from
+/// cylinder B towards cylinder A, `point_a` and `point_b` are the points of the
+/// two surfaces facing each other along the normal, and
+/// `point_b - point_a == normal * depth`.
 pub fn cylinder_cylinder(
     c1: &Cylinder,
     t1: &Transform,
@@ -240,7 +257,7 @@ pub fn cylinder_cylinder(
     let a2 = t2.position + up2 * c2.half_height;
     let b2 = t2.position - up2 * c2.half_height;
     let (p1, p2) = closest_points_segments(&a1, &b1, &a2, &b2);
-    let diff = p2 - p1;
+    let diff = p1 - p2;
     let dist = diff.norm();
     let combined = c1.radius + c2.radius;
     if dist >= combined {
@@ -252,8 +269,8 @@ pub fn cylinder_cylinder(
         Vec3::new(0.0, 1.0, 0.0)
     };
     let depth = combined - dist;
-    let point_a = p1 + normal * c1.radius;
-    let point_b = p2 - normal * c2.radius;
+    let point_a = p1 - normal * c1.radius;
+    let point_b = p2 + normal * c2.radius;
     Some(Contact::new(point_a, point_b, normal, depth))
 }
 /// Cone-sphere collision test.
@@ -766,7 +783,10 @@ pub(super) fn closest_points_segments(a1: &Vec3, b1: &Vec3, a2: &Vec3, b2: &Vec3
 }
 /// Precise cylinder vs cylinder collision test.
 ///
-/// Returns both a contact and a diagnostic contact mode.
+/// Returns both a contact and a diagnostic contact mode. The contact follows
+/// the crate convention: `normal` points from cylinder B towards cylinder A,
+/// `point_a` and `point_b` are the points of the two surfaces facing each other
+/// and `point_b - point_a == normal * depth`.
 pub fn cylinder_cylinder_precise(
     c1: &Cylinder,
     t1: &Transform,
@@ -782,7 +802,8 @@ pub fn cylinder_cylinder_precise(
     let axis_dot = axis1.dot(&axis2).abs();
     let parallel = axis_dot > 0.999;
     if parallel {
-        let radial = (t2.position - t1.position) - axis1 * axis1.dot(&(t2.position - t1.position));
+        let from_b = t1.position - t2.position;
+        let radial = from_b - axis1 * axis1.dot(&from_b);
         let radial_dist = radial.norm();
         let combined_r = c1.radius + c2.radius;
         if radial_dist >= combined_r {
@@ -805,15 +826,15 @@ pub fn cylinder_cylinder_precise(
             Vec3::new(1.0, 0.0, 0.0)
         };
         let depth = combined_r - radial_dist;
-        let point_a = t1.position + normal * c1.radius;
-        let point_b = t2.position - normal * c2.radius;
+        let point_a = t1.position - normal * c1.radius;
+        let point_b = t2.position + normal * c2.radius;
         return CylinderContactResult {
             contact: Some(Contact::new(point_a, point_b, normal, depth)),
             mode: CylinderContactMode::Parallel,
         };
     }
     let (p1, p2) = closest_points_segments_impl(&cap1_bot, &cap1_top, &cap2_bot, &cap2_top);
-    let diff = p2 - p1;
+    let diff = p1 - p2;
     let dist = diff.norm();
     let combined = c1.radius + c2.radius;
     if dist >= combined {
@@ -851,8 +872,8 @@ pub fn cylinder_cylinder_precise(
     } else {
         CylinderContactMode::SideToSide
     };
-    let point_a = p1 + normal * c1.radius;
-    let point_b = p2 - normal * c2.radius;
+    let point_a = p1 - normal * c1.radius;
+    let point_b = p2 + normal * c2.radius;
     CylinderContactResult {
         contact: Some(Contact::new(point_a, point_b, normal, depth)),
         mode,
@@ -1234,7 +1255,8 @@ mod tests {
         let t2 = Transform::from_position(Vec3::new(1.5, 0.0, 0.0));
         let contact = sphere_sphere(&s1, &t1, &s2, &t2).unwrap();
         assert!((contact.depth - 0.5).abs() < 1e-10);
-        assert!((contact.normal.x - 1.0).abs() < 1e-10);
+        // B sits on the +x side of A, so the normal from B towards A is -x.
+        assert!((contact.normal.x + 1.0).abs() < 1e-10);
     }
     #[test]
     fn test_sphere_sphere_no_collision() {

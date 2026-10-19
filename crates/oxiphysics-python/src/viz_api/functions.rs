@@ -471,6 +471,126 @@ mod tests {
         let out = vis.compute(0).unwrap();
         assert!(out.von_mises >= 0.0);
     }
+    fn assert_close(actual: f64, expected: f64, tol: f64, what: &str) {
+        assert!(
+            (actual - expected).abs() <= tol,
+            "{what}: {actual} vs {expected}"
+        );
+    }
+    /// Row `k` of the row-major 3×3 direction matrix.
+    fn direction(out: &StressVisOutput, k: usize) -> [f64; 3] {
+        let d = &out.principal_directions;
+        [d[3 * k], d[3 * k + 1], d[3 * k + 2]]
+    }
+    #[test]
+    fn test_stress_visualizer_pure_shear_has_plus_minus_tau_principal_stresses() {
+        let tau = 7.5;
+        let vis = PyStressVisualizer::new(vec![StressTensor::new(0.0, 0.0, 0.0, tau, 0.0, 0.0)]);
+        let out = vis.compute(0).unwrap();
+        assert_close(out.principal_stresses[0], tau, 1e-12, "sigma_1");
+        assert_close(out.principal_stresses[1], 0.0, 1e-12, "sigma_2");
+        assert_close(out.principal_stresses[2], -tau, 1e-12, "sigma_3");
+        let s = 0.5_f64.sqrt();
+        let d1 = direction(&out, 0);
+        assert_close(d1[0], s, 1e-12, "d1.x");
+        assert_close(d1[1], s, 1e-12, "d1.y");
+        assert_close(d1[2], 0.0, 1e-12, "d1.z");
+        let d2 = direction(&out, 1);
+        assert_close(d2[2].abs(), 1.0, 1e-12, "d2 is the z axis");
+        let d3 = direction(&out, 2);
+        assert_close(d3[0], s, 1e-12, "d3.x");
+        assert_close(d3[1], -s, 1e-12, "d3.y");
+        // The 1-3 circle is centred on zero with radius tau; the others touch it.
+        assert_close(out.mohr_circle[4], 0.0, 1e-12, "centre_13");
+        assert_close(out.mohr_circle[5], tau, 1e-12, "radius_13");
+        assert_close(out.mohr_circle[0], 0.5 * tau, 1e-12, "centre_12");
+        assert_close(out.mohr_circle[1], 0.5 * tau, 1e-12, "radius_12");
+        assert_close(out.mohr_circle[2], -0.5 * tau, 1e-12, "centre_23");
+        assert_close(out.mohr_circle[3], 0.5 * tau, 1e-12, "radius_23");
+    }
+    #[test]
+    fn test_stress_visualizer_diagonal_tensor_reproduces_its_input() {
+        let vis = PyStressVisualizer::new(vec![StressTensor::new(3.0, -1.0, 2.0, 0.0, 0.0, 0.0)]);
+        let out = vis.compute(0).unwrap();
+        for (actual, expected) in out.principal_stresses.iter().zip([3.0, 2.0, -1.0]) {
+            assert_close(*actual, expected, 1e-12, "principal stress");
+        }
+        // sigma_1 = s11 (x axis), sigma_2 = s33 (z axis), sigma_3 = s22 (y axis).
+        let expected_directions = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0];
+        for (actual, expected) in out.principal_directions.iter().zip(expected_directions) {
+            assert_close(*actual, expected, 1e-12, "principal direction");
+        }
+    }
+    #[test]
+    fn test_stress_visualizer_general_tensor_satisfies_the_eigen_equations() {
+        let [s11, s22, s33, s12, s13, s23] = [120.0, -40.0, 15.0, 30.0, -25.0, 10.0];
+        let t = StressTensor::new(s11, s22, s33, s12, s13, s23);
+        let vm = t.von_mises();
+        let vis = PyStressVisualizer::new(vec![t]);
+        let out = vis.compute(0).unwrap();
+        let a = [[s11, s12, s13], [s12, s22, s23], [s13, s23, s33]];
+        let p = out.principal_stresses;
+        assert!(p[0] >= p[1] && p[1] >= p[2], "descending order: {p:?}");
+        // A v = lambda v for every row, and the rows are orthonormal.
+        for (k, &lambda) in p.iter().enumerate() {
+            let v = direction(&out, k);
+            for (i, row) in a.iter().enumerate() {
+                let av: f64 = (0..3).map(|j| row[j] * v[j]).sum();
+                assert_close(av, lambda * v[i], 1e-9, "A v = lambda v");
+            }
+            for l in 0..3 {
+                let w = direction(&out, l);
+                let dot: f64 = (0..3).map(|j| v[j] * w[j]).sum();
+                let expected = if k == l { 1.0 } else { 0.0 };
+                assert_close(dot, expected, 1e-12, "orthonormality");
+            }
+        }
+        // Invariants: trace, determinant and the von Mises stress.
+        assert_close(p[0] + p[1] + p[2], s11 + s22 + s33, 1e-9, "trace");
+        let det = s11 * (s22 * s33 - s23 * s23) - s12 * (s12 * s33 - s23 * s13)
+            + s13 * (s12 * s23 - s22 * s13);
+        assert_close(p[0] * p[1] * p[2], det, 1e-6 * det.abs(), "determinant");
+        let vm_principal =
+            (0.5 * ((p[0] - p[1]).powi(2) + (p[1] - p[2]).powi(2) + (p[2] - p[0]).powi(2))).sqrt();
+        assert_close(out.von_mises, vm, 1e-12, "von Mises output");
+        assert_close(vm_principal, vm, 1e-9, "von Mises from principal stresses");
+        // Mohr circles are built from the true principal stresses.
+        assert_close(out.mohr_circle[0], 0.5 * (p[0] + p[1]), 1e-12, "centre_12");
+        assert_close(out.mohr_circle[5], 0.5 * (p[0] - p[2]), 1e-12, "radius_13");
+        assert!(out.mohr_circle[1] >= 0.0 && out.mohr_circle[3] >= 0.0);
+    }
+    #[test]
+    fn test_stress_visualizer_hydrostatic_and_zero_tensors_keep_an_orthonormal_frame() {
+        for value in [5.0, 0.0] {
+            let vis = PyStressVisualizer::new(vec![StressTensor::new(
+                value, value, value, 0.0, 0.0, 0.0,
+            )]);
+            let out = vis.compute(0).unwrap();
+            for sigma in out.principal_stresses {
+                assert_close(sigma, value, 1e-12, "principal stress");
+            }
+            for radius in [1, 3, 5].map(|k| out.mohr_circle[k]) {
+                assert_close(radius, 0.0, 1e-12, "Mohr radius");
+            }
+            for k in 0..3 {
+                let v = direction(&out, k);
+                let norm: f64 = v.iter().map(|c| c * c).sum();
+                assert_close(norm, 1.0, 1e-12, "unit direction");
+            }
+        }
+    }
+    #[test]
+    fn test_stress_visualizer_rejects_missing_and_non_finite_tensors() {
+        let vis = PyStressVisualizer::new(vec![
+            StressTensor::new(1.0, 2.0, 3.0, 0.0, 0.0, 0.0),
+            StressTensor::new(f64::NAN, 0.0, 0.0, 0.0, 0.0, 0.0),
+            StressTensor::new(0.0, 0.0, 0.0, f64::INFINITY, 0.0, 0.0),
+        ]);
+        assert!(vis.compute(0).is_some());
+        assert!(vis.compute(1).is_none());
+        assert!(vis.compute(2).is_none());
+        assert!(vis.compute(3).is_none());
+    }
     #[test]
     fn test_streamline_tracer_trace() {
         let nx = 4u32;

@@ -4,10 +4,16 @@
 //! GJK (Gilbert-Johnson-Keerthi) and EPA (Expanding Polytope Algorithm)
 //! for convex shape collision detection using plain `[f64; 3]` arrays.
 
-mod distance;
+use std::collections::BTreeMap;
+
+pub(crate) mod distance;
 #[cfg(test)]
 mod distance_tests;
+#[cfg(test)]
+mod epa_contact_tests;
 pub(crate) mod simplex_closest;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 // ─── Helper math ────────────────────────────────────────────────────────────
 
@@ -139,13 +145,45 @@ pub fn minkowski_support(
     sub3(shape_a.support(dir), shape_b.support(neg3(dir)))
 }
 
+/// A point of the Minkowski difference `A - B` together with the support
+/// points on `A` and `B` it is the difference of.
+///
+/// Keeping the pair lets EPA turn the barycentric coordinates of a face into
+/// contact points on the two shapes: `sum(l_i * a_i)` and `sum(l_i * b_i)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SupportPoint {
+    /// Point of the Minkowski difference: `a - b`.
+    pub w: [f64; 3],
+    /// Support point on shape A.
+    pub a: [f64; 3],
+    /// Support point on shape B.
+    pub b: [f64; 3],
+}
+
+/// Support point of the Minkowski difference of two convex shapes along `dir`,
+/// together with the support points on both shapes.
+pub fn minkowski_support_point(
+    shape_a: &dyn ConvexShape,
+    shape_b: &dyn ConvexShape,
+    dir: [f64; 3],
+) -> SupportPoint {
+    let a = shape_a.support(dir);
+    let b = shape_b.support(neg3(dir));
+    SupportPoint {
+        w: sub3(a, b),
+        a,
+        b,
+    }
+}
+
 // ─── Simplex ─────────────────────────────────────────────────────────────────
 
 /// A simplex of up to 4 points in the Minkowski difference space.
 #[derive(Clone)]
 pub struct Simplex {
-    /// Points of the simplex (at most 4).
-    pub points: Vec<[f64; 3]>,
+    /// Points of the simplex (at most 4), each with its support points on both
+    /// shapes.
+    pub points: Vec<SupportPoint>,
 }
 
 impl Simplex {
@@ -155,7 +193,7 @@ impl Simplex {
         }
     }
 
-    fn push(&mut self, p: [f64; 3]) {
+    fn push(&mut self, p: SupportPoint) {
         self.points.push(p);
     }
 
@@ -180,10 +218,9 @@ pub fn do_simplex(simplex: &mut Simplex, direction: &mut [f64; 3]) -> bool {
 fn handle_line(simplex: &mut Simplex, direction: &mut [f64; 3]) -> bool {
     let b = simplex.points[0];
     let a = simplex.points[1];
-    let ab = sub3(b, a);
-    let ao = neg3(a);
+    let ab = sub3(b.w, a.w);
+    let ao = neg3(a.w);
     if dot3(ab, ao) > 0.0 {
-        *direction = sub3(scale3(ab, dot3(ab, ao) / dot3(ab, ab)), ao);
         // direction = AB × (AO × AB) (triple product)
         let t = cross3(cross3(ab, ao), ab);
         if len3(t) < 1e-12 {
@@ -204,9 +241,9 @@ fn handle_triangle(simplex: &mut Simplex, direction: &mut [f64; 3]) -> bool {
     let b = simplex.points[1];
     let a = simplex.points[2];
 
-    let ab = sub3(b, a);
-    let ac = sub3(c, a);
-    let ao = neg3(a);
+    let ab = sub3(b.w, a.w);
+    let ac = sub3(c.w, a.w);
+    let ao = neg3(a.w);
     let abc = cross3(ab, ac);
 
     // Is origin outside edge AB (away from C)?
@@ -239,10 +276,10 @@ fn handle_tetrahedron(simplex: &mut Simplex, direction: &mut [f64; 3]) -> bool {
     let b = simplex.points[2];
     let a = simplex.points[3];
 
-    let ab = sub3(b, a);
-    let ac = sub3(c, a);
-    let ad = sub3(d, a);
-    let ao = neg3(a);
+    let ab = sub3(b.w, a.w);
+    let ac = sub3(c.w, a.w);
+    let ad = sub3(d.w, a.w);
+    let ao = neg3(a.w);
 
     let abc = cross3(ab, ac);
     let acd = cross3(ac, ad);
@@ -265,29 +302,35 @@ fn handle_tetrahedron(simplex: &mut Simplex, direction: &mut [f64; 3]) -> bool {
 
 // ─── GJK intersection test ───────────────────────────────────────────────────
 
-/// Returns true if the two convex shapes intersect using GJK.
-pub fn gjk_intersect(shape_a: &dyn ConvexShape, shape_b: &dyn ConvexShape) -> bool {
+/// Run the GJK boolean iteration; returns the final simplex when the shapes
+/// intersect and `None` when a separating direction was found.
+fn gjk_simplex(shape_a: &dyn ConvexShape, shape_b: &dyn ConvexShape) -> Option<Simplex> {
     let mut direction = [1.0_f64, 0.0, 0.0];
     let mut simplex = Simplex::new();
 
-    let support = minkowski_support(shape_a, shape_b, direction);
-    simplex.push(support);
-    direction = neg3(support);
+    let first = minkowski_support_point(shape_a, shape_b, direction);
+    simplex.push(first);
+    direction = neg3(first.w);
 
     for _ in 0..64 {
         if len3(direction) < 1e-12 {
-            return true;
+            return Some(simplex);
         }
-        let a = minkowski_support(shape_a, shape_b, direction);
-        if dot3(a, direction) < 0.0 {
-            return false;
+        let next = minkowski_support_point(shape_a, shape_b, direction);
+        if dot3(next.w, direction) < 0.0 {
+            return None;
         }
-        simplex.push(a);
+        simplex.push(next);
         if do_simplex(&mut simplex, &mut direction) {
-            return true;
+            return Some(simplex);
         }
     }
-    false
+    None
+}
+
+/// Returns true if the two convex shapes intersect using GJK.
+pub fn gjk_intersect(shape_a: &dyn ConvexShape, shape_b: &dyn ConvexShape) -> bool {
+    gjk_simplex(shape_a, shape_b).is_some()
 }
 
 /// Euclidean distance between two convex shapes.
@@ -302,47 +345,78 @@ pub fn gjk_intersect(shape_a: &dyn ConvexShape, shape_b: &dyn ConvexShape) -> bo
 /// [`gjk_distance_with_witnesses`] to also obtain the closest points.
 pub fn gjk_distance(shape_a: &dyn ConvexShape, shape_b: &dyn ConvexShape) -> Option<f64> {
     match distance::solve(shape_a, shape_b) {
-        distance::DistanceOutcome::Overlapping => None,
+        distance::DistanceOutcome::Overlapping { .. } => None,
         distance::DistanceOutcome::Separated { distance, .. } => Some(distance),
     }
 }
 
 // ─── EPA ─────────────────────────────────────────────────────────────────────
 
+/// Hard cap on the number of EPA expansion steps.
+const EPA_MAX_ITERATIONS: usize = 128;
+
+/// EPA stops once the support point along the normal of the nearest face lies
+/// within this fraction of the polytope's extent beyond the face plane.
+const EPA_TOLERANCE: f64 = 1e-9;
+
+/// A support point must lie beyond a face plane by more than this fraction of
+/// the polytope's extent for the face to count as visible from it.
+const EPA_VISIBILITY: f64 = 1e-10;
+
 /// A face of the polytope used in EPA.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct EpaFace {
     /// First vertex.
-    pub a: [f64; 3],
+    pub a: SupportPoint,
     /// Second vertex.
-    pub b: [f64; 3],
+    pub b: SupportPoint,
     /// Third vertex.
-    pub c: [f64; 3],
-    /// Outward-pointing unit normal.
+    pub c: SupportPoint,
+    /// Outward-pointing unit normal (away from the interior of the polytope).
     pub normal: [f64; 3],
-    /// Distance from origin to the face plane.
+    /// Signed distance from the origin to the face plane along `normal`. It is
+    /// negative while the origin is still outside the polytope.
     pub dist: f64,
 }
 
 impl EpaFace {
-    fn new(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> Self {
-        let ab = sub3(b, a);
-        let ac = sub3(c, a);
+    /// Face through three vertices whose outward side is the one that faces away
+    /// from `interior`, a point inside the polytope. The vertices are reordered
+    /// so that they wind counter-clockwise seen from outside.
+    ///
+    /// Returns `None` for a degenerate (zero-area) triangle.
+    fn oriented(
+        a: SupportPoint,
+        b: SupportPoint,
+        c: SupportPoint,
+        interior: [f64; 3],
+    ) -> Option<Self> {
+        let ab = sub3(b.w, a.w);
+        let ac = sub3(c.w, a.w);
         let n = cross3(ab, ac);
-        let mut normal = normalize3(n);
-        let mut dist = dot3(normal, a);
-        // Ensure normal points away from origin (positive dist)
-        if dist < 0.0 {
-            normal = neg3(normal);
-            dist = -dist;
+        let length = len3(n);
+        let reach = dot3(ab, ab).max(dot3(ac, ac));
+        if !length.is_finite() || length <= 1e-13 * reach {
+            return None;
         }
-        Self {
+        let mut normal = scale3(n, 1.0 / length);
+        let (mut b, mut c) = (b, c);
+        if dot3(normal, sub3(interior, a.w)) > 0.0 {
+            normal = neg3(normal);
+            std::mem::swap(&mut b, &mut c);
+        }
+        Some(Self {
             a,
             b,
             c,
             normal,
-            dist,
-        }
+            dist: dot3(normal, a.w),
+        })
+    }
+
+    /// The three vertices of the face.
+    fn corners(&self) -> [SupportPoint; 3] {
+        [self.a, self.b, self.c]
     }
 }
 
@@ -350,268 +424,372 @@ impl EpaFace {
 pub struct EpaResult {
     /// Penetration depth (positive means overlap).
     pub depth: f64,
-    /// Collision normal pointing from shape B to shape A.
+    /// Collision normal pointing from shape B to shape A: the direction in which
+    /// shape A has to move to separate from shape B.
     pub normal: [f64; 3],
-    /// Contact point on shape A.
+    /// Contact point on shape A: its deepest point inside shape B.
     pub contact_a: [f64; 3],
-    /// Contact point on shape B.
+    /// Contact point on shape B: its deepest point inside shape A.
+    ///
+    /// `contact_a - contact_b == -normal * depth`.
     pub contact_b: [f64; 3],
 }
 
-fn barycentric_contact(
-    shape_a: &dyn ConvexShape,
-    shape_b: &dyn ConvexShape,
-    face: &EpaFace,
-) -> ([f64; 3], [f64; 3]) {
-    // Use barycentric coords of origin projection onto face
-    let n = face.normal;
-    let proj = scale3(n, face.dist);
+/// Outcome of [`expand_polytope`]: the nearest facet of the Minkowski difference
+/// `A - B`.
+pub(crate) struct Penetration {
+    /// Penetration depth: the distance of the nearest facet from the origin.
+    pub(crate) depth: f64,
+    /// Outward unit normal of that facet, from shape A toward shape B.
+    pub(crate) normal: [f64; 3],
+    /// Contact point on shape A: its deepest point inside shape B.
+    pub(crate) contact_a: [f64; 3],
+    /// Contact point on shape B: its deepest point inside shape A.
+    pub(crate) contact_b: [f64; 3],
+    /// Number of expansion steps performed.
+    pub(crate) iterations: usize,
+}
 
-    let v0 = sub3(face.b, face.a);
-    let v1 = sub3(face.c, face.a);
-    let v2 = sub3(proj, face.a);
+/// Turn the polytope's nearest boundary region into a [`Penetration`].
+///
+/// Several faces can lie in the nearest plane (the triangles of one facet of a
+/// polyhedral Minkowski difference) and only one of them contains the foot of
+/// the perpendicular from the origin. Among all faces whose plane is within a
+/// relative `1e-9` of the nearest one, the face whose triangle is closest to
+/// the origin is used. The contact points are the blends of the support points
+/// of its vertices with the barycentric weights of the point of the triangle
+/// nearest to the origin; that is the foot `n * dist` whenever the foot lies in
+/// the triangle, which makes `contact_a - contact_b` equal `normal * depth`
+/// exactly.
+///
+/// Returns `None` when `faces` is empty or the origin lies outside the
+/// polytope by more than `tolerance`, which proves that the shapes are
+/// disjoint.
+fn penetration(faces: &[EpaFace], tolerance: f64, iterations: usize) -> Option<Penetration> {
+    let nearest_plane = faces.iter().map(|f| f.dist).fold(f64::INFINITY, f64::min);
+    if !nearest_plane.is_finite() || nearest_plane < -tolerance {
+        return None;
+    }
+    let slack = 1e-9 * nearest_plane.abs().max(1.0);
+    let mut best: Option<(f64, &EpaFace, simplex_closest::SimplexClosest)> = None;
+    for face in faces.iter().filter(|f| f.dist <= nearest_plane + slack) {
+        let corners = face.corners();
+        let closest =
+            simplex_closest::closest_point_to_origin(&[corners[0].w, corners[1].w, corners[2].w]);
+        let reach = dot3(closest.point, closest.point);
+        if best
+            .as_ref()
+            .is_none_or(|(smallest, _, _)| reach < *smallest)
+        {
+            best = Some((reach, face, closest));
+        }
+    }
+    let (_, face, closest) = best?;
+    let mut contact_a = [0.0; 3];
+    let mut contact_b = [0.0; 3];
+    for (corner, &weight) in face.corners().iter().zip(closest.weights.iter()) {
+        contact_a = add3(contact_a, scale3(corner.a, weight));
+        contact_b = add3(contact_b, scale3(corner.b, weight));
+    }
+    Some(Penetration {
+        depth: face.dist.max(0.0),
+        normal: face.normal,
+        contact_a,
+        contact_b,
+        iterations,
+    })
+}
 
-    let d00 = dot3(v0, v0);
-    let d01 = dot3(v0, v1);
-    let d11 = dot3(v1, v1);
-    let d20 = dot3(v2, v0);
-    let d21 = dot3(v2, v1);
-    let denom = d00 * d11 - d01 * d01;
+/// Key of an undirected edge: the bit patterns of its end points, ordered.
+type EdgeKey = ([u64; 3], [u64; 3]);
 
-    let (u, v, w) = if denom.abs() < 1e-12 {
-        (1.0_f64 / 3.0, 1.0_f64 / 3.0, 1.0_f64 / 3.0)
-    } else {
-        let v_coord = (d11 * d20 - d01 * d21) / denom;
-        let w_coord = (d00 * d21 - d01 * d20) / denom;
-        let u_coord = 1.0 - v_coord - w_coord;
-        (u_coord, v_coord, w_coord)
-    };
+fn edge_key(p: &SupportPoint, q: &SupportPoint) -> EdgeKey {
+    let bits = |v: [f64; 3]| [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+    let (kp, kq) = (bits(p.w), bits(q.w));
+    if kp <= kq { (kp, kq) } else { (kq, kp) }
+}
 
-    // Reconstruct support points from Minkowski difference vertices
-    // face.a = sa_a - sb_a, face.b = sa_b - sb_b, face.c = sa_c - sb_c
-    // We need to recover original support points; store them as (sa, sb) pairs
-    // Since we only have the Minkowski difference points, approximate with
-    // closest support point in face normal direction
-    let ca = add3(
-        add3(
-            scale3(shape_a.support(face.a), u),
-            scale3(shape_a.support(face.b), v),
-        ),
-        scale3(shape_a.support(face.c), w),
+/// Extent of a set of Minkowski-difference points: the largest distance from
+/// the origin, but at least one. Tolerances of the expansion are fractions of it.
+pub(crate) fn seed_scale(points: &[SupportPoint]) -> f64 {
+    points.iter().map(|p| len3(p.w)).fold(1.0_f64, f64::max)
+}
+
+/// Grow the polytope `seed` of the Minkowski difference `A - B` until its
+/// nearest facet is a facet of `A - B`, and report that facet as a
+/// [`Penetration`].
+///
+/// `support(d)` returns the point of `A - B` furthest along `d` together with
+/// the support points on `A` and `B`. `seed` must hold four non-coplanar points
+/// of `A - B`; it does not have to enclose the origin: faces are oriented
+/// against the centroid of the seed, so the polytope first grows toward the
+/// origin and then converges on the nearest facet.
+///
+/// Every step takes the face nearest to the origin (the most negative signed
+/// distance first), asks for the support point along its normal, removes all
+/// faces that can see that point, and joins the point to the horizon (the
+/// edges of exactly one removed face). The iteration ends when the support point
+/// lies within `tolerance` beyond the nearest face (never less than `1e-13`
+/// of the seed extent, which is the rounding noise of that test) or after
+/// `max_iterations` steps, in which case the nearest facet reached so far is
+/// reported and its depth is a lower bound of the true depth.
+///
+/// Returns `None` when the seed is flat, or when the polytope cannot be grown
+/// around the origin, which proves that the shapes do not overlap.
+pub(crate) fn expand_polytope(
+    seed: [SupportPoint; 4],
+    support: &dyn Fn([f64; 3]) -> SupportPoint,
+    tolerance: f64,
+    max_iterations: usize,
+) -> Option<Penetration> {
+    let scale = seed_scale(&seed);
+    let interior = scale3(
+        add3(add3(seed[0].w, seed[1].w), add3(seed[2].w, seed[3].w)),
+        0.25,
     );
-    let cb = add3(
-        add3(
-            scale3(shape_b.support(neg3(face.a)), u),
-            scale3(shape_b.support(neg3(face.b)), v),
-        ),
-        scale3(shape_b.support(neg3(face.c)), w),
-    );
-    (ca, cb)
+    let volume = dot3(
+        cross3(sub3(seed[1].w, seed[0].w), sub3(seed[2].w, seed[0].w)),
+        sub3(seed[3].w, seed[0].w),
+    )
+    .abs();
+    if volume.is_nan() || volume <= 1e-12 * scale * scale * scale {
+        return None;
+    }
+
+    let mut faces: Vec<EpaFace> = Vec::with_capacity(32);
+    for [i, j, k] in [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]] {
+        faces.push(EpaFace::oriented(seed[i], seed[j], seed[k], interior)?);
+    }
+
+    let tolerance = tolerance.max(1e-13 * scale);
+    let margin = EPA_VISIBILITY * scale;
+    let mut iterations = 0;
+    while iterations < max_iterations {
+        let nearest = faces
+            .iter()
+            .min_by(|x, y| x.dist.total_cmp(&y.dist))?
+            .clone();
+        let point = support(nearest.normal);
+        if dot3(point.w, nearest.normal) - nearest.dist < tolerance {
+            break;
+        }
+        iterations += 1;
+
+        // Remove the faces that can see the new point; the horizon is made of the
+        // edges that belong to exactly one of them.
+        let (visible, kept): (Vec<EpaFace>, Vec<EpaFace>) = faces
+            .into_iter()
+            .partition(|f| dot3(f.normal, sub3(point.w, f.a.w)) > margin);
+        faces = kept;
+        if visible.is_empty() {
+            // The point is beyond the nearest plane by less than the visibility
+            // margin: the polytope cannot grow there any more.
+            break;
+        }
+        let mut edges: BTreeMap<EdgeKey, (usize, SupportPoint, SupportPoint)> = BTreeMap::new();
+        for face in &visible {
+            for (p, q) in [(face.a, face.b), (face.b, face.c), (face.c, face.a)] {
+                edges.entry(edge_key(&p, &q)).or_insert((0, p, q)).0 += 1;
+            }
+        }
+        for (uses, p, q) in edges.into_values() {
+            if uses == 1
+                && let Some(face) = EpaFace::oriented(p, q, point, interior)
+            {
+                faces.push(face);
+            }
+        }
+    }
+    penetration(&faces, tolerance, iterations)
 }
 
 /// Expand polytope algorithm: finds penetration depth given initial simplex from GJK.
+///
+/// The simplex must hold four non-coplanar points of the Minkowski difference
+/// `A - B` (a degenerate GJK simplex can be completed with the support points
+/// along fixed directions, as [`gjk_epa_contact`] does). It does not have to
+/// enclose the origin: faces are oriented against the centroid of the seed, so
+/// the polytope first grows toward the origin and then converges on the
+/// nearest facet.
+///
+/// Every step takes the face nearest to the origin, asks for the support point
+/// along its normal, removes all faces that can see that point, and joins the
+/// point to the horizon (the edges of exactly one removed face). The iteration
+/// ends when the support point lies within a tolerance of the nearest face.
+///
+/// The returned normal points from shape B to shape A and the contact points
+/// are the deepest points of each shape inside the other (see [`EpaResult`]).
+///
+/// Returns `None` when the simplex has fewer than four points, is flat, or
+/// when the polytope cannot be grown around the origin, i.e. the shapes do not
+/// overlap.
 pub fn epa(
     shape_a: &dyn ConvexShape,
     shape_b: &dyn ConvexShape,
     simplex: Simplex,
 ) -> Option<EpaResult> {
-    if simplex.points.len() < 4 {
-        return None;
-    }
-
-    let mut faces: Vec<EpaFace> = vec![
-        EpaFace::new(simplex.points[0], simplex.points[1], simplex.points[2]),
-        EpaFace::new(simplex.points[0], simplex.points[1], simplex.points[3]),
-        EpaFace::new(simplex.points[0], simplex.points[2], simplex.points[3]),
-        EpaFace::new(simplex.points[1], simplex.points[2], simplex.points[3]),
-    ];
-
-    for _ in 0..64 {
-        // Find face closest to origin
-        let (min_idx, min_face) = {
-            let mut best_idx = 0;
-            let mut best_dist = f64::MAX;
-            for (i, face) in faces.iter().enumerate() {
-                if face.dist < best_dist {
-                    best_dist = face.dist;
-                    best_idx = i;
-                }
-            }
-            (best_idx, faces[best_idx].clone())
-        };
-
-        let support = minkowski_support(shape_a, shape_b, min_face.normal);
-        let d = dot3(support, min_face.normal);
-
-        if (d - min_face.dist).abs() < 1e-6 {
-            // Converged
-            let (contact_a, contact_b) = barycentric_contact(shape_a, shape_b, &min_face);
-            return Some(EpaResult {
-                depth: min_face.dist,
-                normal: min_face.normal,
-                contact_a,
-                contact_b,
-            });
-        }
-
-        // Remove faces that can "see" the new support point and collect silhouette edges
-        let mut silhouette: Vec<([f64; 3], [f64; 3])> = Vec::new();
-        let new_point = support;
-
-        let mut i = 0;
-        while i < faces.len() {
-            if dot3(faces[i].normal, sub3(new_point, faces[i].a)) > 0.0 {
-                let f = faces.remove(i);
-                // Collect edges (in reverse winding to keep silhouette consistent)
-                for edge in [(f.a, f.b), (f.b, f.c), (f.c, f.a)] {
-                    // Remove shared edges (horizon silhouette)
-                    let shared = silhouette
-                        .iter()
-                        .position(|&(x, y)| x == edge.1 && y == edge.0);
-                    if let Some(pos) = shared {
-                        silhouette.remove(pos);
-                    } else {
-                        silhouette.push(edge);
-                    }
-                }
-            } else {
-                i += 1;
-            }
-        }
-
-        // Re-expand with new faces from silhouette
-        for (ea, eb) in silhouette {
-            faces.push(EpaFace::new(ea, eb, new_point));
-        }
-
-        // Safety: remove the face we started with if it's still there (re-inserted version covers it)
-        let _ = min_idx; // already removed or updated above
-    }
-
-    // Return best face found so far
-    let best = faces.iter().min_by(|a, b| {
-        a.dist
-            .partial_cmp(&b.dist)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    })?;
-    let (contact_a, contact_b) = barycentric_contact(shape_a, shape_b, best);
+    let seed = <[SupportPoint; 4]>::try_from(simplex.points.get(..4)?).ok()?;
+    let oracle = |direction: [f64; 3]| minkowski_support_point(shape_a, shape_b, direction);
+    let found = expand_polytope(
+        seed,
+        &oracle,
+        EPA_TOLERANCE * seed_scale(&seed),
+        EPA_MAX_ITERATIONS,
+    )?;
     Some(EpaResult {
-        depth: best.dist,
-        normal: best.normal,
-        contact_a,
-        contact_b,
+        depth: found.depth,
+        normal: neg3(found.normal),
+        contact_a: found.contact_a,
+        contact_b: found.contact_b,
     })
 }
 
 // ─── Full GJK + EPA pipeline ─────────────────────────────────────────────────
 
 /// Run GJK to detect intersection, then EPA to find penetration depth and contact.
-/// Returns `None` if the shapes are not intersecting.
+/// Returns `None` if the shapes are not intersecting, or if their Minkowski
+/// difference is flat (for example two zero-thickness shapes in one plane), which
+/// leaves no volume to penetrate.
+///
+/// The contact points `contact_a` and `contact_b` are the deepest points of each
+/// shape inside the other: blends of the support points that built the nearest
+/// facet of the Minkowski difference, so `contact_a - contact_b` is the
+/// penetration vector `-normal * depth`.
 pub fn gjk_epa_contact(shape_a: &dyn ConvexShape, shape_b: &dyn ConvexShape) -> Option<EpaResult> {
-    // Run GJK and collect the final simplex
-    let mut direction = [1.0_f64, 0.0, 0.0];
-    let mut simplex = Simplex::new();
-
-    let first_support = minkowski_support(shape_a, shape_b, direction);
-    simplex.push(first_support);
-    direction = neg3(first_support);
-
-    let mut intersects = false;
-    for _ in 0..64 {
-        if len3(direction) < 1e-12 {
-            intersects = true;
-            break;
-        }
-        let a = minkowski_support(shape_a, shape_b, direction);
-        if dot3(a, direction) < 0.0 {
-            return None;
-        }
-        simplex.push(a);
-        if do_simplex(&mut simplex, &mut direction) {
-            intersects = true;
-            break;
-        }
-    }
-
-    if !intersects {
-        return None;
-    }
-
-    // Ensure we have a tetrahedron for EPA
+    let simplex = gjk_simplex(shape_a, shape_b)?;
     let simplex = ensure_tetrahedron(shape_a, shape_b, simplex);
     epa(shape_a, shape_b, simplex)
 }
 
+/// Directions along which a degenerate GJK simplex is completed: the six axes
+/// and the eight cube diagonals.
+const COMPLETION_DIRECTIONS: [[f64; 3]; 14] = [
+    [1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 0.0, -1.0],
+    [1.0, 1.0, 1.0],
+    [-1.0, 1.0, 1.0],
+    [1.0, -1.0, 1.0],
+    [1.0, 1.0, -1.0],
+    [-1.0, -1.0, 1.0],
+    [-1.0, 1.0, -1.0],
+    [1.0, -1.0, -1.0],
+    [-1.0, -1.0, -1.0],
+];
+
+/// Complete the GJK simplex to four non-coplanar points of the Minkowski
+/// difference, for EPA.
+///
+/// GJK can stop with fewer than four points (the origin lies on a point,
+/// segment or triangle of the simplex) or with repeated points. The distinct,
+/// affinely independent points of `known` are kept and the remaining ones are
+/// chosen among the support points along [`COMPLETION_DIRECTIONS`]: the
+/// farthest from the first point, then the farthest from the line through the
+/// two, then the one that rises the most above their plane (also trying the
+/// support points along the plane normal). Every added point is a support point
+/// of the Minkowski difference, so the result lies inside it. If the
+/// Minkowski difference is itself flat there is no fourth point and the
+/// result stays short, which [`expand_polytope`] callers report as no
+/// penetration.
+pub(crate) fn complete_tetrahedron(
+    known: &[SupportPoint],
+    support: &dyn Fn([f64; 3]) -> SupportPoint,
+) -> Vec<SupportPoint> {
+    let scale = seed_scale(known);
+    let epsilon = 1e-9 * scale;
+
+    // Affinely independent subset of the points GJK found.
+    let mut basis: Vec<SupportPoint> = Vec::with_capacity(4);
+    for &p in known {
+        let independent = match basis.len() {
+            0 => true,
+            1 => len3(sub3(p.w, basis[0].w)) > epsilon,
+            2 => {
+                len3(cross3(sub3(basis[1].w, basis[0].w), sub3(p.w, basis[0].w))) > epsilon * scale
+            }
+            3 => {
+                let normal = cross3(sub3(basis[1].w, basis[0].w), sub3(basis[2].w, basis[0].w));
+                dot3(normal, sub3(p.w, basis[0].w)).abs() > epsilon * scale * scale
+            }
+            _ => false,
+        };
+        if independent {
+            basis.push(p);
+        }
+    }
+    if basis.len() == 4 {
+        return basis;
+    }
+
+    let probes: Vec<SupportPoint> = COMPLETION_DIRECTIONS
+        .iter()
+        .map(|&d| support(normalize3(d)))
+        .collect();
+    let farthest = |measure: &dyn Fn(&SupportPoint) -> f64| {
+        probes
+            .iter()
+            .copied()
+            .map(|p| (measure(&p), p))
+            .filter(|(m, _)| m.is_finite())
+            .max_by(|x, y| x.0.total_cmp(&y.0))
+    };
+
+    if basis.is_empty()
+        && let Some(&first) = probes.first()
+    {
+        basis.push(first);
+    }
+    if basis.len() == 1 {
+        let origin = basis[0].w;
+        match farthest(&|p| len3(sub3(p.w, origin))) {
+            Some((reach, p)) if reach > epsilon => basis.push(p),
+            _ => return basis,
+        }
+    }
+    if basis.len() == 2 {
+        let (origin, edge) = (basis[0].w, sub3(basis[1].w, basis[0].w));
+        match farthest(&|p| len3(cross3(edge, sub3(p.w, origin)))) {
+            Some((reach, p)) if reach > epsilon * scale => basis.push(p),
+            _ => return basis,
+        }
+    }
+    if basis.len() == 3 {
+        let origin = basis[0].w;
+        let normal = normalize3(cross3(
+            sub3(basis[1].w, basis[0].w),
+            sub3(basis[2].w, basis[0].w),
+        ));
+        let mut candidates = probes.clone();
+        candidates.push(support(normal));
+        candidates.push(support(neg3(normal)));
+        let best = candidates
+            .into_iter()
+            .map(|p| (dot3(normal, sub3(p.w, origin)).abs(), p))
+            .filter(|(m, _)| m.is_finite())
+            .max_by(|x, y| x.0.total_cmp(&y.0));
+        if let Some((rise, p)) = best
+            && rise > epsilon
+        {
+            basis.push(p);
+        }
+    }
+    basis
+}
+
+/// Complete a GJK simplex to a tetrahedron for [`epa`]; see
+/// [`complete_tetrahedron`].
 fn ensure_tetrahedron(
     shape_a: &dyn ConvexShape,
     shape_b: &dyn ConvexShape,
-    mut simplex: Simplex,
+    simplex: Simplex,
 ) -> Simplex {
-    let dirs = [
-        [1.0_f64, 0.0, 0.0],
-        [-1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [0.0, -1.0, 0.0],
-        [0.0, 0.0, 1.0],
-        [0.0, 0.0, -1.0],
-    ];
-
-    // Fill up to 3 unique points
-    for dir in dirs {
-        if simplex.len() >= 3 {
-            break;
-        }
-        let p = minkowski_support(shape_a, shape_b, dir);
-        let is_new = simplex.points.iter().all(|&q| len3(sub3(p, q)) > 1e-10);
-        if is_new {
-            simplex.push(p);
-        }
+    let oracle = |direction: [f64; 3]| minkowski_support_point(shape_a, shape_b, direction);
+    Simplex {
+        points: complete_tetrahedron(&simplex.points, &oracle),
     }
-
-    if simplex.len() < 3 {
-        return simplex;
-    }
-
-    // Check if we already have a valid (non-degenerate) tetrahedron
-    if simplex.len() >= 4 {
-        let a = simplex.points[0];
-        let b = simplex.points[1];
-        let c = simplex.points[2];
-        let d = simplex.points[3];
-        let ab = sub3(b, a);
-        let ac = sub3(c, a);
-        let normal = cross3(ab, ac);
-        let vol = dot3(normal, sub3(d, a));
-        if vol.abs() > 1e-10 {
-            return simplex; // already a valid tetrahedron
-        }
-        // Degenerate: drop the 4th point and find a better one
-        simplex.points.truncate(3);
-    }
-
-    // For the 4th point, we need it to be non-coplanar with the first 3
-    let a = simplex.points[0];
-    let b = simplex.points[1];
-    let c = simplex.points[2];
-    let ab = sub3(b, a);
-    let ac = sub3(c, a);
-    let normal = cross3(ab, ac);
-
-    for dir in dirs {
-        let p = minkowski_support(shape_a, shape_b, dir);
-        let is_new = simplex.points.iter().all(|&q| len3(sub3(p, q)) > 1e-10);
-        if !is_new {
-            continue;
-        }
-        // Check non-coplanar: dot(normal, p-a) != 0
-        let vol = dot3(normal, sub3(p, a));
-        if vol.abs() > 1e-10 {
-            simplex.push(p);
-            break;
-        }
-    }
-
-    simplex
 }
 
 // ─── GJK Distance query (improved) ───────────────────────────────────────────
@@ -651,11 +829,12 @@ pub fn gjk_distance_with_witnesses(
     shape_b: &dyn ConvexShape,
 ) -> Option<(f64, [f64; 3], [f64; 3])> {
     match distance::solve(shape_a, shape_b) {
-        distance::DistanceOutcome::Overlapping => None,
+        distance::DistanceOutcome::Overlapping { .. } => None,
         distance::DistanceOutcome::Separated {
             distance,
             point_a,
             point_b,
+            ..
         } => Some((distance, point_a, point_b)),
     }
 }
@@ -790,7 +969,7 @@ impl ConvexShape for GjkConvexHull {
     }
 }
 
-/// A cylinder (finite) approximated as a convex hull of 16 sample points.
+/// A finite right circular cylinder with its exact support function.
 pub struct GjkCylinder {
     /// Center of the bottom cap.
     pub base: [f64; 3],
@@ -800,6 +979,21 @@ pub struct GjkCylinder {
     pub height: f64,
     /// Radius of the cylinder.
     pub radius: f64,
+}
+
+/// A unit vector perpendicular to the unit vector `axis`.
+///
+/// The cross product with the coordinate axis least aligned with `axis` is well
+/// conditioned: its length is at least `sqrt(2/3)`.
+fn perpendicular_to(axis: [f64; 3]) -> [f64; 3] {
+    let helper = if axis[0].abs() <= axis[1].abs() && axis[0].abs() <= axis[2].abs() {
+        [1.0, 0.0, 0.0]
+    } else if axis[1].abs() <= axis[2].abs() {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    normalize3(cross3(axis, helper))
 }
 
 impl ConvexShape for GjkCylinder {
@@ -813,7 +1007,11 @@ impl ConvexShape for GjkCylinder {
         let radial_pt = if radial_len > 1e-12 {
             scale3(radial, self.radius / radial_len)
         } else {
-            [self.radius, 0.0, 0.0]
+            // The direction runs along the axis, so every rim point of the cap
+            // supports it. A fixed offset such as `(radius, 0, 0)` is a rim
+            // point only when the axis is perpendicular to x; take a point
+            // perpendicular to the axis instead.
+            scale3(perpendicular_to(axis), self.radius)
         };
         // Choose top or bottom cap
         let cap_offset = if d_axial >= 0.0 {
@@ -1037,9 +1235,9 @@ mod tests {
         let a = sphere(0.0, 0.0, 0.0, 1.0);
         let b = sphere(1.0, 0.0, 0.0, 1.0);
         assert!(gjk_intersect(&a, &b), "spheres must intersect");
-        if let Some(r) = gjk_epa_contact(&a, &b) {
-            assert!(r.depth >= 0.0, "depth must be non-negative");
-        }
+        // Radii 1 + 1 minus the centre distance 1.
+        let r = gjk_epa_contact(&a, &b).expect("overlapping spheres have a contact");
+        assert!((r.depth - 1.0).abs() < 1e-6, "depth {}", r.depth);
     }
 
     #[test]
@@ -1054,20 +1252,18 @@ mod tests {
     fn test_epa_box_box_depth() {
         let a = aabb(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
         let b = aabb(1.5, 0.0, 0.0, 1.0, 1.0, 1.0);
-        let result = gjk_epa_contact(&a, &b);
-        assert!(result.is_some());
-        let r = result.unwrap();
-        assert!(r.depth > 0.0);
+        let r = gjk_epa_contact(&a, &b).expect("overlapping boxes have a contact");
+        // Half extents 1 + 1 minus the centre distance 1.5.
+        assert!((r.depth - 0.5).abs() < 1e-9, "depth {}", r.depth);
     }
 
     #[test]
     fn test_epa_normal_unit_length() {
         let a = sphere(0.0, 0.0, 0.0, 1.0);
         let b = sphere(1.5, 0.0, 0.0, 1.0);
-        if let Some(r) = gjk_epa_contact(&a, &b) {
-            let nl = len3(r.normal);
-            assert!((nl - 1.0).abs() < 1e-6, "normal length={}", nl);
-        }
+        let r = gjk_epa_contact(&a, &b).expect("overlapping spheres have a contact");
+        let nl = len3(r.normal);
+        assert!((nl - 1.0).abs() < 1e-6, "normal length={}", nl);
     }
 
     // ── minkowski_support ────────────────────────────────────────────────────
@@ -1322,6 +1518,84 @@ mod tests {
         };
         let s = sphere(10.0, 0.5, 0.0, 0.5);
         assert!(!gjk_intersect(&cyl, &s));
+    }
+
+    #[test]
+    fn test_cylinder_support_along_the_axis_is_a_point_of_the_cylinder() {
+        // A direction parallel to the axis has no radial part: every rim point of
+        // the cap supports it, but the point returned must belong to the cylinder.
+        // The old fallback `(radius, 0, 0)` lies beyond the cap unless the axis is
+        // perpendicular to x.
+        let (height, radius) = (3.0, 0.75);
+        for axis in [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 2.0, -2.0],
+            [-0.3, 0.1, 0.9],
+        ] {
+            let unit = normalize3(axis);
+            let cyl = GjkCylinder {
+                base: [0.5, -1.0, 2.0],
+                axis: unit,
+                height,
+                radius,
+            };
+            for sign in [1.0, -1.0] {
+                let p = cyl.support(scale3(unit, sign));
+                let relative = sub3(p, cyl.base);
+                let along = dot3(relative, unit);
+                let rim = len3(sub3(relative, scale3(unit, along)));
+                let cap = if sign > 0.0 { height } else { 0.0 };
+                assert!(
+                    (along - cap).abs() < 1e-12,
+                    "axis {axis:?} sign {sign}: axial position {along}, cap at {cap}"
+                );
+                assert!(
+                    (rim - radius).abs() < 1e-12,
+                    "axis {axis:?} sign {sign}: distance from the axis {rim}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_cylinder_along_x_is_not_reported_in_contact_beyond_its_end_cap() {
+        // The cylinder fills x in [0, 2] around the x axis. GJK starts with the
+        // direction +x, which is parallel to the axis: the support point beyond the
+        // cap made a sphere 1.0 away look like it touched the cylinder.
+        let cyl = GjkCylinder {
+            base: [0.0; 3],
+            axis: [1.0, 0.0, 0.0],
+            height: 2.0,
+            radius: 1.0,
+        };
+        let apart = sphere(3.5, 0.0, 0.0, 0.5);
+        assert!(!gjk_intersect(&cyl, &apart));
+        assert!(gjk_epa_contact(&cyl, &apart).is_none());
+        let d = gjk_distance(&cyl, &apart).expect("the shapes are apart");
+        assert!((d - 1.0).abs() < 1e-6, "distance {d}");
+        let (dist, on_cylinder, on_sphere) =
+            gjk_distance_with_witnesses(&cyl, &apart).expect("the shapes are apart");
+        assert!((dist - 1.0).abs() < 1e-6);
+        assert!((on_cylinder[0] - 2.0).abs() < 1e-6, "{on_cylinder:?}");
+        assert!((on_sphere[0] - 3.0).abs() < 1e-6, "{on_sphere:?}");
+
+        // Overlapping the end cap by 0.2 gives a depth of exactly 0.2 along -x.
+        let overlapping = sphere(2.3, 0.0, 0.0, 0.5);
+        assert!(gjk_intersect(&cyl, &overlapping));
+        let contact = gjk_epa_contact(&cyl, &overlapping).expect("the shapes overlap");
+        assert!(
+            (contact.depth - 0.2).abs() < 1e-6,
+            "depth {}",
+            contact.depth
+        );
+        assert!(
+            (contact.normal[0] + 1.0).abs() < 1e-6,
+            "{:?}",
+            contact.normal
+        );
     }
 
     // ── epa_face_count_lower_bound ────────────────────────────────────────────

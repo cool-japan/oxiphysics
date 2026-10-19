@@ -9,8 +9,14 @@
 
 use std::collections::HashMap;
 
+use crate::subdivision::{QuadMesh, catmull_clark_subdivision};
 use crate::triangle_mesh::TriangleMesh;
 use oxiphysics_core::math::Vec3;
+
+mod edge_flip;
+
+use edge_flip::flip_for_valence;
+pub use edge_flip::{delaunay_edge_flip, flip_edges_for_quality};
 
 // ---------------------------------------------------------------------------
 // Vector helpers
@@ -136,7 +142,7 @@ pub fn isotropic_remesh(mesh: &TriangleMesh, target_len: f64, iterations: usize)
         collapse_short_edges(&mut verts, &mut tris, low);
 
         // 3. Flip edges toward valence-6
-        flip_for_valence(&mut tris, verts.len());
+        flip_for_valence(&mut tris, &verts, |_, _| false);
 
         // 4. Laplacian smooth (tangential)
         laplacian_smooth_surface(&mut verts, &tris);
@@ -252,69 +258,6 @@ fn collapse_short_edges(verts: &mut [[f64; 3]], tris: &mut Vec<[usize; 3]>, min_
         .collect();
 
     *tris = new_tris;
-}
-
-// ---------------------------------------------------------------------------
-// Flip edges for valence
-// ---------------------------------------------------------------------------
-
-fn flip_for_valence(tris: &mut [[usize; 3]], n_verts: usize) {
-    // Compute vertex valence
-    let mut valence = vec![0usize; n_verts];
-    for tri in tris.iter() {
-        for &vi in tri.iter() {
-            if vi < n_verts {
-                valence[vi] += 1;
-            }
-        }
-    }
-
-    // Build edge → (tri_idx, opposite_vertex) map
-    let mut edge_map: HashMap<(usize, usize), Vec<(usize, usize)>> = HashMap::new();
-    for (ti, tri) in tris.iter().enumerate() {
-        for k in 0..3 {
-            let a = tri[k];
-            let b = tri[(k + 1) % 3];
-            let opp = tri[(k + 2) % 3];
-            let key = (a.min(b), a.max(b));
-            edge_map.entry(key).or_default().push((ti, opp));
-        }
-    }
-
-    for ((ea, eb), entries) in &edge_map {
-        if entries.len() != 2 {
-            continue;
-        }
-        let (ti, oc) = entries[0];
-        let (tj, od) = entries[1];
-
-        // Current deviation from ideal valence (6 for interior)
-        let dev_before = valence_deviation(valence[*ea], 6)
-            + valence_deviation(valence[*eb], 6)
-            + valence_deviation(valence[oc], 6)
-            + valence_deviation(valence[od], 6);
-
-        // After flip: edge changes to (oc, od)
-        let dev_after = valence_deviation(valence[*ea] - 1, 6)
-            + valence_deviation(valence[*eb] - 1, 6)
-            + valence_deviation(valence[oc] + 1, 6)
-            + valence_deviation(valence[od] + 1, 6);
-
-        if dev_after < dev_before {
-            tris[ti] = [*ea, oc, od];
-            tris[tj] = [*eb, od, oc];
-            // Update valence
-            valence[*ea] -= 1;
-            valence[*eb] -= 1;
-            valence[oc] += 1;
-            valence[od] += 1;
-        }
-    }
-}
-
-fn valence_deviation(v: usize, ideal: usize) -> i64 {
-    let d = v as i64 - ideal as i64;
-    d * d
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +477,11 @@ pub struct CatmullClark;
 impl CatmullClark {
     /// Subdivide a quad mesh once using Catmull-Clark rules.
     ///
+    /// Interior vertices use the Catmull-Clark smoothing rule, boundary vertices
+    /// the cubic B-spline boundary rule, and corner vertices (a single incident
+    /// face) stay in place. The vertex order is deterministic. This is
+    /// [`catmull_clark_subdivision`] on a [`QuadMesh`] built from the arguments.
+    ///
     /// # Arguments
     /// * `verts` – original vertex positions.
     /// * `quads` – quads defined by four vertex indices each.
@@ -545,126 +493,8 @@ impl CatmullClark {
         verts: &[[f64; 3]],
         quads: &[[usize; 4]],
     ) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
-        let n_orig = verts.len();
-        let mut new_verts: Vec<[f64; 3]> = verts.to_vec();
-
-        // Step 1: Face points — centroid of each quad
-        let face_point_start = new_verts.len();
-        let mut face_points: Vec<usize> = Vec::with_capacity(quads.len());
-        for quad in quads {
-            let fp = scale3(
-                quad.iter()
-                    .fold([0.0_f64; 3], |acc, &vi| add3(acc, verts[vi])),
-                0.25,
-            );
-            face_points.push(new_verts.len());
-            new_verts.push(fp);
-        }
-
-        // Step 2: Edge points
-        // For each edge, the edge point is the average of its two endpoints
-        // and the face points of the two adjacent faces.
-        let mut edge_map: HashMap<(usize, usize), Vec<usize>> = HashMap::new(); // edge → face indices
-        for (qi, quad) in quads.iter().enumerate() {
-            for k in 0..4 {
-                let a = quad[k];
-                let b = quad[(k + 1) % 4];
-                let key = (a.min(b), a.max(b));
-                edge_map.entry(key).or_default().push(qi);
-            }
-        }
-
-        let edge_point_start = new_verts.len();
-        let mut edge_to_idx: HashMap<(usize, usize), usize> = HashMap::new();
-        for (&(ea, eb), face_idxs) in &edge_map {
-            let mut ep = scale3(add3(verts[ea], verts[eb]), 0.5);
-            if face_idxs.len() == 2 {
-                let fp0 = new_verts[face_point_start + face_idxs[0]];
-                let fp1 = new_verts[face_point_start + face_idxs[1]];
-                ep = scale3(add3(add3(verts[ea], verts[eb]), add3(fp0, fp1)), 0.25);
-            }
-            edge_to_idx.insert((ea, eb), new_verts.len());
-            edge_to_idx.insert((eb, ea), new_verts.len());
-            new_verts.push(ep);
-        }
-        let _ = edge_point_start;
-
-        // Step 3: Updated original vertex positions
-        // v' = (F + 2E + (n-3)V) / n
-        // where F = avg of adjacent face points, E = avg of adjacent edge midpoints, n = valence
-        let mut vertex_face_points: Vec<Vec<[f64; 3]>> = vec![Vec::new(); n_orig];
-        let mut vertex_edge_mids: Vec<Vec<[f64; 3]>> = vec![Vec::new(); n_orig];
-
-        for (qi, quad) in quads.iter().enumerate() {
-            let fp = new_verts[face_point_start + qi];
-            for k in 0..4 {
-                let vi = quad[k];
-                vertex_face_points[vi].push(fp);
-                let nb = quad[(k + 1) % 4];
-                let em = scale3(add3(verts[vi], verts[nb]), 0.5);
-                vertex_edge_mids[vi].push(em);
-                let nb2 = quad[(k + 3) % 4];
-                let em2 = scale3(add3(verts[vi], verts[nb2]), 0.5);
-                vertex_edge_mids[vi].push(em2);
-            }
-        }
-
-        for i in 0..n_orig {
-            let n = vertex_face_points[i].len();
-            if n == 0 {
-                continue;
-            }
-            let n_f = n as f64;
-            let f_avg = scale3(
-                vertex_face_points[i]
-                    .iter()
-                    .fold([0.0_f64; 3], |acc, &x| add3(acc, x)),
-                1.0 / n_f,
-            );
-            let e_count = vertex_edge_mids[i].len();
-            let e_avg = if e_count > 0 {
-                scale3(
-                    vertex_edge_mids[i]
-                        .iter()
-                        .fold([0.0_f64; 3], |acc, &x| add3(acc, x)),
-                    1.0 / e_count as f64,
-                )
-            } else {
-                verts[i]
-            };
-            // Catmull-Clark: (F + 2E + (n-3)V) / n
-            let v_new = scale3(
-                add3(
-                    add3(f_avg, scale3(e_avg, 2.0)),
-                    scale3(verts[i], (n_f - 3.0).max(0.0)),
-                ),
-                1.0 / n_f,
-            );
-            new_verts[i] = v_new;
-        }
-
-        // Step 4: Build new quads
-        // Each original quad → 4 new quads
-        let mut new_quads: Vec<[usize; 4]> = Vec::with_capacity(quads.len() * 4);
-        for (qi, quad) in quads.iter().enumerate() {
-            let fp_idx = face_point_start + qi;
-            for k in 0..4 {
-                let vi = quad[k];
-                let ea = quad[k];
-                let eb = quad[(k + 1) % 4];
-                let ea2 = quad[(k + 3) % 4];
-                let eb2 = quad[k];
-
-                let ep1 = *edge_to_idx.get(&(ea.min(eb), ea.max(eb))).unwrap_or(&vi);
-                let ep2 = *edge_to_idx
-                    .get(&(ea2.min(eb2), ea2.max(eb2)))
-                    .unwrap_or(&vi);
-
-                new_quads.push([vi, ep1, fp_idx, ep2]);
-            }
-        }
-
-        (new_verts, new_quads)
+        let refined = catmull_clark_subdivision(&QuadMesh::new(verts.to_vec(), quads.to_vec()));
+        (refined.vertices, refined.faces)
     }
 }
 
@@ -674,8 +504,10 @@ impl CatmullClark {
 
 /// Feature-preserving isotropic remeshing.
 ///
-/// Like `isotropic_remesh` but marks sharp feature edges (dihedral angle >
-/// `feature_angle_rad`) as "locked" — they are never collapsed or flipped.
+/// Like `isotropic_remesh` but marks sharp feature edges of the input (dihedral
+/// angle > `feature_angle_rad`, boundary edges) as "locked": a marked edge between
+/// two input vertices is never collapsed or flipped. The edges that appear when a
+/// locked edge is split are not tracked as features.
 pub fn feature_preserving_remesh(
     mesh: &TriangleMesh,
     target_len: f64,
@@ -697,7 +529,12 @@ pub fn feature_preserving_remesh(
     for _ in 0..iterations {
         split_long_edges(&mut verts, &mut tris, high);
         collapse_short_edges_preserving(&mut verts, &mut tris, low, &feature_edges);
-        flip_for_valence(&mut tris, verts.len());
+        flip_for_valence(&mut tris, &verts, |a, b| {
+            feature_edges
+                .get(&(a.min(b), a.max(b)))
+                .copied()
+                .unwrap_or(false)
+        });
         laplacian_smooth_surface(&mut verts, &tris);
         project_to_surface(&mut verts, &orig_verts, &orig_tris);
     }
@@ -798,52 +635,8 @@ fn collapse_short_edges_preserving(
 }
 
 // ---------------------------------------------------------------------------
-// Edge flip for quality
+// Triangle angles
 // ---------------------------------------------------------------------------
-
-/// Flip edges to improve triangle quality (maximize minimum angle).
-///
-/// For each interior edge shared by two triangles, flip if the flipped
-/// configuration has a better minimum angle.
-pub fn flip_edges_for_quality(tris: &mut [[usize; 3]], verts: &[[f64; 3]]) {
-    let n_verts = verts.len();
-
-    // Build edge → face map
-    let mut edge_map: HashMap<(usize, usize), Vec<(usize, usize)>> = HashMap::new();
-    for (ti, tri) in tris.iter().enumerate() {
-        for k in 0..3 {
-            let a = tri[k];
-            let b = tri[(k + 1) % 3];
-            let opp = tri[(k + 2) % 3];
-            let key = (a.min(b), a.max(b));
-            edge_map.entry(key).or_default().push((ti, opp));
-        }
-    }
-
-    for ((ea, eb), entries) in &edge_map {
-        if entries.len() != 2 {
-            continue;
-        }
-        let (ti, oc) = entries[0];
-        let (tj, od) = entries[1];
-
-        if *ea >= n_verts || *eb >= n_verts || oc >= n_verts || od >= n_verts {
-            continue;
-        }
-
-        // Compare min angles before and after flip
-        let before_min = min_triangle_angle(verts[*ea], verts[*eb], verts[oc])
-            .min(min_triangle_angle(verts[*ea], verts[*eb], verts[od]));
-        let after_min = min_triangle_angle(verts[oc], verts[od], verts[*ea])
-            .min(min_triangle_angle(verts[oc], verts[od], verts[*eb]));
-
-        if after_min > before_min + 1e-6 {
-            // Flip: replace (ea,eb,oc) and (ea,eb,od) with (oc,od,ea) and (oc,od,eb)
-            tris[ti] = [*ea, oc, od];
-            tris[tj] = [*eb, od, oc];
-        }
-    }
-}
 
 /// Minimum angle (in radians) of a triangle given its three vertex positions.
 fn min_triangle_angle(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
@@ -1014,75 +807,6 @@ pub fn laplacian_smooth(mesh: &TriangleMesh, iterations: usize, lambda: f64) -> 
 
     let vertices: Vec<Vec3> = verts.iter().map(|&a| arr_to_vec3(a)).collect();
     TriangleMesh::new(vertices, tris.clone())
-}
-
-// ---------------------------------------------------------------------------
-// Edge flip for Delaunay criterion
-// ---------------------------------------------------------------------------
-
-/// Flip edges in a 2D-projected triangle mesh to satisfy the Delaunay criterion.
-///
-/// An edge is flipped if the opposite vertex lies inside the circumcircle of the
-/// current triangle.  Operates directly on the `tris` array (in-place).
-pub fn delaunay_edge_flip(tris: &mut [[usize; 3]], verts: &[[f64; 3]]) {
-    // Build edge → (tri_idx, opposite_vertex) map
-    let mut changed = true;
-    let max_passes = 32;
-    let mut pass = 0;
-
-    while changed && pass < max_passes {
-        changed = false;
-        pass += 1;
-
-        let mut edge_map: HashMap<(usize, usize), Vec<(usize, usize)>> = HashMap::new();
-        for (ti, tri) in tris.iter().enumerate() {
-            for k in 0..3 {
-                let a = tri[k];
-                let b = tri[(k + 1) % 3];
-                let opp = tri[(k + 2) % 3];
-                let key = (a.min(b), a.max(b));
-                edge_map.entry(key).or_default().push((ti, opp));
-            }
-        }
-
-        for ((ea, eb), entries) in &edge_map {
-            if entries.len() != 2 {
-                continue;
-            }
-            let (ti, oc) = entries[0];
-            let (tj, od) = entries[1];
-
-            if *ea >= verts.len() || *eb >= verts.len() || oc >= verts.len() || od >= verts.len() {
-                continue;
-            }
-
-            // Test if od is inside the circumcircle of triangle (ea, eb, oc)
-            if point_in_circumcircle(verts[*ea], verts[*eb], verts[oc], verts[od]) {
-                // Flip: replace edge ea-eb with oc-od
-                tris[ti] = [*ea, oc, od];
-                tris[tj] = [*eb, od, oc];
-                changed = true;
-            }
-        }
-    }
-}
-
-/// Returns `true` if point `d` is inside the circumcircle of triangle `(a, b, c)`.
-/// Uses the 2D X-Z projection.
-fn point_in_circumcircle(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> bool {
-    // Use the standard 3×3 determinant test (X-Z plane projection)
-    let ax = a[0] - d[0];
-    let az = a[2] - d[2];
-    let bx = b[0] - d[0];
-    let bz = b[2] - d[2];
-    let cx = c[0] - d[0];
-    let cz = c[2] - d[2];
-
-    let det = ax * (bz * (cx * cx + cz * cz) - cz * (bx * bx + bz * bz))
-        - az * (bx * (cx * cx + cz * cz) - cx * (bx * bx + bz * bz))
-        + (ax * ax + az * az) * (bx * cz - bz * cx);
-
-    det > 0.0
 }
 
 // ---------------------------------------------------------------------------
@@ -1525,26 +1249,34 @@ mod tests {
     }
 
     // ── Edge flip tests ────────────────────────────────────────────────────────
+    //
+    // The flip engine has its own regression suite in `edge_flip/tests.rs`; these
+    // two cases check the public entry point.
 
     #[test]
-    fn test_edge_flip_preserves_vertex_count() {
+    fn test_edge_flip_keeps_the_tie_of_a_unit_square() {
+        // Both diagonals of a square give the same smallest angle (45 degrees), so
+        // the quality flip leaves the triangulation alone.
         let mesh = simple_quad_mesh();
         let verts: Vec<[f64; 3]> = mesh.vertices.iter().map(|v| vec3_to_arr(*v)).collect();
         let mut tris = mesh.indices.clone();
-        let n_verts_before = verts.len();
-        flip_edges_for_quality(&mut tris, &verts);
-        assert_eq!(verts.len(), n_verts_before);
-        let _ = verts; // suppress unused warning
+        assert_eq!(flip_edges_for_quality(&mut tris, &verts), 0);
+        assert_eq!(tris, mesh.indices);
     }
 
     #[test]
-    fn test_edge_flip_preserves_face_count() {
-        let mesh = simple_quad_mesh();
-        let verts: Vec<[f64; 3]> = mesh.vertices.iter().map(|v| vec3_to_arr(*v)).collect();
-        let mut tris = mesh.indices.clone();
-        let n_tris_before = tris.len();
-        flip_edges_for_quality(&mut tris, &verts);
-        assert_eq!(tris.len(), n_tris_before);
+    fn test_edge_flip_improves_a_stretched_quad() {
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [2.0, 0.5, 0.0],
+            [2.0, -0.5, 0.0],
+        ];
+        let mut tris = vec![[0usize, 1, 2], [1, 0, 3]];
+        let before = mesh_quality_min_angle(&verts, &tris);
+        assert_eq!(flip_edges_for_quality(&mut tris, &verts), 1);
+        assert_eq!(tris, vec![[2, 0, 3], [3, 1, 2]]);
+        assert!(mesh_quality_min_angle(&verts, &tris) > before);
     }
 
     // ── Quality metric tests ─────────────────────────────────────────────────
@@ -1604,6 +1336,27 @@ mod tests {
         assert_eq!(q2.len(), quads.len() * 16); // 1 * 4 * 4
     }
 
+    #[test]
+    fn test_catmull_clark_keeps_corners_and_has_deterministic_order() {
+        // The corners of a single quad stay fixed (the interior rule used to move
+        // them onto the diagonal) and the edge points follow the order of the sides.
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let quads: Vec<[usize; 4]> = vec![[0, 1, 2, 3]];
+        let (v1, q1) = CatmullClark::subdivide_quad_mesh(&verts, &quads);
+        assert_eq!(&v1[..4], &verts[..]);
+        assert_eq!(v1[4], [0.5, 0.5, 0.0]);
+        assert_eq!(v1[5], [0.5, 0.0, 0.0]);
+        assert_eq!(v1[8], [0.0, 0.5, 0.0]);
+        assert_eq!(q1[0], [0, 5, 4, 8]);
+        let (v2, q2) = CatmullClark::subdivide_quad_mesh(&verts, &quads);
+        assert_eq!((v1, q1), (v2, q2));
+    }
+
     // ── Laplacian smoothing tests ─────────────────────────────────────────────
 
     #[test]
@@ -1639,23 +1392,17 @@ mod tests {
     // ── Edge flip Delaunay tests ──────────────────────────────────────────────
 
     #[test]
-    fn test_delaunay_flip_preserves_vertices() {
-        let mesh = simple_quad_mesh();
-        let verts: Vec<[f64; 3]> = mesh.vertices.iter().map(|v| vec3_to_arr(*v)).collect();
-        let mut tris = mesh.indices.clone();
-        let before = verts.len();
-        delaunay_edge_flip(&mut tris, &verts);
-        assert_eq!(verts.len(), before);
-    }
-
-    #[test]
-    fn test_delaunay_flip_preserves_face_count() {
-        let mesh = simple_quad_mesh();
-        let verts: Vec<[f64; 3]> = mesh.vertices.iter().map(|v| vec3_to_arr(*v)).collect();
-        let mut tris = mesh.indices.clone();
-        let before = tris.len();
-        delaunay_edge_flip(&mut tris, &verts);
-        assert_eq!(tris.len(), before);
+    fn test_delaunay_flip_repairs_a_bad_diagonal() {
+        // Thin rhombus in the X-Z plane, split along its long diagonal.
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [2.0, 0.0, 1.0],
+            [2.0, 0.0, -1.0],
+        ];
+        let mut tris = vec![[0usize, 1, 2], [1, 0, 3]];
+        assert_eq!(delaunay_edge_flip(&mut tris, &verts), 1);
+        assert_eq!(tris, vec![[2, 0, 3], [3, 1, 2]]);
     }
 
     // ── Coarsening tests ──────────────────────────────────────────────────────

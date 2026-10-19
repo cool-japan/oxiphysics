@@ -2,11 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use std::collections::HashMap;
-
-use super::types::{
-    Atom, CifAtomSite, CifBlock, MolFormat, MolVizError, MoldenMo, PsfAtom, XsfAtom,
-};
+use super::types::{Atom, MolFormat, MolVizError, MoldenMo, PsfAtom, XsfAtom};
 
 /// Convenience result alias.
 pub type Result<T> = std::result::Result<T, MolVizError>;
@@ -97,119 +93,6 @@ pub(super) fn parse_xsf_atom(line: &str) -> Option<XsfAtom> {
         position: pos,
         force,
     })
-}
-/// Parse a simplified CIF file into a list of data blocks.
-pub fn parse_cif(content: &str) -> Result<Vec<CifBlock>> {
-    let mut blocks: Vec<CifBlock> = Vec::new();
-    let mut current: Option<CifBlock> = None;
-    let mut in_loop = false;
-    let mut loop_headers: Vec<String> = Vec::new();
-    let mut loop_rows: Vec<Vec<String>> = Vec::new();
-    for raw in content.lines() {
-        let line = raw.trim();
-        if line.starts_with('#') || line.is_empty() {
-            continue;
-        }
-        if line.starts_with("data_") {
-            if let Some(blk) = current.take() {
-                blocks.push(blk);
-            }
-            let name = line.trim_start_matches("data_").to_string();
-            current = Some(CifBlock {
-                name,
-                tags: HashMap::new(),
-                atom_sites: Vec::new(),
-            });
-            in_loop = false;
-            loop_headers.clear();
-            loop_rows.clear();
-            continue;
-        }
-        let Some(ref mut blk) = current else {
-            continue;
-        };
-        if line == "loop_" {
-            if !loop_headers.is_empty() {
-                process_cif_loop(&loop_headers, &loop_rows, blk);
-            }
-            in_loop = true;
-            loop_headers.clear();
-            loop_rows.clear();
-            continue;
-        }
-        if in_loop {
-            if line.starts_with('_') {
-                loop_headers.push(line.to_string());
-            } else if !line.is_empty() {
-                let row: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
-                if !row.is_empty() {
-                    loop_rows.push(row);
-                }
-            }
-        } else if line.starts_with('_') {
-            let mut parts = line.splitn(2, char::is_whitespace);
-            let key = parts.next().unwrap_or("").to_string();
-            let value = parts.next().unwrap_or("").trim().to_string();
-            blk.tags.insert(key, value);
-        }
-    }
-    if let Some(ref mut blk) = current
-        && !loop_headers.is_empty()
-    {
-        process_cif_loop(&loop_headers, &loop_rows, blk);
-    }
-    if let Some(blk) = current {
-        blocks.push(blk);
-    }
-    Ok(blocks)
-}
-pub(super) fn process_cif_loop(headers: &[String], rows: &[Vec<String>], blk: &mut CifBlock) {
-    let is_atom_site = headers.iter().any(|h| h.contains("_atom_site"));
-    if !is_atom_site {
-        return;
-    }
-    let idx_label = headers.iter().position(|h| h.contains("label"));
-    let idx_type = headers
-        .iter()
-        .position(|h| h.contains("type_symbol") || h.contains("element"));
-    let idx_x = headers.iter().position(|h| h.ends_with("_x"));
-    let idx_y = headers.iter().position(|h| h.ends_with("_y"));
-    let idx_z = headers.iter().position(|h| h.ends_with("_z"));
-    let idx_occ = headers.iter().position(|h| h.contains("occupancy"));
-    for row in rows {
-        let label = idx_label
-            .and_then(|i| row.get(i))
-            .cloned()
-            .unwrap_or_else(|| "X".to_string());
-        let element = idx_type
-            .and_then(|i| row.get(i))
-            .cloned()
-            .unwrap_or_else(|| label.chars().take(2).collect());
-        let fx = idx_x
-            .and_then(|i| row.get(i))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.0);
-        let fy = idx_y
-            .and_then(|i| row.get(i))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.0);
-        let fz = idx_z
-            .and_then(|i| row.get(i))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.0);
-        let occupancy = idx_occ
-            .and_then(|i| row.get(i))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1.0);
-        blk.atom_sites.push(CifAtomSite {
-            label,
-            element,
-            fx,
-            fy,
-            fz,
-            occupancy,
-        });
-    }
 }
 pub(super) fn parse_molden_kv(line: &str, mo: &mut MoldenMo) {
     if let Some(rest) = line.strip_prefix("Sym=") {
@@ -468,7 +351,7 @@ mod tests {
         assert!(result.is_err());
     }
     fn sample_dx() -> &'static str {
-        "# Data from APBS\nobject 1 class gridpositions counts 2 2 2\norigin 0.0 0.0 0.0\ndelta 1.0 0.0 0.0\ndelta 0.0 1.0 0.0\ndelta 0.0 0.0 1.0\nobject 2 class array type double rank 0 items 8 data follows\n1.0 2.0 3.0\n4.0 5.0 6.0\n7.0 8.0\nattribute \"dep\" string \"positions\"\n"
+        "# Data from APBS\nobject 1 class gridpositions counts 2 2 2\norigin 0.0 0.0 0.0\ndelta 1.0 0.0 0.0\ndelta 0.0 1.0 0.0\ndelta 0.0 0.0 1.0\nobject 2 class gridconnections counts 2 2 2\nobject 3 class array type double rank 0 items 8 data follows\n1.0 2.0 3.0\n4.0 5.0 6.0\n7.0 8.0\nattribute \"dep\" string \"positions\"\nobject \"regular positions regular connections\" class field\ncomponent \"positions\" value 1\ncomponent \"connections\" value 2\ncomponent \"data\" value 3\n"
     }
     #[test]
     fn test_dx_parse_dims() {
@@ -509,7 +392,9 @@ mod tests {
         let s = dx.to_dx_string();
         let dx2 = DxGrid::parse(&s).unwrap();
         assert_eq!(dx2.nx, dx.nx);
-        assert_eq!(dx2.data.len(), dx.data.len());
+        assert_eq!(dx2.data, dx.data);
+        assert_eq!(dx2.origin, dx.origin);
+        assert_eq!(dx2.delta_z, dx.delta_z);
     }
     fn sample_cube() -> &'static str {
         "Electron density\nGenerated by OxiPhysics\n2 0.0 0.0 0.0\n2 0.5 0.0 0.0\n2 0.0 0.5 0.0\n2 0.0 0.0 0.5\n6 6.0 0.0 0.0 0.0\n8 8.0 1.2 0.0 0.0\n1.0 2.0 3.0 4.0\n5.0 6.0 7.0 8.0\n"
@@ -670,33 +555,6 @@ mod tests {
                 assert!((got[k] - want[k]).abs() < 1e-9, "got {got:?} want {want:?}");
             }
         }
-    }
-    fn sample_cif() -> &'static str {
-        "data_test\n_cell_length_a 4.0\n_cell_length_b 4.0\n_cell_length_c 4.0\nloop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n_atom_site_occupancy\nFe1 Fe 0.0 0.0 0.0 1.0\nFe2 Fe 0.5 0.5 0.5 1.0\n"
-    }
-    #[test]
-    fn test_cif_parse_block() {
-        let blocks = parse_cif(sample_cif()).unwrap();
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].name, "test");
-    }
-    #[test]
-    fn test_cif_parse_atom_sites() {
-        let blocks = parse_cif(sample_cif()).unwrap();
-        assert_eq!(blocks[0].atom_sites.len(), 2);
-    }
-    #[test]
-    fn test_cif_atom_site_values() {
-        let blocks = parse_cif(sample_cif()).unwrap();
-        let site0 = &blocks[0].atom_sites[0];
-        assert_eq!(site0.element, "Fe");
-        assert!((site0.fx - 0.0).abs() < 1e-12);
-        assert!((site0.occupancy - 1.0).abs() < 1e-12);
-    }
-    #[test]
-    fn test_cif_parse_tags() {
-        let blocks = parse_cif(sample_cif()).unwrap();
-        assert!(blocks[0].tags.contains_key("_cell_length_a"));
     }
     fn make_frame(idx: usize, t: f64, n: usize) -> TrajectoryFrame {
         let positions = (0..n).map(|i| [i as f64, 0.0, 0.0]).collect();

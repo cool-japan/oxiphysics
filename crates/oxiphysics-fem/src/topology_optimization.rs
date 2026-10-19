@@ -6,6 +6,8 @@
 //! checkerboard suppression, continuation, compliance gradient, and
 //! multi-load-case optimization.
 
+use crate::topology_filter::SparseFilter;
+
 // ---------------------------------------------------------------------------
 // 1. SIMP design-variable update
 // ---------------------------------------------------------------------------
@@ -128,6 +130,9 @@ pub fn volume_fraction(densities: &[f64]) -> f64 {
 /// with w_ij = max(0, r_min − d_ij).
 ///
 /// `centroids`: (x, y) centroid of each element.
+///
+/// The weights come from a uniform cell list ([`SparseFilter`]): cost `O(n · k)`
+/// with `k` the number of elements inside `r_min`, not `O(n²)`.
 pub fn filter_sensitivities_density_weighted(
     sensitivities: &[f64],
     densities: &[f64],
@@ -137,28 +142,12 @@ pub fn filter_sensitivities_density_weighted(
     let n = sensitivities.len();
     assert_eq!(densities.len(), n);
     assert_eq!(centroids.len(), n);
-    let mut out = vec![0.0_f64; n];
-    for i in 0..n {
-        let (xi, yi) = centroids[i];
-        let mut num = 0.0;
-        let mut den = 0.0;
-        for j in 0..n {
-            let (xj, yj) = centroids[j];
-            let d = ((xi - xj).powi(2) + (yi - yj).powi(2)).sqrt();
-            let w = (r_min - d).max(0.0);
-            num += w * densities[j] * sensitivities[j];
-            den += w * densities[j];
-        }
-        out[i] = if den.abs() > 1e-30 {
-            num / den
-        } else {
-            sensitivities[i]
-        };
-    }
-    out
+    SparseFilter::hat(centroids, r_min).density_weighted_average(sensitivities, densities)
 }
 
 /// Simple hat-function sensitivity filter (no density weighting).
+///
+/// Cost `O(n · k)` (see [`SparseFilter`]).
 pub fn filter_sensitivities_hat(
     sensitivities: &[f64],
     centroids: &[(f64, f64)],
@@ -166,25 +155,7 @@ pub fn filter_sensitivities_hat(
 ) -> Vec<f64> {
     let n = sensitivities.len();
     assert_eq!(centroids.len(), n);
-    let mut out = vec![0.0_f64; n];
-    for i in 0..n {
-        let (xi, yi) = centroids[i];
-        let mut num = 0.0;
-        let mut den = 0.0;
-        for j in 0..n {
-            let (xj, yj) = centroids[j];
-            let d = ((xi - xj).powi(2) + (yi - yj).powi(2)).sqrt();
-            let w = (r_min - d).max(0.0);
-            num += w * sensitivities[j];
-            den += w;
-        }
-        out[i] = if den.abs() > 1e-30 {
-            num / den
-        } else {
-            sensitivities[i]
-        };
-    }
-    out
+    SparseFilter::hat(centroids, r_min).average(sensitivities)
 }
 
 // ---------------------------------------------------------------------------
@@ -632,6 +603,8 @@ pub fn run_oc_iterations(
 ///
 /// Step 1: density filter  ρ̃ = Σ w_j ρ_j / Σ w_j
 /// Step 2: Heaviside projection  ρ̄ = H(ρ̃; β, η)
+///
+/// The filter is evaluated on a uniform cell list ([`SparseFilter`]), cost `O(n · k)`.
 pub fn density_filter_and_project(
     densities: &[f64],
     centroids: &[(f64, f64)],
@@ -641,20 +614,7 @@ pub fn density_filter_and_project(
 ) -> Vec<f64> {
     let n = densities.len();
     assert_eq!(centroids.len(), n);
-    let mut rho_tilde = vec![0.0_f64; n];
-    for i in 0..n {
-        let (xi, yi) = centroids[i];
-        let mut num = 0.0;
-        let mut den = 0.0;
-        for j in 0..n {
-            let (xj, yj) = centroids[j];
-            let d = ((xi - xj).powi(2) + (yi - yj).powi(2)).sqrt();
-            let w = (r_min - d).max(0.0);
-            num += w * densities[j];
-            den += w;
-        }
-        rho_tilde[i] = if den > 1e-30 { num / den } else { densities[i] };
-    }
+    let rho_tilde = SparseFilter::hat(centroids, r_min).average(densities);
     apply_heaviside_projection(&rho_tilde, beta, eta)
 }
 
@@ -977,30 +937,22 @@ pub fn perimeter_gradient(densities: &[f64], nx: usize, ny: usize, threshold: f6
 /// Minimum length scale filter using erosion/dilation.
 ///
 /// Projects densities so features below the minimum length scale are suppressed.
-/// Uses a hat-function filter with radius r_min then applies solid threshold.
+/// Uses a hat-function filter with radius r_min (cost `O(n · k)`, see
+/// [`SparseFilter`]), clamps the filtered value to \[0, 1\] and keeps the
+/// unfiltered density of elements without any neighbour weight.
 pub fn minimum_length_scale_filter(
     densities: &[f64],
     centroids: &[(f64, f64)],
     r_min: f64,
 ) -> Vec<f64> {
     let n = densities.len();
-    let mut out = vec![0.0_f64; n];
-    for i in 0..n {
-        let (xi, yi) = centroids[i];
-        let mut num = 0.0;
-        let mut den = 0.0;
-        for j in 0..n {
-            let (xj, yj) = centroids[j];
-            let d = ((xi - xj).powi(2) + (yi - yj).powi(2)).sqrt();
-            let w = (r_min - d).max(0.0);
-            num += w * densities[j];
-            den += w;
+    assert_eq!(centroids.len(), n);
+    let filter = SparseFilter::hat(centroids, r_min);
+    let mut out = filter.average(densities);
+    for (value, &weight_sum) in out.iter_mut().zip(filter.row_sum.iter()) {
+        if weight_sum > 1e-30 {
+            *value = value.clamp(0.0, 1.0);
         }
-        out[i] = if den > 1e-30 {
-            (num / den).clamp(0.0, 1.0)
-        } else {
-            densities[i]
-        };
     }
     out
 }

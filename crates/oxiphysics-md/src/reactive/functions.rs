@@ -3,6 +3,9 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::types::{BondOrder, OverCoordParams, OxidationState, ReactiveSite, ReaxFFBond};
+use crate::MdError;
+use crate::reactive_md::KE_EV_ANG;
+use oxiphysics_core::linalg::{backward_sub_n, forward_sub_n, lu_factor_n};
 
 /// Atom index pair representing a bond.
 type BondPair = (usize, usize);
@@ -297,16 +300,43 @@ pub fn rebo_switching_derivative(r: f64, r_inner: f64, r_outer: f64) -> f64 {
 pub fn conjugation_correction(bo_pi_1: f64, bo_pi_2: f64, f_conj: f64, k: f64) -> f64 {
     -f_conj * (-(k * (bo_pi_1 - 0.5).powi(2))).exp() * (-(k * (bo_pi_2 - 0.5).powi(2))).exp()
 }
-/// Electronegativity equalization for charges in a reactive system.
+/// Electronegativity equalization (EEM) for charges in a reactive system.
 ///
-/// Iteratively updates charges on each atom based on the EEM model:
+/// The charges minimise the electrostatic energy
+///
 /// ```text
-/// chi_i + η_i * q_i + Σ_{j≠i} J_ij * q_j = λ  (for all i)
+/// E(q) = Σ_i (χ_i q_i + ½ η_i q_i²) + ½ Σ_{i≠j} k_e q_i q_j / r_ij
+/// ```
+///
+/// under the constraint `Σ_i q_i = Q_total`, i.e. they satisfy the EEM equations
+///
+/// ```text
+/// χ_i + η_i q_i + Σ_{j≠i} k_e q_j / r_ij = μ   (for all i)
 /// Σ_i q_i = Q_total
 /// ```
 ///
-/// Uses a simple Jacobi-style iteration for the equalisation.
-/// Returns updated charges; convergence to `tol` or `max_iter` iterations.
+/// with `k_e` = [`KE_EV_ANG`] (eV·Å/e²).  The coupled `(n+1) × (n+1)` system
+/// (charges plus the common electronegativity `μ`) is solved directly by LU
+/// decomposition with partial pivoting, which also handles the degenerate cases
+/// of equal hardnesses and `Q_total = 0` that a damped fixed-point iteration
+/// cannot (rescaling the iterate to the target charge collapses a neutral system
+/// to all-zero charges).
+///
+/// `tol` and `max_iter` control iterative refinement of the direct solution: up
+/// to `max_iter` correction passes are applied while the largest residual of the
+/// bordered EEM equations (eV for the rows of the atoms, e for the constraint)
+/// exceeds `tol`.
+///
+/// The bare Coulomb kernel `k_e / r` exceeds typical hardnesses at bonded
+/// distances, which makes the Hessian `η δ_ij + k_e / r_ij` indefinite; the
+/// minimum-energy interpretation (and the expected sign of the charge transfer)
+/// holds only when that matrix is positive definite, e.g. for hardnesses larger
+/// than the Coulomb coupling.  For close atoms use
+/// [`EemCharges`](crate::reactive_md::EemCharges) with ReaxFF shielding.
+///
+/// # Errors
+/// [`MdError::General`] if the input slices differ in length, if the EEM matrix
+/// is singular, or if the solution is not finite.
 pub fn eem_charges(
     positions: &[[f64; 3]],
     electronegativities: &[f64],
@@ -314,61 +344,79 @@ pub fn eem_charges(
     total_charge: f64,
     tol: f64,
     max_iter: usize,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, MdError> {
     let n = positions.len();
-    if n == 0 {
-        return Vec::new();
+    if electronegativities.len() != n || hardnesses.len() != n {
+        return Err(MdError::General(format!(
+            "eem_charges: {n} positions but {} electronegativities and {} hardnesses",
+            electronegativities.len(),
+            hardnesses.len()
+        )));
     }
-    let ke = 14.3996_f64;
-    let mut q = vec![total_charge / n as f64; n];
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let mut matrix = vec![vec![0.0_f64; n + 1]; n + 1];
+    for (i, &eta) in hardnesses.iter().enumerate() {
+        matrix[i][i] = eta;
+        matrix[i][n] = 1.0;
+        matrix[n][i] = 1.0;
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let r = dist(positions[i], positions[j]);
+            let coupling = if r > 1e-10 { KE_EV_ANG / r } else { 0.0 };
+            matrix[i][j] = coupling;
+            matrix[j][i] = coupling;
+        }
+    }
+    let mut rhs: Vec<f64> = electronegativities.iter().map(|chi| -chi).collect();
+    rhs.push(total_charge);
+    let solution = solve_bordered_system(&matrix, &rhs, tol, max_iter)?;
+    Ok(solution[..n].to_vec())
+}
+/// Solve the bordered EEM system `A x = b` by LU decomposition with partial pivoting
+/// followed by at most `max_iter` iterative-refinement passes.
+///
+/// Refinement stops once the largest residual component is at most `tol`.
+pub(crate) fn solve_bordered_system(
+    matrix: &[Vec<f64>],
+    rhs: &[f64],
+    tol: f64,
+    max_iter: usize,
+) -> Result<Vec<f64>, MdError> {
+    let (lu, perm) = lu_factor_n(matrix).ok_or_else(|| {
+        MdError::General("EEM matrix is singular; cannot equalise electronegativities".into())
+    })?;
+    let solve_with_factors = |b: &[f64]| -> Result<Vec<f64>, MdError> {
+        let permuted: Vec<f64> = perm.iter().map(|&row| b[row]).collect();
+        backward_sub_n(&lu, &forward_sub_n(&lu, &permuted)).ok_or_else(|| {
+            MdError::General("EEM matrix is singular; cannot equalise electronegativities".into())
+        })
+    };
+    let mut x = solve_with_factors(rhs)?;
     for _ in 0..max_iter {
-        let lambda = {
-            let sum_chi_eta: f64 = (0..n)
-                .map(|i| electronegativities[i] + hardnesses[i] * q[i])
-                .sum::<f64>();
-            let coulomb_sum: f64 = (0..n)
-                .map(|i| {
-                    (0..n)
-                        .filter(|&j| j != i)
-                        .map(|j| {
-                            let r = dist(positions[i], positions[j]);
-                            if r > 1e-10 { ke * q[j] / r } else { 0.0 }
-                        })
-                        .sum::<f64>()
-                })
-                .sum::<f64>();
-            (sum_chi_eta + coulomb_sum) / n as f64
-        };
-        let mut q_new = vec![0.0; n];
-        for i in 0..n {
-            let coulomb_i: f64 = (0..n)
-                .filter(|&j| j != i)
-                .map(|j| {
-                    let r = dist(positions[i], positions[j]);
-                    if r > 1e-10 { ke * q[j] / r } else { 0.0 }
-                })
-                .sum();
-            q_new[i] = (lambda - electronegativities[i] - coulomb_i) / hardnesses[i].max(1e-12);
-        }
-        let q_sum: f64 = q_new.iter().sum();
-        if q_sum.abs() > 1e-12 {
-            let scale = total_charge / q_sum;
-            for v in q_new.iter_mut() {
-                *v *= scale;
-            }
-        }
-        let delta: f64 = q
+        let residual: Vec<f64> = matrix
             .iter()
-            .zip(q_new.iter())
-            .map(|(a, b)| (a - b).powi(2))
-            .sum::<f64>()
-            .sqrt();
-        q = q_new;
-        if delta < tol {
+            .zip(rhs.iter())
+            .map(|(row, &b)| b - row.iter().zip(x.iter()).map(|(a, xi)| a * xi).sum::<f64>())
+            .collect();
+        let largest = residual.iter().fold(0.0_f64, |acc, r| acc.max(r.abs()));
+        if largest <= tol {
             break;
         }
+        let correction = solve_with_factors(&residual)?;
+        for (xi, dx) in x.iter_mut().zip(correction.iter()) {
+            *xi += dx;
+        }
     }
-    q
+    if x.iter().any(|v| !v.is_finite()) {
+        return Err(MdError::General(
+            "EEM solution is not finite (check positions, electronegativities and hardnesses)"
+                .into(),
+        ));
+    }
+    Ok(x)
 }
 /// ReaxFF-style valence angle energy.
 ///
@@ -437,7 +485,16 @@ pub fn is_hydrogen_bond(r_ha: f64, theta_dha: f64) -> bool {
 /// Extended charge equilibration (QEq/EEM) iteration step.
 ///
 /// Performs one Jacobi update of all atomic charges based on the EEM equations
-/// and returns the updated charges together with the residual (RMS change).
+/// (`χ_i + η_i q_i + Σ_{j≠i} k_e q_j / r_ij = λ`, with `λ` the mean of the
+/// current left-hand sides) and returns the updated charges together with the
+/// residual (Euclidean norm of the change).
+///
+/// The updated charges are shifted *additively* by `(Q_total − Σ q)/n` so that
+/// they sum to `total_charge`.  A multiplicative rescaling by `Q_total/Σ q`
+/// would reduce every charge of a neutral system to zero; the additive shift
+/// leaves the fixed point of the iteration (the solution of
+/// [`eem_charges`]) unchanged.  The plain Jacobi update converges only for
+/// diagonally dominant systems; use [`eem_charges`] for a direct solution.
 pub fn qeq_iteration_step(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -449,7 +506,7 @@ pub fn qeq_iteration_step(
     if n == 0 {
         return (Vec::new(), 0.0);
     }
-    let ke = 14.3996_f64;
+    let ke = KE_EV_ANG;
     let sum_chi: f64 = (0..n)
         .map(|i| electronegativities[i] + hardnesses[i] * charges[i])
         .sum();
@@ -476,12 +533,9 @@ pub fn qeq_iteration_step(
             .sum();
         q_new[i] = (lambda - electronegativities[i] - j_sum) / hardnesses[i].max(1e-12);
     }
-    let q_sum: f64 = q_new.iter().sum();
-    if q_sum.abs() > 1e-12 {
-        let scale = total_charge / q_sum;
-        for v in q_new.iter_mut() {
-            *v *= scale;
-        }
+    let shift = (total_charge - q_new.iter().sum::<f64>()) / n as f64;
+    for v in q_new.iter_mut() {
+        *v += shift;
     }
     let residual = charges
         .iter()
@@ -1129,18 +1183,160 @@ mod tests {
         assert!((c.valence - 4.0).abs() < 1e-12);
         assert!(c.mass > 12.0 && c.mass < 13.0);
     }
-    #[test]
-    fn test_eem_charges_sum_to_total() {
-        let positions = vec![[0.0_f64, 0.0, 0.0], [1.5, 0.0, 0.0], [3.0, 0.0, 0.0]];
+    /// Spread of the electronegativities `χ_i + η_i q_i + Σ_{j≠i} k_e q_j / r_ij`
+    /// of all atoms; it vanishes exactly when the charges are equalised.
+    fn eem_equalisation_spread(
+        positions: &[[f64; 3]],
+        chi: &[f64],
+        eta: &[f64],
+        charges: &[f64],
+    ) -> f64 {
+        let n = positions.len();
+        let effective: Vec<f64> = (0..n)
+            .map(|i| {
+                let coulomb: f64 = (0..n)
+                    .filter(|&j| j != i)
+                    .map(|j| KE_EV_ANG * charges[j] / dist(positions[i], positions[j]))
+                    .sum();
+                chi[i] + eta[i] * charges[i] + coulomb
+            })
+            .collect();
+        let max = effective.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let min = effective.iter().cloned().fold(f64::INFINITY, f64::min);
+        max - min
+    }
+    /// Collinear H-O-H chain with both O-H distances 3 Å and H...H 6 Å; the
+    /// hardnesses are large enough for the EEM Hessian to be positive definite.
+    fn water_like_geometry() -> (Vec<[f64; 3]>, Vec<f64>, Vec<f64>) {
+        let positions = vec![[-3.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [3.0, 0.0, 0.0]];
         let chi = vec![4.53, 6.93, 4.53];
         let eta = vec![5.0, 8.0, 5.0];
-        let total_q = 0.0_f64;
-        let charges = eem_charges(&positions, &chi, &eta, total_q, 1e-6, 100);
-        let sum: f64 = charges.iter().sum();
+        (positions, chi, eta)
+    }
+    #[test]
+    fn test_eem_charges_sum_to_total() {
+        let (positions, chi, eta) = water_like_geometry();
+        for &total_q in &[0.0_f64, 1.0, -2.0] {
+            let charges = eem_charges(&positions, &chi, &eta, total_q, 1e-6, 100)
+                .expect("EEM system of a well separated H-O-H chain is regular");
+            let sum: f64 = charges.iter().sum();
+            assert!(
+                (sum - total_q).abs() < 1e-10,
+                "EEM charges should sum to {total_q}, got {sum}"
+            );
+        }
+    }
+    #[test]
+    fn test_eem_charges_neutral_system_is_not_all_zero() {
+        // Regression: the old multiplicative rescaling `Q / Σq` with Q = 0 zeroed every
+        // charge of a neutral system with unequal hardnesses (and the old test only
+        // asserted that the sum was zero, which zeros satisfy).
+        let (positions, chi, eta) = water_like_geometry();
+        let charges = eem_charges(&positions, &chi, &eta, 0.0, 1e-10, 50)
+            .expect("EEM system of a well separated H-O-H chain is regular");
+        assert_eq!(charges.len(), 3);
+        for (i, q) in charges.iter().enumerate() {
+            assert!(q.abs() > 1e-2, "charge {i} collapsed to {q}");
+        }
+        // The more electronegative oxygen takes the electrons from both hydrogens.
+        assert!(charges[1] < 0.0, "q_O = {}", charges[1]);
+        assert!(charges[0] > 0.0 && charges[2] > 0.0, "q_H = {charges:?}");
+    }
+    #[test]
+    fn test_eem_charges_match_closed_form_for_symmetric_chain() {
+        // Symmetric H-O-H: q_H = a, q_O = -2a with
+        // a = (χ_O − χ_H) / (η_H + 2 η_O + J_HH − 4 J_HO),  J = k_e / r.
+        let (positions, chi, eta) = water_like_geometry();
+        let j_ho = KE_EV_ANG / 3.0;
+        let j_hh = KE_EV_ANG / 6.0;
+        let a = (chi[1] - chi[0]) / (eta[0] + 2.0 * eta[1] + j_hh - 4.0 * j_ho);
+        let charges = eem_charges(&positions, &chi, &eta, 0.0, 1e-12, 50)
+            .expect("EEM system of a well separated H-O-H chain is regular");
         assert!(
-            (sum - total_q).abs() < 1e-4,
-            "EEM charges should sum to {total_q}, got {sum}"
+            (charges[0] - a).abs() < 1e-10,
+            "q_H1 = {}, a = {a}",
+            charges[0]
         );
+        assert!(
+            (charges[2] - a).abs() < 1e-10,
+            "q_H2 = {}, a = {a}",
+            charges[2]
+        );
+        assert!((charges[1] + 2.0 * a).abs() < 1e-10, "q_O = {}", charges[1]);
+        assert!(
+            a > 0.1,
+            "closed-form charge transfer should be sizeable, got {a}"
+        );
+    }
+    #[test]
+    fn test_eem_charges_equalise_electronegativity() {
+        // The defining property is independent of any sign expectation: every atom ends
+        // up with the same effective electronegativity, also for the strongly coupled
+        // (indefinite) configuration where k_e / r exceeds the hardnesses.
+        let strongly_coupled = vec![[0.0_f64, 0.0, 0.0], [1.5, 0.0, 0.0], [3.0, 0.0, 0.0]];
+        let chi = vec![4.53, 6.93, 4.53];
+        let eta = vec![5.0, 8.0, 5.0];
+        for &total_q in &[0.0_f64, 0.5, -1.0] {
+            let charges = eem_charges(&strongly_coupled, &chi, &eta, total_q, 1e-12, 50)
+                .expect("EEM matrix of three distinct atoms is regular");
+            let spread = eem_equalisation_spread(&strongly_coupled, &chi, &eta, &charges);
+            assert!(
+                spread < 1e-9,
+                "electronegativity spread {spread} (Q = {total_q})"
+            );
+            let sum: f64 = charges.iter().sum();
+            assert!((sum - total_q).abs() < 1e-10);
+            assert!(charges.iter().any(|q| q.abs() > 1e-3), "{charges:?}");
+        }
+        let (positions, chi, eta) = water_like_geometry();
+        let charges = eem_charges(&positions, &chi, &eta, 0.0, 1e-12, 50)
+            .expect("EEM system of a well separated H-O-H chain is regular");
+        assert!(eem_equalisation_spread(&positions, &chi, &eta, &charges) < 1e-9);
+    }
+    #[test]
+    fn test_eem_charges_homonuclear_pair_is_neutral() {
+        // Equal electronegativities and hardnesses: the symmetric solution is q = 0 ...
+        let positions = vec![[0.0_f64, 0.0, 0.0], [4.0, 0.0, 0.0]];
+        let zero = eem_charges(&positions, &[5.0, 5.0], &[6.0, 6.0], 0.0, 1e-12, 10)
+            .expect("homonuclear EEM system is regular");
+        assert!(zero.iter().all(|q| q.abs() < 1e-12), "{zero:?}");
+        // ... and a net charge is shared equally.
+        let shared = eem_charges(&positions, &[5.0, 5.0], &[6.0, 6.0], 1.0, 1e-12, 10)
+            .expect("homonuclear EEM system is regular");
+        assert!((shared[0] - 0.5).abs() < 1e-12 && (shared[1] - 0.5).abs() < 1e-12);
+    }
+    #[test]
+    fn test_eem_charges_two_atom_closed_form_uses_coulomb_constant() {
+        // q_1 = (χ_2 − χ_1) / (η_1 + η_2 − 2 k_e / r) for a neutral pair.
+        let positions = vec![[0.0_f64, 0.0, 0.0], [5.0, 0.0, 0.0]];
+        let (chi, eta) = ([4.0, 7.0], [9.0, 11.0]);
+        let charges = eem_charges(&positions, &chi, &eta, 0.0, 1e-12, 10)
+            .expect("EEM system of a distant pair is regular");
+        let expected = (chi[1] - chi[0]) / (eta[0] + eta[1] - 2.0 * KE_EV_ANG / 5.0);
+        assert!(
+            (charges[0] - expected).abs() < 1e-10,
+            "{} vs {expected}",
+            charges[0]
+        );
+        assert!((charges[1] + expected).abs() < 1e-10);
+    }
+    #[test]
+    fn test_eem_charges_rejects_inconsistent_inputs() {
+        let positions = vec![[0.0_f64, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        let short_chi = eem_charges(&positions, &[1.0], &[5.0, 5.0], 0.0, 1e-8, 10);
+        assert!(short_chi.is_err());
+        let short_eta = eem_charges(&positions, &[1.0, 2.0], &[5.0], 0.0, 1e-8, 10);
+        assert!(short_eta.is_err());
+        let empty = eem_charges(&[], &[], &[], 0.0, 1e-8, 10).expect("empty system is valid");
+        assert!(empty.is_empty());
+    }
+    #[test]
+    fn test_eem_charges_singular_matrix_is_reported() {
+        // Zero hardness on both atoms and a suppressed coupling (coincident atoms)
+        // leave the bordered matrix [[0, 0, 1], [0, 0, 1], [1, 1, 0]], which is singular.
+        let positions = vec![[0.0_f64, 0.0, 0.0], [1e-12, 0.0, 0.0]];
+        let result = eem_charges(&positions, &[1.0, 2.0], &[0.0, 0.0], 0.0, 1e-8, 10);
+        assert!(result.is_err(), "singular EEM matrix must be an error");
     }
     #[test]
     fn test_lj_nonbonded_force_at_minimum_zero() {
@@ -1281,6 +1477,80 @@ mod tests {
             res.is_finite() && res >= 0.0,
             "Residual must be non-negative finite, got {res}"
         );
+    }
+    #[test]
+    fn test_qeq_step_neutral_system_is_not_collapsed_to_zero() {
+        // Regression: the multiplicative rescaling `Q / Σq` with Q = 0 multiplied every
+        // charge by zero.  Hand-evaluated Jacobi step for the dimer below:
+        //   λ = ½[(χ_1 + η_1 q_1) + (χ_2 + η_2 q_2)] = 5.43   (the Coulomb terms cancel),
+        //   raw q_1 = (λ − χ_1 − J q_2) / η_1, raw q_2 = (λ − χ_2 − J q_1) / η_2,
+        // followed by the additive shift that restores Σq = 0.
+        let positions = vec![[0.0_f64, 0.0, 0.0], [1.5, 0.0, 0.0]];
+        let charges = vec![0.2, -0.2];
+        let chi = vec![4.53, 6.93];
+        let eta = vec![5.0, 8.0];
+        let coupling = KE_EV_ANG / 1.5;
+        let raw_1 = (5.43 - 4.53 + 0.2 * coupling) / 5.0;
+        let raw_2 = (5.43 - 6.93 - 0.2 * coupling) / 8.0;
+        let shift = -(raw_1 + raw_2) / 2.0;
+        let (q_new, residual) = qeq_iteration_step(&positions, &charges, &chi, &eta, 0.0);
+        assert!(
+            (q_new[0] - (raw_1 + shift)).abs() < 1e-12,
+            "q_1 = {}",
+            q_new[0]
+        );
+        assert!(
+            (q_new[1] - (raw_2 + shift)).abs() < 1e-12,
+            "q_2 = {}",
+            q_new[1]
+        );
+        assert!(q_new.iter().all(|q| q.abs() > 0.1), "{q_new:?}");
+        assert!(q_new.iter().sum::<f64>().abs() < 1e-12);
+        let expected_residual = ((q_new[0] - 0.2).powi(2) + (q_new[1] + 0.2).powi(2)).sqrt();
+        assert!((residual - expected_residual).abs() < 1e-12);
+    }
+    #[test]
+    fn test_qeq_step_leaves_direct_solution_unchanged() {
+        let (positions, chi, eta) = water_like_geometry();
+        for &total_q in &[0.0_f64, 1.0] {
+            let exact = eem_charges(&positions, &chi, &eta, total_q, 1e-12, 50)
+                .expect("EEM system of a well separated H-O-H chain is regular");
+            let (next, residual) = qeq_iteration_step(&positions, &exact, &chi, &eta, total_q);
+            assert!(residual < 1e-10, "residual {residual} at the EEM solution");
+            for (a, b) in exact.iter().zip(next.iter()) {
+                assert!((a - b).abs() < 1e-10, "{a} vs {b}");
+            }
+        }
+    }
+    #[test]
+    fn test_qeq_iteration_converges_to_direct_solution_for_weak_coupling() {
+        // Far apart atoms (k_e / r << η): the Jacobi iteration is a contraction and its
+        // limit is the direct EEM solution.
+        let positions = vec![[-20.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [20.0, 0.0, 0.0]];
+        let chi = vec![4.53, 6.93, 4.53];
+        let eta = vec![5.0, 8.0, 5.0];
+        let exact = eem_charges(&positions, &chi, &eta, 0.0, 1e-12, 50)
+            .expect("EEM system of distant atoms is regular");
+        let mut charges = vec![0.0_f64; 3];
+        let mut residual = f64::INFINITY;
+        for _ in 0..200 {
+            let (next, res) = qeq_iteration_step(&positions, &charges, &chi, &eta, 0.0);
+            charges = next;
+            residual = res;
+        }
+        assert!(residual < 1e-12, "iteration did not settle: {residual}");
+        for (a, b) in exact.iter().zip(charges.iter()) {
+            assert!((a - b).abs() < 1e-9, "iterated {b} vs direct {a}");
+        }
+        // Symmetric H-O-H closed form: q_H = a, q_O = -2a with J_HO = k_e / 20, J_HH = k_e / 40.
+        let a =
+            (chi[1] - chi[0]) / (eta[0] + 2.0 * eta[1] + KE_EV_ANG / 40.0 - 4.0 * KE_EV_ANG / 20.0);
+        assert!(
+            (charges[0] - a).abs() < 1e-9,
+            "q_H = {}, a = {a}",
+            charges[0]
+        );
+        assert!((charges[1] + 2.0 * a).abs() < 1e-9, "q_O = {}", charges[1]);
     }
     #[test]
     fn test_detect_topology_changes_break() {

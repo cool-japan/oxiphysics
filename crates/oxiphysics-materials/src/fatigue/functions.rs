@@ -2,149 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use super::types::{BasquinCurve, DamageToleranceResult, ParisLaw, RainflowCycle};
+use super::types::{BasquinCurve, DamageToleranceResult, ParisLaw};
 
-/// Rainflow cycle counting using the ASTM E1049 simplified 3-point algorithm.
-///
-/// Returns a list of `(range, mean)` pairs for each counted cycle.
-/// Half-cycles (residual cycles) are combined as full cycles where possible.
-///
-/// # Arguments
-/// * `signal` - Time-domain load or strain signal (peaks/valleys, or raw signal)
-///
-/// # Returns
-/// A `Vec<(f64, f64)>` of `(range, mean)` tuples for each full cycle.
-pub fn rain_flow_count(signal: &[f64]) -> Vec<(f64, f64)> {
-    if signal.len() < 3 {
-        return Vec::new();
-    }
-    let tp = extract_turning_points(signal);
-    let mut cycles: Vec<(f64, f64)> = Vec::new();
-    let mut stack: Vec<f64> = Vec::new();
-    let mut i = 0;
-    while i < tp.len() {
-        stack.push(tp[i]);
-        i += 1;
-        loop {
-            let n = stack.len();
-            if n < 3 {
-                break;
-            }
-            let x0 = stack[n - 3];
-            let x1 = stack[n - 2];
-            let x2 = stack[n - 1];
-            let range_01 = (x1 - x0).abs();
-            let range_12 = (x2 - x1).abs();
-            if range_12 >= range_01 {
-                let range = range_01;
-                let mean = (x0 + x1) / 2.0;
-                cycles.push((range, mean));
-                stack.remove(n - 3);
-                stack.remove(n - 3);
-            } else {
-                break;
-            }
-        }
-    }
-    let residuals = stack;
-    let mut j = 0;
-    while j + 1 < residuals.len() {
-        let x0 = residuals[j];
-        let x1 = residuals[j + 1];
-        let range = (x1 - x0).abs();
-        let mean = (x0 + x1) / 2.0;
-        cycles.push((range, mean));
-        j += 2;
-    }
-    cycles
-}
-/// Rainflow counting that also returns half-cycle information.
-///
-/// Returns `Vec<(range, mean, count)>` where `count` is 1.0 for full cycles
-/// and 0.5 for half cycles.
-pub fn rain_flow_count_with_half_cycles(signal: &[f64]) -> Vec<(f64, f64, f64)> {
-    if signal.len() < 3 {
-        return Vec::new();
-    }
-    let tp = extract_turning_points(signal);
-    let mut cycles: Vec<(f64, f64, f64)> = Vec::new();
-    let mut stack: Vec<f64> = Vec::new();
-    let mut i = 0;
-    while i < tp.len() {
-        stack.push(tp[i]);
-        i += 1;
-        loop {
-            let n = stack.len();
-            if n < 3 {
-                break;
-            }
-            let x0 = stack[n - 3];
-            let x1 = stack[n - 2];
-            let x2 = stack[n - 1];
-            let range_01 = (x1 - x0).abs();
-            let range_12 = (x2 - x1).abs();
-            if range_12 >= range_01 {
-                let range = range_01;
-                let mean = (x0 + x1) / 2.0;
-                cycles.push((range, mean, 1.0));
-                stack.remove(n - 3);
-                stack.remove(n - 3);
-            } else {
-                break;
-            }
-        }
-    }
-    let residuals = stack;
-    let mut j = 0;
-    while j + 1 < residuals.len() {
-        let x0 = residuals[j];
-        let x1 = residuals[j + 1];
-        let range = (x1 - x0).abs();
-        let mean = (x0 + x1) / 2.0;
-        cycles.push((range, mean, 0.5));
-        j += 2;
-    }
-    cycles
-}
-/// Compute Palmgren-Miner damage from rainflow-counted cycles using an S-N curve.
-///
-/// For each cycle (range, mean), the stress amplitude = range/2 is used to
-/// compute cycles to failure N_f from the S-N curve, and damage D += 1/N_f.
-pub fn miner_damage_from_rainflow(cycles: &[(f64, f64)], sn: &BasquinCurve) -> f64 {
-    let mut damage = 0.0;
-    for &(range, _mean) in cycles {
-        let stress_amp = range / 2.0;
-        let nf = sn.cycles_to_failure(stress_amp);
-        if nf.is_finite() && nf > 0.0 {
-            damage += 1.0 / nf;
-        }
-    }
-    damage
-}
-/// Extract turning points (peaks and valleys) from a signal.
-///
-/// The first and last points are always included.
-pub(super) fn extract_turning_points(signal: &[f64]) -> Vec<f64> {
-    if signal.len() <= 2 {
-        return signal.to_vec();
-    }
-    let mut tp = vec![signal[0]];
-    for k in 1..signal.len() - 1 {
-        let prev = signal[k - 1];
-        let curr = signal[k];
-        let next = signal[k + 1];
-        if ((curr >= prev && curr >= next) || (curr <= prev && curr <= next))
-            && *tp.last().expect("collection should not be empty") != curr
-        {
-            tp.push(curr);
-        }
-    }
-    let last = *signal.last().expect("collection should not be empty");
-    if *tp.last().expect("collection should not be empty") != last {
-        tp.push(last);
-    }
-    tp
-}
 /// Compute stress concentration factor for a notched specimen.
 ///
 /// Kt is the theoretical stress concentration factor.
@@ -447,13 +306,16 @@ pub fn sequenced_miner_damage(blocks: &[(f64, f64)]) -> Vec<f64> {
 }
 /// Compute the rainflow cycle histogram.
 ///
-/// Groups cycles from rainflow counting into `n_bins` linearly-spaced
-/// stress-range bins and returns `(bin_midpoints, cycle_counts)`.
-pub fn rainflow_histogram(cycles: &[(f64, f64)], n_bins: usize) -> (Vec<f64>, Vec<f64>) {
+/// Groups the `(range, mean, count)` entries of a rainflow count (see
+/// [`rain_flow_count`](super::rain_flow_count)) into `n_bins` linearly-spaced
+/// stress-range bins and returns `(bin_midpoints, cycle_counts)`.  Every entry
+/// adds its `count` (1.0 for a closed cycle, 0.5 for a half cycle of the
+/// residue) to its bin, so the bin counts sum to the total number of cycles.
+pub fn rainflow_histogram(cycles: &[(f64, f64, f64)], n_bins: usize) -> (Vec<f64>, Vec<f64>) {
     if cycles.is_empty() || n_bins == 0 {
         return (vec![], vec![]);
     }
-    let max_range = cycles.iter().map(|&(r, _)| r).fold(0.0_f64, f64::max);
+    let max_range = cycles.iter().map(|&(r, _, _)| r).fold(0.0_f64, f64::max);
     if max_range <= 0.0 {
         return (vec![0.0; n_bins], vec![0.0; n_bins]);
     }
@@ -463,33 +325,46 @@ pub fn rainflow_histogram(cycles: &[(f64, f64)], n_bins: usize) -> (Vec<f64>, Ve
     for (k, mid) in midpoints.iter_mut().enumerate() {
         *mid = (k as f64 + 0.5) * bin_width;
     }
-    for &(range, _mean) in cycles {
+    for &(range, _mean, count) in cycles {
         let idx = ((range / bin_width) as usize).min(n_bins - 1);
-        counts[idx] += 1.0;
+        counts[idx] += count;
     }
     (midpoints, counts)
 }
 /// Compute damage-equivalent stress range (DESR) for variable amplitude loading.
 ///
-/// DESR = (Σ n_i * Δσ_i^m / N_total)^(1/m)
+/// DESR = (Σ n_i * Δσ_i^m / Σ n_i)^(1/m)
 ///
-/// where n_i is the number of cycles at range Δσ_i and m is the Paris/S-N
-/// exponent. Represents the constant-amplitude range giving the same damage.
-pub fn damage_equivalent_stress_range(cycles: &[(f64, f64)], m_exp: f64) -> f64 {
-    if cycles.is_empty() {
+/// where n_i is the number of cycles at range Δσ_i (the `count` of each
+/// `(range, mean, count)` entry of a rainflow count, so a half cycle weighs 0.5)
+/// and m is the Paris/S-N exponent. Represents the constant-amplitude range
+/// giving the same damage.  Returns 0 when there are no cycles.
+pub fn damage_equivalent_stress_range(cycles: &[(f64, f64, f64)], m_exp: f64) -> f64 {
+    let n_total: f64 = cycles.iter().map(|&(_, _, count)| count).sum();
+    if n_total.is_nan() || n_total <= 0.0 {
         return 0.0;
     }
-    let n_total = cycles.len() as f64;
-    let sum: f64 = cycles.iter().map(|&(range, _)| range.powf(m_exp)).sum();
+    let sum: f64 = cycles
+        .iter()
+        .map(|&(range, _, count)| count * range.powf(m_exp))
+        .sum();
     (sum / n_total).powf(1.0 / m_exp)
 }
 /// Compute root-mean-square (RMS) stress range from rainflow cycles.
-pub fn rms_stress_range(cycles: &[(f64, f64)]) -> f64 {
-    if cycles.is_empty() {
+///
+/// RMS = sqrt(Σ n_i * Δσ_i² / Σ n_i) over the `(range, mean, count)` entries of
+/// a rainflow count, so a half cycle weighs 0.5.  Returns 0 when there are no
+/// cycles.
+pub fn rms_stress_range(cycles: &[(f64, f64, f64)]) -> f64 {
+    let n_total: f64 = cycles.iter().map(|&(_, _, count)| count).sum();
+    if n_total.is_nan() || n_total <= 0.0 {
         return 0.0;
     }
-    let mean_sq: f64 = cycles.iter().map(|&(r, _)| r * r).sum::<f64>() / cycles.len() as f64;
-    mean_sq.sqrt()
+    let weighted_square_sum: f64 = cycles
+        .iter()
+        .map(|&(range, _, count)| count * range * range)
+        .sum();
+    (weighted_square_sum / n_total).sqrt()
 }
 /// Irregularity factor I = number of upward zero crossings / number of peaks.
 ///
@@ -722,38 +597,6 @@ mod tests {
         assert!(!miner.is_failed());
     }
     #[test]
-    fn test_rain_flow_count_simple() {
-        let signal = [0.0_f64, 1.0, -1.0, 0.0];
-        let cycles = rain_flow_count(&signal);
-        assert!(
-            !cycles.is_empty(),
-            "rain_flow_count should return at least one cycle for [0,1,-1,0]"
-        );
-        assert_eq!(cycles.len(), 2, "Expected 2 cycles, got: {cycles:?}");
-        assert!(
-            cycles.iter().all(|&(r, _)| (r - 1.0).abs() < 1.0e-10),
-            "Expected all cycles with range 1.0, got: {cycles:?}"
-        );
-    }
-    #[test]
-    fn test_rain_flow_count_empty() {
-        let signal = [0.0_f64, 1.0];
-        let cycles = rain_flow_count(&signal);
-        assert!(
-            cycles.is_empty(),
-            "Signal with fewer than 3 points should return no cycles"
-        );
-    }
-    #[test]
-    fn test_rain_flow_count_constant() {
-        let signal = [1.0_f64; 10];
-        let cycles = rain_flow_count(&signal);
-        assert!(
-            cycles.is_empty(),
-            "Constant signal should produce no cycles"
-        );
-    }
-    #[test]
     fn test_basquin_curve_stress_at_n() {
         let bc = BasquinCurve::new(1500.0e6, -0.1, 200.0e6);
         let sigma = bc.stress_at_n(1e6);
@@ -931,22 +774,6 @@ mod tests {
         miner.apply_cycle_block(500.0, 1000.0);
         let remaining = miner.remaining_cycles(2000.0);
         assert!((remaining - 1000.0).abs() < 1e-12);
-    }
-    #[test]
-    fn test_rainflow_with_half_cycles() {
-        let signal = [0.0_f64, 2.0, -1.0, 3.0, -2.0, 1.0];
-        let cycles = rain_flow_count_with_half_cycles(&signal);
-        assert!(!cycles.is_empty());
-        for &(_, _, count) in &cycles {
-            assert!(count == 0.5 || count == 1.0, "Invalid cycle count: {count}");
-        }
-    }
-    #[test]
-    fn test_miner_damage_from_rainflow() {
-        let sn = BasquinCurve::new(1500.0e6, -0.1, 100.0e6);
-        let cycles = vec![(400.0e6, 200.0e6), (200.0e6, 100.0e6)];
-        let damage = miner_damage_from_rainflow(&cycles, &sn);
-        assert!(damage > 0.0, "Should accumulate some damage");
     }
     #[test]
     fn test_fatigue_notch_factor_no_sensitivity() {
@@ -1375,7 +1202,11 @@ mod tests {
     }
     #[test]
     fn test_rainflow_histogram_basic() {
-        let cycles = vec![(100.0e6, 0.0), (200.0e6, 10.0e6), (50.0e6, -25.0e6)];
+        let cycles = vec![
+            (100.0e6, 0.0, 1.0),
+            (200.0e6, 10.0e6, 1.0),
+            (50.0e6, -25.0e6, 1.0),
+        ];
         let (midpoints, counts) = rainflow_histogram(&cycles, 4);
         assert_eq!(midpoints.len(), 4, "Should have 4 bins");
         assert_eq!(counts.len(), 4, "Should have 4 bins");
@@ -1388,8 +1219,17 @@ mod tests {
         assert!(mid.is_empty() && cnt.is_empty());
     }
     #[test]
+    fn test_rainflow_histogram_weights_half_cycles() {
+        // Bin width 1: range 1 falls in bin 1, range 2 in bin 2 and the maximum
+        // range 4 in the top bin.  A half cycle adds 0.5, not 1.
+        let cycles = [(1.0, 0.0, 1.0), (2.0, 0.0, 0.5), (4.0, 0.0, 0.5)];
+        let (midpoints, counts) = rainflow_histogram(&cycles, 4);
+        assert_eq!(midpoints, vec![0.5, 1.5, 2.5, 3.5]);
+        assert_eq!(counts, vec![0.0, 1.0, 0.5, 0.5]);
+    }
+    #[test]
     fn test_damage_equivalent_stress_range_uniform() {
-        let cycles = vec![(100.0e6, 0.0); 10];
+        let cycles = vec![(100.0e6, 0.0, 1.0); 10];
         let desr = damage_equivalent_stress_range(&cycles, 3.0);
         assert!(
             (desr - 100.0e6).abs() / 100.0e6 < 1e-10,
@@ -1398,7 +1238,11 @@ mod tests {
     }
     #[test]
     fn test_damage_equivalent_stress_range_positive() {
-        let cycles = vec![(50.0e6, 0.0), (100.0e6, 10.0e6), (150.0e6, -50.0e6)];
+        let cycles = vec![
+            (50.0e6, 0.0, 1.0),
+            (100.0e6, 10.0e6, 1.0),
+            (150.0e6, -50.0e6, 1.0),
+        ];
         let desr = damage_equivalent_stress_range(&cycles, 3.0);
         assert!(desr > 0.0, "DESR should be positive");
         assert!(
@@ -1407,8 +1251,27 @@ mod tests {
         );
     }
     #[test]
+    fn test_damage_equivalent_stress_range_weights_by_count() {
+        // One full cycle of range 100 and one half cycle of range 200 (m = 2):
+        // (1 * 100^2 + 0.5 * 200^2) / 1.5 = 20000 / 1.5.
+        let cycles = [(100.0, 0.0, 1.0), (200.0, 0.0, 0.5)];
+        let desr = damage_equivalent_stress_range(&cycles, 2.0);
+        let expected = (30_000.0_f64 / 1.5).sqrt();
+        assert!((desr - expected).abs() < 1e-12 * expected, "DESR = {desr}");
+        // The old unweighted mean of the two entries would have given sqrt(25000).
+        assert!((desr - 25_000.0_f64.sqrt()).abs() > 1.0);
+    }
+    #[test]
+    fn test_damage_equivalent_stress_range_no_cycles_is_zero() {
+        assert_eq!(damage_equivalent_stress_range(&[], 3.0), 0.0);
+        assert_eq!(
+            damage_equivalent_stress_range(&[(10.0, 0.0, 0.0)], 3.0),
+            0.0
+        );
+    }
+    #[test]
     fn test_rms_stress_range_uniform() {
-        let cycles = vec![(100.0e6, 0.0); 5];
+        let cycles = vec![(100.0e6, 0.0, 1.0); 5];
         let rms = rms_stress_range(&cycles);
         assert!(
             (rms - 100.0e6).abs() / 100.0e6 < 1e-10,
@@ -1419,6 +1282,33 @@ mod tests {
     fn test_rms_stress_range_empty() {
         let rms = rms_stress_range(&[]);
         assert_eq!(rms, 0.0);
+    }
+    #[test]
+    fn test_rms_stress_range_weights_by_count() {
+        // sqrt((1 * 3^2 + 0.5 * 6^2) / 1.5) = sqrt(18).
+        let cycles = [(3.0, 0.0, 1.0), (6.0, 0.0, 0.5)];
+        let rms = rms_stress_range(&cycles);
+        assert!((rms - 18.0_f64.sqrt()).abs() < 1e-12, "RMS = {rms}");
+        assert_eq!(rms_stress_range(&[(5.0, 0.0, 0.0)]), 0.0);
+    }
+    #[test]
+    fn test_rainflow_statistics_of_the_astm_e1049_history() {
+        // ASTM E1049 history: 0.5 @ 3, 1.5 @ 4, 0.5 @ 6, 1.0 @ 8 and 0.5 @ 9, four
+        // cycles in total.  Unit-width bins put the 9 into the top (9th) bin
+        // together with the 8.
+        let cycles =
+            crate::fatigue::rain_flow_count(&[-2.0, 1.0, -3.0, 5.0, -1.0, 3.0, -4.0, 4.0, -2.0]);
+        let (_, counts) = rainflow_histogram(&cycles, 9);
+        assert_eq!(counts, vec![0.0, 0.0, 0.0, 0.5, 1.5, 0.0, 0.5, 0.0, 1.5]);
+        // m = 1: count-weighted mean range (1.5 + 6 + 3 + 8 + 4.5) / 4 = 5.75.
+        let mean_range = damage_equivalent_stress_range(&cycles, 1.0);
+        assert!(
+            (mean_range - 5.75).abs() < 1e-12,
+            "mean range = {mean_range}"
+        );
+        // RMS: sqrt((4.5 + 24 + 18 + 64 + 40.5) / 4) = sqrt(37.75).
+        let rms = rms_stress_range(&cycles);
+        assert!((rms - 37.75_f64.sqrt()).abs() < 1e-12, "RMS = {rms}");
     }
     #[test]
     fn test_irregularity_factor_narrow_band() {
@@ -1582,64 +1472,6 @@ mod tests {
             "Normal quantile roundtrip: {p_back} vs {p}"
         );
     }
-}
-/// Perform rainflow cycle counting on a stress/strain time series.
-///
-/// Implements the ASTM E1049 four-point algorithm.  Returns a list of
-/// [`RainflowCycle`] structs with `count = 1.0` for full cycles and
-/// `count = 0.5` for residual half-cycles at the end.
-pub fn rainflow_count(signal: &[f64]) -> Vec<RainflowCycle> {
-    if signal.len() < 2 {
-        return Vec::new();
-    }
-    let mut pts: Vec<f64> = Vec::with_capacity(signal.len());
-    pts.push(signal[0]);
-    for i in 1..signal.len() - 1 {
-        let prev = signal[i - 1];
-        let curr = signal[i];
-        let next = signal[i + 1];
-        if (curr >= prev && curr >= next) || (curr <= prev && curr <= next) {
-            pts.push(curr);
-        }
-    }
-    pts.push(*signal.last().expect("collection should not be empty"));
-    let mut stack: Vec<f64> = Vec::new();
-    let mut cycles: Vec<RainflowCycle> = Vec::new();
-    for &pt in &pts {
-        stack.push(pt);
-        loop {
-            let n = stack.len();
-            if n < 4 {
-                break;
-            }
-            let x = (stack[n - 2] - stack[n - 3]).abs();
-            let y = (stack[n - 1] - stack[n - 2]).abs();
-            let z = (stack[n - 3] - stack[n - 4]).abs();
-            if y >= x && x <= z {
-                let mean = (stack[n - 3] + stack[n - 2]) / 2.0;
-                cycles.push(RainflowCycle {
-                    range: x,
-                    mean,
-                    count: 1.0,
-                });
-                stack.remove(n - 3);
-                stack.remove(n - 3);
-            } else {
-                break;
-            }
-        }
-    }
-    let n = stack.len();
-    for i in 0..n.saturating_sub(1) {
-        let range = (stack[i + 1] - stack[i]).abs();
-        let mean = (stack[i + 1] + stack[i]) / 2.0;
-        cycles.push(RainflowCycle {
-            range,
-            mean,
-            count: 0.5,
-        });
-    }
-    cycles
 }
 /// Compute Miner cumulative damage from a slice of (n_applied, N_failure) pairs.
 ///

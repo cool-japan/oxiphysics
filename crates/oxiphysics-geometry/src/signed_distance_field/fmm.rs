@@ -3,6 +3,7 @@
 
 //! Fast Marching Method for SDF initialization on a uniform 3D grid.
 
+use crate::error::{Result, check_finite, check_len, check_positive};
 use std::collections::BinaryHeap;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -58,6 +59,9 @@ impl Ord for FmmEntry {
 /// the nearest accepted neighbour it was computed from, so cells enclosed by
 /// seeds with negative distance receive negative distances and the others
 /// positive ones. Cells that no seed can reach keep the value `f64::MAX`.
+///
+/// [`FastMarchingMethod::reinitialize`] derives the seeds from an arbitrary
+/// level-set function instead of requiring signed distances to be supplied.
 #[derive(Debug, Clone)]
 pub struct FastMarchingMethod {
     /// Grid size.
@@ -134,6 +138,119 @@ impl FastMarchingMethod {
             let ix = rem % self.nx;
             self.push_neighbours(ix, iy, iz, &mut heap);
         }
+    }
+
+    /// Re-initialise the grid as the signed distance field of the zero level set
+    /// of `phi`.
+    ///
+    /// `phi` holds one value per cell in the layout of the flat grid index (the
+    /// index used by [`FastMarchingMethod::set_known`]). It may be any scalar field
+    /// whose zero level set is the interface, for example `|x|² - R²`; it does not
+    /// have to be a distance function. Negative values are inside, positive values
+    /// outside. Previous distances are discarded.
+    ///
+    /// 1. A cell is an interface cell when `phi` is exactly zero there or a face
+    ///    neighbour has the opposite sign (or is exactly zero). Cells with a
+    ///    non-finite `phi` are never seeded.
+    /// 2. Each interface cell is seeded with the first-order distance estimate
+    ///    `|phi| / |∇phi|`, with `∇phi` from central differences (one-sided at the
+    ///    grid boundary). The estimate is capped by the distance to the zero
+    ///    crossing along a grid axis, located by linear interpolation of `phi`
+    ///    between the two cells. Where `phi` is linear between the cells that
+    ///    crossing lies on the interface, so its distance is an upper bound of the
+    ///    distance to the interface; it also serves as the fallback where the
+    ///    gradient vanishes.
+    /// 3. The Eikonal equation is marched on the distance magnitude from all seeds,
+    ///    and every distance receives the sign of `phi` in its own cell.
+    ///
+    /// The result does not change when `phi` is multiplied by a positive constant.
+    /// A field without a sign change has no interface: nothing is seeded and every
+    /// cell keeps the value `f64::MAX`.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::LengthMismatch`](crate::Error::LengthMismatch) if `phi.len()` is
+    ///   not `nx * ny * nz`.
+    /// * [`Error::OutOfRange`](crate::Error::OutOfRange) or
+    ///   [`Error::General`](crate::Error::General) if the grid spacing is not a
+    ///   positive finite number.
+    pub fn reinitialize(&mut self, phi: &[f64]) -> Result<()> {
+        check_len(self.dist.len(), phi.len())?;
+        check_finite("dx", self.dx)?;
+        check_positive("dx", self.dx)?;
+
+        self.dist.fill(f64::MAX);
+        self.state.fill(FmmState::Far);
+
+        let mut seeds: Vec<(usize, f64)> = Vec::new();
+        for iz in 0..self.nz {
+            for iy in 0..self.ny {
+                for ix in 0..self.nx {
+                    if let Some(distance) = self.interface_seed_distance(phi, ix, iy, iz) {
+                        seeds.push((self.flat(ix, iy, iz), distance));
+                    }
+                }
+            }
+        }
+        self.set_known(&seeds);
+        self.run();
+
+        for (distance, &value) in self.dist.iter_mut().zip(phi) {
+            if value < 0.0 && *distance != f64::MAX {
+                *distance = -*distance;
+            }
+        }
+        Ok(())
+    }
+
+    /// Distance from cell `(ix, iy, iz)` to the zero level set of `phi`, or `None`
+    /// when the cell is not next to the interface (or `phi` is not finite there).
+    fn interface_seed_distance(&self, phi: &[f64], ix: usize, iy: usize, iz: usize) -> Option<f64> {
+        let here = self.flat(ix, iy, iz);
+        let value = phi[here];
+        if !value.is_finite() {
+            return None;
+        }
+        if value == 0.0 {
+            return Some(0.0);
+        }
+        let dx = self.dx;
+        let axes = [
+            (ix, self.nx, 1),
+            (iy, self.ny, self.nx),
+            (iz, self.nz, self.nx * self.ny),
+        ];
+        let mut gradient_sq = 0.0;
+        let mut axis_crossing = f64::INFINITY;
+        for (coord, extent, stride) in axes {
+            let lower = (coord > 0)
+                .then(|| phi[here - stride])
+                .filter(|v| v.is_finite());
+            let upper = (coord + 1 < extent)
+                .then(|| phi[here + stride])
+                .filter(|v| v.is_finite());
+            let derivative = match (lower, upper) {
+                (Some(lo), Some(hi)) => (hi - lo) / (2.0 * dx),
+                (None, Some(hi)) => (hi - value) / dx,
+                (Some(lo), None) => (value - lo) / dx,
+                (None, None) => 0.0,
+            };
+            gradient_sq += derivative * derivative;
+            for neighbour in [lower, upper].into_iter().flatten() {
+                // `value` is non-zero, so comparing the signs is exact even where
+                // a product of tiny values would underflow.
+                let crosses = neighbour == 0.0 || (value < 0.0) != (neighbour < 0.0);
+                if crosses {
+                    let crossing = dx * value.abs() / (value.abs() + neighbour.abs());
+                    axis_crossing = axis_crossing.min(crossing);
+                }
+            }
+        }
+        if !axis_crossing.is_finite() {
+            return None;
+        }
+        let first_order = value.abs() / gradient_sq.sqrt();
+        Some(first_order.min(axis_crossing))
     }
 
     fn push_neighbours(
@@ -271,5 +388,7 @@ impl FastMarchingMethod {
     }
 }
 
+#[cfg(test)]
+mod reinitialize_tests;
 #[cfg(test)]
 mod tests;

@@ -111,23 +111,6 @@ pub(super) fn do_simplex_cached(simplex: &mut Vec<CachedSupport>) -> Option<[f64
         }
     }
 }
-/// Compute the closest point on the simplex (line or triangle) to the origin.
-pub(super) fn closest_point_on_simplex_to_origin(simplex: &[CachedSupport]) -> [f64; 3] {
-    match simplex.len() {
-        0 => [0.0; 3],
-        1 => simplex[0].minkowski_point,
-        2 => {
-            let a = simplex[0].minkowski_point;
-            let b = simplex[1].minkowski_point;
-            let ab = sub3_arr(b, a);
-            let ao = negate3(a);
-            let t = dot3_arr(ao, ab) / dot3_arr(ab, ab);
-            let t = t.clamp(0.0, 1.0);
-            [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t]
-        }
-        _ => simplex[0].minkowski_point,
-    }
-}
 #[cfg(test)]
 mod tests {
 
@@ -304,9 +287,14 @@ mod tests {
             let sb = sphere_support(c2, r, negate3(dir));
             CachedSupport::new(sa, sb)
         });
+        let (pa, pb) = result.expect("separated spheres should produce closest points");
         assert!(
-            result.is_some(),
-            "separated spheres should produce closest points"
+            len3_arr(sub3_arr(pa, [1.0, 0.0, 0.0])) < 1e-9,
+            "witness on A should be (1, 0, 0), got {pa:?}"
+        );
+        assert!(
+            len3_arr(sub3_arr(pb, [4.0, 0.0, 0.0])) < 1e-9,
+            "witness on B should be (4, 0, 0), got {pb:?}"
         );
     }
     #[test]
@@ -320,15 +308,10 @@ mod tests {
             let sb = sphere_support(c2, r, negate3(dir));
             CachedSupport::new(sa, sb)
         });
-        if let Some((pa, pb)) = result {
-            let diff = sub3_arr(pa, pb);
-            let dist = len3_arr(diff);
-            assert!(
-                dist.is_finite(),
-                "witness distance should be finite, got {}",
-                dist
-            );
-        }
+        assert!(
+            result.is_none(),
+            "overlapping spheres have no closest pair, got {result:?}"
+        );
     }
 }
 /// Compute the closest point on a line segment AB to the origin.
@@ -347,29 +330,17 @@ pub(super) fn johnson_segment(a: [f64; 3], b: [f64; 3]) -> ([f64; 3], f64, f64) 
 }
 /// Compute the closest point on triangle ABC to the origin using Johnson's method.
 ///
-/// Returns (closest, u, v, w) with barycentric coords.
+/// Returns (closest, u, v, w) with barycentric coords, so that
+/// `closest = u*A + v*B + w*C` with non-negative weights summing to one.
 pub(super) fn johnson_triangle(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> ([f64; 3], f64, f64, f64) {
     let ab = sub3_arr(b, a);
     let ac = sub3_arr(c, a);
     let n = cross3_arr(ab, ac);
     let n_sq = dot3_arr(n, n);
     if n_sq < 1e-14 {
-        let (cp_ab, u_ab, v_ab) = johnson_segment(a, b);
-        let (cp_ac, u_ac, _) = johnson_segment(a, c);
-        let (cp_bc, _, v_bc) = johnson_segment(b, c);
-        let d_ab = dot3_arr(cp_ab, cp_ab);
-        let d_ac = dot3_arr(cp_ac, cp_ac);
-        let d_bc = dot3_arr(cp_bc, cp_bc);
-        if d_ab <= d_ac && d_ab <= d_bc {
-            return (cp_ab, u_ab, v_ab, 0.0);
-        } else if d_ac <= d_bc {
-            return (cp_ac, u_ac, 0.0, 1.0 - u_ac);
-        } else {
-            return (cp_bc, 0.0, v_bc, 1.0 - v_bc);
-        }
+        return johnson_triangle_edges(a, b, c);
     }
     let ao = negate3(a);
-    let dist_to_plane = dot3_arr(ao, n) / n_sq.sqrt();
     let d1 = dot3_arr(ab, ao);
     let d2 = dot3_arr(ac, ao);
     let d3 = dot3_arr(ab, ab);
@@ -377,7 +348,7 @@ pub(super) fn johnson_triangle(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> ([f64; 
     let d5 = dot3_arr(ac, ac);
     let denom = d3 * d5 - d4 * d4;
     if denom.abs() < 1e-14 {
-        return johnson_triangle_fallback(a, b, c);
+        return johnson_triangle_edges(a, b, c);
     }
     let v = (d1 * d5 - d2 * d4) / denom;
     let w = (d2 * d3 - d1 * d4) / denom;
@@ -388,37 +359,32 @@ pub(super) fn johnson_triangle(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> ([f64; 
             a[1] * u + b[1] * v + c[1] * w,
             a[2] * u + b[2] * v + c[2] * w,
         ];
-        let _ = dist_to_plane;
         return (closest, u, v, w);
     }
-    let (cp_ab, u_ab, v_ab) = johnson_segment(a, b);
-    let (cp_ac, u_ac, w_ac) = johnson_segment(a, c);
-    let (cp_bc, v_bc, w_bc) = johnson_segment(b, c);
-    let d_ab = dot3_arr(cp_ab, cp_ab);
-    let d_ac = dot3_arr(cp_ac, cp_ac);
-    let d_bc = dot3_arr(cp_bc, cp_bc);
-    if d_ab <= d_ac && d_ab <= d_bc {
-        (cp_ab, u_ab, v_ab, 0.0)
-    } else if d_ac <= d_bc {
-        (cp_ac, u_ac, 0.0, w_ac)
-    } else {
-        (cp_bc, 0.0, v_bc, w_bc)
-    }
+    johnson_triangle_edges(a, b, c)
 }
-/// Fallback for degenerate triangles in johnson_triangle.
-pub(super) fn johnson_triangle_fallback(
+/// Closest point to the origin on the three edges of triangle ABC, with the
+/// barycentric weights `(closest, u, v, w)` of that point.
+///
+/// This is the answer for a degenerate (collinear) triangle and for a regular
+/// one whose closest point lies outside its interior.
+pub(super) fn johnson_triangle_edges(
     a: [f64; 3],
     b: [f64; 3],
     c: [f64; 3],
 ) -> ([f64; 3], f64, f64, f64) {
-    let (cp_ab, u_ab, v_ab) = johnson_segment(a, b);
-    let (cp_ac, u_ac, w_ac) = johnson_segment(a, c);
+    let (cp_ab, a_ab, b_ab) = johnson_segment(a, b);
+    let (cp_ac, a_ac, c_ac) = johnson_segment(a, c);
+    let (cp_bc, b_bc, c_bc) = johnson_segment(b, c);
     let d_ab = dot3_arr(cp_ab, cp_ab);
     let d_ac = dot3_arr(cp_ac, cp_ac);
-    if d_ab <= d_ac {
-        (cp_ab, u_ab, v_ab, 0.0)
+    let d_bc = dot3_arr(cp_bc, cp_bc);
+    if d_ab <= d_ac && d_ab <= d_bc {
+        (cp_ab, a_ab, b_ab, 0.0)
+    } else if d_ac <= d_bc {
+        (cp_ac, a_ac, 0.0, c_ac)
     } else {
-        (cp_ac, u_ac, 0.0, w_ac)
+        (cp_bc, 0.0, b_bc, c_bc)
     }
 }
 /// Barycentric weight below which a simplex vertex does not take part in the

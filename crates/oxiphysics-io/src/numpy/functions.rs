@@ -2,6 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::layout::{ByteOrder, checked_element_count, fortran_to_c_order, parse_simple_descr};
 use super::types::NpyDtype;
 
 pub(super) const NPY_MAGIC: &[u8; 6] = b"\x93NUMPY";
@@ -137,31 +138,70 @@ pub fn write_npy_i64(shape: &[usize], data: &[i64]) -> Vec<u8> {
     }
     out
 }
-/// Parse the NPY v1.0 header and return `(dtype_str, shape, data_offset)`.
-pub(super) fn parse_npy_header(bytes: &[u8]) -> Result<(String, Vec<usize>, usize), String> {
-    if bytes.len() < 10 {
-        return Err("npy data too short".to_string());
+/// Parsed header of an `.npy` file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NpyHeader {
+    /// The `descr` entry, for example `<f8`.
+    pub(super) descr: String,
+    /// Whether the data are stored in Fortran (column-major) order.
+    pub(super) fortran_order: bool,
+    /// Logical array shape.
+    pub(super) shape: Vec<usize>,
+    /// Byte offset of the first data element.
+    pub(super) data_start: usize,
+}
+/// Parse the header of an `.npy` file (format versions 1.0, 2.0 and 3.0).
+pub(super) fn parse_npy_header(bytes: &[u8]) -> Result<NpyHeader, String> {
+    let magic = bytes.get(..6).ok_or("npy data too short")?;
+    if magic != NPY_MAGIC {
+        return Err(format!("bad npy magic: {magic:?}"));
     }
-    if &bytes[0..6] != NPY_MAGIC {
-        return Err(format!("bad npy magic: {:?}", &bytes[0..6]));
-    }
-    let major = bytes[6];
-    let minor = bytes[7];
-    if major != 1 || minor != 0 {
-        return Err(format!("unsupported npy version: {major}.{minor}"));
-    }
-    let header_len = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
-    let data_start = 10 + header_len;
-    if bytes.len() < data_start {
-        return Err("npy header truncated".to_string());
-    }
-    let header_str = std::str::from_utf8(&bytes[10..data_start])
-        .map_err(|e| format!("npy header not utf-8: {e}"))?
-        .trim();
-    let dtype_str = extract_dict_value(header_str, "descr")?;
-    let shape_str = extract_dict_value(header_str, "shape")?;
-    let shape = parse_shape_tuple(&shape_str)?;
-    Ok((dtype_str, shape, data_start))
+    let (major, minor) = match (bytes.get(6), bytes.get(7)) {
+        (Some(&major), Some(&minor)) => (major, minor),
+        _ => return Err("npy data too short".to_string()),
+    };
+    // Versions 2.0 and 3.0 widen the header length field from 16 to 32 bits;
+    // version 3.0 additionally encodes the header as UTF-8 (Latin-1 before).
+    let length_field_bytes = match (major, minor) {
+        (1, 0) => 2,
+        (2, 0) | (3, 0) => 4,
+        _ => return Err(format!("unsupported npy version: {major}.{minor}")),
+    };
+    let header_start = 8 + length_field_bytes;
+    let length_field = bytes.get(8..header_start).ok_or("npy data too short")?;
+    let header_len = match length_field {
+        [a, b] => usize::from(u16::from_le_bytes([*a, *b])),
+        [a, b, c, d] => usize::try_from(u32::from_le_bytes([*a, *b, *c, *d]))
+            .map_err(|_| "npy header length does not fit in memory".to_string())?,
+        _ => return Err("npy data too short".to_string()),
+    };
+    let data_start = header_start
+        .checked_add(header_len)
+        .ok_or("npy header length overflows")?;
+    let raw_header = bytes
+        .get(header_start..data_start)
+        .ok_or("npy header truncated")?;
+    let header_text: String = if major >= 3 {
+        std::str::from_utf8(raw_header)
+            .map_err(|e| format!("npy header not utf-8: {e}"))?
+            .to_string()
+    } else {
+        raw_header.iter().map(|&b| char::from(b)).collect()
+    };
+    let header_str = header_text.trim();
+    let descr = extract_dict_value(header_str, "descr")?;
+    let fortran_order = match extract_dict_value(header_str, "fortran_order")?.as_str() {
+        "True" => true,
+        "False" => false,
+        other => return Err(format!("bad fortran_order value '{other}' in npy header")),
+    };
+    let shape = parse_shape_tuple(&extract_dict_value(header_str, "shape")?)?;
+    Ok(NpyHeader {
+        descr,
+        fortran_order,
+        shape,
+        data_start,
+    })
 }
 /// Extract a value from a Python-style dict string for a given key.
 pub(super) fn extract_dict_value(header: &str, key: &str) -> Result<String, String> {
@@ -169,23 +209,40 @@ pub(super) fn extract_dict_value(header: &str, key: &str) -> Result<String, Stri
     let pos = header
         .find(&search)
         .ok_or_else(|| format!("key '{key}' not found in npy header"))?;
-    let rest = &header[pos + search.len()..];
-    let rest = rest.trim_start();
+    let rest = header[pos + search.len()..].trim_start();
     let rest = rest
         .strip_prefix(':')
         .ok_or("missing ':' after key")?
         .trim_start();
-    if rest.starts_with('\'') {
-        let inner = rest.strip_prefix('\'').expect("prefix should be present");
+    if let Some(inner) = rest.strip_prefix('\'') {
         let end = inner.find('\'').ok_or("unterminated string value")?;
         Ok(inner[..end].to_string())
-    } else if rest.starts_with('(') {
-        let end = rest.find(')').ok_or("unterminated tuple value")? + 1;
-        Ok(rest[..end].to_string())
+    } else if rest.starts_with(['(', '[']) {
+        Ok(rest[..bracketed_len(rest)?].to_string())
     } else {
         let end = rest.find([',', '}']).unwrap_or(rest.len());
         Ok(rest[..end].trim().to_string())
     }
+}
+/// Byte length of the bracketed group `(...)` or `[...]` that starts at the
+/// beginning of `s`, nested groups included.
+fn bracketed_len(s: &str) -> Result<usize, String> {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or("unbalanced brackets in npy header")?;
+                if depth == 0 {
+                    return Ok(i + c.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    Err("unterminated bracketed value in npy header".to_string())
 }
 /// Parse a Python tuple string like `"(3, 2)"` or `"(6,)"` or `"()"` into `Vec`usize`.
 pub(super) fn parse_shape_tuple(s: &str) -> Result<Vec<usize>, String> {
@@ -211,135 +268,101 @@ pub(super) fn parse_shape_tuple(s: &str) -> Result<Vec<usize>, String> {
     }
     Ok(dims)
 }
-/// Parse a `.npy` byte buffer and return `(shape, f64 data)`.
-pub fn read_npy_f64(bytes: &[u8]) -> Result<(Vec<usize>, Vec<f64>), String> {
-    let (dtype_str, shape, data_start) = parse_npy_header(bytes)?;
-    if dtype_str != "<f8" {
-        return Err(format!("expected dtype '<f8', got '{dtype_str}'"));
+/// Decode the elements of an `.npy` array whose elements are `N` bytes wide.
+///
+/// `expected` is the canonical dtype string used in error messages and `kind`
+/// the NumPy kind character the caller accepts.  Both byte orders are
+/// supported.  Data stored in Fortran order (`fortran_order: True`, as written
+/// by `numpy.save` for transposed and other column-major arrays) are returned
+/// in C (row-major) order, so the returned vector always matches the returned
+/// shape in row-major layout.
+fn read_npy_elements<T: Copy, const N: usize>(
+    bytes: &[u8],
+    expected: &str,
+    kind: char,
+    decode_le: fn([u8; N]) -> T,
+    decode_be: fn([u8; N]) -> T,
+) -> Result<(Vec<usize>, Vec<T>), String> {
+    let header = parse_npy_header(bytes)?;
+    let wrong_dtype = || format!("expected dtype '{expected}', got '{}'", header.descr);
+    let descr = parse_simple_descr(&header.descr).map_err(|_| wrong_dtype())?;
+    if descr.kind != kind || descr.size != N {
+        return Err(wrong_dtype());
     }
-    let n_elems: usize = shape.iter().product();
-    let expected_bytes = data_start + n_elems * 8;
-    if bytes.len() < expected_bytes {
-        return Err(format!(
-            "data truncated: expected {expected_bytes} bytes, got {}",
-            bytes.len()
-        ));
-    }
+    let n_elems = checked_element_count(&header.shape)?;
+    let payload_len = n_elems.checked_mul(N).ok_or("npy payload size overflows")?;
+    let end = header
+        .data_start
+        .checked_add(payload_len)
+        .ok_or("npy payload size overflows")?;
+    let payload = bytes
+        .get(header.data_start..end)
+        .ok_or_else(|| format!("data truncated: expected {end} bytes, got {}", bytes.len()))?;
+    let decode = match descr.byte_order {
+        ByteOrder::Little => decode_le,
+        ByteOrder::Big => decode_be,
+    };
+    // `payload` holds exactly `n_elems * N` bytes, so this allocation is
+    // bounded by the size of the input.
     let mut data = Vec::with_capacity(n_elems);
-    let mut pos = data_start;
-    for _ in 0..n_elems {
-        let v = f64::from_le_bytes(
-            bytes[pos..pos + 8]
-                .try_into()
-                .expect("slice length must match"),
-        );
-        pos += 8;
-        data.push(v);
+    for chunk in payload.chunks_exact(N) {
+        let raw = <[u8; N]>::try_from(chunk)
+            .map_err(|_| "internal error: element chunk has the wrong width".to_string())?;
+        data.push(decode(raw));
     }
-    Ok((shape, data))
+    if header.fortran_order {
+        data = fortran_to_c_order(&data, &header.shape)?;
+    }
+    Ok((header.shape, data))
+}
+/// Parse a `.npy` byte buffer and return `(shape, f64 data)`.
+///
+/// Accepts `<f8`, `>f8` and `=f8` arrays in C or Fortran order; the data are
+/// returned in C order.
+pub fn read_npy_f64(bytes: &[u8]) -> Result<(Vec<usize>, Vec<f64>), String> {
+    read_npy_elements::<f64, 8>(bytes, "<f8", 'f', f64::from_le_bytes, f64::from_be_bytes)
 }
 /// Parse a `.npy` byte buffer and return `(shape, f32 data)`.
+///
+/// Accepts `<f4`, `>f4` and `=f4` arrays in C or Fortran order; the data are
+/// returned in C order.
 pub fn read_npy_f32(bytes: &[u8]) -> Result<(Vec<usize>, Vec<f32>), String> {
-    let (dtype_str, shape, data_start) = parse_npy_header(bytes)?;
-    if dtype_str != "<f4" {
-        return Err(format!("expected dtype '<f4', got '{dtype_str}'"));
-    }
-    let n_elems: usize = shape.iter().product();
-    let expected_bytes = data_start + n_elems * 4;
-    if bytes.len() < expected_bytes {
-        return Err(format!(
-            "data truncated: expected {expected_bytes} bytes, got {}",
-            bytes.len()
-        ));
-    }
-    let mut data = Vec::with_capacity(n_elems);
-    let mut pos = data_start;
-    for _ in 0..n_elems {
-        let v = f32::from_le_bytes(
-            bytes[pos..pos + 4]
-                .try_into()
-                .expect("slice length must match"),
-        );
-        pos += 4;
-        data.push(v);
-    }
-    Ok((shape, data))
+    read_npy_elements::<f32, 4>(bytes, "<f4", 'f', f32::from_le_bytes, f32::from_be_bytes)
 }
 /// Parse a `.npy` byte buffer and return `(shape, i32 data)`.
+///
+/// Accepts `<i4`, `>i4` and `=i4` arrays in C or Fortran order; the data are
+/// returned in C order.
 pub fn read_npy_i32(bytes: &[u8]) -> Result<(Vec<usize>, Vec<i32>), String> {
-    let (dtype_str, shape, data_start) = parse_npy_header(bytes)?;
-    if dtype_str != "<i4" {
-        return Err(format!("expected dtype '<i4', got '{dtype_str}'"));
-    }
-    let n_elems: usize = shape.iter().product();
-    let expected_bytes = data_start + n_elems * 4;
-    if bytes.len() < expected_bytes {
-        return Err(format!(
-            "data truncated: expected {expected_bytes} bytes, got {}",
-            bytes.len()
-        ));
-    }
-    let mut data = Vec::with_capacity(n_elems);
-    let mut pos = data_start;
-    for _ in 0..n_elems {
-        let v = i32::from_le_bytes(
-            bytes[pos..pos + 4]
-                .try_into()
-                .expect("slice length must match"),
-        );
-        pos += 4;
-        data.push(v);
-    }
-    Ok((shape, data))
+    read_npy_elements::<i32, 4>(bytes, "<i4", 'i', i32::from_le_bytes, i32::from_be_bytes)
 }
 /// Parse a `.npy` byte buffer and return `(shape, i64 data)`.
+///
+/// Accepts `<i8`, `>i8` and `=i8` arrays in C or Fortran order; the data are
+/// returned in C order.
 pub fn read_npy_i64(bytes: &[u8]) -> Result<(Vec<usize>, Vec<i64>), String> {
-    let (dtype_str, shape, data_start) = parse_npy_header(bytes)?;
-    if dtype_str != "<i8" {
-        return Err(format!("expected dtype '<i8', got '{dtype_str}'"));
-    }
-    let n_elems: usize = shape.iter().product();
-    let expected_bytes = data_start + n_elems * 8;
-    if bytes.len() < expected_bytes {
-        return Err(format!(
-            "data truncated: expected {expected_bytes} bytes, got {}",
-            bytes.len()
-        ));
-    }
-    let mut data = Vec::with_capacity(n_elems);
-    let mut pos = data_start;
-    for _ in 0..n_elems {
-        let v = i64::from_le_bytes(
-            bytes[pos..pos + 8]
-                .try_into()
-                .expect("slice length must match"),
-        );
-        pos += 8;
-        data.push(v);
-    }
-    Ok((shape, data))
+    read_npy_elements::<i64, 8>(bytes, "<i8", 'i', i64::from_le_bytes, i64::from_be_bytes)
 }
 /// Auto-detect dtype from header and return the NpyDtype.
+///
+/// The byte order of the stored elements is not part of the result; the typed
+/// readers handle both byte orders.
 pub fn detect_npy_dtype(bytes: &[u8]) -> Result<NpyDtype, String> {
-    let (dtype_str, _, _) = parse_npy_header(bytes)?;
-    NpyDtype::from_numpy_str(&dtype_str)
+    let header = parse_npy_header(bytes)?;
+    NpyDtype::from_numpy_str(&header.descr)
 }
 /// Auto-detect and return the shape from a .npy byte buffer.
 pub fn read_npy_shape(bytes: &[u8]) -> Result<Vec<usize>, String> {
-    let (_, shape, _) = parse_npy_header(bytes)?;
-    Ok(shape)
+    Ok(parse_npy_header(bytes)?.shape)
 }
 pub(super) fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, String> {
-    if *pos + 4 > data.len() {
-        return Err(format!("unexpected EOF reading u32 at offset {pos}"));
-    }
-    let v = u32::from_le_bytes(
-        data[*pos..*pos + 4]
-            .try_into()
-            .expect("slice length must match"),
-    );
+    let raw = pos
+        .checked_add(4)
+        .and_then(|end| data.get(*pos..end))
+        .and_then(|slice| <[u8; 4]>::try_from(slice).ok())
+        .ok_or_else(|| format!("unexpected EOF reading u32 at offset {pos}"))?;
     *pos += 4;
-    Ok(v)
+    Ok(u32::from_le_bytes(raw))
 }
 /// Compute the arithmetic mean of a slice.
 ///

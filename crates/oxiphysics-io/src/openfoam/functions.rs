@@ -8,6 +8,16 @@ use super::types::{
 
 /// Returns the standard FoamFile header dict for an OpenFOAM file.
 pub fn foam_header(class: &str, object: &str) -> String {
+    foam_header_with_note(class, object, None)
+}
+/// Returns the FoamFile header dict, with an optional quoted `note` entry.
+///
+/// OpenFOAM writes `note "nPoints:... nCells:... nFaces:... nInternalFaces:...";`
+/// into the header of the `owner` and `neighbour` files of a `polyMesh`.
+pub fn foam_header_with_note(class: &str, object: &str, note: Option<&str>) -> String {
+    let note_entry = note
+        .map(|text| format!("note        \"{text}\";\n"))
+        .unwrap_or_default();
     format!(
         "/*--------------------------------*- C++ -*----------------------------------*\\\n\
          | =========                 |                                                 |\n\
@@ -21,6 +31,7 @@ pub fn foam_header(class: &str, object: &str) -> String {
              version     2.0;\n\
              format      ascii;\n\
              class       {class};\n\
+         {note_entry}\
              object      {object};\n\
          }}\n\
          // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n"
@@ -1417,21 +1428,29 @@ smoothSolver:  Solving for Ux, Initial residual = 9e-4, Final residual = 8e-7, N
 /// Uses the cross-product shoelace formula projected onto the best-fit plane.
 /// For convex quads and triangles this gives an exact result.
 pub fn face_area(vertices: &[[f64; 3]]) -> f64 {
-    if vertices.len() < 3 {
-        return 0.0;
-    }
+    let sf = face_area_vector(vertices);
+    (sf[0] * sf[0] + sf[1] * sf[1] + sf[2] * sf[2]).sqrt()
+}
+/// Vector area `S_f` of a polygon: its normal (right-hand rule along the vertex
+/// order) scaled by its area, summed over the triangle fan from the first vertex.
+///
+/// Unlike `face_normal` times `face_area` this is exact for non-planar faces and
+/// does not depend on the first three vertices being non-collinear.  Returns the
+/// zero vector for fewer than three vertices.
+pub fn face_area_vector(vertices: &[[f64; 3]]) -> [f64; 3] {
+    let Some((&v0, rest)) = vertices.split_first() else {
+        return [0.0; 3];
+    };
     let mut area_vec = [0.0_f64; 3];
-    let v0 = vertices[0];
-    for i in 1..vertices.len() - 1 {
-        let v1 = vertices[i];
-        let v2 = vertices[i + 1];
+    for pair in rest.windows(2) {
+        let (v1, v2) = (pair[0], pair[1]);
         let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
         let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
         area_vec[0] += e1[1] * e2[2] - e1[2] * e2[1];
         area_vec[1] += e1[2] * e2[0] - e1[0] * e2[2];
         area_vec[2] += e1[0] * e2[1] - e1[1] * e2[0];
     }
-    0.5 * (area_vec[0] * area_vec[0] + area_vec[1] * area_vec[1] + area_vec[2] * area_vec[2]).sqrt()
+    [0.5 * area_vec[0], 0.5 * area_vec[1], 0.5 * area_vec[2]]
 }
 /// Compute the face centroid (arithmetic mean of vertices).
 pub fn face_centroid(vertices: &[[f64; 3]]) -> [f64; 3] {
@@ -1558,11 +1577,22 @@ pub fn cell_centroid_from_faces(
     let n = count as f64;
     [sum[0] / n, sum[1] / n, sum[2] / n]
 }
-/// Compute the cell-centred gradient of a scalar field using a simple
-/// Green-Gauss scheme on a structured 3D grid.
+/// Compute the cell-centred gradient of a scalar field with the Green-Gauss
+/// theorem, `grad(phi)_c = 1/V_c * sum_f phi_f S_f`.
 ///
-/// `values[i]` is the scalar at cell `i`, `cell_centres[i]` its position,
-/// `faces`, `owner`, `neighbour` are the standard OpenFOAM topology arrays.
+/// `values[i]` is the scalar at cell `i` and `cell_centres[i]` its position.
+/// `faces`, `points`, `owner` and `neighbour` are the OpenFOAM mesh topology
+/// arrays: every face normal points out of its owner cell into its neighbour.
+/// `neighbour` may be the standard OpenFOAM list that only covers the internal
+/// faces (the first `neighbour.len()` faces) or one entry per face with a
+/// negative value for boundary faces; faces without a neighbour entry are
+/// boundary faces.
+///
+/// The face value is the mean of the two adjacent cell values on internal
+/// faces (exact for linear fields on meshes with equally spaced cells) and the
+/// owner value on boundary faces (zero-gradient).  The cell volume follows
+/// from the divergence theorem, `3 V = sum_f (x_f - x_c) . S_f`.  Cells whose
+/// volume is zero get a zero gradient.
 ///
 /// Returns one gradient vector `[dφ/dx, dφ/dy, dφ/dz]` per cell.
 pub fn green_gauss_gradient(
@@ -1575,56 +1605,54 @@ pub fn green_gauss_gradient(
     n_cells: usize,
 ) -> Vec<[f64; 3]> {
     let mut grad = vec![[0.0_f64; 3]; n_cells];
-    let mut vol = vec![0.0_f64; n_cells];
-    for face_idx in 0..faces.len() {
-        let face_verts: Vec<[f64; 3]> = faces[face_idx]
+    // sum_f (x_f - x_c) . S_f per cell, which equals three times the volume.
+    let mut three_volume = vec![0.0_f64; n_cells];
+    for (face_idx, face) in faces.iter().enumerate() {
+        let Some(&own) = owner.get(face_idx) else {
+            continue;
+        };
+        let face_verts: Vec<[f64; 3]> = face
             .iter()
             .filter_map(|&vi| points.get(vi).copied())
             .collect();
         if face_verts.len() < 3 {
             continue;
         }
-        let area = face_area(&face_verts);
-        let norm = face_normal(&face_verts);
-        let sf = [norm[0] * area, norm[1] * area, norm[2] * area];
+        let sf = face_area_vector(&face_verts);
         let fc = face_centroid(&face_verts);
-        let own = owner[face_idx];
-        let nbr = neighbour[face_idx];
-        let phi_face = if nbr >= 0 {
-            let n_idx = nbr as usize;
-            let phi_own = values.get(own).copied().unwrap_or(0.0);
-            let phi_nbr = values.get(n_idx).copied().unwrap_or(0.0);
-            0.5 * (phi_own + phi_nbr)
-        } else {
-            values.get(own).copied().unwrap_or(0.0)
+        let nbr = neighbour
+            .get(face_idx)
+            .and_then(|&n| usize::try_from(n).ok());
+        let phi_own = values.get(own).copied().unwrap_or(0.0);
+        let phi_face = match nbr {
+            Some(n_idx) => 0.5 * (phi_own + values.get(n_idx).copied().unwrap_or(0.0)),
+            None => phi_own,
         };
-        if own < n_cells {
-            grad[own][0] += phi_face * sf[0];
-            grad[own][1] += phi_face * sf[1];
-            grad[own][2] += phi_face * sf[2];
-            let cc = cell_centres.get(own).copied().unwrap_or([0.0; 3]);
-            vol[own] +=
-                ((fc[0] - cc[0]) * sf[0] + (fc[1] - cc[1]) * sf[1] + (fc[2] - cc[2]) * sf[2]).abs();
-        }
-        if nbr >= 0 {
-            let n_idx = nbr as usize;
-            if n_idx < n_cells {
-                grad[n_idx][0] -= phi_face * sf[0];
-                grad[n_idx][1] -= phi_face * sf[1];
-                grad[n_idx][2] -= phi_face * sf[2];
-                let cc = cell_centres.get(n_idx).copied().unwrap_or([0.0; 3]);
-                vol[n_idx] +=
-                    ((fc[0] - cc[0]) * sf[0] + (fc[1] - cc[1]) * sf[1] + (fc[2] - cc[2]) * sf[2])
-                        .abs();
+        // Contribution of this face to a cell; `sign` is +1 for the owner (the
+        // normal points outwards) and -1 for the neighbour (it points inwards).
+        let mut add_to_cell = |cell: usize, sign: f64| {
+            if let (Some(g), Some(tv)) = (grad.get_mut(cell), three_volume.get_mut(cell)) {
+                let cc = cell_centres.get(cell).copied().unwrap_or([0.0; 3]);
+                for (component, s) in g.iter_mut().zip(sf) {
+                    *component += sign * phi_face * s;
+                }
+                *tv += sign
+                    * ((fc[0] - cc[0]) * sf[0] + (fc[1] - cc[1]) * sf[1] + (fc[2] - cc[2]) * sf[2]);
             }
+        };
+        add_to_cell(own, 1.0);
+        if let Some(n_idx) = nbr {
+            add_to_cell(n_idx, -1.0);
         }
     }
-    for i in 0..n_cells {
-        let v = vol[i];
-        if v > 1e-30 {
-            grad[i][0] /= v;
-            grad[i][1] /= v;
-            grad[i][2] /= v;
+    for (g, three_v) in grad.iter_mut().zip(&three_volume) {
+        let volume = three_v / 3.0;
+        if volume > 1e-30 {
+            for component in g.iter_mut() {
+                *component /= volume;
+            }
+        } else {
+            *g = [0.0; 3];
         }
     }
     grad

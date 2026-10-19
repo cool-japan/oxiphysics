@@ -100,8 +100,6 @@ fn point_in_tri_xz(p: [f64; 3], verts: &[[f64; 3]], tri: [u32; 3]) -> bool {
     let v1 = verts[tri[1] as usize];
     let v2 = verts[tri[2] as usize];
 
-    let e0 = sub2([v1[0] - v0[0], v1[2] - v0[2]], [0.0, 0.0]);
-    let _ = e0; // suppress; computed differently below
     let d0 = [v1[0] - v0[0], v1[2] - v0[2]];
     let d1 = [v2[0] - v0[0], v2[2] - v0[2]];
     let dp = [p[0] - v0[0], p[2] - v0[2]];
@@ -323,6 +321,11 @@ impl NavMesh {
     /// algorithm to smooth the corridor into waypoints.
     ///
     /// `agent_radius` and `obstacles` are used to mark portals as impassable.
+    ///
+    /// The returned waypoints begin with `start` and end with `goal`.  In
+    /// between, the path bends only at mesh vertices -- the corners of the
+    /// corridor found by A\* -- and is the shortest path that stays inside that
+    /// corridor.  A corner never repeats the waypoint before it.
     pub fn find_path(
         &self,
         start: [f64; 3],
@@ -348,6 +351,36 @@ impl NavMesh {
             });
         }
 
+        let corridor = self.find_corridor(start_tri, goal_tri, agent_radius, obstacles)?;
+        let mut portals = self.corridor_portals(&corridor)?;
+
+        // A start point that lies on a shared edge (for example on the diagonal
+        // of a grid cell) is already past that edge and past every edge before
+        // it.  Such portals do not constrain the path, and keeping them would
+        // put the funnel apex on the funnel boundary.
+        let first_constraining = portals
+            .iter()
+            .rposition(|&(left, right)| point_on_segment_xz(start, left, right))
+            .map_or(0, |index| index + 1);
+        let mut funnel_portals = portals.split_off(first_constraining);
+
+        // The goal closes the funnel as a zero-width portal.
+        funnel_portals.push((goal, goal));
+
+        let waypoints = funnel_smooth(start, &funnel_portals);
+        let length = compute_path_length(&waypoints);
+        Ok(Path { waypoints, length })
+    }
+
+    /// A\* over the triangle dual graph: the corridor of triangle indices that
+    /// leads from `start_tri` to `goal_tri` (both inclusive, in walking order).
+    fn find_corridor(
+        &self,
+        start_tri: usize,
+        goal_tri: usize,
+        agent_radius: f64,
+        obstacles: &[Circle2D],
+    ) -> Result<Vec<usize>, NavError> {
         // ---------------------------------------------------------------
         // A* over triangle graph
         // ---------------------------------------------------------------
@@ -444,48 +477,44 @@ impl NavMesh {
         }
         corridor.reverse(); // now start_tri … goal_tri
 
-        // ---------------------------------------------------------------
-        // Build portal list from corridor
-        // ---------------------------------------------------------------
-        // A portal is the shared edge between corridor[i] and corridor[i+1].
-        // For triangle corridor[i] with adjacency slot `edge_slot_in_parent`
-        // leading to corridor[i+1], the portal vertices are:
-        //   left  = tris[corridor[i]][(edge_slot_in_parent + 1) % 3]
-        //   right = tris[corridor[i]][(edge_slot_in_parent + 2) % 3]
-        //
-        // "Left" and "right" here correspond to a CCW-wound triangle viewed
-        // from above (+Y).  The funnel code uses signed cross products (XZ)
-        // to determine which side of the funnel a vertex falls on.
+        Ok(corridor)
+    }
 
-        // portals: (left_vertex_3d, right_vertex_3d)
-        let mut portals: Vec<([f64; 3], [f64; 3])> = Vec::new();
-
-        for i in 0..corridor.len().saturating_sub(1) {
-            let from_tri = corridor[i];
-            let to_tri = corridor[i + 1];
-
+    /// The portals crossed by `corridor` (triangle indices of consecutive
+    /// adjacent triangles, in walking order).
+    ///
+    /// Portal `i` is the edge shared by `corridor[i]` and `corridor[i + 1]`.
+    /// Its endpoints are returned as `(left, right)` from the viewpoint of a
+    /// walker leaving `corridor[i]` through the edge: `left` is the endpoint on
+    /// the counter-clockwise side of the walking direction in the x-z plane, which is
+    /// the convention the funnel algorithm relies on.  The side is decided
+    /// geometrically (from the centroid of `corridor[i]`), so it does not
+    /// depend on the winding order of the triangles.
+    fn corridor_portals(&self, corridor: &[usize]) -> Result<Vec<Portal>, NavError> {
+        let mut portals = Vec::with_capacity(corridor.len().saturating_sub(1));
+        for (&from_tri, &to_tri) in corridor.iter().zip(corridor.iter().skip(1)) {
             // Find which slot in from_tri points to to_tri.
-            let adj = self.adjacency[from_tri];
-            let found_slot = adj.iter().position(|&a| a == to_tri as i32);
-            let slot = match found_slot {
-                Some(s) => s,
-                None => return Err(NavError::NoPath),
+            let slot = self.adjacency[from_tri]
+                .iter()
+                .position(|&adjacent| adjacent == to_tri as i32)
+                .ok_or(NavError::NoPath)?;
+
+            // The portal is the edge opposite vertex `slot`.
+            let tri = self.tris[from_tri];
+            let a = self.vertices[tri[(slot + 1) % 3] as usize];
+            let b = self.vertices[tri[(slot + 2) % 3] as usize];
+
+            // `b` is counter-clockwise of `a` as seen from inside the triangle,
+            // i.e. on the left of a walker heading for the edge.
+            let inside = xz(centroid(&self.vertices, tri));
+            let portal = if cross2(sub2(xz(a), inside), sub2(xz(b), inside)) > 0.0 {
+                (b, a)
+            } else {
+                (a, b)
             };
-
-            let lv = self.tris[from_tri][(slot + 1) % 3] as usize;
-            let rv = self.tris[from_tri][(slot + 2) % 3] as usize;
-            portals.push((self.vertices[lv], self.vertices[rv]));
+            portals.push(portal);
         }
-        // Append goal as a zero-width portal.
-        portals.push((goal, goal));
-
-        // ---------------------------------------------------------------
-        // Simple Stupid Funnel (SSF) algorithm
-        // ---------------------------------------------------------------
-        let waypoints = funnel_smooth(start, &portals);
-
-        let length = compute_path_length(&waypoints);
-        Ok(Path { waypoints, length })
+        Ok(portals)
     }
 }
 
@@ -493,133 +522,142 @@ impl NavMesh {
 // Funnel algorithm
 // ---------------------------------------------------------------------------
 
+/// A portal between two consecutive corridor triangles: its `(left, right)`
+/// endpoints as seen by a walker crossing it (`left` is the endpoint on the
+/// counter-clockwise side in the x-z plane).
+type Portal = ([f64; 3], [f64; 3]);
+
 /// 2D XZ representation of a point.
 #[inline]
 fn xz(p: [f64; 3]) -> [f64; 2] {
     [p[0], p[2]]
 }
 
-/// Reconstruct 3D point, preserving Y from original 3D point.
-#[inline]
-fn xz_to_3d(xz_pt: [f64; 2], y: f64) -> [f64; 3] {
-    [xz_pt[0], y, xz_pt[1]]
-}
-
-/// Run the Simple Stupid Funnel algorithm.
-///
-/// `start` is the apex start point.
-/// `portals` is a list of `(left, right)` 3D portal vertices ending with `(goal, goal)`.
-///
-/// Returns a smoothed list of waypoints `[start, apex1, ..., goal]`.
-fn funnel_smooth(start: [f64; 3], portals: &[([f64; 3], [f64; 3])]) -> Vec<[f64; 3]> {
-    if portals.is_empty() {
-        return vec![start];
-    }
-
-    let mut waypoints: Vec<[f64; 3]> = vec![start];
-
-    let apex = xz(start);
-    let apex_3d = start;
-    let mut left_leg = apex;
-    let mut right_leg = apex;
-
-    let mut portal_idx = 0usize;
-
-    while portal_idx < portals.len() {
-        let (pl, pr) = portals[portal_idx];
-        let new_left = xz(pl);
-        let new_right = xz(pr);
-
-        let apex_to_left = sub2(left_leg, apex);
-        let apex_to_right = sub2(right_leg, apex);
-        let apex_to_new_left = sub2(new_left, apex);
-        let apex_to_new_right = sub2(new_right, apex);
-
-        // --- Update right leg ---
-        // New right narrows funnel (tightens right) if it's to the LEFT of current right.
-        // In XZ: cross2(apex_to_right, apex_to_new_right) > 0 means new_right is CCW from right.
-        if cross2(apex_to_right, apex_to_new_right) >= 0.0 {
-            // Cross right over left: apex has moved to old right leg.
-            if cross2(apex_to_left, apex_to_new_right) > 0.0 {
-                // New right is past the left leg → emit left leg as waypoint and restart.
-                waypoints.push(apex_3d);
-                // Advance apex to left leg position, find its portal.
-                // Find the portal where left_leg is a vertex.
-                let new_apex_3d = find_portal_vertex_3d(portals, left_leg, portal_idx);
-                // Reset funnel to new apex, restart from portal_idx = the one after apex.
-                let restart_idx = find_apex_portal_idx(portals, left_leg, portal_idx);
-                let funnel_tail = funnel_smooth(new_apex_3d, &portals[restart_idx..]);
-                // Append tail (skip first element which would be new_apex_3d duplicated).
-                for w in funnel_tail.into_iter().skip(1) {
-                    waypoints.push(w);
-                }
-                return waypoints;
-            }
-            // Tighten right.
-            right_leg = new_right;
-        }
-
-        // --- Update left leg ---
-        // New left narrows funnel if it's to the RIGHT of current left.
-        // cross2(apex_to_left, apex_to_new_left) < 0 means new_left is CW from left.
-        if cross2(apex_to_left, apex_to_new_left) <= 0.0 {
-            // New left crossed over right leg → emit right leg as waypoint and restart.
-            if cross2(apex_to_right, apex_to_new_left) < 0.0 {
-                waypoints.push(apex_3d);
-                let new_apex_3d = find_portal_vertex_3d(portals, right_leg, portal_idx);
-                let restart_idx = find_apex_portal_idx(portals, right_leg, portal_idx);
-                let funnel_tail = funnel_smooth(new_apex_3d, &portals[restart_idx..]);
-                for w in funnel_tail.into_iter().skip(1) {
-                    waypoints.push(w);
-                }
-                return waypoints;
-            }
-            // Tighten left.
-            left_leg = new_left;
-        }
-
-        portal_idx += 1;
-    }
-
-    // Append the last waypoint (goal), which is portals.last().0 == portals.last().1.
-    if let Some(&(goal, _)) = portals.last() {
-        waypoints.push(goal);
-    }
-
-    waypoints
-}
-
-/// Find the 3D position of a portal vertex that matches `xz_pt` within `portals[0..limit]`.
-fn find_portal_vertex_3d(
-    portals: &[([f64; 3], [f64; 3])],
-    xz_pt: [f64; 2],
-    limit: usize,
-) -> [f64; 3] {
-    for &(pl, pr) in portals.iter().take(limit + 1) {
-        if approx_eq2(xz(pl), xz_pt) {
-            return pl;
-        }
-        if approx_eq2(xz(pr), xz_pt) {
-            return pr;
-        }
-    }
-    // Fallback: reconstruct from xz with Y=0.
-    xz_to_3d(xz_pt, 0.0)
-}
-
-/// Find the portal index just after the portal that contains `xz_pt` as a vertex.
-fn find_apex_portal_idx(portals: &[([f64; 3], [f64; 3])], xz_pt: [f64; 2], limit: usize) -> usize {
-    for (i, &(pl, pr)) in portals.iter().take(limit + 1).enumerate() {
-        if approx_eq2(xz(pl), xz_pt) || approx_eq2(xz(pr), xz_pt) {
-            return i + 1;
-        }
-    }
-    limit + 1
-}
-
 #[inline]
 fn approx_eq2(a: [f64; 2], b: [f64; 2]) -> bool {
     (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9
+}
+
+#[inline]
+fn approx_eq3(a: [f64; 3], b: [f64; 3]) -> bool {
+    (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9 && (a[2] - b[2]).abs() < 1e-9
+}
+
+/// Append `point` to `waypoints` unless it coincides with the last waypoint, so
+/// that a path never contains two consecutive identical points.
+fn push_waypoint(waypoints: &mut Vec<[f64; 3]>, point: [f64; 3]) {
+    if waypoints
+        .last()
+        .is_some_and(|&last| approx_eq3(last, point))
+    {
+        return;
+    }
+    waypoints.push(point);
+}
+
+/// `true` if the XZ projection of `p` lies on the segment `a`-`b` (within a
+/// small tolerance).
+fn point_on_segment_xz(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> bool {
+    let ab = sub2(xz(b), xz(a));
+    let ap = sub2(xz(p), xz(a));
+    let len_sq = dot2(ab, ab);
+    if len_sq < 1e-24 {
+        // Degenerate segment: it contains `p` only if the points coincide.
+        return dot2(ap, ap) < 1e-18;
+    }
+    // Distance from the supporting line: |ab x ap| / |ab|.
+    if cross2(ab, ap).abs() > 1e-9 * len_sq.sqrt() {
+        return false;
+    }
+    let along = dot2(ab, ap) / len_sq;
+    (-1e-9..=1.0 + 1e-9).contains(&along)
+}
+
+/// Run the Simple Stupid Funnel (string-pulling) algorithm.
+///
+/// `start` is the initial apex.  `portals` lists the `(left, right)` portal
+/// endpoints in walking order and ends with the zero-width portal
+/// `(goal, goal)`; `left` is the endpoint on the counter-clockwise side of the
+/// walking direction in the x-z plane (see [`NavMesh::corridor_portals`]).
+///
+/// Returns the taut path `[start, corner_1, ..., corner_k, goal]`, where the
+/// corners are the portal endpoints at which the shortest path through all
+/// portals bends.  The result never contains two consecutive coincident points.
+///
+/// The funnel is described by an apex and a left and a right leg, each with the
+/// index of the portal that supplied it.  Every portal narrows the funnel from
+/// one or both sides.  When a leg would cross over the opposite one, the
+/// opposite leg's endpoint is a corner of the path: it is emitted, becomes the
+/// new apex, and scanning restarts with the portal *after* the one that supplied
+/// it.  The restart index strictly increases, so the scan terminates.
+fn funnel_smooth(start: [f64; 3], portals: &[Portal]) -> Vec<[f64; 3]> {
+    let mut waypoints: Vec<[f64; 3]> = vec![start];
+    let Some(&(goal, _)) = portals.last() else {
+        return waypoints;
+    };
+
+    // Portal 0 is the zero-width portal at `start`, so that the apex and both
+    // legs can always be identified by a portal index.
+    let mut all: Vec<Portal> = Vec::with_capacity(portals.len() + 1);
+    all.push((start, start));
+    all.extend_from_slice(portals);
+
+    let mut apex = start;
+    let mut left = start;
+    let mut right = start;
+    let mut left_idx = 0_usize;
+    let mut right_idx = 0_usize;
+
+    let mut i = 1_usize;
+    while let Some(&(new_left, new_right)) = all.get(i) {
+        let apex_xz = xz(apex);
+
+        // --- Right leg ---
+        // It tightens (moves towards the left leg) when the new right endpoint
+        // lies counter-clockwise of it.
+        if cross2(sub2(xz(right), apex_xz), sub2(xz(new_right), apex_xz)) >= 0.0 {
+            let right_at_apex = approx_eq2(apex_xz, xz(right));
+            if right_at_apex || cross2(sub2(xz(left), apex_xz), sub2(xz(new_right), apex_xz)) < 0.0
+            {
+                right = new_right;
+                right_idx = i;
+            } else {
+                // The right leg crossed over the left leg: the left endpoint is
+                // a corner.  It becomes the apex; restart after its portal.
+                push_waypoint(&mut waypoints, left);
+                apex = left;
+                right = left;
+                right_idx = left_idx;
+                i = left_idx + 1;
+                continue;
+            }
+        }
+
+        // --- Left leg ---
+        // It tightens (moves towards the right leg) when the new left endpoint
+        // lies clockwise of it.
+        if cross2(sub2(xz(left), apex_xz), sub2(xz(new_left), apex_xz)) <= 0.0 {
+            let left_at_apex = approx_eq2(apex_xz, xz(left));
+            if left_at_apex || cross2(sub2(xz(right), apex_xz), sub2(xz(new_left), apex_xz)) > 0.0 {
+                left = new_left;
+                left_idx = i;
+            } else {
+                // The left leg crossed over the right leg: the right endpoint
+                // is a corner.  It becomes the apex; restart after its portal.
+                push_waypoint(&mut waypoints, right);
+                apex = right;
+                left = right;
+                left_idx = right_idx;
+                i = right_idx + 1;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+
+    push_waypoint(&mut waypoints, goal);
+    waypoints
 }
 
 // ---------------------------------------------------------------------------
@@ -889,5 +927,369 @@ mod tests {
     fn test_nav_error_display() {
         let e = NavError::NoPath;
         assert!(!format!("{e}").is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Funnel regression tests: the corner waypoint used to be dropped and the
+    // apex duplicated ([start, start, goal]).
+    // -----------------------------------------------------------------------
+
+    /// Mesh of the unit cells `(i, j)` (x = i, z = j) for which `is_open(i, j)`
+    /// holds; every cell is split into two triangles.
+    ///
+    /// The triangles are wound counter-clockwise in the x-z plane (positive 2D
+    /// cross product) unless `reversed` is set, which flips every triangle so
+    /// that both windings can be exercised.
+    fn make_cells_mesh(
+        cols: usize,
+        rows: usize,
+        is_open: impl Fn(usize, usize) -> bool,
+        reversed: bool,
+    ) -> NavMesh {
+        let mut verts: Vec<[f64; 3]> = Vec::new();
+        for i in 0..=cols {
+            for j in 0..=rows {
+                verts.push([i as f64, 0.0, j as f64]);
+            }
+        }
+        let vi = |i: usize, j: usize| -> u32 { (i * (rows + 1) + j) as u32 };
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+        for i in 0..cols {
+            for j in 0..rows {
+                if !is_open(i, j) {
+                    continue;
+                }
+                let mut lower = [vi(i, j), vi(i + 1, j), vi(i, j + 1)];
+                let mut upper = [vi(i + 1, j), vi(i + 1, j + 1), vi(i, j + 1)];
+                if reversed {
+                    lower.swap(1, 2);
+                    upper.swap(1, 2);
+                }
+                tris.push(lower);
+                tris.push(upper);
+            }
+        }
+        NavMesh::from_triangles(verts, tris)
+    }
+
+    /// 5x5 grid of which only the bottom row (`z` in `[0, 1]`) and the right
+    /// column (`x` in `[4, 5]`) are walkable: an L-shaped corridor.
+    fn make_l_mesh(reversed: bool) -> NavMesh {
+        make_cells_mesh(5, 5, |i, j| j == 0 || i == 4, reversed)
+    }
+
+    fn assert_no_consecutive_duplicates(waypoints: &[[f64; 3]]) {
+        for pair in waypoints.windows(2) {
+            assert!(
+                len3(sub3(pair[1], pair[0])) > 1e-9,
+                "consecutive coincident waypoints in {waypoints:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_l_corridor_path_bends_at_the_inner_corner() {
+        let start = [0.3, 0.0, 0.2];
+        let goal = [4.7, 0.0, 4.6];
+        let corner = [4.0, 0.0, 1.0];
+        for reversed in [false, true] {
+            let mesh = make_l_mesh(reversed);
+            let path = mesh
+                .find_path(start, goal, 0.0, &[])
+                .expect("L corridor must be passable");
+            assert_eq!(
+                path.waypoints,
+                vec![start, corner, goal],
+                "reversed winding = {reversed}"
+            );
+            assert_no_consecutive_duplicates(&path.waypoints);
+            let expected = len3(sub3(corner, start)) + len3(sub3(goal, corner));
+            assert!((path.length - expected).abs() < 1e-12);
+            // The straight line would cut through the closed part of the grid.
+            assert!(path.length > len3(sub3(goal, start)));
+        }
+    }
+
+    #[test]
+    fn test_mirrored_l_corridor_path_bends_at_the_inner_corner() {
+        // Bottom row plus the *left* column: the corridor turns the other way.
+        let start = [4.7, 0.0, 0.2];
+        let goal = [0.3, 0.0, 4.6];
+        let corner = [1.0, 0.0, 1.0];
+        for reversed in [false, true] {
+            let mesh = make_cells_mesh(5, 5, |i, j| j == 0 || i == 0, reversed);
+            let path = mesh
+                .find_path(start, goal, 0.0, &[])
+                .expect("mirrored L corridor must be passable");
+            assert_eq!(
+                path.waypoints,
+                vec![start, corner, goal],
+                "reversed winding = {reversed}"
+            );
+            assert_no_consecutive_duplicates(&path.waypoints);
+        }
+    }
+
+    #[test]
+    fn test_u_corridor_path_has_two_corners() {
+        // Bottom row, top row and right column of a 5x4 grid: a U opening left.
+        let start = [0.3, 0.0, 0.2];
+        let goal = [0.3, 0.0, 3.7];
+        for reversed in [false, true] {
+            let mesh = make_cells_mesh(5, 4, |i, j| j == 0 || j == 3 || i == 4, reversed);
+            let path = mesh
+                .find_path(start, goal, 0.0, &[])
+                .expect("U corridor must be passable");
+            assert_eq!(
+                path.waypoints,
+                vec![start, [4.0, 0.0, 1.0], [4.0, 0.0, 3.0], goal],
+                "reversed winding = {reversed}"
+            );
+            assert_no_consecutive_duplicates(&path.waypoints);
+        }
+    }
+
+    #[test]
+    fn test_start_on_a_shared_edge_does_not_duplicate_the_apex() {
+        // (0.5, 0.5) and (4.5, 4.5) lie on the diagonal shared by the two
+        // triangles of their cells, i.e. exactly on a portal.
+        let start = [0.5, 0.0, 0.5];
+        let goal = [4.5, 0.0, 4.5];
+        for reversed in [false, true] {
+            let mesh = make_l_mesh(reversed);
+            let path = mesh.find_path(start, goal, 0.0, &[]).expect("path");
+            assert_eq!(
+                path.waypoints,
+                vec![start, [4.0, 0.0, 1.0], goal],
+                "reversed winding = {reversed}"
+            );
+            assert_no_consecutive_duplicates(&path.waypoints);
+        }
+    }
+
+    #[test]
+    fn test_start_on_a_mesh_vertex() {
+        let start = [1.0, 0.0, 0.0];
+        let goal = [4.6, 0.0, 4.4];
+        for reversed in [false, true] {
+            let mesh = make_l_mesh(reversed);
+            let path = mesh.find_path(start, goal, 0.0, &[]).expect("path");
+            assert_eq!(path.waypoints.first(), Some(&start));
+            assert_eq!(path.waypoints.last(), Some(&goal));
+            assert_no_consecutive_duplicates(&path.waypoints);
+            assert_eq!(path.waypoints.len(), 3, "one corner: {:?}", path.waypoints);
+            assert_eq!(path.waypoints[1], [4.0, 0.0, 1.0]);
+        }
+    }
+
+    #[test]
+    fn test_straight_corridor_collapses_to_start_and_goal() {
+        let start = [0.3, 0.0, 0.2];
+        let goal = [9.4, 0.0, 0.8];
+        for reversed in [false, true] {
+            let mesh = make_cells_mesh(10, 1, |_, _| true, reversed);
+            let path = mesh.find_path(start, goal, 0.0, &[]).expect("path");
+            assert_eq!(path.waypoints, vec![start, goal]);
+            assert!((path.length - len3(sub3(goal, start))).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_funnel_without_portals_returns_only_the_start() {
+        assert_eq!(funnel_smooth([1.0, 2.0, 3.0], &[]), vec![[1.0, 2.0, 3.0]]);
+    }
+
+    #[test]
+    fn test_funnel_keeps_the_height_of_the_corner() {
+        // Same L corridor, lifted: the corner keeps its own y coordinate.
+        let mut mesh = make_l_mesh(false);
+        for vertex in &mut mesh.vertices {
+            vertex[1] = 0.5 * vertex[0] + 2.0 * vertex[2];
+        }
+        let start = [0.3, 0.0, 0.2];
+        let goal = [4.7, 0.0, 4.6];
+        let path = mesh.find_path(start, goal, 0.0, &[]).expect("path");
+        assert_eq!(path.waypoints.len(), 3);
+        assert_eq!(path.waypoints[1], [4.0, 0.5 * 4.0 + 2.0 * 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_portals_are_oriented_independently_of_the_winding() {
+        let start = [0.3, 0.0, 0.2];
+        let goal = [4.7, 0.0, 4.6];
+        for reversed in [false, true] {
+            let mesh = make_l_mesh(reversed);
+            let start_tri = mesh.find_triangle(start).expect("start in mesh");
+            let goal_tri = mesh.find_triangle(goal).expect("goal in mesh");
+            let corridor = mesh
+                .find_corridor(start_tri, goal_tri, 0.0, &[])
+                .expect("corridor");
+            let portals = mesh.corridor_portals(&corridor).expect("portals");
+            assert_eq!(portals.len(), corridor.len() - 1);
+            for (i, &(left, right)) in portals.iter().enumerate() {
+                // Walking from corridor[i] through the portal, `right` must be
+                // clockwise of `left` as seen from the triangle's centroid.
+                let inside = xz(centroid(&mesh.vertices, mesh.tris[corridor[i]]));
+                let cross = cross2(sub2(xz(right), inside), sub2(xz(left), inside));
+                assert!(
+                    cross > 0.0,
+                    "portal {i} (reversed = {reversed}): left {left:?} / right {right:?}"
+                );
+            }
+        }
+    }
+
+    /// Minimal xorshift64* generator so the property test is deterministic.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next_u64(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        /// Uniform in `[0, 1)`.
+        fn unit(&mut self) -> f64 {
+            (self.next_u64() >> 11) as f64 / (1_u64 << 53) as f64
+        }
+
+        /// Uniform in `0..n`.
+        fn below(&mut self, n: usize) -> usize {
+            (self.unit() * n as f64) as usize % n
+        }
+    }
+
+    /// Length of the shortest path from `start` through every portal in order,
+    /// found by dynamic programming over `samples + 1` points per portal
+    /// (portal endpoints included).  It converges to the true optimum from
+    /// above as `samples` grows.
+    fn dp_shortest_through_portals(start: [f64; 3], portals: &[Portal], samples: usize) -> f64 {
+        let mut previous: Vec<([f64; 3], f64)> = vec![(start, 0.0)];
+        for &(left, right) in portals {
+            let points: Vec<[f64; 3]> = (0..=samples)
+                .map(|k| {
+                    let t = k as f64 / samples as f64;
+                    [
+                        left[0] + (right[0] - left[0]) * t,
+                        left[1] + (right[1] - left[1]) * t,
+                        left[2] + (right[2] - left[2]) * t,
+                    ]
+                })
+                .collect();
+            previous = points
+                .into_iter()
+                .map(|point| {
+                    let best = previous
+                        .iter()
+                        .map(|&(from, cost)| cost + len3(sub3(point, from)))
+                        .fold(f64::INFINITY, f64::min);
+                    (point, best)
+                })
+                .collect();
+        }
+        previous
+            .iter()
+            .map(|&(_, cost)| cost)
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// Random mazes: whatever A\* returns, the funnel path must start and end
+    /// at the query points, stay inside the mesh, contain no coincident
+    /// consecutive points, and be the shortest path through the corridor.
+    #[test]
+    fn test_random_corridors_give_taut_paths_inside_the_mesh() {
+        let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+        let mut checked = 0_usize;
+        for _ in 0..150 {
+            let cols = 3 + rng.below(5);
+            let rows = 3 + rng.below(5);
+            let mut open = vec![vec![false; rows]; cols];
+            for column in &mut open {
+                for cell in column.iter_mut() {
+                    *cell = rng.unit() < 0.7;
+                }
+            }
+            let reversed = rng.below(2) == 1;
+            let mesh = make_cells_mesh(cols, rows, |i, j| open[i][j], reversed);
+            if mesh.tris.is_empty() {
+                continue;
+            }
+
+            let mut random_point = || {
+                let tri = mesh.tris[rng.below(mesh.tris.len())];
+                let a = mesh.vertices[tri[0] as usize];
+                let b = mesh.vertices[tri[1] as usize];
+                let c = mesh.vertices[tri[2] as usize];
+                let (mut u, mut v) = (rng.unit(), rng.unit());
+                if u + v > 1.0 {
+                    u = 1.0 - u;
+                    v = 1.0 - v;
+                }
+                [
+                    a[0] + u * (b[0] - a[0]) + v * (c[0] - a[0]),
+                    0.0,
+                    a[2] + u * (b[2] - a[2]) + v * (c[2] - a[2]),
+                ]
+            };
+            let start = random_point();
+            let goal = random_point();
+
+            let Ok(path) = mesh.find_path(start, goal, 0.0, &[]) else {
+                continue; // disconnected maze
+            };
+            checked += 1;
+
+            assert_eq!(path.waypoints.first(), Some(&start));
+            assert_eq!(path.waypoints.last(), Some(&goal));
+            assert_no_consecutive_duplicates(&path.waypoints);
+            assert!((path.length - compute_path_length(&path.waypoints)).abs() < 1e-12);
+            assert!(path.length >= len3(sub3(goal, start)) - 1e-9);
+
+            // The polyline never leaves the mesh.
+            for pair in path.waypoints.windows(2) {
+                for k in 0..=32 {
+                    let t = k as f64 / 32.0;
+                    let point = add3(pair[0], scale3(sub3(pair[1], pair[0]), t));
+                    assert!(
+                        mesh.find_triangle(point).is_some(),
+                        "path leaves the mesh at {point:?}: {:?}",
+                        path.waypoints
+                    );
+                }
+            }
+
+            // ... and it is the shortest path through the A* corridor.
+            let (Some(start_tri), Some(goal_tri)) =
+                (mesh.find_triangle(start), mesh.find_triangle(goal))
+            else {
+                panic!("query points are inside the mesh");
+            };
+            if start_tri == goal_tri {
+                assert_eq!(path.waypoints, vec![start, goal]);
+                continue;
+            }
+            let corridor = mesh
+                .find_corridor(start_tri, goal_tri, 0.0, &[])
+                .expect("find_path succeeded, so a corridor exists");
+            let mut portals = mesh.corridor_portals(&corridor).expect("portals");
+            portals.push((goal, goal));
+            let dp = dp_shortest_through_portals(start, &portals, 128);
+            assert!(
+                path.length <= dp + 1e-9,
+                "funnel path ({}) longer than the DP path ({dp})",
+                path.length
+            );
+            assert!(
+                path.length >= dp - 5e-3,
+                "funnel path ({}) much shorter than the DP path ({dp}): not through the corridor",
+                path.length
+            );
+        }
+        assert!(
+            checked > 60,
+            "only {checked} connected random mazes checked"
+        );
     }
 }

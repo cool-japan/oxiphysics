@@ -46,7 +46,11 @@ impl CcdSweep {
     /// r(t) = (pos_a - pos_b) + (vel_a - vel_b)·t.
     ///
     /// Returns the earliest positive root ∈ `[0, dt]`, or `None` if the
-    /// spheres do not collide within the interval.
+    /// spheres do not collide within the interval.  Spheres that already
+    /// overlap are an impact (`Some(0.0)`) only while they are still closing
+    /// in on each other; a resting or separating overlap has nothing left to
+    /// collide and gives `None` (the second root of the quadratic would only
+    /// be the time at which the spheres part again).
     ///
     /// - `pos_a`, `pos_b` : initial world positions (m)
     /// - `vel_a`, `vel_b` : linear velocities (m/s)
@@ -68,7 +72,7 @@ impl CcdSweep {
         let bb = 2.0 * dot(r, v);
         let cc = dot(r, r) - sum_r * sum_r;
         if cc <= 0.0 {
-            return Some(0.0);
+            return if bb < 0.0 { Some(0.0) } else { None };
         }
         if aa < 1e-30 {
             return None;
@@ -314,13 +318,17 @@ pub struct AabbSupport {
 /// Result of the GJK distance query.
 #[derive(Debug, Clone)]
 pub struct GjkResult {
-    /// Minimum squared distance between the two shapes.
+    /// Minimum squared distance between the two shapes (zero when they
+    /// intersect).
     pub sq_dist: f64,
-    /// Closest point on shape A.
+    /// Closest point on shape A.  Only meaningful for disjoint shapes; for
+    /// overlapping shapes it is an arbitrary support point of A.
     pub closest_a: [f64; 3],
-    /// Closest point on shape B.
+    /// Closest point on shape B.  Only meaningful for disjoint shapes; for
+    /// overlapping shapes it is an arbitrary support point of B.
     pub closest_b: [f64; 3],
-    /// Whether the shapes overlap (penetrating).
+    /// Whether the shapes overlap: they intersect or are closer than the
+    /// tolerance given to [`gjk_distance`](super::gjk_distance).
     pub overlapping: bool,
 }
 /// A CCD broadphase that produces filtered candidate pairs.
@@ -415,13 +423,25 @@ impl CcdPipeline {
         self.detect_tunneling(bodies, ids).into_iter().next()
     }
 }
+/// Impact responses [`CcdPipeline::run_with_stats`] processes per call.
+const MAX_IMPACTS_PER_STEP: usize = 64;
+/// Smallest time the pass advances for an impact (guarantees progress for
+/// impacts at `t = 0`).
+const MIN_IMPACT_ADVANCE: f64 = 1e-8;
+/// Remaining time (s) below which a pass stops looking for further impacts.
+const MIN_REMAINING_TIME: f64 = 1e-10;
+
 impl CcdPipeline {
     /// Run a full CCD pass: detect, resolve, and return statistics.
     ///
     /// Advances all bodies to the earliest TOI of a *closing* pair, resolves
     /// the contact, then continues until `dt` is consumed or no closing pair is
-    /// left.  Pairs that touch or overlap but are already separating are not
-    /// events: nothing needs resolving and the bodies keep moving.
+    /// left.  Pairs that touch or overlap but are already separating, pairs at
+    /// rest, and pairs of two immovable bodies (nothing to respond with) are
+    /// not events: the bodies keep moving.  At most 64 impacts are resolved per
+    /// call; whatever part of the step is left when that cap is reached, or
+    /// when no closing pair is left, is integrated without further response,
+    /// so the full `dt` is always consumed.
     ///
     /// `ids` are the user-defined body IDs reported in the detected events;
     /// the bodies to respond are always located by slice index, so the IDs may
@@ -438,27 +458,29 @@ impl CcdPipeline {
         let mut local_bodies = bodies.clone();
         let n = local_bodies.len();
         stats.pairs_tested += n * n.saturating_sub(1) / 2;
-        let mut iter_cap = 64usize;
-        while remaining > 1e-10 && iter_cap > 0 {
-            iter_cap -= 1;
+        let mut impacts_left = MAX_IMPACTS_PER_STEP;
+        while remaining > MIN_REMAINING_TIME && impacts_left > 0 {
+            impacts_left -= 1;
             let sub_pipeline = CcdPipeline::new(remaining);
             let events = sub_pipeline.detect_tunneling(&local_bodies, ids);
             let closing = events.into_iter().find(|ev| {
-                SubstepIntegrator::normal_speed(&local_bodies, ev).is_some_and(|vn| vn < 0.0)
+                SubstepIntegrator::response_impulse(&local_bodies, ev, restitution).is_some()
             });
             let Some(ev) = closing else {
-                integrator.step_to_toi(&mut local_bodies, remaining);
-                stats.record_time(remaining);
                 break;
             };
             stats.record_event(ev.toi);
-            let advance = ev.toi.max(1e-8);
+            let advance = ev.toi.max(MIN_IMPACT_ADVANCE).min(remaining);
             integrator.step_to_toi(&mut local_bodies, advance);
             if integrator.resolve_event(&mut local_bodies, &ev, restitution) {
                 stats.record_impulse();
             }
             stats.record_time(advance);
             remaining -= advance;
+        }
+        if remaining > 0.0 {
+            integrator.step_to_toi(&mut local_bodies, remaining);
+            stats.record_time(remaining);
         }
         *bodies = local_bodies;
         stats
@@ -556,7 +578,10 @@ impl TunnelTest {
     /// Sphere–sphere continuous collision test.
     ///
     /// Returns the time of impact `t ∈ [0, dt]` when the two spheres first
-    /// touch, or `None` if they do not collide within `[0, dt]`.
+    /// touch, or `None` if they do not collide within `[0, dt]`.  Spheres that
+    /// already overlap are an impact (`Some(0.0)`) only while they are still
+    /// closing in on each other; a resting or separating overlap is not an
+    /// impact and gives `None`.
     pub fn check_sphere_sphere(a: &SweptBody, b: &SweptBody, dt: f64) -> Option<f64> {
         let r = sub(a.pos, b.pos);
         let v = sub(a.vel, b.vel);
@@ -565,7 +590,7 @@ impl TunnelTest {
         let bb = 2.0 * dot(r, v);
         let cc = dot(r, r) - sum_r * sum_r;
         if cc <= 0.0 {
-            return Some(0.0);
+            return if bb < 0.0 { Some(0.0) } else { None };
         }
         if aa < 1e-30 {
             return None;
@@ -632,6 +657,27 @@ impl SubstepIntegrator {
         let b = bodies.get(ib)?;
         Some(dot(sub(a.vel, b.vel), event.contact_normal))
     }
+    /// Magnitude of the impulse [`SubstepIntegrator::resolve_event`] applies
+    /// along the contact normal for `event`, or `None` when the event is
+    /// skipped: indices outside `bodies`, the same body twice, separating or
+    /// resting bodies, or two immovable bodies.
+    pub(super) fn response_impulse(
+        bodies: &[SweptBody],
+        event: &CcdEvent,
+        restitution: f64,
+    ) -> Option<f64> {
+        let vn = Self::normal_speed(bodies, event)?;
+        if vn >= 0.0 {
+            return None;
+        }
+        let inv_a = bodies.get(event.index_a)?.inv_mass;
+        let inv_b = bodies.get(event.index_b)?.inv_mass;
+        let denom = inv_a + inv_b;
+        if denom < 1e-30 {
+            return None;
+        }
+        Some(-(1.0 + restitution) * vn / denom)
+    }
     /// Apply an impulsive response at the contact described by `event`.
     ///
     /// The bodies are addressed by their slice indices
@@ -648,24 +694,16 @@ impl SubstepIntegrator {
         event: &CcdEvent,
         restitution: f64,
     ) -> bool {
-        let Some(vn) = Self::normal_speed(bodies, event) else {
+        let Some(j) = Self::response_impulse(bodies, event, restitution) else {
             return false;
         };
-        if vn >= 0.0 {
-            return false;
+        let impulse = scale(event.contact_normal, j);
+        if let Some(a) = bodies.get_mut(event.index_a) {
+            a.vel = add(a.vel, scale(impulse, a.inv_mass));
         }
-        let (ia, ib) = (event.index_a, event.index_b);
-        let n = event.contact_normal;
-        let inv_a = bodies[ia].inv_mass;
-        let inv_b = bodies[ib].inv_mass;
-        let denom = inv_a + inv_b;
-        if denom < 1e-30 {
-            return false;
+        if let Some(b) = bodies.get_mut(event.index_b) {
+            b.vel = sub(b.vel, scale(impulse, b.inv_mass));
         }
-        let j = -(1.0 + restitution) * vn / denom;
-        let impulse = scale(n, j);
-        bodies[ia].vel = add(bodies[ia].vel, scale(impulse, inv_a));
-        bodies[ib].vel = sub(bodies[ib].vel, scale(impulse, inv_b));
         true
     }
 }

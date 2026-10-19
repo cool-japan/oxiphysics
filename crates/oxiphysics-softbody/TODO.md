@@ -159,8 +159,8 @@ History: the pre-2026-06-11 TODO (last updated 2026-06-06) is preserved in full 
 Verified: 294 (critical 5, high 100, medium 150, low 39); 61 further raw findings pending second-round verification. IDs refer to the audit ledger; `[x]` = fixed.
 
 ### Critical (5)
-- [ ] **F4071** (critical, fabrication, hard/medium) `constraint/neohookeanconstraint_traits.rs:66` — Neo-Hookean XPBD projection fabricated: y-shift, radial push, inverted alpha
-- [ ] **F4078** (critical, bug, easy/small) `cosserat_rods.rs:555` — Cosserat rod internal force sign flipped; stretch and shear self-amplify
+- [x] **F4071** (critical, fabrication, hard/medium) `constraint/neohookeanconstraint_traits.rs:66` — Neo-Hookean XPBD projection fabricated: y-shift, radial push, inverted alpha
+- [x] **F4078** (critical, bug, easy/small) `cosserat_rods.rs:555` — Cosserat rod internal force sign flipped; stretch and shear self-amplify
 - [ ] **F4175** (critical, fabrication, medium/medium) `material_point/functions.rs:185` — mat3_svd is not an SVD; snow/sand plasticity squares stretch
 - [ ] **F4198** (critical, bug, easy/small) `metamorphic_mesh.rs:209` — polar_decomp_r iterates (R+R^-1)/2, collapsing rotations to identity
 - [ ] **F4273** (critical, bug, easy/small) `pbd_system/types.rs:471` — Tet volume-constraint gradients negated; projection diverges
@@ -174,31 +174,31 @@ Verified: 294 (critical 5, high 100, medium 150, low 39); 61 further raw finding
 - [ ] **F4053** (high, bug, easy/small) `cloth/types.rs:150` — XpbdClothMesh bending stencils are collinear, so every constraint is inert
 - [ ] **F4057** (high, fabrication, medium/small) `cloth/types.rs:1125` — PbdClothMesh bend constraint cannot change dihedral angle (no-op bending)
 - [ ] **F4064** (high, perf, medium/medium) `collision_response.rs:621` — SelfCollision::detect tests every particle against every triangle
-- [ ] **F4068** (high, bug, medium/medium) `constraint/balloonpressureconstraint_traits.rs:24` — Balloon constraint drives each triangle toward the whole-balloon volume
-- [ ] **F4072** (high, bug, medium/medium) `constraint/strainlimitingconstraint_traits.rs:69` — Strain limiting always shrinks the triangle, even when over-compressed
-- [ ] **F4073** (high, bug, medium/small) `constraint/types.rs:244` — Shape-matching 'polar decomposition' is Gram-Schmidt and breaks for planar groups
-- [ ] **F4074** (high, bug, medium/small) `constraint/types.rs:251` — Shape-matching rotation uses Gram-Schmidt QR, not polar; rotates resting clusters
-- [ ] **F4075** (high, bug, medium/small) `constraint/types.rs:748` — Isometric bending K vector wrong: nonzero C at flat rest, translation-dependent
-- [ ] **F4076** (high, fabrication, medium/small) `constraint/types.rs:838` — Isometric bending Q matrices give non-zero energy for flat sheets
-- [ ] **F4077** (high, bug, medium/small) `cosserat_rods.rs:493` — Curvature components projected onto the wrong director axes
-- [ ] **F4081** (high, bug, medium/small) `cosserat_softbody.rs:561` — Discrete Cosserat elastic moment applied with same sign to both nodes
-- [ ] **F4082** (high, bug, hard/medium) `cosserat_softbody.rs:586` — Discrete Cosserat rod: bending never couples to positions; moments not balanced
-- [ ] **F4085** (high, fabrication, hard/medium) `crack_propagation.rs:239` — Crack propagation only refines edges; mesh never separates
-- [ ] **F4094** (high, fabrication, medium/small) `electroactive_softbody.rs:852` — Maxwell nodal forces fabricated: identical force on all four nodes
-- [ ] **F4095** (high, fabrication, hard/medium) `electroactive_softbody.rs:936` — Electroactive FEM body: Maxwell force only translates, no dt, no elasticity
-- [ ] **F4098** (high, bug, easy/trivial) `fem_soft/corot_functions.rs:135` — tet_stiffness_matrix reads Dm⁻¹ columns as shape-function gradients
-- [ ] **F4104** (high, bug, easy/trivial) `fem_soft/corot_sim.rs:428` — Rayleigh stiffness damping sign inverted, injects energy
-- [ ] **F4107** (high, bug, easy/trivial) `fem_soft/corotational.rs:322` — Invertible element abs(sigma) leaves mirrored tet as equilibrium
-- [ ] **F4108** (high, fabrication, medium/small) `fem_soft/integrators.rs:109` — Rayleigh stiffness damping is −β·f_total, not −β·K·v
-- [ ] **F4110** (high, fabrication, medium/small) `fem_soft/materials.rs:61` — CorotationalElementRaw not force-free at rest; rotation from raw edges
-- [ ] **F4111** (high, bug, medium/small) `fem_soft/materials.rs:112` — CorotationalElementRaw: rotation from Ds not F, rest not force-free
-- [ ] **F4112** (high, bug, easy/trivial) `fem_soft/stable_neohookean_xpbd.rs:255` — Hydrostatic target alpha makes rest tet non-equilibrium; ν=0 gives inf/NaN
-- [ ] **F4118** (high, bug, easy/trivial) `fluid_film_softbody.rs:1166` — Film gravity flux sign reversed: fluid flows uphill
-- [ ] **F4125** (high, bug, medium/medium) `fracture/types.rs:180` — CrackFront::propagate moves vertices along crack-plane normal
-- [ ] **F4131** (high, fabrication, medium/small) `fracture_dynamics/types.rs:266` — Crack-tip K_I computed from net nodal force (dimensionally wrong)
-- [ ] **F4133** (high, bug, easy/trivial) `granular_softbody.rs:355` — Hertz-Mindlin contact velocity uses flipped lever arms (anti-friction)
-- [ ] **F4137** (high, perf, medium/medium) `granular_softbody.rs:1038` — DEM contacts all-pairs with two grain clones and cache insert per pair
-- [ ] **F4147** (high, bug, easy/small) `hair_fur.rs:320` — Wind drag force (N) added directly to positions (m)
+- [x] **F4068** (high, bug, medium/medium) `constraint/balloonpressureconstraint_traits.rs:24` — Balloon constraint drives each triangle toward the whole-balloon volume
+- [x] **F4072** (high, bug, medium/medium) `constraint/strainlimitingconstraint_traits.rs:69` — Strain limiting always shrinks the triangle, even when over-compressed
+- [x] **F4073** (high, bug, medium/small) `constraint/types.rs:244` — Shape-matching 'polar decomposition' is Gram-Schmidt and breaks for planar groups
+- [x] **F4074** (high, bug, medium/small) `constraint/types.rs:251` — Shape-matching rotation uses Gram-Schmidt QR, not polar; rotates resting clusters
+- [x] **F4075** (high, bug, medium/small) `constraint/types.rs:748` — Isometric bending K vector wrong: nonzero C at flat rest, translation-dependent
+- [x] **F4076** (high, fabrication, medium/small) `constraint/types.rs:838` — Isometric bending Q matrices give non-zero energy for flat sheets
+- [x] **F4077** (high, bug, medium/small) `cosserat_rods.rs:493` — Curvature components projected onto the wrong director axes
+- [x] **F4081** (high, bug, medium/small) `cosserat_softbody.rs:561` — Discrete Cosserat elastic moment applied with same sign to both nodes
+- [x] **F4082** (high, bug, hard/medium) `cosserat_softbody.rs:586` — Discrete Cosserat rod: bending never couples to positions; moments not balanced
+- [x] **F4085** (high, fabrication, hard/medium) `crack_propagation.rs:239` — Crack propagation only refines edges; mesh never separates
+- [x] **F4094** (high, fabrication, medium/small) `electroactive_softbody.rs:852` — Maxwell nodal forces fabricated: identical force on all four nodes
+- [x] **F4095** (high, fabrication, hard/medium) `electroactive_softbody.rs:936` — Electroactive FEM body: Maxwell force only translates, no dt, no elasticity
+- [x] **F4098** (high, bug, easy/trivial) `fem_soft/corot_functions.rs:135` — tet_stiffness_matrix reads Dm⁻¹ columns as shape-function gradients
+- [x] **F4104** (high, bug, easy/trivial) `fem_soft/corot_sim.rs:428` — Rayleigh stiffness damping sign inverted, injects energy
+- [x] **F4107** (high, bug, easy/trivial) `fem_soft/corotational.rs:322` — Invertible element abs(sigma) leaves mirrored tet as equilibrium
+- [x] **F4108** (high, fabrication, medium/small) `fem_soft/integrators.rs:109` — Rayleigh stiffness damping is −β·f_total, not −β·K·v
+- [x] **F4110** (high, fabrication, medium/small) `fem_soft/materials.rs:61` — CorotationalElementRaw not force-free at rest; rotation from raw edges
+- [x] **F4111** (high, bug, medium/small) `fem_soft/materials.rs:112` — CorotationalElementRaw: rotation from Ds not F, rest not force-free
+- [x] **F4112** (high, bug, easy/trivial) `fem_soft/stable_neohookean_xpbd.rs:255` — Hydrostatic target alpha makes rest tet non-equilibrium; ν=0 gives inf/NaN
+- [x] **F4118** (high, bug, easy/trivial) `fluid_film_softbody.rs:1166` — Film gravity flux sign reversed: fluid flows uphill
+- [x] **F4125** (high, bug, medium/medium) `fracture/types.rs:180` — CrackFront::propagate moves vertices along crack-plane normal
+- [x] **F4131** (high, fabrication, medium/small) `fracture_dynamics/types.rs:266` — Crack-tip K_I computed from net nodal force (dimensionally wrong)
+- [x] **F4133** (high, bug, easy/trivial) `granular_softbody.rs:355` — Hertz-Mindlin contact velocity uses flipped lever arms (anti-friction)
+- [x] **F4137** (high, perf, medium/medium) `granular_softbody.rs:1038` — DEM contacts all-pairs with two grain clones and cache insert per pair
+- [x] **F4147** (high, bug, easy/small) `hair_fur.rs:320` — Wind drag force (N) added directly to positions (m)
 - [ ] **F4149** (high, fabrication, hard/medium) `hair_sim.rs:252` — twisting_energy is identically zero; twist stiffness has no effect
 - [ ] **F4150** (high, perf, medium/medium) `hair_sim.rs:345` — FD rod gradient clones whole strand per DOF: O(n²) per step
 - [ ] **F4152** (high, bug, medium/small) `hair_softbody.rs:281` — DER bend force applied along binormal, cannot reduce curvature
@@ -248,22 +248,22 @@ Verified: 294 (critical 5, high 100, medium 150, low 39); 61 further raw finding
 - [ ] **F4285** (high, bug, easy/small) `pressure_volume.rs:386` — valve_flow drives gauge pressure toward +101325 Pa
 - [ ] **F4286** (high, bug, medium/medium) `pressure_volume.rs:439` — step_body: volume projection without velocity update makes pressurised bodies blow up
 - [ ] **F4300** (high, stub, medium/medium) `sand_sim.rs:206` — 'MPM' SandSimulation::step is ballistic free fall only
-- [ ] **F4302** (high, bug, easy/small) `shape_matching.rs:297` — Shape-matching plasticity moves the rest shape away from the deformation
-- [ ] **F4303** (high, bug, medium/small) `shape_matching.rs:721` — Quadratic shape matching omits A_qq⁻¹; goals are not rest positions
+- [x] **F4302** (high, bug, easy/small) `shape_matching.rs:297` — Shape-matching plasticity moves the rest shape away from the deformation
+- [x] **F4303** (high, bug, medium/small) `shape_matching.rs:721` — Quadratic shape matching omits A_qq⁻¹; goals are not rest positions
 - [x] **F4306** (high, bug, medium/medium) `solver.rs:201` — dyn-constraint XPBD solvers never reset lambda between substeps
-- [ ] **F4307** (high, bug, easy/small) `solver.rs:219` — XpbdSolver never resets XPBD lambdas per substep
+- [x] **F4307** (high, bug, easy/small) `solver.rs:219` — XpbdSolver never resets XPBD lambdas per substep
 - [x] **F4308** (high, bug, medium/medium) `solver.rs:233` — XPBD Lagrange multipliers never reset between substeps or frames
 - [x] **F4312** (high, bug, easy/small) `solver.rs:585` — GaussSeidelSolver SOR rescales whole-substep displacement every iteration
-- [ ] **F4318** (high, bug, medium/medium) `surgery_simulation/types.rs:223` — TissueModel divides gravity by mass and has no internal elasticity
+- [x] **F4318** (high, bug, medium/medium) `surgery_simulation/types.rs:223` — TissueModel divides gravity by mass and has no internal elasticity
 - [x] **F4320** (high, fabrication, medium/medium) `surgery_simulation/types.rs:678` — SoftTissueModel::step ignores all neo-Hookean elements
 - [x] **F4331** (high, perf, medium/medium) `textile_simulation.rs:757` — Fabric self-collision is O(V·T·iters) and clones triangles
-- [ ] **F4341** (high, bug, medium/small) `topology_optimization.rs:318` — mma_update gives less material to more sensitive elements
-- [ ] **F4346** (high, bug, easy/trivial) `underwater_softbody.rs:489` — Windenburg-Trilling collapse pressure uses (t/D)^(5/3) instead of (t/D)^(5/2)
-- [ ] **F4352** (high, bug, easy/trivial) `volume/functions.rs:99` — tet_volume_gradient returns wrong-sign dV/dp0
-- [ ] **F4354** (high, bug, easy/trivial) `volume/functions.rs:281` — volume_preservation_gradient flips sign of 3 of 4 vertex gradients
-- [ ] **F4359** (high, bug, easy/small) `volume/types.rs:118` — Tet volume constraint: |V| with signed gradients, and g0 sign flipped
-- [ ] **F4360** (high, bug, easy/trivial) `volume/types.rs:126` — solve_volume_constraints inline g0 has wrong sign; injects momentum
-- [ ] **F4365** (high, fabrication, medium/small) `wrinkling.rs:131` — wrinkle_amplitude always equals thickness; wavelength load-independent
+- [x] **F4341** (high, bug, medium/small) `topology_optimization.rs:318` — mma_update gives less material to more sensitive elements
+- [x] **F4346** (high, bug, easy/trivial) `underwater_softbody.rs:489` — Windenburg-Trilling collapse pressure uses (t/D)^(5/3) instead of (t/D)^(5/2)
+- [x] **F4352** (high, bug, easy/trivial) `volume/functions.rs:99` — tet_volume_gradient returns wrong-sign dV/dp0
+- [x] **F4354** (high, bug, easy/trivial) `volume/functions.rs:281` — volume_preservation_gradient flips sign of 3 of 4 vertex gradients
+- [x] **F4359** (high, bug, easy/small) `volume/types.rs:118` — Tet volume constraint: |V| with signed gradients, and g0 sign flipped
+- [x] **F4360** (high, bug, easy/trivial) `volume/types.rs:126` — solve_volume_constraints inline g0 has wrong sign; injects momentum
+- [x] **F4365** (high, fabrication, medium/small) `wrinkling.rs:131` — wrinkle_amplitude always equals thickness; wavelength load-independent
 - [ ] **F4373** (high, bug, medium/medium) `xpbd/strain_limit.rs:267` — Strain limiter projects current triangle onto rest plane, fights rotation
 - [ ] **F4375** (high, bug, medium/medium) `xpbd/types.rs:343` — XPBD bending: unsigned acos dihedral gives anti-restoring correction, breaks momentum
 

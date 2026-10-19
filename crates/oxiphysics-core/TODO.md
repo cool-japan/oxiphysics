@@ -207,32 +207,32 @@ Verified: 432 (critical 2, high 118, medium 242, low 70); 70 further raw finding
 
 ### High (118)
 - [x] **F0518** (high, docs, easy/medium) `crates/oxiphysics-core/README.md:45` — core/geometry/collision README examples use nonexistent APIs
-- [ ] **F0520** (high, panic, easy/small) `adaptive_timestepping.rs:272` — compute_global_dt panics on disjoint domain dt ranges
+- [x] **F0520** (high, panic, easy/small) `adaptive_timestepping.rs:272` — compute_global_dt panics on disjoint domain dt ranges
 - [x] **F0538** (high, bug, easy/small) `causal_inference.rs:578` — FrontdoorCriterion::check: condition 2 no-op, condition 3 rejects valid graphs
 - [x] **F0539** (high, fabrication, medium/medium) `causal_inference.rs:621` — Frontdoor adjusted_effect ignores Σ_x' adjustment; confounded estimate
-- [ ] **F0540** (high, fabrication, medium/small) `causal_inference.rs:892` — 2SLS uses only first instrument; F-stat k=1; panics on bad input
+- [x] **F0540** (high, fabrication, medium/small) `causal_inference.rs:892` — 2SLS uses only first instrument; F-stat k=1; panics on bad input
 - [x] **F0549** (high, bug, hard/medium) `collision.rs:552` — gjk() reports simplex upper bound and support points as minimum distance
 - [x] **F0557** (high, bug, easy/trivial) `complex_analysis.rs:309` — residue() returns leading Laurent coefficient a_{−m}, not residue, for order>1
 - [x] **F0558** (high, bug, easy/trivial) `complex_analysis.rs:561` — elliptic_e AGM series subtracts 2^{n+1}c² instead of 2^{n−1}… weights
-- [ ] **F0560** (high, bug, medium/small) `complex_analysis.rs:693` — bessel_y0/bessel_y1 series wrong: sign flip and -1/(pi x)
+- [x] **F0560** (high, bug, medium/small) `complex_analysis.rs:693` — bessel_y0/bessel_y1 series wrong: sign flip and -1/(pi x)
 - [x] **F0566** (high, fabrication, medium/small) `compressed_sensing.rs:968` — K-SVD discards coefficient update and forbids overcomplete dictionaries
-- [ ] **F0568** (high, bug, medium/small) `continuation.rs:356` — stability_index and StabilityAnalysis::label count Gershgorin discs for n>2
+- [x] **F0568** (high, bug, medium/small) `continuation.rs:356` — stability_index and StabilityAnalysis::label count Gershgorin discs for n>2
 - [x] **F0569** (high, fabrication, medium/medium) `continuation.rs:498` — branch_switching uses a Jacobian column as the null vector
-- [ ] **F0572** (high, bug, easy/small) `control.rs:430` — TransferFunction::poles fabricates real roots via unchecked Newton
-- [ ] **F0576** (high, fabrication, medium/medium) `control.rs:728` — ModelPredictiveControl uses wrong one-step gradient, fixed step
+- [x] **F0572** (high, bug, easy/small) `control.rs:430` — TransferFunction::poles fabricates real roots via unchecked Newton
+- [x] **F0576** (high, fabrication, medium/medium) `control.rs:728` — ModelPredictiveControl uses wrong one-step gradient, fixed step
 - [x] **F0577** (high, bug, medium/medium) `control.rs:748` — ModelPredictiveControl::compute uses truncated gradient and fixed 50 steps
 - [x] **F0583** (high, bug, easy/small) `control_systems/functions.rs:699` — matrix_rank ties pivot row to column index; underestimates rank
 - [x] **F0584** (high, fabrication, medium/small) `control_systems/functions.rs:814` — observer_gain_ackermann returns heuristic diagonal gain for n>1
 - [x] **F0585** (high, fabrication, medium/medium) `control_systems/functions.rs:881` — step_response/impulse_response use fake equal-weight modal sums, not simulation
-- [ ] **F0588** (high, bug, easy/trivial) `control_theory.rs:390` — StateSpaceModel::is_stable via power iteration reports unstable systems stable
-- [ ] **F0589** (high, bug, easy/small) `control_theory.rs:801` — BodeAnalysis::margins never detects −180° crossing (wrapped phase)
+- [x] **F0588** (high, bug, easy/trivial) `control_theory.rs:390` — StateSpaceModel::is_stable via power iteration reports unstable systems stable
+- [x] **F0589** (high, bug, easy/small) `control_theory.rs:801` — BodeAnalysis::margins never detects −180° crossing (wrapped phase)
 - [x] **F0590** (high, bug, easy/small) `control_theory.rs:812` — BodeAnalysis::margins misses −180° crossing because phase is wrapped
 - [x] **F0593** (high, fabrication, medium/small) `control_theory.rs:1321` — PolesZeros::step_response_approx fabricates step response; ignores zeros, residues and complex poles
 - [x] **F0595** (high, bug, easy/trivial) `differential_geometry/functions.rs:222` — christoffel_symbols_numerical swaps c112/c121, sign-flips Γ¹₁₂ and Γ²₁₁
 - [x] **F0597** (high, bug, medium/small) `differential_geometry/functions.rs:350` — mat3_exp: linear scaling exponent overflows; Padé code discarded
 - [x] **F0601** (high, bug, medium/small) `dual_quaternion.rs:410` — ScLERP loses pure translations; no shortest-path flip
-- [ ] **F0604** (high, bug, medium/small) `dynamic_systems.rs:847` — fundamental_solution_matrix transposes Φ every step (computes A·Φᵀ)
-- [ ] **F0611** (high, bug, medium/small) `dynamical_systems.rs:1106` — DoublePendulum RHS inconsistent with energy; gravity sign flipped
+- [x] **F0604** (high, bug, medium/small) `dynamic_systems.rs:847` — fundamental_solution_matrix transposes Φ every step (computes A·Φᵀ)
+- [x] **F0611** (high, bug, medium/small) `dynamical_systems.rs:1106` — DoublePendulum RHS inconsistent with energy; gravity sign flipped
 - [ ] **F0613** (high, bug, medium/small) `ergodic_theory.rs:225` — LyapunovSpectrum::update_qr discards the Q frame between steps
 - [x] **F0614** (high, fabrication, medium/medium) `ergodic_theory.rs:290` — lyapunov_exponents sums log coordinate increments, not exponents
 - [ ] **F0615** (high, fabrication, medium/medium) `ergodic_theory.rs:306` — lyapunov_exponents(trajectory) averages log step sizes, not divergence
@@ -257,45 +257,45 @@ Verified: 432 (critical 2, high 118, medium 242, low 70); 70 further raw finding
 - [ ] **F0713** (high, bug, easy/small) `monte_carlo.rs:643` — MarkovChainMC::mala has no Hastings correction and samples a biased target
 - [ ] **F0714** (high, bug, easy/small) `monte_carlo.rs:728` — integrate_stratified divides its integral estimate by the number of strata
 - [ ] **F0723** (high, bug, easy/small) `network_dynamics.rs:932` — CommunityDetection::modularity applies the null-model penalty only on edges
-- [ ] **F0728** (high, bug, hard/medium) `neural_ode.rs:596` — AdjointMethod::run integrates J·a with wrong sign and wrong times
-- [ ] **F0729** (high, fabrication, medium/medium) `neural_ode.rs:776` — TimeSeriesOde::fit computes no gradient; it only shrinks bias_out toward zero
-- [ ] **F0733** (high, bug, medium/medium) `numerical_linear_algebra/functions.rs:193` — svd_small: wide inputs never orthogonalised, U/V unsorted, V returned as Vt
+- [x] **F0728** (high, bug, hard/medium) `neural_ode.rs:596` — AdjointMethod::run integrates J·a with wrong sign and wrong times
+- [x] **F0729** (high, fabrication, medium/medium) `neural_ode.rs:776` — TimeSeriesOde::fit computes no gradient; it only shrinks bias_out toward zero
+- [x] **F0733** (high, bug, medium/medium) `numerical_linear_algebra/functions.rs:193` — svd_small: wide inputs never orthogonalised, U/V unsorted, V returned as Vt
 - [x] **F0737** (high, fabrication, medium/medium) `numerical_linear_algebra/types.rs:134` — Arnoldi/Lanczos: Krylov dimension = k, converged always true, eigenvectors are basis vectors
 - [x] **F0738** (high, fabrication, hard/medium) `numerical_linear_algebra/types.rs:211` — lobpcg is fixed-step 0.1 gradient descent, not LOBPCG
 - [x] **F0739** (high, fabrication, medium/small) `numerical_linear_algebra/types.rs:340` — Lanczos tridiag_eigenvalues is a non-converging fake Jacobi sweep
-- [ ] **F0742** (high, bug, hard/medium) `numerical_linear_algebra/types.rs:638` — MINRES recurrence is wrong; a 1×1 system returns b/(1+b²)
+- [x] **F0742** (high, bug, hard/medium) `numerical_linear_algebra/types.rs:638` — MINRES recurrence is wrong; a 1×1 system returns b/(1+b²)
 - [x] **F0743** (high, bug, medium/medium) `numerical_linear_algebra/types.rs:881` — TFQMR uses a stale A·u and wrong v update; returns converged=true at 1e19
 - [x] **F0747** (high, bug, medium/small) `numerical_linear_algebra/types.rs:1321` — MatrixFunctions::logm uses a wrong Padé form and returns about ½·log(A)
-- [ ] **F0751** (high, bug, easy/small) `numerical_methods/functions.rs:326` — RK45 error estimate omits Dormand–Prince e7·k7 term, so it is O(h)
+- [x] **F0751** (high, bug, easy/small) `numerical_methods/functions.rs:326` — RK45 error estimate omits Dormand–Prince e7·k7 term, so it is O(h)
 - [x] **F0759** (high, bug, easy/small) `numerical_methods/functions.rs:938` — qr_eigenvalues forms R·Qᵀ instead of R·Q; arnoldi_eigenvalues inherits it
-- [ ] **F0761** (high, bug, medium/small) `numerical_methods_ext.rs:332` — Gauss-Hermite n>5 Newton guesses collapse to one duplicated root
+- [x] **F0761** (high, bug, medium/small) `numerical_methods_ext.rs:332` — Gauss-Hermite n>5 Newton guesses collapse to one duplicated root
 - [x] **F0763** (high, bug, easy/trivial) `numerical_methods_ext.rs:864` — SplineInterpolation::eval uses a wrong cubic correction term
 - [x] **F0772** (high, bug, easy/small) `numerics/functions.rs:422` — inc_beta continued fraction swapped/wrong terms: returns values above 1
 - [x] **F0779** (high, bug, easy/small) `ode/types.rs:101` — DormandPrince/AdaptiveIntegrator evaluate every RK stage at step-start time
 - [x] **F0788** (high, bug, easy/small) `optimization/functions.rs:1425` — bfgs inverse-Hessian update is not BFGS and H becomes indefinite
 - [x] **F0798** (high, fabrication, medium/medium) `parallel/types.rs:248` — WorkStealingPool workers exit immediately; all tasks run serially
 - [x] **F0802** (high, bug, easy/small) `pde/types/types_2.rs:611` — MethodOfLines::integrate_dopri5 mixes DP stages with Fehlberg weights
-- [ ] **F0828** (high, bug, medium/small) `probabilistic_models.rs:880` — VI ELBO KL formula wrong; CAVI responsibilities never normalised
+- [x] **F0828** (high, bug, medium/small) `probabilistic_models.rs:880` — VI ELBO KL formula wrong; CAVI responsibilities never normalised
 - [x] **F0831** (high, bug, medium/small) `quadrature.rs:455` — Gauss-Hermite weights are n times too large and nodes collapse for n≥5
-- [ ] **F0832** (high, bug, easy/small) `quadrature.rs:497` — Gauss-Laguerre uses wrong derivative; nodes collapse, weights sum ≠1
+- [x] **F0832** (high, bug, easy/small) `quadrature.rs:497` — Gauss-Laguerre uses wrong derivative; nodes collapse, weights sum ≠1
 - [x] **F0834** (high, bug, easy/small) `random/functions.rs:617` — regularized_incomplete_beta drops first CF term, so student_t_cdf is wrong
-- [ ] **F0835** (high, bug, medium/medium) `random/types.rs:198` — SobolSequence capped at 4 dims; dims 0 and 1 identical
+- [x] **F0835** (high, bug, medium/medium) `random/types.rs:198` — SobolSequence capped at 4 dims; dims 0 and 1 identical
 - [x] **F0839** (high, fabrication, medium/medium) `random/types.rs:1404` — Sobol direction tables make dimension 1 identical to dimension 0
 - [x] **F0840** (high, fabrication, medium/small) `random/types.rs:1518` — fBm 'Hosking' generator ignores Hurst correlation and produces plain BM
 - [x] **F0842** (high, fabrication, easy/small) `random_processes.rs:486` — CTMC mean_first_passage_time ignores `from` and returns recurrence time
 - [x] **F0843** (high, bug, easy/trivial) `random_processes.rs:633` — stable_sample α=1 branch evaluates tan(π/2), so Cauchy paths explode
 - [x] **F0852** (high, fabrication, medium/medium) `sampling/functions.rs:307` — sobol10 direction numbers fabricated; dims 2–8 not stratified
-- [ ] **F0853** (high, fabrication, easy/small) `sampling/functions.rs:324` — Sobol 10-D direction numbers are invented, not Joe & Kuo
+- [x] **F0853** (high, fabrication, easy/small) `sampling/functions.rs:324` — Sobol 10-D direction numbers are invented, not Joe & Kuo
 - [x] **F0869** (high, fabrication, medium/small) `signal/types.rs:467` — ButterworthBandpass is ad-hoc RBJ biquad; cutoffs far below −3 dB
-- [ ] **F0870** (high, fabrication, medium/medium) `signal/types.rs:474` — ButterworthBandpass is an ad-hoc RBJ fudge, not a Butterworth design
+- [x] **F0870** (high, fabrication, medium/medium) `signal/types.rs:474` — ButterworthBandpass is an ad-hoc RBJ fudge, not a Butterworth design
 - [x] **F0872** (high, bug, easy/trivial) `signal/types.rs:770` — ButterworthLowPass odd-order section has flipped feedback sign
 - [x] **F0876** (high, panic, easy/small) `signal_processing.rs:446` — welch_psd hangs on empty input or overlap==segment_len
-- [ ] **F0882** (high, bug, easy/small) `signal_processing.rs:1076` — db2_reconstruct uses reversed filters, so it does not invert db2_decompose
-- [ ] **F0883** (high, bug, medium/medium) `signal_processing.rs:1116` — resample loses amplitude, is under-filtered and misaligned
+- [x] **F0882** (high, bug, easy/small) `signal_processing.rs:1076` — db2_reconstruct uses reversed filters, so it does not invert db2_decompose
+- [x] **F0883** (high, bug, medium/medium) `signal_processing.rs:1116` — resample loses amplitude, is under-filtered and misaligned
 - [x] **F0886** (high, bug, medium/small) `sparse/functions.rs:864` — saddle_point_solve: Schur RHS sign flipped, diagonal-only pressure solve
 - [x] **F0887** (high, fabrication, easy/small) `sparse/functions.rs:960` — ritz_values zeroes off-diagonals in one sweep; returns non-eigenvalues
 - [x] **F0888** (high, fabrication, medium/medium) `sparse/types.rs:41` — SparseLu::ilu0 is a dense exact LU, not ILU(0)
-- [ ] **F0893** (high, bug, medium/medium) `sparse/types.rs:757` — IncompleteCholesky::solve_upper does not solve L^T x=b; factor/apply are dense
+- [x] **F0893** (high, bug, medium/medium) `sparse/types.rs:757` — IncompleteCholesky::solve_upper does not solve L^T x=b; factor/apply are dense
 - [ ] **F0896** (high, bug, easy/small) `spatial/types.rs:412` — BallTree prunes with pivot centre but centroid radius; misses neighbours
 - [ ] **F0905** (high, bug, easy/small) `statistics/functions.rs:419` — PCA power iteration from a fixed e0 returns wrong or duplicate components
 - [ ] **F0907** (high, duplicate, easy/small) `statistics/functions.rs:682` — shapiro_wilk_w coefficients unnormalised, W approx n instead of <=1
@@ -320,10 +320,10 @@ Verified: 432 (critical 2, high 118, medium 242, low 70); 70 further raw finding
 - [ ] **F0987** (high, bug, easy/small) `uncertainty_quantification.rs:1136` — LCG low bits make bootstrap resamples exact permutations
 - [x] **F0989** (high, bug, medium/small) `wavelet_transform/functions.rs:137` — Periodic DWT emits duplicate coefficients; Db2–Db6 roundtrip fails
 - [x] **F1000** (high, bug, easy/small) `wavelets.rs:860` — SURE risk cancels to n−2k+Σx²; threshold is always max|x|
-- [ ] **F1007** (high, bug, easy/trivial) `world/types.rs:250` — Quaternion integration treats world-frame angular velocity as body-frame
+- [x] **F1007** (high, bug, easy/trivial) `world/types.rs:250` — Quaternion integration treats world-frame angular velocity as body-frame
 - [x] **F1013** (high, fabrication, hard/medium) `world/types.rs:926` — PhysicsWorld accepts constraints but step never solves them
 - [x] **F1014** (high, bug, easy/small) `world/types.rs:962` — step_with_accumulator hangs when fixed_dt<=0; no substep cap
-- [ ] **F1015** (high, fabrication, hard/large) `world/types.rs:970` — PhysicsWorld::step ignores stored constraints; add_constraint has no effect
+- [x] **F1015** (high, fabrication, hard/large) `world/types.rs:970` — PhysicsWorld::step ignores stored constraints; add_constraint has no effect
 
 ### Medium (242)
 - [ ] **F0517** (medium, missing-feature, medium/medium) `crates/oxiphysics-core/Cargo.toml:20` — No serde feature: world state and config cannot be persisted

@@ -422,9 +422,14 @@ mod tests {
         let expected = (beta_c - beta_h) * (-100.0 - -200.0);
         let delta = remd.swap_log_ratio(0, 1).unwrap();
         assert!((delta - expected).abs() < 1e-12, "{delta} vs {expected}");
-        // The reverse proposal has the opposite log ratio.
-        let reverse = remd.swap_log_ratio(1, 0).unwrap();
-        assert!((delta + reverse).abs() < 1e-12);
+        // Exchanging i with j is the same move as exchanging j with i.
+        let symmetric = remd.swap_log_ratio(1, 0).unwrap();
+        assert!((delta - symmetric).abs() < 1e-12, "{delta} vs {symmetric}");
+        // Detailed balance: once the exchange is made (each replica now holds the
+        // other's energy), swapping back has exactly the opposite log ratio.
+        let exchanged = two_replica_remd(300.0, 400.0, -200.0, -100.0);
+        let back = exchanged.swap_log_ratio(0, 1).unwrap();
+        assert!((delta + back).abs() < 1e-12, "{delta} vs {back}");
         assert!(remd.swap_log_ratio(0, 5).is_none());
     }
 

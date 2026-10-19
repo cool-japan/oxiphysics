@@ -850,47 +850,97 @@ pub enum AnnealingSchedule {
 /// Manages N replicas at different temperatures and proposes swap moves
 /// between adjacent replicas using the Metropolis criterion:
 ///
-/// P_swap = min(1, exp(Δβ · ΔE))
+/// P_swap = min(1, exp((β_i − β_j) · (E_i − E_j)))
 ///
-/// where Δβ = β_j - β_i and ΔE = E_j - E_i for adjacent replicas i, j.
+/// where β = 1 / (k_B T) and E_i, E_j are the potential energies of the
+/// configurations currently held by replicas i and j.  Exchanging the
+/// configurations changes the Boltzmann weight by
+/// `exp(−β_i E_j − β_j E_i + β_i E_i + β_j E_j)`, which is the expression
+/// above: the swap that moves the lower energy to the colder replica
+/// (`(β_i − β_j)(E_i − E_j) ≥ 0`) is always accepted, an unfavourable one only
+/// with probability `exp((β_i − β_j)(E_i − E_j)) < 1`.
+///
+/// The energies must be given in the energy unit of
+/// [`ReplicaExchange::boltzmann_constant`] per kelvin.  [`ReplicaExchange::new`]
+/// uses joules (`k_B = 1.380649e-23 J/K`);
+/// [`ReplicaExchange::with_boltzmann_constant`] selects another unit system, for
+/// example `8.314462618e-3` for energies in kJ/mol.
 pub struct ReplicaExchange {
     /// Temperatures for each replica (K).
     pub temperatures: Vec<f64>,
-    /// Current energies for each replica.
+    /// Current energies for each replica, in units of
+    /// [`ReplicaExchange::boltzmann_constant`] times kelvin (joules by default).
     pub energies: Vec<f64>,
     /// Total accepted swaps.
     pub accepted: usize,
     /// Total attempted swaps.
     pub attempted: usize,
+    /// Boltzmann constant in the energy unit of `energies` per kelvin
+    /// (`1.380649e-23` for joules).
+    pub boltzmann_constant: f64,
 }
 impl ReplicaExchange {
-    /// Create a new replica exchange manager.
+    /// Create a new replica exchange manager for energies in joules.
     ///
     /// `temperatures` must be sorted in ascending order.
     pub fn new(temperatures: Vec<f64>) -> Self {
+        Self::with_boltzmann_constant(temperatures, KB_SAMP)
+    }
+    /// Create a replica exchange manager for energies measured in the unit whose
+    /// Boltzmann constant (energy per kelvin) is `boltzmann_constant`, for
+    /// example `8.314462618e-3` for kJ/mol.
+    ///
+    /// `temperatures` must be sorted in ascending order.
+    pub fn with_boltzmann_constant(temperatures: Vec<f64>, boltzmann_constant: f64) -> Self {
         let n = temperatures.len();
         Self {
             temperatures,
             energies: vec![0.0; n],
             accepted: 0,
             attempted: 0,
+            boltzmann_constant,
         }
     }
     /// Set the energy of replica `idx`.
     pub fn set_energy(&mut self, idx: usize, energy: f64) {
         self.energies[idx] = energy;
     }
+    /// Metropolis acceptance probability
+    /// `min(1, exp((β_i − β_j)(E_i − E_j)))` of exchanging the configurations of
+    /// replicas `i` and `j`, or `None` if an index is out of range or a
+    /// temperature or the Boltzmann constant is not positive and finite.
+    pub fn swap_probability(&self, i: usize, j: usize) -> Option<f64> {
+        let t_i = *self.temperatures.get(i)?;
+        let t_j = *self.temperatures.get(j)?;
+        let e_i = *self.energies.get(i)?;
+        let e_j = *self.energies.get(j)?;
+        let k_b = self.boltzmann_constant;
+        let positive_finite = |x: f64| x.is_finite() && x > 0.0;
+        if !(positive_finite(t_i) && positive_finite(t_j) && positive_finite(k_b)) {
+            return None;
+        }
+        let beta_i = 1.0 / (k_b * t_i);
+        let beta_j = 1.0 / (k_b * t_j);
+        Some(crate::remd::metropolis_exchange_probability(
+            e_i, e_j, beta_i, beta_j,
+        ))
+    }
     /// Attempt a swap between replicas `i` and `j`.
     ///
-    /// Returns `true` if the swap was accepted (using a deterministic
-    /// Metropolis criterion with a provided uniform random number `u01`
-    /// in \[0, 1)).
+    /// Returns `true` if the swap was accepted: the Metropolis criterion
+    /// `u01 < min(1, exp((β_i − β_j)(E_i − E_j)))` is evaluated with the
+    /// provided uniform random number `u01` in \[0, 1).  An accepted swap
+    /// exchanges the stored energies of the two replicas.
+    ///
+    /// An index out of range, a non-positive temperature or a non-positive
+    /// Boltzmann constant makes the attempt invalid: nothing is counted and
+    /// `false` is returned.
     pub fn try_swap(&mut self, i: usize, j: usize, u01: f64) -> bool {
+        let Some(probability) = self.swap_probability(i, j) else {
+            return false;
+        };
         self.attempted += 1;
-        let beta_i = 1.0 / (KB_SAMP * self.temperatures[i]);
-        let beta_j = 1.0 / (KB_SAMP * self.temperatures[j]);
-        let delta = (beta_j - beta_i) * (self.energies[i] - self.energies[j]);
-        let accepted = delta <= 0.0 || u01 < delta.exp();
+        let accepted = u01 < probability;
         if accepted {
             self.accepted += 1;
             self.energies.swap(i, j);

@@ -52,6 +52,42 @@ pub fn cubic_kernel_grad(r_ij: [f64; 3], h: f64) -> [f64; 3] {
     };
     scale3(r_ij, dw_dr / r)
 }
+/// Regularisation of the Brookshaw/Morris SPH Laplacians: they divide by
+/// `r_ij² + η²` with `η² = 0.01 h²`, which keeps a pair term bounded as `r_ij → 0`
+/// without changing it at the usual particle spacings.
+pub(super) const MORRIS_ETA_SQ_FACTOR: f64 = 0.01;
+/// Pair contribution of neighbour `j` to the Brookshaw/Morris SPH Laplacian of a
+/// scalar `φ` at particle `i`:
+///
+/// ```text
+/// (∇²φ)_i ≈ Σ_j 2 V_j (φ_i − φ_j) (r_ij · ∇_iW_ij) / (|r_ij|² + η²),   η² = 0.01 h²
+/// ```
+///
+/// with `r_ij = x_i − x_j` (the result does not depend on the orientation of `r_ij`),
+/// the cubic-spline gradient `∇_iW_ij = cubic_kernel_grad(r_ij, h)` and the neighbour
+/// volume `V_j = m_j/ρ_j`.  Because `r_ij · ∇_iW_ij = |r| dW/dr < 0`, a particle that
+/// is richer in `φ` than its neighbour has a negative pair term: diffusion flows down
+/// the gradient.  The operator is exact for a quadratic field up to the SPH kernel
+/// approximation, and the pair terms of `i` and `j` are antisymmetric for equal
+/// volumes, which conserves the total amount of `φ`.
+///
+/// Multiply the sum over the neighbours by a diffusivity `D` to get `D ∇²φ`.
+pub fn morris_laplacian(phi_i: f64, phi_j: f64, r_ij: [f64; 3], vol_j: f64, h: f64) -> f64 {
+    morris_pair_term(phi_i, phi_j, r_ij, vol_j, h, cubic_kernel_grad(r_ij, h))
+}
+/// The Brookshaw/Morris pair term of [`morris_laplacian`] for a caller-supplied kernel
+/// gradient `grad_w = ∇_iW_ij`.
+pub(super) fn morris_pair_term(
+    phi_i: f64,
+    phi_j: f64,
+    r_ij: [f64; 3],
+    vol_j: f64,
+    h: f64,
+    grad_w: [f64; 3],
+) -> f64 {
+    2.0 * vol_j * (phi_i - phi_j) * dot3(r_ij, grad_w)
+        / (dot3(r_ij, r_ij) + MORRIS_ETA_SQ_FACTOR * h * h)
+}
 /// Reaction term function type: f(c) → dc/dt contribution.
 pub type ReactionFn = fn(f64) -> f64;
 #[cfg(test)]
@@ -502,60 +538,54 @@ mod tests {
         assert_eq!(err, 0.0);
     }
 }
-/// Compute the SPH Laplacian diffusion term for species `species` at particle `i`.
+/// Compute the SPH diffusion term `D ∇²c_i` for species `species` at particle `i` (1/s
+/// times the concentration unit).
 ///
-/// Uses the standard Morris et al. (1997) SPH diffusion:
-/// ∇²c_i ≈ Σ_j (m_j/ρ_j) * 2*(c_i − c_j)/(r_ij²+ε) * (r_ij · ∇W_ij)
+/// Uses the Brookshaw/Morris et al. (1997) SPH Laplacian:
+/// `∇²c_i ≈ Σ_j (m_j/ρ_j) · 2 (c_i − c_j) (r_ij · ∇_iW_ij) / (r_ij² + η²)`, with
+/// `r_ij = x_i − x_j`, the pair smoothing length `h_ij = (h_i + h_j)/2` and
+/// `η² = 0.01 h_ij²` (see [`morris_laplacian`]).
 ///
-/// Here a simplified scalar version is returned using the kernel value only.
+/// `kernel_grad(r_ij, h)` must return the kernel gradient `∇_iW_ij` for the separation
+/// `r_ij = x_i − x_j`, e.g. [`cubic_kernel_grad`].  Species missing from a particle
+/// count as concentration zero.
 pub fn sph_diffusion_laplacian(
     particles: &[MultiTransportParticle],
     i: usize,
     species: usize,
-    kernel: impl Fn(f64, f64) -> f64,
+    kernel_grad: impl Fn([f64; 3], f64) -> [f64; 3],
     diffusivity: f64,
 ) -> f64 {
     if i >= particles.len() {
         return 0.0;
     }
     let pi = &particles[i];
-    let ci = if species < pi.concentration.len() {
-        pi.concentration[species]
-    } else {
-        0.0
-    };
-    let hi = pi.h;
+    let ci = pi.concentration.get(species).copied().unwrap_or(0.0);
     let mut lap = 0.0;
     for (j, pj) in particles.iter().enumerate() {
         if j == i {
             continue;
         }
-        let cj = if species < pj.concentration.len() {
-            pj.concentration[species]
-        } else {
-            0.0
-        };
-        let dx = pi.pos[0] - pj.pos[0];
-        let dy = pi.pos[1] - pj.pos[1];
-        let dz = pi.pos[2] - pj.pos[2];
-        let r = (dx * dx + dy * dy + dz * dz).sqrt();
-        let w = kernel(r, hi);
+        let cj = pj.concentration.get(species).copied().unwrap_or(0.0);
+        let r_ij = sub3(pi.pos, pj.pos);
+        let h_ij = 0.5 * (pi.h + pj.h);
         let vol_j = pj.mass / pj.rho.max(1e-300);
-        lap += vol_j * (cj - ci) * w;
+        lap += morris_pair_term(ci, cj, r_ij, vol_j, h_ij, kernel_grad(r_ij, h_ij));
     }
-    diffusivity * 2.0 * lap / (hi * hi).max(1e-300)
+    diffusivity * lap
 }
 /// Advection-diffusion RHS for species `species` at particle `i`.
 ///
-/// dc/dt ≈ diffusion_laplacian(c)  (advection is handled by particle motion).
+/// dc/dt ≈ D ∇²c  (advection is handled by particle motion); see
+/// [`sph_diffusion_laplacian`] for the operator and the meaning of `kernel_grad`.
 pub fn advection_diffusion_rhs(
     particles: &[MultiTransportParticle],
     i: usize,
     species: usize,
-    kernel: impl Fn(f64, f64) -> f64,
+    kernel_grad: impl Fn([f64; 3], f64) -> [f64; 3],
     d: f64,
 ) -> f64 {
-    sph_diffusion_laplacian(particles, i, species, kernel, d)
+    sph_diffusion_laplacian(particles, i, species, kernel_grad, d)
 }
 /// Arrhenius reaction rate: k = A * exp(−E_a / (R T)).
 ///
@@ -595,36 +625,41 @@ pub fn lewis_number(thermal_diff: f64, mass_diff: f64) -> f64 {
     }
     thermal_diff / mass_diff
 }
-/// Heat equation RHS at particle `i` via SPH.
+/// Heat equation RHS at particle `i` via SPH (K/s).
 ///
-/// dT/dt ≈ λ / (ρ c_v) * ∇²T
+/// dT/dt ≈ α ∇²T  with the thermal diffusivity `α = λ / (ρ c_v)` (m²/s, see
+/// [`thermal_diffusivity`]); the Laplacian is the Brookshaw/Morris form of
+/// [`sph_diffusion_laplacian`] applied to the particle temperatures, with
+/// `kernel_grad(r_ij, h)` returning `∇_iW_ij` for `r_ij = x_i − x_j`.
 pub fn energy_equation_rhs(
     particles: &[MultiTransportParticle],
     i: usize,
-    kernel: impl Fn(f64, f64) -> f64,
-    lambda: f64,
+    kernel_grad: impl Fn([f64; 3], f64) -> [f64; 3],
+    alpha: f64,
 ) -> f64 {
     if i >= particles.len() {
         return 0.0;
     }
     let pi = &particles[i];
     let ti = pi.temperature;
-    let hi = pi.h;
     let mut lap_t = 0.0;
     for (j, pj) in particles.iter().enumerate() {
         if j == i {
             continue;
         }
-        let tj = pj.temperature;
-        let dx = pi.pos[0] - pj.pos[0];
-        let dy = pi.pos[1] - pj.pos[1];
-        let dz = pi.pos[2] - pj.pos[2];
-        let r = (dx * dx + dy * dy + dz * dz).sqrt();
-        let w = kernel(r, hi);
+        let r_ij = sub3(pi.pos, pj.pos);
+        let h_ij = 0.5 * (pi.h + pj.h);
         let vol_j = pj.mass / pj.rho.max(1e-300);
-        lap_t += vol_j * (tj - ti) * w;
+        lap_t += morris_pair_term(
+            ti,
+            pj.temperature,
+            r_ij,
+            vol_j,
+            h_ij,
+            kernel_grad(r_ij, h_ij),
+        );
     }
-    lambda * 2.0 * lap_t / (hi * hi).max(1e-300)
+    alpha * lap_t
 }
 /// Effective diffusivity in a porous medium: D_eff = D · ε / τ.
 pub fn porous_diffusivity(d0: f64, porosity: f64, tortuosity: f64) -> f64 {
@@ -640,26 +675,29 @@ pub fn thermal_diffusivity(k: f64, rho: f64, cp: f64) -> f64 {
     }
     k / (rho * cp)
 }
-/// Helper: rate contribution for one neighbour pair.
+/// Helper: temperature-rate contribution `α · 2 V_j (T_i − T_j)(r_ij·∇_iW_ij)/(r²+η²)`
+/// (K/s) of one neighbour pair with separation `r_ij = x_i − x_j`, see [`morris_laplacian`].
 pub(super) fn heat_exchange_rate(
     alpha: f64,
     t_i: f64,
     t_j: f64,
     mass_j: f64,
     rho_j: f64,
-    w: f64,
+    r_ij: [f64; 3],
+    h: f64,
 ) -> f64 {
     if rho_j <= 0.0_f64 {
         return 0.0_f64;
     }
-    2.0_f64 * alpha * (t_j - t_i) * mass_j / rho_j * w
+    alpha * morris_laplacian(t_i, t_j, r_ij, mass_j / rho_j, h)
 }
 #[cfg(test)]
 mod reactive_transport_tests {
     use super::*;
     use crate::transport_sph::types::*;
-    fn zero_kernel(_r: f64, _h: f64) -> f64 {
-        0.0
+    /// Kernel gradient that vanishes everywhere (no particle interacts).
+    fn zero_kernel_grad(_r_ij: [f64; 3], _h: f64) -> [f64; 3] {
+        [0.0; 3]
     }
     #[test]
     fn test_multi_transport_particle_new() {
@@ -692,7 +730,7 @@ mod reactive_transport_tests {
     fn test_sph_diffusion_laplacian_no_neighbors() {
         let p = MultiTransportParticle::new([0.0; 3], [0.0; 3], 2);
         let particles = vec![p];
-        let result = sph_diffusion_laplacian(&particles, 0, 0, zero_kernel, 1e-5);
+        let result = sph_diffusion_laplacian(&particles, 0, 0, zero_kernel_grad, 1e-5);
         assert_eq!(result, 0.0);
     }
     #[test]
@@ -702,14 +740,14 @@ mod reactive_transport_tests {
         p1.concentration = vec![1.0, 0.0];
         p2.concentration = vec![0.0, 0.0];
         let particles = vec![p1, p2];
-        let result = sph_diffusion_laplacian(&particles, 0, 0, zero_kernel, 1.0);
+        let result = sph_diffusion_laplacian(&particles, 0, 0, zero_kernel_grad, 1.0);
         assert_eq!(result, 0.0);
     }
     #[test]
     fn test_advection_diffusion_rhs_zero_kernel() {
         let p = MultiTransportParticle::new([0.0; 3], [0.0; 3], 1);
         let particles = vec![p];
-        let rhs = advection_diffusion_rhs(&particles, 0, 0, zero_kernel, 1e-4);
+        let rhs = advection_diffusion_rhs(&particles, 0, 0, zero_kernel_grad, 1e-4);
         assert_eq!(rhs, 0.0);
     }
     #[test]
@@ -821,7 +859,7 @@ mod reactive_transport_tests {
     fn test_energy_equation_rhs_single_particle() {
         let p = MultiTransportParticle::new([0.0; 3], [0.0; 3], 1);
         let particles = vec![p];
-        let rhs = energy_equation_rhs(&particles, 0, zero_kernel, 1.0);
+        let rhs = energy_equation_rhs(&particles, 0, zero_kernel_grad, 1.0);
         assert_eq!(rhs, 0.0);
     }
     #[test]
@@ -829,7 +867,7 @@ mod reactive_transport_tests {
         let p1 = MultiTransportParticle::new([0.0; 3], [0.0; 3], 1);
         let p2 = MultiTransportParticle::new([0.1, 0.0, 0.0], [0.0; 3], 1);
         let particles = vec![p1, p2];
-        let rhs = energy_equation_rhs(&particles, 0, zero_kernel, 100.0);
+        let rhs = energy_equation_rhs(&particles, 0, zero_kernel_grad, 100.0);
         assert_eq!(rhs, 0.0);
     }
     #[test]
@@ -1148,21 +1186,21 @@ mod extended_transport_tests {
     #[test]
     fn test_sph_heat_transfer_two_particles_same_temp() {
         let ht = SPHHeatTransfer::new(1.0, 1.0, 1.0);
-        let dq = ht.heat_exchange(300.0, 300.0, 1.0, 1.0, 0.1);
+        let dq = ht.heat_exchange(300.0, 300.0, 1.0, 1.0, [0.1, 0.0, 0.0], 0.5);
         assert!(dq.abs() < 1e-12);
     }
     #[test]
     fn test_sph_heat_transfer_direction() {
         let ht = SPHHeatTransfer::new(1.0, 1.0, 1.0);
-        let dq = ht.heat_exchange(400.0, 300.0, 1.0, 1.0, 0.1);
+        let dq = ht.heat_exchange(400.0, 300.0, 1.0, 1.0, [0.1, 0.0, 0.0], 0.5);
         assert!(dq < 0.0);
     }
     #[test]
     fn test_sph_heat_transfer_proportional_to_k() {
         let ht1 = SPHHeatTransfer::new(1.0, 1.0, 1.0);
         let ht2 = SPHHeatTransfer::new(2.0, 1.0, 1.0);
-        let dq1 = ht1.heat_exchange(400.0, 300.0, 1.0, 1.0, 0.1);
-        let dq2 = ht2.heat_exchange(400.0, 300.0, 1.0, 1.0, 0.1);
+        let dq1 = ht1.heat_exchange(400.0, 300.0, 1.0, 1.0, [0.1, 0.0, 0.0], 0.5);
+        let dq2 = ht2.heat_exchange(400.0, 300.0, 1.0, 1.0, [0.1, 0.0, 0.0], 0.5);
         assert!((dq2 / dq1 - 2.0).abs() < 1e-10);
     }
     #[test]

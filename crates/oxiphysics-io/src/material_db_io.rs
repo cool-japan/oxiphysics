@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Material database I/O: CES-style material properties, JSON material libraries.
 //!
-//! Provides typed property storage, a searchable material database, manual JSON
+//! Provides typed property storage, a searchable material database, JSON
 //! serialization/deserialization, temperature-dependent property interpolation,
 //! and CSV import (Matweb-style).
 
@@ -414,13 +414,37 @@ impl MaterialFilter {
 
 // ── JsonMaterialDb ─────────────────────────────────────────────────────────────
 
-/// Manual JSON serialization/deserialization for a `MaterialDatabase`.
+/// JSON serialization and deserialization of a [`MaterialRecord`].
 ///
-/// Does not use `serde`; produces and parses a simple human-readable JSON format.
+/// [`JsonMaterialDb::write_json_material`] writes a small, human-readable JSON
+/// object and [`JsonMaterialDb::parse_json_material`] reads it back with the
+/// `serde_json` parser, so any valid JSON text is accepted, whatever its
+/// whitespace or key order, and strings may hold any Unicode text:
+///
+/// ```text
+/// {
+///   "name": "Ti-6Al-4V (α+β)",
+///   "category": "Metal>NonFerrous>Titanium",
+///   "source": "Matweb",
+///   "properties": {
+///     "density": {"type": "scalar", "value": 4430.0},
+///     "yield_strength": {"type": "range", "lo": 800000000.0, "hi": 1000000000.0},
+///     "stiffness": {"type": "matrix", "values": [1.0, 2.0, 3.0]}
+///   }
+/// }
+/// ```
+///
+/// Numbers are written in the shortest decimal form that parses back to the
+/// identical `f64`.  JSON has no spelling for NaN and the infinities, so they
+/// are written as the strings `"NaN"`, `"Infinity"` and `"-Infinity"`, which
+/// the reader accepts wherever it expects a number.
 pub struct JsonMaterialDb;
 
 impl JsonMaterialDb {
     /// Serialize a `MaterialRecord` to a JSON object string.
+    ///
+    /// The properties are written in key order, so the text of a record is the
+    /// same on every run.
     pub fn write_json_material(record: &MaterialRecord) -> String {
         let mut out = String::from("{\n");
         out.push_str(&format!("  \"name\": \"{}\",\n", escape_json(&record.name)));
@@ -433,147 +457,133 @@ impl JsonMaterialDb {
             escape_json(&record.source)
         ));
         out.push_str("  \"properties\": {\n");
-        let mut prop_iter = record.properties.iter().peekable();
-        while let Some((k, v)) = prop_iter.next() {
-            let comma = if prop_iter.peek().is_some() { "," } else { "" };
-            let prop_str = match v {
-                MaterialProperty::Scalar(val) => {
-                    format!(
-                        "    \"{}\": {{\"type\": \"scalar\", \"value\": {:.6}}}{}",
-                        escape_json(k),
-                        val,
-                        comma
-                    )
+        let mut entries: Vec<(&String, &MaterialProperty)> = record.properties.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        let last = entries.len().saturating_sub(1);
+        for (index, (key, property)) in entries.into_iter().enumerate() {
+            let comma = if index < last { "," } else { "" };
+            let body = match property {
+                MaterialProperty::Scalar(value) => {
+                    format!("\"type\": \"scalar\", \"value\": {}", json_number(*value))
                 }
-                MaterialProperty::Range(lo, hi) => {
-                    format!(
-                        "    \"{}\": {{\"type\": \"range\", \"lo\": {:.6}, \"hi\": {:.6}}}{}",
-                        escape_json(k),
-                        lo,
-                        hi,
-                        comma
-                    )
-                }
-                MaterialProperty::Matrix(vals) => {
-                    let vals_str: Vec<String> = vals.iter().map(|x| format!("{:.6}", x)).collect();
-                    format!(
-                        "    \"{}\": {{\"type\": \"matrix\", \"values\": [{}]}}{}",
-                        escape_json(k),
-                        vals_str.join(", "),
-                        comma
-                    )
+                MaterialProperty::Range(lo, hi) => format!(
+                    "\"type\": \"range\", \"lo\": {}, \"hi\": {}",
+                    json_number(*lo),
+                    json_number(*hi)
+                ),
+                MaterialProperty::Matrix(values) => {
+                    let items: Vec<String> = values.iter().map(|x| json_number(*x)).collect();
+                    format!("\"type\": \"matrix\", \"values\": [{}]", items.join(", "))
                 }
             };
-            out.push_str(&prop_str);
-            out.push('\n');
+            out.push_str(&format!(
+                "    \"{}\": {{{}}}{}\n",
+                escape_json(key),
+                body,
+                comma
+            ));
         }
         out.push_str("  }\n");
         out.push('}');
         out
     }
 
-    /// Parse a single material record from a simplified JSON string.
+    /// Parse a single material record from a JSON string.
     ///
-    /// Supports the format produced by `write_json_material`.
+    /// Reads the format produced by [`JsonMaterialDb::write_json_material`]:
+    /// a JSON object with a string `"name"`, optional string `"category"` and
+    /// `"source"` (empty when absent) and a `"properties"` object whose members
+    /// are `{"type": "scalar", "value": v}`, `{"type": "range", "lo": a, "hi": b}`
+    /// or `{"type": "matrix", "values": [..]}`.  Other members are ignored.
+    ///
+    /// Returns `None` when the text is not valid JSON or does not have that
+    /// shape (a missing name, an unknown property type, a missing or
+    /// non-numeric value, ...); a record is never returned half-parsed.
     pub fn parse_json_material(json: &str) -> Option<MaterialRecord> {
-        let name = extract_json_str(json, "name")?;
-        let category = extract_json_str(json, "category").unwrap_or_default();
-        let source = extract_json_str(json, "source").unwrap_or_default();
-
-        let mut record = MaterialRecord::new(&name, &category);
-        record.source = source;
-
-        // Extract the properties block between "properties": { ... }
-        let props_start = json.find("\"properties\":")?;
-        let block_start = json[props_start..].find('{')? + props_start + 1;
-        // Find the matching closing brace
-        let block = &json[block_start..];
-        let mut depth = 1i32;
-        let mut end = 0usize;
-        let chars: Vec<char> = block.chars().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            match chars[i] {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = i;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        let props_block = &block[..end];
-
-        // Parse each "key": {...} pair
-        let mut pos = 0usize;
-        let pb_chars: Vec<char> = props_block.chars().collect();
-        while pos < pb_chars.len() {
-            // Find next quoted key
-            if let Some(rel) = props_block[pos..].find('"') {
-                let key_start = pos + rel + 1;
-                if let Some(key_end_rel) = props_block[key_start..].find('"') {
-                    let key = &props_block[key_start..key_start + key_end_rel];
-                    // Find the opening brace of the value object
-                    let after_key = key_start + key_end_rel + 1;
-                    if let Some(brace_rel) = props_block[after_key..].find('{') {
-                        let val_start = after_key + brace_rel + 1;
-                        // Find matching closing brace
-                        let mut d = 1i32;
-                        let mut vend = val_start;
-                        while vend < props_block.len() {
-                            match props_block.chars().nth(vend) {
-                                Some('{') => d += 1,
-                                Some('}') => {
-                                    d -= 1;
-                                    if d == 0 {
-                                        break;
-                                    }
-                                }
-                                _ => {}
-                            }
-                            vend += 1;
-                        }
-                        let val_block = &props_block[val_start..vend];
-                        // Determine type
-                        if val_block.contains("\"scalar\"") {
-                            if let Some(v) = extract_json_f64(val_block, "value") {
-                                record.set_scalar(key, v);
-                            }
-                        } else if val_block.contains("\"range\"") {
-                            let lo = extract_json_f64(val_block, "lo");
-                            let hi = extract_json_f64(val_block, "hi");
-                            if let (Some(lo), Some(hi)) = (lo, hi) {
-                                record.set_range(key, lo, hi);
-                            }
-                        } else if val_block.contains("\"matrix\"") {
-                            let vals = extract_json_f64_array(val_block, "values");
-                            record
-                                .properties
-                                .insert(key.to_string(), MaterialProperty::Matrix(vals));
-                        }
-                        pos = vend + 1;
-                    } else {
-                        pos = after_key;
-                    }
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
+        let root: serde_json::Value = serde_json::from_str(json).ok()?;
+        let fields = root.as_object()?;
+        let name = fields.get("name")?.as_str()?;
+        let category = optional_text(fields, "category")?;
+        let source = optional_text(fields, "source")?;
+        let properties = fields.get("properties")?.as_object()?;
+        let mut record = MaterialRecord::new(name, category);
+        record.source = source.to_string();
+        for (key, entry) in properties {
+            record
+                .properties
+                .insert(key.clone(), parse_property(entry)?);
         }
         Some(record)
+    }
+}
+
+/// A string member that may be absent (`""`); present but not a string is `None`.
+fn optional_text<'a>(
+    fields: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<&'a str> {
+    match fields.get(key) {
+        None => Some(""),
+        Some(value) => value.as_str(),
+    }
+}
+
+/// Decode one member of the `"properties"` object, dispatching on its `"type"`.
+fn parse_property(entry: &serde_json::Value) -> Option<MaterialProperty> {
+    let fields = entry.as_object()?;
+    match fields.get("type")?.as_str()? {
+        "scalar" => Some(MaterialProperty::Scalar(json_f64(fields.get("value")?)?)),
+        "range" => Some(MaterialProperty::Range(
+            json_f64(fields.get("lo")?)?,
+            json_f64(fields.get("hi")?)?,
+        )),
+        "matrix" => {
+            let values = fields
+                .get("values")?
+                .as_array()?
+                .iter()
+                .map(json_f64)
+                .collect::<Option<Vec<f64>>>()?;
+            Some(MaterialProperty::Matrix(values))
+        }
+        _ => None,
+    }
+}
+
+/// A JSON number, or one of the strings `"NaN"`, `"Infinity"` and `"-Infinity"`.
+fn json_f64(value: &serde_json::Value) -> Option<f64> {
+    match value {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::String(text) => match text.as_str() {
+            "NaN" => Some(f64::NAN),
+            "Infinity" => Some(f64::INFINITY),
+            "-Infinity" => Some(f64::NEG_INFINITY),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Render an `f64` as a JSON token (see [`JsonMaterialDb`] for the spelling of
+/// non-finite values).
+fn json_number(value: f64) -> String {
+    if value.is_nan() {
+        "\"NaN\"".to_string()
+    } else if value == f64::INFINITY {
+        "\"Infinity\"".to_string()
+    } else if value == f64::NEG_INFINITY {
+        "\"-Infinity\"".to_string()
+    } else {
+        // `{:?}` is the shortest form that round-trips, and valid JSON for every
+        // finite value (never a leading `.`, a trailing `.` or a `+`).
+        format!("{value:?}")
     }
 }
 
 /// Escape special characters for JSON strings.
 ///
 /// Quotes, backslashes and all control characters are escaped, so the result is
-/// valid JSON and [`extract_json_str`] decodes it back to `s`.
+/// valid JSON and decodes back to `s`.
 fn escape_json(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -590,105 +600,6 @@ fn escape_json(s: &str) -> String {
         }
     }
     out
-}
-
-/// Extract a string value from a flat JSON object for a given key.
-///
-/// The value is decoded as a JSON string, including the `\uXXXX` escapes and
-/// surrogate pairs. Returns `None` when the key is missing, its value is not a
-/// string, the string is unterminated, or it contains an invalid escape.
-fn extract_json_str(json: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\":", key);
-    let pos = json.find(&pattern)?;
-    let after = json[pos + pattern.len()..].trim_start();
-    let inner = after.strip_prefix('"')?;
-    decode_json_string_body(inner)
-}
-
-/// Decode the body of a JSON string; `body` starts right after the opening quote.
-///
-/// Consumes characters (never bytes), so multi-byte text is preserved. Returns the
-/// decoded text at the first unescaped quote, or `None` if the input ends first.
-fn decode_json_string_body(body: &str) -> Option<String> {
-    let mut out = String::new();
-    let mut chars = body.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => match chars.next()? {
-                '"' => out.push('"'),
-                '\\' => out.push('\\'),
-                '/' => out.push('/'),
-                'b' => out.push('\u{0008}'),
-                'f' => out.push('\u{000C}'),
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push('\t'),
-                'u' => out.push(decode_json_unicode_escape(&mut chars)?),
-                _ => return None,
-            },
-            other => out.push(other),
-        }
-    }
-    None
-}
-
-/// Decode the `XXXX` part of a `\uXXXX` escape, joining a UTF-16 surrogate pair
-/// (`\uD83D\uDE00`) into one character. A lone surrogate is invalid.
-fn decode_json_unicode_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
-    let first = read_hex4(chars)?;
-    match first {
-        0xD800..=0xDBFF => {
-            if chars.next()? != '\\' || chars.next()? != 'u' {
-                return None;
-            }
-            let second = read_hex4(chars)?;
-            if !(0xDC00..=0xDFFF).contains(&second) {
-                return None;
-            }
-            char::from_u32(0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00))
-        }
-        0xDC00..=0xDFFF => None,
-        _ => char::from_u32(first),
-    }
-}
-
-/// Read four hexadecimal digits as a UTF-16 code unit.
-fn read_hex4(chars: &mut std::str::Chars<'_>) -> Option<u32> {
-    let mut value = 0u32;
-    for _ in 0..4 {
-        value = value * 16 + chars.next()?.to_digit(16)?;
-    }
-    Some(value)
-}
-
-/// Extract a f64 value from a flat JSON object for a given key.
-fn extract_json_f64(json: &str, key: &str) -> Option<f64> {
-    let pattern = format!("\"{}\":", key);
-    let pos = json.find(&pattern)?;
-    let after = json[pos + pattern.len()..].trim_start();
-    // Read until comma, }, or whitespace
-    let end = after.find([',', '}', '\n']).unwrap_or(after.len());
-    after[..end].trim().parse().ok()
-}
-
-/// Extract a JSON array of f64 values: `"key": [1.0, 2.0, ...]`.
-fn extract_json_f64_array(json: &str, key: &str) -> Vec<f64> {
-    let pattern = format!("\"{}\":", key);
-    let pos = match json.find(&pattern) {
-        Some(p) => p,
-        None => return Vec::new(),
-    };
-    let after = json[pos + pattern.len()..].trim_start();
-    if !after.starts_with('[') {
-        return Vec::new();
-    }
-    let inner_end = after.find(']').unwrap_or(after.len());
-    let inner = &after[1..inner_end];
-    inner
-        .split(',')
-        .filter_map(|s| s.trim().parse::<f64>().ok())
-        .collect()
 }
 
 // ── CsvMaterialDb ─────────────────────────────────────────────────────────────
@@ -749,6 +660,9 @@ impl CsvMaterialDb {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod json_tests;
 
 #[cfg(test)]
 mod tests {
@@ -958,43 +872,6 @@ mod tests {
         let parsed = JsonMaterialDb::parse_json_material(&json).unwrap();
         assert_eq!(parsed.name, name);
         assert_eq!(parsed.category, "a/b");
-    }
-
-    #[test]
-    fn test_extract_json_str_unterminated_returns_none() {
-        assert_eq!(extract_json_str("{\"name\": \"abc\\", "name"), None);
-        assert_eq!(extract_json_str("{\"name\": \"abc", "name"), None);
-        assert_eq!(extract_json_str("{\"name\": \"", "name"), None);
-        assert_eq!(extract_json_str("{\"name\": \"鋼\\", "name"), None);
-        assert_eq!(extract_json_str("{\"name\":", "name"), None);
-        assert_eq!(extract_json_str("{\"name\": 5}", "name"), None);
-        assert_eq!(extract_json_str("{\"other\": \"x\"}", "name"), None);
-        // A truncated record is rejected rather than half-parsed.
-        assert!(JsonMaterialDb::parse_json_material("{\"name\": \"Ab\\").is_none());
-    }
-
-    #[test]
-    fn test_extract_json_str_decodes_escapes() {
-        let json = "{\"name\": \"a\\\"b\\\\c\\/d\\n\\t\\u00e5\\u9444\"}";
-        assert_eq!(extract_json_str(json, "name").unwrap(), "a\"b\\c/d\n\tå鑄");
-        // Surrogate pair for U+1F600.
-        let pair = "{\"name\": \"\\ud83d\\ude00!\"}";
-        assert_eq!(extract_json_str(pair, "name").unwrap(), "\u{1F600}!");
-    }
-
-    #[test]
-    fn test_extract_json_str_rejects_invalid_escapes() {
-        for bad in [
-            "{\"name\": \"\\q\"}",
-            "{\"name\": \"\\u12\"}",
-            "{\"name\": \"\\u12zz\"}",
-            "{\"name\": \"\\ud83d\"}",
-            "{\"name\": \"\\ud83dx\"}",
-            "{\"name\": \"\\ude00\"}",
-            "{\"name\": \"\\ud83d\\u0041\"}",
-        ] {
-            assert_eq!(extract_json_str(bad, "name"), None, "{bad}");
-        }
     }
 
     // --- Performance index ---

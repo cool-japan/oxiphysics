@@ -385,11 +385,25 @@ mod tests {
         let jac = Jacobian::compute(&robot);
         assert_eq!(jac.j.len(), 6 * robot.dof());
     }
+    /// Planar two-link arm with unit links: `J^T J = [[3 + 2c, 2 + c], [2 + c, 2]]`
+    /// with `c = cos(q2)`, so `sqrt(det(J^T J)) = sqrt(2 - c^2)` whatever `q1` is.
     #[test]
-    fn test_jacobian_manipulability_nonneg() {
-        let robot = make_2dof_robot();
-        let jac = Jacobian::compute(&robot);
-        assert!(jac.manipulability() >= 0.0);
+    fn test_jacobian_manipulability_planar_two_link_closed_form() {
+        let mut robot = make_2dof_robot();
+        let stretched = Jacobian::compute(&robot).manipulability();
+        assert!(
+            (stretched - 1.0).abs() < 1e-12,
+            "stretched arm: {stretched}"
+        );
+        for (q1, q2) in [(0.3, 0.9), (-1.2, 2.5), (2.0, -0.4)] {
+            robot.set_joint_angles(&[q1, q2]);
+            let w = Jacobian::compute(&robot).manipulability();
+            let expected = (2.0 - f64::cos(q2).powi(2)).sqrt();
+            assert!(
+                (w - expected).abs() < 1e-12,
+                "q = ({q1}, {q2}): {w} vs {expected}"
+            );
+        }
     }
     #[test]
     fn test_damped_pseudoinverse_size() {

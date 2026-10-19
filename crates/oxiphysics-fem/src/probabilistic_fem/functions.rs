@@ -41,9 +41,22 @@ pub fn phi_inv(p: f64) -> f64 {
     }
     0.5 * (lo + hi)
 }
-/// Box-Muller transform: standard normal from two U(0,1) samples.
-pub(super) fn box_muller(u1: f64, u2: f64) -> f64 {
-    (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
+/// Box-Muller transform: two independent standard normals from two uniform
+/// samples.
+///
+/// `u1` must lie in `(0, 1]` (the logarithm has to be finite) and `u2` in
+/// `[0, 1)`.  The first value is the cosine branch, the second the sine branch.
+pub(super) fn box_muller_pair(u1: f64, u2: f64) -> (f64, f64) {
+    let radius = (-2.0 * u1.ln()).sqrt();
+    let angle = 2.0 * PI * u2;
+    (radius * angle.cos(), radius * angle.sin())
+}
+/// SplitMix64 finaliser: decorrelates nearby generator seeds.
+pub(super) fn splitmix64(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 /// Mean of a slice.
 pub(super) fn mean(v: &[f64]) -> f64 {
@@ -404,14 +417,18 @@ mod tests {
     #[test]
     fn test_spectral_sfem_pce_mean() {
         let mut ssfem = SpectralStochasticFem::new(1, 1, 4, 1.0, 1.0, 100.0, 1e6);
-        ssfem.compute_pce_coefficients(0.05);
+        ssfem
+            .compute_pce_coefficients(0.05)
+            .expect("PCE projection");
         let m = ssfem.pce_mean();
         assert!(m.is_finite() && m > 0.0);
     }
     #[test]
     fn test_spectral_sfem_pce_variance_nonneg() {
         let mut ssfem = SpectralStochasticFem::new(1, 1, 4, 1.0, 1.0, 100.0, 1e6);
-        ssfem.compute_pce_coefficients(0.05);
+        ssfem
+            .compute_pce_coefficients(0.05)
+            .expect("PCE projection");
         let var = ssfem.pce_variance();
         assert!(var >= 0.0 && var.is_finite());
     }

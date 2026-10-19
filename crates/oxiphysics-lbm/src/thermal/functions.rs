@@ -286,36 +286,39 @@ mod tests {
             "Expected zero force at T_ref, got {force:?}"
         );
     }
-    /// Hot fluid (T > T_ref) with downward gravity should produce an upward
-    /// buoyancy force (positive y-component when gravity is negative y).
+    /// Hot fluid (T > T_ref) with downward gravity (g_y < 0) must be pushed
+    /// upwards: `F = -rho * beta * (T - T_ref) * g_vec`.
     #[test]
     fn test_boussinesq_hot_rises() {
         let coupling = BoussinesqCoupling::new([0.0, -1e-4], 2e-3, 1.0);
         let force = coupling.buoyancy_force(1.0, 1.5);
         assert!(
-            force[1] < 0.0,
-            "Hot fluid should feel downward (buoyant) net difference; \
-             with gravity negative, F_y = rho*g_y*beta*(T-T_ref) < 0 \
-             means the force is in the gravity direction which is correct \
-             for standard Boussinesq (force[1]={}).",
+            force[1] > 0.0,
+            "Hot fluid must feel an upward buoyancy force (force[1]={})",
             force[1]
         );
-        let expected = 1.0 * (-1e-4_f64) * 2e-3 * (1.5 - 1.0);
+        let expected = -1.0 * (-1e-4_f64) * 2e-3 * (1.5 - 1.0);
         assert!(
             (force[1] - expected).abs() < 1e-30,
             "F_y = {}, expected {expected}",
             force[1]
         );
     }
-    /// Cold fluid (T < T_ref) with downward gravity should produce a force in
-    /// the gravity direction (downward, negative y when g_y < 0).
+    /// Cold fluid (T < T_ref) with downward gravity must be pushed downwards
+    /// (along the gravity vector).
     #[test]
     fn test_boussinesq_cold_sinks() {
         let coupling = BoussinesqCoupling::new([0.0, -1e-4], 2e-3, 1.0);
         let force = coupling.buoyancy_force(1.0, 0.5);
         assert!(
-            force[1] > 0.0,
-            "Cold fluid buoyancy force should have opposite sign to hot: force[1]={}",
+            force[1] < 0.0,
+            "Cold fluid must sink: force[1]={}",
+            force[1]
+        );
+        let expected = -1.0 * (-1e-4_f64) * 2e-3 * (0.5 - 1.0);
+        assert!(
+            (force[1] - expected).abs() < 1e-30,
+            "F_y = {}, expected {expected}",
             force[1]
         );
     }
@@ -411,6 +414,8 @@ mod tests {
             forces[1][1] * forces[2][1] < 0.0,
             "Hot and cold forces should be opposite"
         );
+        assert!(forces[1][1] > 0.0, "Hot node must be pushed up");
+        assert!(forces[2][1] < 0.0, "Cold node must be pushed down");
     }
     #[test]
     fn test_conjugate_heat_diffusion() {

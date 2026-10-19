@@ -66,6 +66,7 @@ mod tests {
         PyGeometryTransform, PyMeshQuality, PyPointCloud, convex_hull_from_mesh,
         mesh_to_obj_string, obj_string_to_mesh,
     };
+    use oxiphysics::geometry::convex_hull::{ConvexHull3D, gjk_intersect};
     use std::f64::consts::PI;
 
     use super::mesh::PyCsg;
@@ -334,6 +335,40 @@ mod tests {
     }
 
     #[test]
+    fn test_convex_hull_gjk_overlap_matches_the_engine_gjk_for_every_separation() {
+        // Cubes [-1, 1]^3 and the same cube shifted by d along x overlap exactly
+        // when d < 2. The bounding spheres (radius sqrt(3)) are disjoint for
+        // d > 2 sqrt(3) ~ 3.46, so the sweep covers both the early rejection and
+        // the GJK decision, which must agree with the engine's GJK on the hulls.
+        let base = PyConvexHull::from_points_internal(&cube_corners(-1.0, 1.0)).expect("cube");
+        let engine = |hull: &PyConvexHull| ConvexHull3D {
+            vertices: hull.vertices.clone(),
+            faces: hull
+                .faces
+                .chunks_exact(3)
+                .map(|tri| [tri[0], tri[1], tri[2]])
+                .collect(),
+        };
+        for shift in [
+            0.0, 0.5, 1.0, 1.5, 1.9, 2.1, 2.5, 3.0, 3.4, 3.5, 4.0, 6.0, 50.0,
+        ] {
+            let moved = PyConvexHull::from_points_internal(&translated(
+                &cube_corners(-1.0, 1.0),
+                [shift, 0.0, 0.0],
+            ))
+            .expect("shifted cube");
+            let expected = shift < 2.0;
+            assert_eq!(
+                gjk_intersect(&engine(&base), &engine(&moved)),
+                expected,
+                "engine GJK at shift {shift}"
+            );
+            assert_eq!(base.gjk_overlap(&moved), expected, "shift {shift}");
+            assert_eq!(moved.gjk_overlap(&base), expected, "shift {shift}, swapped");
+        }
+    }
+
+    #[test]
     fn test_convex_hull_gjk_detects_containment() {
         let outer =
             PyConvexHull::from_points_internal(&cube_corners(-2.0, 2.0)).expect("outer cube");
@@ -408,36 +443,77 @@ mod tests {
 
     // --- PyCsg tests ---
 
-    #[test]
-    fn test_csg_union_vertex_count() {
-        let a = unit_box_mesh();
-        let b = unit_box_mesh();
-        let u = PyCsg::union(&a, &b);
-        assert_eq!(u.vertices.len(), a.vertices.len() + b.vertices.len());
+    /// Closed triangle mesh of the cube `[lo, hi]`, wound counter-clockwise seen
+    /// from outside as the boolean operations require (signed volume `> 0`).
+    fn outward_cube(lo: [f64; 3], hi: [f64; 3]) -> PyTriangleMesh {
+        let verts = vec![
+            [lo[0], lo[1], lo[2]],
+            [hi[0], lo[1], lo[2]],
+            [hi[0], hi[1], lo[2]],
+            [lo[0], hi[1], lo[2]],
+            [lo[0], lo[1], hi[2]],
+            [hi[0], lo[1], hi[2]],
+            [hi[0], hi[1], hi[2]],
+            [lo[0], hi[1], hi[2]],
+        ];
+        let idx = vec![
+            0, 2, 1, 0, 3, 2, // -z
+            4, 5, 6, 4, 6, 7, // +z
+            0, 1, 5, 0, 5, 4, // -y
+            3, 6, 2, 3, 7, 6, // +y
+            0, 4, 7, 0, 7, 3, // -x
+            1, 2, 6, 1, 6, 5, // +x
+        ];
+        PyTriangleMesh::from_raw_internal(verts, idx)
     }
 
     #[test]
-    fn test_csg_intersection_subset() {
-        let a = unit_box_mesh();
-        let mut b_big = unit_box_mesh();
-        for v in &mut b_big.vertices {
-            v[0] *= 2.0;
-            v[1] *= 2.0;
-            v[2] *= 2.0;
-            v[0] -= 0.5;
-            v[1] -= 0.5;
-            v[2] -= 0.5;
+    fn test_csg_operations_return_the_exact_volumes_of_overlapping_cubes() {
+        // B is A shifted by 0.5 along x: the overlap is a 0.5 x 1 x 1 slab whose
+        // faces cut the cube faces of both operands.
+        let a = outward_cube([0.0; 3], [1.0; 3]);
+        let b = outward_cube([0.5, 0.0, 0.0], [1.5, 1.0, 1.0]);
+        for (name, result, expected) in [
+            ("union", PyCsg::union(&a, &b), 1.5),
+            ("intersection", PyCsg::intersection(&a, &b), 0.5),
+            ("A minus B", PyCsg::subtraction(&a, &b), 0.5),
+            ("B minus A", PyCsg::subtraction(&b, &a), 0.5),
+        ] {
+            let volume = result.compute_volume();
+            assert!(
+                (volume - expected).abs() < 1e-9,
+                "{name}: volume {volume}, expected {expected}"
+            );
+            assert!(
+                result.triangle_count() >= 12,
+                "{name} must be a closed surface"
+            );
         }
-        let inter = PyCsg::intersection(&a, &b_big);
-        assert!(inter.vertices.len() <= a.vertices.len() + 8);
     }
 
     #[test]
-    fn test_csg_subtraction_removes_some() {
-        let a = unit_box_mesh();
-        let b = unit_box_mesh();
-        let sub = PyCsg::subtraction(&a, &b);
-        assert!(sub.triangle_count() <= a.triangle_count());
+    fn test_csg_with_a_cube_inside_a_larger_cube() {
+        let small = outward_cube([0.0; 3], [1.0; 3]);
+        let big = outward_cube([-0.5; 3], [1.5; 3]);
+        let volume = |mesh: &PyTriangleMesh| mesh.compute_volume();
+        assert!((volume(&PyCsg::union(&small, &big)) - 8.0).abs() < 1e-9);
+        assert!((volume(&PyCsg::intersection(&small, &big)) - 1.0).abs() < 1e-9);
+        // The big cube with a cavity: 8 - 1.
+        assert!((volume(&PyCsg::subtraction(&big, &small)) - 7.0).abs() < 1e-9);
+        // Nothing of the small cube is left outside the big one.
+        let nothing = PyCsg::subtraction(&small, &big);
+        assert_eq!(nothing.triangle_count(), 0);
+        assert!(volume(&nothing).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_csg_with_disjoint_cubes() {
+        let a = outward_cube([0.0; 3], [1.0; 3]);
+        let far = outward_cube([5.0; 3], [6.0; 3]);
+        let volume = |mesh: &PyTriangleMesh| mesh.compute_volume();
+        assert!((volume(&PyCsg::union(&a, &far)) - 2.0).abs() < 1e-9);
+        assert!((volume(&PyCsg::subtraction(&a, &far)) - 1.0).abs() < 1e-9);
+        assert_eq!(PyCsg::intersection(&a, &far).triangle_count(), 0);
     }
 
     // --- PyHeightfield tests ---

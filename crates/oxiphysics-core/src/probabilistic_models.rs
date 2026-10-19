@@ -33,6 +33,9 @@ fn log_sum_exp(values: &[f64]) -> f64 {
     max + sum.ln()
 }
 
+/// Smallest variance used by the variational-inference updates.
+const VARIANCE_FLOOR: f64 = 1e-12;
+
 /// Softmax of a slice, returns normalized probabilities.
 fn softmax(logits: &[f64]) -> Vec<f64> {
     let max = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -822,7 +825,8 @@ impl DirichletProcess {
 pub struct VariationalInference {
     /// Number of mixture components.
     pub n_components: usize,
-    /// Variational component weights (log-scale unnormalized).
+    /// Mixing weights `π_k` on the log scale; [`VariationalInference::cavi_step`]
+    /// leaves them normalised (`Σ_k exp(log_weights[k]) = 1`).
     pub log_weights: Vec<f64>,
     /// Variational mean for each component.
     pub var_mean: Vec<f64>,
@@ -856,77 +860,109 @@ impl VariationalInference {
         }
     }
 
-    /// Computes the ELBO for current variational parameters given observations.
+    /// Computes the ELBO of the current variational parameters for `observations`.
+    ///
+    /// The model is a mixture of `K` univariate Gaussians with known observation
+    /// variance `v = obs_var`, point-estimate mixing weights
+    /// `π = softmax(log_weights)` and independent priors
+    /// `μ_k ~ N(prior_mean, prior_var)` on the component means.  The variational
+    /// family is `q(μ_k) = N(m_k, s_k²)` (`var_mean`, `var_var`) together with a
+    /// categorical `q(z_n)`.  Setting `q(z_n)` to its optimum, the bound is
+    ///
+    /// `Σ_n ln Σ_k π_k · N(x_n; m_k, v) · exp(−s_k² / (2v))  −  Σ_k KL(q(μ_k) ‖ p(μ_k))`
+    ///
+    /// with `KL(N(m, s²) ‖ N(μ₀, σ₀²)) = ½ (s²/σ₀² + (m − μ₀)²/σ₀² − 1 + ln(σ₀²/s²))`.
+    /// The `exp(−s_k²/(2v))` factor is the exact expectation of the Gaussian
+    /// log-likelihood under `q(μ_k)`; every component pays its full KL penalty.
     pub fn elbo(&self, observations: &[f64]) -> f64 {
-        let weights = softmax(&self.log_weights);
+        let obs_var = self.obs_var.max(VARIANCE_FLOOR);
+        let prior_var = self.prior_var.max(VARIANCE_FLOOR);
+        let log_mix: Vec<f64> = softmax(&self.log_weights)
+            .iter()
+            .map(|w| w.max(1e-300).ln())
+            .collect();
         let mut elbo = 0.0f64;
-        // Expected log likelihood
+        // Expected log likelihood with the responsibilities maximised out.
         for &x in observations {
-            let ll_terms: Vec<f64> = (0..self.n_components)
-                .map(|k| {
-                    weights[k].max(1e-300).ln()
-                        + log_normal_pdf(x, self.var_mean[k], self.obs_var + self.var_var[k])
+            let terms: Vec<f64> = log_mix
+                .iter()
+                .zip(self.var_mean.iter().zip(self.var_var.iter()))
+                .map(|(&log_w, (&mean, &var))| {
+                    log_w + log_normal_pdf(x, mean, obs_var)
+                        - var.max(VARIANCE_FLOOR) / (2.0 * obs_var)
                 })
                 .collect();
-            elbo += log_sum_exp(&ll_terms);
+            elbo += log_sum_exp(&terms);
         }
-        // KL divergence: Σ_k w_k KL(q(z_k) || p(z_k))
-        for ((&wk, &vv), &vm) in weights
-            .iter()
-            .zip(self.var_var.iter())
-            .zip(self.var_mean.iter())
-        {
-            // KL(N(μ_q, σ_q²) || N(μ_p, σ_p²))
+        // KL(q(mu_k) || p(mu_k)) of every component.
+        for (&mean, &var) in self.var_mean.iter().zip(self.var_var.iter()) {
+            let var = var.max(VARIANCE_FLOOR);
             let kl = 0.5
-                * (self.prior_var / vv.max(1e-12)
-                    + (vm - self.prior_mean).powi(2) / self.prior_var
-                    - 1.0
-                    + (vv / self.prior_var).ln());
-            elbo -= wk * kl;
+                * (var / prior_var + (mean - self.prior_mean).powi(2) / prior_var - 1.0
+                    + (prior_var / var).ln());
+            elbo -= kl;
         }
         elbo
     }
 
     /// Performs one CAVI update step.
     ///
-    /// Returns the new ELBO.
+    /// 1. Responsibilities: for every observation `x_n`,
+    ///    `ln ρ_nk = ln π_k + ln N(x_n; m_k, v) − s_k²/(2v)` is normalised over the
+    ///    components with a log-sum-exp, giving `r_nk` with `Σ_k r_nk = 1`.
+    /// 2. Component posteriors: with `N_k = Σ_n r_nk`, the precision becomes
+    ///    `1/σ₀² + N_k/v` and the mean `s_k² · (μ₀/σ₀² + Σ_n r_nk x_n / v)`.
+    /// 3. Mixing weights: `π_k = N_k / N`.
+    ///
+    /// Every block is an exact coordinate-ascent update, so the ELBO never
+    /// decreases from one step to the next.  Returns the new ELBO.
     pub fn cavi_step(&mut self, observations: &[f64]) -> f64 {
-        let n = observations.len() as f64;
-        // Update variational parameters for each component
-        for k in 0..self.n_components {
-            let weights = softmax(&self.log_weights);
-            // Responsibility of component k for each observation
-            let r_k: Vec<f64> = observations
-                .iter()
-                .map(|&x| weights[k] * normal_pdf(x, self.var_mean[k], self.obs_var))
-                .collect();
-            let r_sum: f64 = r_k.iter().sum::<f64>().max(1e-300);
-
-            // Update mean: posterior precision = prior_prec + r_sum/obs_var
-            let prior_prec = 1.0 / self.prior_var.max(1e-12);
-            let lik_prec = r_sum / self.obs_var.max(1e-12);
-            let post_prec = prior_prec + lik_prec;
-            let post_var = 1.0 / post_prec.max(1e-12);
-            let data_sum: f64 = r_k
-                .iter()
-                .zip(observations.iter())
-                .map(|(r, x)| r * x)
-                .sum();
-            let post_mean =
-                post_var * (prior_prec * self.prior_mean + data_sum / self.obs_var.max(1e-12));
-
-            self.var_mean[k] = post_mean;
+        let obs_var = self.obs_var.max(VARIANCE_FLOOR);
+        let prior_var = self.prior_var.max(VARIANCE_FLOOR);
+        let n_obs = observations.len() as f64;
+        let log_mix: Vec<f64> = softmax(&self.log_weights)
+            .iter()
+            .map(|w| w.max(1e-300).ln())
+            .collect();
+        // Expected sufficient statistics under the normalised responsibilities.
+        let mut soft_count = vec![0.0f64; self.n_components];
+        let mut soft_sum = vec![0.0f64; self.n_components];
+        let mut log_rho = vec![0.0f64; self.n_components];
+        for &x in observations {
+            for (slot, (&log_w, (&mean, &var))) in log_rho.iter_mut().zip(
+                log_mix
+                    .iter()
+                    .zip(self.var_mean.iter().zip(self.var_var.iter())),
+            ) {
+                *slot = log_w + log_normal_pdf(x, mean, obs_var)
+                    - var.max(VARIANCE_FLOOR) / (2.0 * obs_var);
+            }
+            let log_norm = log_sum_exp(&log_rho);
+            for ((count, sum), &lr) in soft_count
+                .iter_mut()
+                .zip(soft_sum.iter_mut())
+                .zip(log_rho.iter())
+            {
+                let r = (lr - log_norm).exp();
+                *count += r;
+                *sum += r * x;
+            }
+        }
+        // Gaussian posterior of each component mean given its soft assignments.
+        let prior_prec = 1.0 / prior_var;
+        for (k, (&count, &sum)) in soft_count.iter().zip(soft_sum.iter()).enumerate() {
+            let post_var = 1.0 / (prior_prec + count / obs_var);
             self.var_var[k] = post_var;
-
-            // Update weight (log)
-            self.log_weights[k] = r_sum.max(1e-300).ln();
+            self.var_mean[k] = post_var * (prior_prec * self.prior_mean + sum / obs_var);
+            if n_obs > 0.0 {
+                self.log_weights[k] = (count / n_obs).max(1e-300).ln();
+            }
         }
         // Renormalize log_weights
-        let lse = log_sum_exp(&self.log_weights.clone());
+        let lse = log_sum_exp(&self.log_weights);
         for lw in self.log_weights.iter_mut() {
             *lw -= lse;
         }
-        let _ = n;
         let elbo_val = self.elbo(observations);
         self.elbo_history.push(elbo_val);
         elbo_val
@@ -1491,6 +1527,176 @@ mod tests {
         let obs = vec![1.0, -1.0, 2.0];
         vi.fit(&obs, 5);
         assert_eq!(vi.elbo_history.len(), 5);
+    }
+
+    /// Two well separated clusters at -5 and +5 with a deterministic jitter.
+    fn two_cluster_data(per_cluster: usize) -> Vec<f64> {
+        let mut data = Vec::with_capacity(2 * per_cluster);
+        for i in 0..per_cluster {
+            let jitter = 0.4 * ((i as f64) * 2.399).sin();
+            data.push(-5.0 + jitter);
+            data.push(5.0 - jitter);
+        }
+        data
+    }
+
+    #[test]
+    fn test_vi_elbo_without_data_is_minus_the_exact_kl() {
+        // With no observations the ELBO is -sum_k KL(q(mu_k) || p(mu_k)).
+        // KL(N(3, 0.5) || N(1, 4)) = 0.5 (0.5/4 + (3-1)^2/4 - 1 + ln(4/0.5));
+        // the old formula swapped the variance ratio and the log term.
+        let mut vi = VariationalInference::new(1, 1.0, 4.0, 1.0);
+        vi.var_mean[0] = 3.0;
+        vi.var_var[0] = 0.5;
+        let expected_kl = 0.5 * (0.5 / 4.0 + 4.0 / 4.0 - 1.0 + (4.0_f64 / 0.5).ln());
+        assert!((expected_kl - 1.102_220_8).abs() < 1e-6);
+        assert!((vi.elbo(&[]) + expected_kl).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_vi_kl_vanishes_when_q_equals_the_prior_and_every_component_pays() {
+        let mut vi = VariationalInference::new(2, 0.5, 2.0, 1.0);
+        for k in 0..2 {
+            vi.var_mean[k] = 0.5;
+            vi.var_var[k] = 2.0;
+        }
+        assert!(vi.elbo(&[]).abs() < 1e-14);
+        // Moving one component away from the prior costs its full KL, no matter
+        // how small that component's mixing weight is.
+        vi.log_weights = vec![(0.999_f64).ln(), (0.001_f64).ln()];
+        vi.var_mean[1] = 2.5;
+        vi.var_var[1] = 1.0;
+        let kl = 0.5 * (1.0 / 2.0 + (2.5_f64 - 0.5).powi(2) / 2.0 - 1.0 + (2.0_f64 / 1.0).ln());
+        assert!((vi.elbo(&[]) + kl).abs() < 1e-12, "elbo = {}", vi.elbo(&[]));
+    }
+
+    #[test]
+    fn test_vi_elbo_likelihood_term_is_the_expected_log_likelihood() {
+        // One component: ELBO = sum_n E_q[ln N(x_n; mu, v)] - KL, where
+        // E_q[ln N(x; mu, v)] = -0.5 ln(2 pi v) - ((x - m)^2 + s^2) / (2 v).
+        let mut vi = VariationalInference::new(1, 0.0, 10.0, 2.0);
+        vi.var_mean[0] = 0.7;
+        vi.var_var[0] = 0.3;
+        let obs = [0.2, 1.4, -0.5];
+        let (v, m, s2) = (2.0_f64, 0.7_f64, 0.3_f64);
+        let expected_ll: f64 = obs
+            .iter()
+            .map(|x| -0.5 * (std::f64::consts::TAU * v).ln() - ((x - m).powi(2) + s2) / (2.0 * v))
+            .sum();
+        let kl = 0.5 * (s2 / 10.0 + m * m / 10.0 - 1.0 + (10.0_f64 / s2).ln());
+        assert!(
+            (vi.elbo(&obs) - (expected_ll - kl)).abs() < 1e-12,
+            "elbo = {}, expected {}",
+            vi.elbo(&obs),
+            expected_ll - kl
+        );
+    }
+
+    #[test]
+    fn test_vi_cavi_responsibilities_are_normalised() {
+        // Posterior precision of component k is 1/prior_var + N_k / obs_var with
+        // N_k the soft count, so sum_k (precision_k - 1/prior_var) * obs_var must
+        // equal the number of observations exactly when every responsibility row
+        // sums to one.  The old update used unnormalised weights * pdf values.
+        let obs = two_cluster_data(10);
+        let mut vi = VariationalInference::new(3, 0.0, 25.0, 1.5);
+        for _ in 0..4 {
+            vi.cavi_step(&obs);
+            let total_count: f64 = vi
+                .var_var
+                .iter()
+                .map(|s2| (1.0 / s2 - 1.0 / 25.0) * 1.5)
+                .sum();
+            assert!(
+                (total_count - obs.len() as f64).abs() < 1e-9,
+                "soft counts sum to {total_count}, expected {}",
+                obs.len()
+            );
+            let weight_sum: f64 = vi.log_weights.iter().map(|lw| lw.exp()).sum();
+            assert!((weight_sum - 1.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_vi_cavi_step_matches_a_hand_computed_update() {
+        // Two components, two observations, all numbers worked out independently.
+        let mut vi = VariationalInference::new(2, 0.0, 4.0, 1.0);
+        vi.var_mean = vec![-1.0, 1.0];
+        vi.var_var = vec![0.5, 0.5];
+        vi.log_weights = vec![(0.5_f64).ln(), (0.5_f64).ln()];
+        let obs = [-2.0_f64, 1.0_f64];
+        // ln rho_nk = ln 0.5 - 0.5 (x - m_k)^2 - s^2/2 + const: the constants
+        // cancel in the normalisation, so r_n1 = sigmoid(...).
+        let d0 = |x: f64| -0.5 * (x + 1.0).powi(2);
+        let d1 = |x: f64| -0.5 * (x - 1.0).powi(2);
+        let r1: Vec<f64> = obs
+            .iter()
+            .map(|&x| 1.0 / (1.0 + (d0(x) - d1(x)).exp()))
+            .collect();
+        let r0: Vec<f64> = r1.iter().map(|r| 1.0 - r).collect();
+        let n0: f64 = r0.iter().sum();
+        let n1: f64 = r1.iter().sum();
+        let sx0: f64 = r0.iter().zip(obs.iter()).map(|(r, x)| r * x).sum();
+        let sx1: f64 = r1.iter().zip(obs.iter()).map(|(r, x)| r * x).sum();
+        vi.cavi_step(&obs);
+        let var0 = 1.0 / (0.25 + n0);
+        let var1 = 1.0 / (0.25 + n1);
+        assert!((vi.var_var[0] - var0).abs() < 1e-12);
+        assert!((vi.var_var[1] - var1).abs() < 1e-12);
+        assert!((vi.var_mean[0] - var0 * sx0).abs() < 1e-12);
+        assert!((vi.var_mean[1] - var1 * sx1).abs() < 1e-12);
+        assert!((vi.log_weights[0].exp() - n0 / 2.0).abs() < 1e-12);
+        assert!((vi.log_weights[1].exp() - n1 / 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_vi_elbo_never_decreases_under_cavi() {
+        let obs = two_cluster_data(15);
+        let mut vi = VariationalInference::new(3, 0.0, 25.0, 1.0);
+        vi.fit(&obs, 40);
+        assert_eq!(vi.elbo_history.len(), 40);
+        for pair in vi.elbo_history.windows(2) {
+            assert!(
+                pair[1] >= pair[0] - 1e-9,
+                "ELBO decreased from {} to {}",
+                pair[0],
+                pair[1]
+            );
+        }
+        let first = vi.elbo_history[0];
+        let last = vi.elbo_history[39];
+        assert!(last > first, "ELBO must improve: {first} -> {last}");
+    }
+
+    #[test]
+    fn test_vi_recovers_two_cluster_means() {
+        let obs = two_cluster_data(20);
+        let mut vi = VariationalInference::new(2, 0.0, 100.0, 1.0);
+        vi.fit(&obs, 50);
+        let mut means = vi.var_mean.clone();
+        means.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        assert!((means[0] + 5.0).abs() < 0.1, "left mean {}", means[0]);
+        assert!((means[1] - 5.0).abs() < 0.1, "right mean {}", means[1]);
+        for lw in &vi.log_weights {
+            assert!((lw.exp() - 0.5).abs() < 0.05, "weight {}", lw.exp());
+        }
+        // The posterior of each mean is tight: about obs_var / N_k = 1/20.
+        for v in &vi.var_var {
+            assert!(*v < 0.06 && *v > 0.04, "posterior variance {v}");
+        }
+    }
+
+    #[test]
+    fn test_vi_cavi_step_without_data_returns_the_prior() {
+        let mut vi = VariationalInference::new(2, 1.5, 3.0, 1.0);
+        let weights_before = vi.log_weights.clone();
+        let elbo = vi.cavi_step(&[]);
+        for k in 0..2 {
+            assert!((vi.var_mean[k] - 1.5).abs() < 1e-12);
+            assert!((vi.var_var[k] - 3.0).abs() < 1e-12);
+        }
+        assert_eq!(vi.log_weights, weights_before);
+        assert!(elbo.abs() < 1e-12, "q equals the prior, so ELBO = {elbo}");
     }
 
     // --- ExpectationMaximization ---

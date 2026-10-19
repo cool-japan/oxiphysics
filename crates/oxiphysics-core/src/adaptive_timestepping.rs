@@ -7,24 +7,134 @@
 //! error-based control, and a [`UnifiedTimeStepper`] that coordinates
 //! multiple physics domains with subcycling support.
 //!
+//! The stepper advances every domain by one common global step, the smallest
+//! effective domain timestep, so the allowed timestep ranges `[min_dt, max_dt]`
+//! of the domains must overlap; [`UnifiedTimeStepper::compute_global_dt`]
+//! reports disjoint ranges as [`TimeStepError::IncompatibleDomains`] instead of
+//! panicking.  Invalid configurations are rejected by
+//! [`TimeDomainConfig::new`] and [`UnifiedTimeStepper::new`].
+//!
 //! # Example
 //!
-//! ```no_run
+//! ```
 //! use oxiphysics_core::adaptive_timestepping::*;
 //!
+//! # fn main() -> Result<(), TimeStepError> {
 //! // Configure two domains: a fast fluid and a slow structure
-//! let fluid = TimeDomainConfig::new(1e-6, 1e-3, 0.25, 0.9);
-//! let structure = TimeDomainConfig::new(1e-5, 1e-2, 0.5, 0.9);
+//! let fluid = TimeDomainConfig::new(1e-6, 1e-3, 0.25, 0.9)?;
+//! let structure = TimeDomainConfig::new(1e-5, 1e-2, 0.5, 0.9)?;
 //!
-//! let mut stepper = UnifiedTimeStepper::new(vec![fluid, structure]);
+//! let mut stepper = UnifiedTimeStepper::new(vec![fluid, structure])?;
 //!
 //! // After evaluating physics, update domain timesteps
 //! stepper.update_domain_dt(0, 1e-4);
 //! stepper.update_domain_dt(1, 5e-4);
 //!
-//! let global_dt = stepper.compute_global_dt();
+//! let global_dt = stepper.compute_global_dt()?;
 //! assert!(global_dt > 0.0);
+//!
+//! // Domains whose timestep ranges do not overlap cannot share a global step.
+//! let tiny = TimeDomainConfig::new(1e-6, 1e-4, 0.5, 0.9)?;
+//! let coarse = TimeDomainConfig::new(1e-3, 1e-2, 0.5, 0.9)?;
+//! let mut disjoint = UnifiedTimeStepper::new(vec![tiny, coarse])?;
+//! assert!(matches!(
+//!     disjoint.compute_global_dt(),
+//!     Err(TimeStepError::IncompatibleDomains { .. })
+//! ));
+//! # Ok(())
+//! # }
 //! ```
+
+use std::fmt;
+
+use crate::error::PhysicsError;
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// Errors reported by the time-domain configuration and the
+/// [`UnifiedTimeStepper`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum TimeStepError {
+    /// A configuration or state value lies outside its valid range.
+    InvalidParameter {
+        /// Index of the offending domain, or `None` when a standalone
+        /// [`TimeDomainConfig`] is validated.
+        domain: Option<usize>,
+        /// Name of the offending field.
+        parameter: &'static str,
+        /// The rejected value.
+        value: f64,
+        /// What the field must satisfy.
+        requirement: &'static str,
+    },
+    /// The timestep ranges of the domains have no value in common: the largest
+    /// `min_dt` exceeds the smallest `max_dt`, so no single global step is
+    /// allowed by every domain.
+    IncompatibleDomains {
+        /// Largest `min_dt` over the domains.
+        global_min_dt: f64,
+        /// Smallest `max_dt` over the domains.
+        global_max_dt: f64,
+    },
+    /// The stepper has no domain and therefore no timestep.
+    NoDomains,
+}
+
+impl fmt::Display for TimeStepError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TimeStepError::InvalidParameter {
+                domain,
+                parameter,
+                value,
+                requirement,
+            } => {
+                match domain {
+                    Some(index) => write!(f, "domain {index}: ")?,
+                    None => write!(f, "time-domain configuration: ")?,
+                }
+                write!(f, "{parameter} = {value} must be {requirement}")
+            }
+            TimeStepError::IncompatibleDomains {
+                global_min_dt,
+                global_max_dt,
+            } => write!(
+                f,
+                "domain timestep ranges do not overlap: the largest min_dt \
+                 ({global_min_dt}) exceeds the smallest max_dt ({global_max_dt})"
+            ),
+            TimeStepError::NoDomains => write!(f, "the time stepper has no domains"),
+        }
+    }
+}
+
+impl std::error::Error for TimeStepError {}
+
+impl From<TimeStepError> for PhysicsError {
+    fn from(error: TimeStepError) -> Self {
+        match error {
+            TimeStepError::InvalidParameter {
+                parameter,
+                value,
+                requirement,
+                ..
+            } => PhysicsError::InvalidInput {
+                field: parameter.to_string(),
+                reason: format!("{value} must be {requirement}"),
+            },
+            TimeStepError::IncompatibleDomains { .. } => PhysicsError::InvalidInput {
+                field: "domains".to_string(),
+                reason: error.to_string(),
+            },
+            TimeStepError::NoDomains => PhysicsError::InvalidInput {
+                field: "domains".to_string(),
+                reason: error.to_string(),
+            },
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Free functions: CFL / Courant / diffusive timestep constraints
@@ -116,14 +226,68 @@ pub struct TimeDomainConfig {
 }
 
 impl TimeDomainConfig {
-    /// Create a new configuration.
-    pub fn new(min_dt: f64, max_dt: f64, cfl_factor: f64, safety_factor: f64) -> Self {
-        Self {
+    /// Create a validated configuration.
+    ///
+    /// # Errors
+    ///
+    /// [`TimeStepError::InvalidParameter`] unless all values are finite with
+    /// `0 < min_dt <= max_dt`, `cfl_factor > 0` and `0 < safety_factor <= 1`.
+    pub fn new(
+        min_dt: f64,
+        max_dt: f64,
+        cfl_factor: f64,
+        safety_factor: f64,
+    ) -> Result<Self, TimeStepError> {
+        let config = Self {
             min_dt,
             max_dt,
             cfl_factor,
             safety_factor,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Check the invariants of the configuration: all values finite,
+    /// `0 < min_dt <= max_dt`, `cfl_factor > 0` and `0 < safety_factor <= 1`.
+    ///
+    /// The fields are public, so a configuration can leave
+    /// [`new`](Self::new) valid and be edited into an invalid one later; the
+    /// stepper re-checks every domain before it relies on these invariants.
+    ///
+    /// # Errors
+    ///
+    /// [`TimeStepError::InvalidParameter`] naming the first offending field.
+    pub fn validate(&self) -> Result<(), TimeStepError> {
+        self.check(None)
+    }
+
+    /// [`validate`](Self::validate), tagging errors with the domain index.
+    fn check(&self, domain: Option<usize>) -> Result<(), TimeStepError> {
+        let reject = |parameter: &'static str, value: f64, requirement: &'static str| {
+            Err(TimeStepError::InvalidParameter {
+                domain,
+                parameter,
+                value,
+                requirement,
+            })
+        };
+        if !(self.min_dt.is_finite() && self.min_dt > 0.0) {
+            return reject("min_dt", self.min_dt, "finite and positive");
         }
+        if !(self.max_dt.is_finite() && self.max_dt >= self.min_dt) {
+            return reject("max_dt", self.max_dt, "finite and at least min_dt");
+        }
+        if !(self.cfl_factor.is_finite() && self.cfl_factor > 0.0) {
+            return reject("cfl_factor", self.cfl_factor, "finite and positive");
+        }
+        if !(self.safety_factor.is_finite()
+            && self.safety_factor > 0.0
+            && self.safety_factor <= 1.0)
+        {
+            return reject("safety_factor", self.safety_factor, "in (0, 1]");
+        }
+        Ok(())
     }
 }
 
@@ -200,7 +364,21 @@ pub struct UnifiedTimeStepper {
 
 impl UnifiedTimeStepper {
     /// Create a new stepper from per-domain configurations.
-    pub fn new(configs: Vec<TimeDomainConfig>) -> Self {
+    ///
+    /// A stepper without domains is allowed (its `global_dt` is `0`), but
+    /// [`compute_global_dt`](Self::compute_global_dt) reports
+    /// [`TimeStepError::NoDomains`] for it.
+    ///
+    /// # Errors
+    ///
+    /// [`TimeStepError::InvalidParameter`] (tagged with the domain index) if a
+    /// configuration violates the invariants checked by
+    /// [`TimeDomainConfig::validate`]; configurations built by struct literal
+    /// bypass [`TimeDomainConfig::new`], so they are re-checked here.
+    pub fn new(configs: Vec<TimeDomainConfig>) -> Result<Self, TimeStepError> {
+        for (index, config) in configs.iter().enumerate() {
+            config.check(Some(index))?;
+        }
         let domains: Vec<TimeDomainState> = configs
             .into_iter()
             .map(TimeDomainState::from_config)
@@ -214,51 +392,76 @@ impl UnifiedTimeStepper {
         };
         stepper.global_dt = stepper.raw_global_dt();
         stepper.recompute_subcycle_ratios();
-        stepper
+        Ok(stepper)
     }
 
     // -- internal helpers ---------------------------------------------------
 
-    /// Compute the raw global dt (minimum of domain dts with safety).
+    /// Compute the raw global dt (minimum of domain dts with safety); `0` for a
+    /// stepper without domains.
     fn raw_global_dt(&self) -> f64 {
         self.domains
             .iter()
             .map(|d| d.current_dt * d.config.safety_factor)
-            .fold(f64::MAX, f64::min)
+            .reduce(f64::min)
+            .unwrap_or(0.0)
     }
 
     /// Recompute subcycle ratios from current domain dts.
     fn recompute_subcycle_ratios(&mut self) {
+        // `subcycle_ratios` is public: keep it one-to-one with the domains.
+        self.subcycle_ratios.resize(self.domains.len(), 1);
         if self.global_dt <= 0.0 {
             // Fallback: all 1.
-            for r in &mut self.subcycle_ratios {
-                *r = 1;
-            }
+            self.subcycle_ratios.fill(1);
             return;
         }
-        for (i, domain) in self.domains.iter().enumerate() {
+        for (ratio_slot, domain) in self.subcycle_ratios.iter_mut().zip(&self.domains) {
             let effective_dt = domain.current_dt * domain.config.safety_factor;
             // Ratio: how many global steps fit in one domain step.
             // If domain is slower (larger dt), it takes 1 sub-step of global_dt.
             // If domain is faster (smaller dt), it needs ceil(global_dt / domain_dt).
-            if effective_dt >= self.global_dt {
-                self.subcycle_ratios[i] = 1;
+            *ratio_slot = if effective_dt >= self.global_dt {
+                1
             } else {
                 // Domain is faster than global; needs multiple sub-steps.
-                let ratio = (self.global_dt / effective_dt).ceil() as usize;
-                self.subcycle_ratios[i] = ratio.max(1);
-            }
+                ((self.global_dt / effective_dt).ceil() as usize).max(1)
+            };
         }
     }
 
     // -- public API ---------------------------------------------------------
 
-    /// Compute and update the global timestep (minimum across domains).
+    /// Compute and update the global timestep (minimum effective domain
+    /// timestep), restricted to the range every domain allows.
     ///
-    /// Returns the new `global_dt`.
-    pub fn compute_global_dt(&mut self) -> f64 {
-        self.global_dt = self.raw_global_dt();
-        // Clamp to the tightest domain bounds.
+    /// The result lies in `[max_i min_dt_i, min_i max_dt_i]`.  Returns the new
+    /// `global_dt`; on error the stepper is left unchanged.
+    ///
+    /// # Errors
+    ///
+    /// * [`TimeStepError::NoDomains`] if the stepper has no domain;
+    /// * [`TimeStepError::InvalidParameter`] if a domain configuration (public
+    ///   field, possibly edited after construction) or its `current_dt` is not
+    ///   valid;
+    /// * [`TimeStepError::IncompatibleDomains`] if the timestep ranges of the
+    ///   domains are disjoint, i.e. the largest `min_dt` exceeds the smallest
+    ///   `max_dt`.
+    pub fn compute_global_dt(&mut self) -> Result<f64, TimeStepError> {
+        if self.domains.is_empty() {
+            return Err(TimeStepError::NoDomains);
+        }
+        for (index, domain) in self.domains.iter().enumerate() {
+            domain.config.check(Some(index))?;
+            if !(domain.current_dt.is_finite() && domain.current_dt > 0.0) {
+                return Err(TimeStepError::InvalidParameter {
+                    domain: Some(index),
+                    parameter: "current_dt",
+                    value: domain.current_dt,
+                    requirement: "finite and positive",
+                });
+            }
+        }
         let global_min = self
             .domains
             .iter()
@@ -268,10 +471,17 @@ impl UnifiedTimeStepper {
             .domains
             .iter()
             .map(|d| d.config.max_dt)
-            .fold(f64::MAX, f64::min);
-        self.global_dt = self.global_dt.clamp(global_min, global_max);
+            .fold(f64::INFINITY, f64::min);
+        if global_min > global_max {
+            return Err(TimeStepError::IncompatibleDomains {
+                global_min_dt: global_min,
+                global_max_dt: global_max,
+            });
+        }
+        // `max` then `min` instead of `f64::clamp`, which panics on min > max.
+        self.global_dt = self.raw_global_dt().max(global_min).min(global_max);
         self.recompute_subcycle_ratios();
-        self.global_dt
+        Ok(self.global_dt)
     }
 
     /// Recompute the subcycle ratios based on the current `global_dt` and
@@ -284,22 +494,31 @@ impl UnifiedTimeStepper {
     /// each domain's step counter by its subcycle ratio.
     pub fn advance_global_time(&mut self) {
         self.global_time += self.global_dt;
-        for (i, domain) in self.domains.iter_mut().enumerate() {
-            domain.step_count += self.subcycle_ratios[i] as u64;
+        for (domain, &ratio) in self.domains.iter_mut().zip(&self.subcycle_ratios) {
+            domain.step_count = domain.step_count.saturating_add(ratio as u64);
         }
     }
 
     /// Update a domain's suggested timestep.
     ///
-    /// The new value is clamped to the domain's `[min_dt, max_dt]` range.
+    /// The new value is clamped to the domain's `[min_dt, max_dt]` range (an
+    /// infinite suggestion means "no constraint" and becomes `max_dt`).
     ///
-    /// Returns `true` if `domain_idx` was valid, `false` otherwise.
+    /// Returns `true` if the timestep was updated; `false`, leaving the domain
+    /// unchanged, if `domain_idx` is out of range or `new_dt` is NaN or not
+    /// positive.
     pub fn update_domain_dt(&mut self, domain_idx: usize, new_dt: f64) -> bool {
-        if let Some(domain) = self.domains.get_mut(domain_idx) {
-            domain.current_dt = new_dt.clamp(domain.config.min_dt, domain.config.max_dt);
-            true
-        } else {
-            false
+        if new_dt.is_nan() || new_dt <= 0.0 {
+            return false;
+        }
+        match self.domains.get_mut(domain_idx) {
+            Some(domain) => {
+                // `max` then `min` instead of `f64::clamp`, which panics when the
+                // public bounds were edited into min_dt > max_dt.
+                domain.current_dt = new_dt.max(domain.config.min_dt).min(domain.config.max_dt);
+                true
+            }
+            None => false,
         }
     }
 
@@ -323,7 +542,7 @@ impl UnifiedTimeStepper {
             .iter()
             .enumerate()
             .map(|(i, _domain)| {
-                let n = self.subcycle_ratios[i];
+                let n = self.subcycle_ratios.get(i).copied().unwrap_or(1);
                 let sub_dt = if n > 0 {
                     self.global_dt / n as f64
                 } else {
@@ -436,14 +655,14 @@ mod tests {
 
     #[test]
     fn test_single_domain_dt_converges() {
-        let cfg = TimeDomainConfig::new(1e-6, 1e-2, 0.5, 0.9);
-        let mut stepper = UnifiedTimeStepper::new(vec![cfg]);
+        let cfg = TimeDomainConfig::new(1e-6, 1e-2, 0.5, 0.9).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
 
         // Simulate a controller loop: update dt based on "physics".
         for _ in 0..20 {
             let target_dt = 5e-4;
             stepper.update_domain_dt(0, target_dt);
-            stepper.compute_global_dt();
+            stepper.compute_global_dt().unwrap();
         }
 
         let effective = stepper.global_dt;
@@ -458,14 +677,14 @@ mod tests {
 
     #[test]
     fn test_two_domains_subcycling() {
-        let fast = TimeDomainConfig::new(1e-6, 1e-2, 0.25, 0.9);
-        let slow = TimeDomainConfig::new(1e-5, 1e-1, 0.5, 0.9);
-        let mut stepper = UnifiedTimeStepper::new(vec![fast, slow]);
+        let fast = TimeDomainConfig::new(1e-6, 1e-2, 0.25, 0.9).unwrap();
+        let slow = TimeDomainConfig::new(1e-5, 1e-1, 0.5, 0.9).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![fast, slow]).unwrap();
 
         // Fast domain wants dt = 1e-4, slow domain wants dt = 1e-3.
         stepper.update_domain_dt(0, 1e-4);
         stepper.update_domain_dt(1, 1e-3);
-        stepper.compute_global_dt();
+        stepper.compute_global_dt().unwrap();
 
         // Global dt should be driven by the fast domain.
         let g = stepper.global_dt;
@@ -482,15 +701,15 @@ mod tests {
 
     #[test]
     fn test_global_dt_is_minimum_across_domains() {
-        let d1 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let d2 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let d3 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let mut stepper = UnifiedTimeStepper::new(vec![d1, d2, d3]);
+        let d1 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let d2 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let d3 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![d1, d2, d3]).unwrap();
 
         stepper.update_domain_dt(0, 0.1);
         stepper.update_domain_dt(1, 0.05);
         stepper.update_domain_dt(2, 0.2);
-        let g = stepper.compute_global_dt();
+        let g = stepper.compute_global_dt().unwrap();
 
         // safety=1.0, so global = min(0.1, 0.05, 0.2) = 0.05
         assert!((g - 0.05).abs() < 1e-14, "global_dt={g}");
@@ -500,10 +719,10 @@ mod tests {
 
     #[test]
     fn test_schedule_single_domain() {
-        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let mut stepper = UnifiedTimeStepper::new(vec![cfg]);
+        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
         stepper.update_domain_dt(0, 0.01);
-        stepper.compute_global_dt();
+        stepper.compute_global_dt().unwrap();
 
         let sched = stepper.step_schedule();
         assert_eq!(sched.len(), 1);
@@ -514,13 +733,13 @@ mod tests {
 
     #[test]
     fn test_schedule_multi_domain() {
-        let d1 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let d2 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let mut stepper = UnifiedTimeStepper::new(vec![d1, d2]);
+        let d1 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let d2 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![d1, d2]).unwrap();
 
         stepper.update_domain_dt(0, 0.01);
         stepper.update_domain_dt(1, 0.1);
-        stepper.compute_global_dt();
+        stepper.compute_global_dt().unwrap();
 
         let sched = stepper.step_schedule();
         assert_eq!(sched.len(), 2);
@@ -538,10 +757,10 @@ mod tests {
 
     #[test]
     fn test_advance_global_time() {
-        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let mut stepper = UnifiedTimeStepper::new(vec![cfg]);
+        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
         stepper.update_domain_dt(0, 0.01);
-        stepper.compute_global_dt();
+        stepper.compute_global_dt().unwrap();
 
         let dt = stepper.global_dt;
         stepper.advance_global_time();
@@ -551,10 +770,10 @@ mod tests {
 
     #[test]
     fn test_advance_accumulates() {
-        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let mut stepper = UnifiedTimeStepper::new(vec![cfg]);
+        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
         stepper.update_domain_dt(0, 0.01);
-        stepper.compute_global_dt();
+        stepper.compute_global_dt().unwrap();
 
         for _ in 0..100 {
             stepper.advance_global_time();
@@ -572,23 +791,23 @@ mod tests {
 
     #[test]
     fn test_update_domain_error() {
-        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let mut stepper = UnifiedTimeStepper::new(vec![cfg]);
+        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
         assert!(stepper.update_domain_error(0, 1e-5));
         assert!((stepper.domains[0].error_estimate - 1e-5).abs() < 1e-20);
     }
 
     #[test]
     fn test_update_domain_error_invalid_index() {
-        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let mut stepper = UnifiedTimeStepper::new(vec![cfg]);
+        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
         assert!(!stepper.update_domain_error(5, 1e-5));
     }
 
     #[test]
     fn test_update_domain_dt_clamps() {
-        let cfg = TimeDomainConfig::new(1e-6, 1e-2, 0.5, 1.0);
-        let mut stepper = UnifiedTimeStepper::new(vec![cfg]);
+        let cfg = TimeDomainConfig::new(1e-6, 1e-2, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
 
         // Try to set dt above max.
         stepper.update_domain_dt(0, 1.0);
@@ -601,8 +820,8 @@ mod tests {
 
     #[test]
     fn test_update_domain_dt_invalid_index() {
-        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let mut stepper = UnifiedTimeStepper::new(vec![cfg]);
+        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
         assert!(!stepper.update_domain_dt(99, 0.01));
     }
 
@@ -610,8 +829,8 @@ mod tests {
 
     #[test]
     fn test_richardson_driven_adaptation() {
-        let cfg = TimeDomainConfig::new(1e-8, 1.0, 0.5, 0.9);
-        let mut stepper = UnifiedTimeStepper::new(vec![cfg]);
+        let cfg = TimeDomainConfig::new(1e-8, 1.0, 0.5, 0.9).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
         stepper.update_domain_dt(0, 0.01);
 
         let tolerance = 1e-4;
@@ -621,14 +840,14 @@ mod tests {
         let error = 1e-2;
         let new_dt = richardson_dt(stepper.domains[0].current_dt, error, tolerance, order);
         stepper.update_domain_dt(0, new_dt);
-        stepper.compute_global_dt();
+        stepper.compute_global_dt().unwrap();
         assert!(stepper.global_dt < 0.01 * 0.9, "should have shrunk");
 
         // Simulate: error is tiny, dt should grow.
         let error2 = 1e-10;
         let new_dt2 = richardson_dt(stepper.domains[0].current_dt, error2, tolerance, order);
         stepper.update_domain_dt(0, new_dt2);
-        stepper.compute_global_dt();
+        stepper.compute_global_dt().unwrap();
         assert!(
             stepper.domains[0].current_dt > stepper.domains[0].config.min_dt,
             "should have grown"
@@ -648,14 +867,14 @@ mod tests {
         //
         // Now if we manually set global_dt larger via a different route,
         // we can test true subcycling:
-        let d0 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let d1 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0);
-        let mut stepper = UnifiedTimeStepper::new(vec![d0, d1]);
+        let d0 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let d1 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![d0, d1]).unwrap();
 
         // d0 wants dt=0.1, d1 wants dt=0.025
         stepper.update_domain_dt(0, 0.1);
         stepper.update_domain_dt(1, 0.025);
-        stepper.compute_global_dt();
+        stepper.compute_global_dt().unwrap();
 
         // global = 0.025, d0 effective 0.1 >= 0.025 → 1 sub-step
         assert_eq!(stepper.subcycle_ratios[0], 1);
@@ -667,7 +886,7 @@ mod tests {
 
     #[test]
     fn test_empty_domains() {
-        let stepper = UnifiedTimeStepper::new(vec![]);
+        let stepper = UnifiedTimeStepper::new(vec![]).unwrap();
         assert_eq!(stepper.domains.len(), 0);
         assert_eq!(stepper.subcycle_ratios.len(), 0);
         assert!(stepper.step_schedule().is_empty());
@@ -675,13 +894,13 @@ mod tests {
 
     #[test]
     fn test_identical_domains() {
-        let c1 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 0.9);
-        let c2 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 0.9);
-        let mut stepper = UnifiedTimeStepper::new(vec![c1, c2]);
+        let c1 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 0.9).unwrap();
+        let c2 = TimeDomainConfig::new(1e-6, 1.0, 0.5, 0.9).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![c1, c2]).unwrap();
 
         stepper.update_domain_dt(0, 0.01);
         stepper.update_domain_dt(1, 0.01);
-        stepper.compute_global_dt();
+        stepper.compute_global_dt().unwrap();
 
         assert_eq!(stepper.subcycle_ratios[0], 1);
         assert_eq!(stepper.subcycle_ratios[1], 1);
@@ -692,10 +911,10 @@ mod tests {
     fn test_global_dt_respects_min_dt_bound() {
         // Both domains have min_dt = 0.001. Even if the raw safety-adjusted
         // dt would be smaller, it should be clamped.
-        let c1 = TimeDomainConfig::new(0.001, 1.0, 0.5, 0.01);
-        let mut stepper = UnifiedTimeStepper::new(vec![c1]);
+        let c1 = TimeDomainConfig::new(0.001, 1.0, 0.5, 0.01).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![c1]).unwrap();
         stepper.update_domain_dt(0, 0.001); // safety 0.01 → effective 1e-5
-        let g = stepper.compute_global_dt();
+        let g = stepper.compute_global_dt().unwrap();
         assert!(g >= 0.001, "global_dt={g} should be >= min_dt=0.001");
     }
 
@@ -713,5 +932,235 @@ mod tests {
         let dt = diffusive_dt(0.1, -0.01, 0.9);
         let expected = 0.9 * 0.01 / 0.02;
         assert!((dt - expected).abs() < 1e-14);
+    }
+
+    // -- Configuration validation -------------------------------------------
+
+    #[test]
+    fn test_config_new_accepts_boundary_values() {
+        // min_dt == max_dt and safety == 1 are valid.
+        assert!(TimeDomainConfig::new(1e-3, 1e-3, 0.5, 1.0).is_ok());
+        assert!(TimeDomainConfig::new(1e-12, 1e12, 1e-9, 1e-9).is_ok());
+    }
+
+    #[test]
+    fn test_config_new_rejects_invalid_values_naming_the_field() {
+        let nan = f64::NAN;
+        let inf = f64::INFINITY;
+        let cases: [([f64; 4], &str); 12] = [
+            ([0.0, 1.0, 0.5, 0.9], "min_dt"),
+            ([-1e-3, 1.0, 0.5, 0.9], "min_dt"),
+            ([nan, 1.0, 0.5, 0.9], "min_dt"),
+            ([inf, inf, 0.5, 0.9], "min_dt"),
+            ([1e-3, 1e-4, 0.5, 0.9], "max_dt"),
+            ([1e-3, nan, 0.5, 0.9], "max_dt"),
+            ([1e-3, inf, 0.5, 0.9], "max_dt"),
+            ([1e-3, 1.0, 0.0, 0.9], "cfl_factor"),
+            ([1e-3, 1.0, nan, 0.9], "cfl_factor"),
+            ([1e-3, 1.0, 0.5, 0.0], "safety_factor"),
+            ([1e-3, 1.0, 0.5, 1.5], "safety_factor"),
+            ([1e-3, 1.0, 0.5, nan], "safety_factor"),
+        ];
+        for ([min_dt, max_dt, cfl, safety], field) in cases {
+            match TimeDomainConfig::new(min_dt, max_dt, cfl, safety) {
+                Err(TimeStepError::InvalidParameter {
+                    domain, parameter, ..
+                }) => {
+                    assert_eq!(domain, None);
+                    assert_eq!(parameter, field, "{min_dt} {max_dt} {cfl} {safety}");
+                }
+                other => panic!("({min_dt}, {max_dt}, {cfl}, {safety}) gave {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_stepper_new_rechecks_struct_literal_configs() {
+        // Fields are public, so a config can bypass TimeDomainConfig::new.
+        let good = TimeDomainConfig::new(1e-6, 1.0, 0.5, 0.9).unwrap();
+        let bad = TimeDomainConfig {
+            min_dt: 1.0,
+            max_dt: 1e-3,
+            cfl_factor: 0.5,
+            safety_factor: 0.9,
+        };
+        match UnifiedTimeStepper::new(vec![good, bad]) {
+            Err(TimeStepError::InvalidParameter {
+                domain, parameter, ..
+            }) => {
+                assert_eq!(domain, Some(1));
+                assert_eq!(parameter, "max_dt");
+            }
+            other => panic!("expected an invalid-parameter error, got {other:?}"),
+        }
+    }
+
+    // -- Disjoint domain ranges (the former clamp panic) --------------------
+
+    #[test]
+    fn test_disjoint_domain_ranges_return_an_error_instead_of_panicking() {
+        // [1e-6, 1e-4] and [1e-3, 1e-2] have no common timestep: the largest
+        // lower bound (1e-3) exceeds the smallest upper bound (1e-4), which made
+        // f64::clamp panic.
+        let fast = TimeDomainConfig::new(1e-6, 1e-4, 0.25, 0.9).unwrap();
+        let slow = TimeDomainConfig::new(1e-3, 1e-2, 0.5, 0.9).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![fast, slow]).unwrap();
+        stepper.update_domain_dt(0, 5e-5);
+        stepper.update_domain_dt(1, 5e-3);
+        let before = (
+            stepper.global_dt,
+            stepper.subcycle_ratios.clone(),
+            stepper.global_time,
+        );
+        assert_eq!(
+            stepper.compute_global_dt(),
+            Err(TimeStepError::IncompatibleDomains {
+                global_min_dt: 1e-3,
+                global_max_dt: 1e-4,
+            })
+        );
+        // The failed call leaves the stepper untouched.
+        assert_eq!(
+            (
+                stepper.global_dt,
+                stepper.subcycle_ratios.clone(),
+                stepper.global_time
+            ),
+            before
+        );
+    }
+
+    #[test]
+    fn test_overlapping_ranges_with_different_bounds_are_clamped_to_the_overlap() {
+        // The ranges overlap in [1e-3, 1e-2].  The raw minimum (5e-4 * 0.9) lies
+        // below the overlap and is raised to its lower bound.
+        let a = TimeDomainConfig::new(1e-5, 1e-2, 0.5, 0.9).unwrap();
+        let b = TimeDomainConfig::new(1e-3, 1e-1, 0.5, 0.9).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![a, b]).unwrap();
+        stepper.update_domain_dt(0, 5e-4);
+        stepper.update_domain_dt(1, 5e-2);
+        let g = stepper.compute_global_dt().unwrap();
+        assert!((g - 1e-3).abs() < 1e-15, "global_dt = {g}");
+        // A raw minimum inside the overlap is left alone.
+        stepper.update_domain_dt(0, 1e-2);
+        stepper.update_domain_dt(1, 1e-1);
+        let g = stepper.compute_global_dt().unwrap();
+        assert!((g - 9e-3).abs() < 1e-15, "global_dt = {g}");
+        // Touching ranges share exactly one value.
+        let low = TimeDomainConfig::new(1e-4, 1e-3, 0.5, 1.0).unwrap();
+        let high = TimeDomainConfig::new(1e-3, 1e-2, 0.5, 1.0).unwrap();
+        let mut touching = UnifiedTimeStepper::new(vec![low, high]).unwrap();
+        touching.update_domain_dt(0, 5e-4);
+        touching.update_domain_dt(1, 5e-3);
+        assert_eq!(touching.compute_global_dt(), Ok(1e-3));
+    }
+
+    #[test]
+    fn test_edited_public_fields_cannot_make_the_stepper_panic() {
+        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 0.9).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
+        // min_dt > max_dt after construction: update_domain_dt used to call clamp.
+        stepper.domains[0].config.min_dt = 2.0;
+        assert!(stepper.update_domain_dt(0, 0.5));
+        assert!(stepper.domains[0].current_dt.is_finite());
+        match stepper.compute_global_dt() {
+            Err(TimeStepError::InvalidParameter {
+                domain, parameter, ..
+            }) => {
+                assert_eq!(domain, Some(0));
+                assert_eq!(parameter, "max_dt");
+            }
+            other => panic!("expected an invalid-parameter error, got {other:?}"),
+        }
+        // A non-finite current_dt is reported, not propagated.
+        stepper.domains[0].config.min_dt = 1e-6;
+        stepper.domains[0].current_dt = f64::NAN;
+        match stepper.compute_global_dt() {
+            Err(TimeStepError::InvalidParameter { parameter, .. }) => {
+                assert_eq!(parameter, "current_dt")
+            }
+            other => panic!("expected an invalid-parameter error, got {other:?}"),
+        }
+        // Subcycle ratios and step_schedule survive a resized public vector.
+        stepper.domains[0].current_dt = 0.1;
+        stepper.subcycle_ratios.clear();
+        assert_eq!(stepper.step_schedule()[0].n_substeps, 1);
+        assert!(stepper.compute_global_dt().is_ok());
+        assert_eq!(stepper.subcycle_ratios.len(), 1);
+    }
+
+    #[test]
+    fn test_update_domain_dt_rejects_nan_and_non_positive_suggestions() {
+        let cfg = TimeDomainConfig::new(1e-6, 1e-2, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
+        assert!(stepper.update_domain_dt(0, 5e-3));
+        for bad in [f64::NAN, 0.0, -1e-3, f64::NEG_INFINITY] {
+            assert!(!stepper.update_domain_dt(0, bad), "{bad}");
+            assert_eq!(stepper.domains[0].current_dt, 5e-3, "{bad}");
+        }
+        // An infinite suggestion means "no constraint" and becomes max_dt.
+        assert!(stepper.update_domain_dt(0, f64::INFINITY));
+        assert_eq!(stepper.domains[0].current_dt, 1e-2);
+    }
+
+    #[test]
+    fn test_empty_stepper_has_no_timestep() {
+        let mut stepper = UnifiedTimeStepper::new(vec![]).unwrap();
+        assert_eq!(stepper.global_dt, 0.0);
+        assert_eq!(stepper.compute_global_dt(), Err(TimeStepError::NoDomains));
+        stepper.advance_global_time();
+        assert_eq!(stepper.global_time, 0.0);
+    }
+
+    #[test]
+    fn test_step_counters_saturate_instead_of_overflowing() {
+        let cfg = TimeDomainConfig::new(1e-6, 1.0, 0.5, 1.0).unwrap();
+        let mut stepper = UnifiedTimeStepper::new(vec![cfg]).unwrap();
+        stepper.domains[0].step_count = u64::MAX - 1;
+        stepper.advance_global_time();
+        stepper.advance_global_time();
+        assert_eq!(stepper.domains[0].step_count, u64::MAX);
+    }
+
+    #[test]
+    fn test_time_step_error_messages_and_physics_error_conversion() {
+        let invalid = TimeDomainConfig::new(0.0, 1.0, 0.5, 0.9).unwrap_err();
+        assert_eq!(
+            invalid.to_string(),
+            "time-domain configuration: min_dt = 0 must be finite and positive"
+        );
+        let tagged = TimeStepError::InvalidParameter {
+            domain: Some(2),
+            parameter: "safety_factor",
+            value: 1.5,
+            requirement: "in (0, 1]",
+        };
+        assert_eq!(
+            tagged.to_string(),
+            "domain 2: safety_factor = 1.5 must be in (0, 1]"
+        );
+        let incompatible = TimeStepError::IncompatibleDomains {
+            global_min_dt: 1e-3,
+            global_max_dt: 1e-4,
+        };
+        assert!(incompatible.to_string().contains("do not overlap"));
+        assert_eq!(
+            TimeStepError::NoDomains.to_string(),
+            "the time stepper has no domains"
+        );
+        match PhysicsError::from(tagged) {
+            PhysicsError::InvalidInput { field, reason } => {
+                assert_eq!(field, "safety_factor");
+                assert_eq!(reason, "1.5 must be in (0, 1]");
+            }
+            other => panic!("unexpected conversion {other:?}"),
+        }
+        assert!(matches!(
+            PhysicsError::from(incompatible),
+            PhysicsError::InvalidInput { .. }
+        ));
+        // The error type can be boxed as std::error::Error.
+        let boxed: Box<dyn std::error::Error> = Box::new(TimeStepError::NoDomains);
+        assert!(!boxed.to_string().is_empty());
     }
 }

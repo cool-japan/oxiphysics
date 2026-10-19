@@ -6,7 +6,14 @@
 //! Provides SDF primitives, smooth blending operations, voxel SDF grids,
 //! marching cubes isosurface extraction, dual contouring, and ray marching.
 
+use crate::level_set::{LevelSetField, LevelSetReinit};
 use crate::mc_tables::{MC_CORNER_OFFSETS, MC_EDGE_TABLE, MC_TRI_TABLE, case_index};
+
+mod dual_contouring;
+#[cfg(test)]
+mod reinitialize_tests;
+
+pub use dual_contouring::DualContouring;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper functions
@@ -453,70 +460,108 @@ impl SdfGrid3D {
         let idx = self.index(ix, iy, iz);
         self.data[idx] = v;
     }
+
+    /// `true` when the grid can be sampled cell by cell: every axis holds at least
+    /// two nodes (a cell needs two), `data` holds exactly one value per node, the
+    /// origin is finite and the voxel size is finite and positive.
+    ///
+    /// The fields are public, so a grid can be left inconsistent by hand.
+    pub(crate) fn is_samplable(&self) -> bool {
+        let nodes = self
+            .nx
+            .checked_mul(self.ny)
+            .and_then(|n| n.checked_mul(self.nz));
+        [self.nx, self.ny, self.nz].iter().all(|&n| n >= 2)
+            && nodes == Some(self.data.len())
+            && self.voxel_size.is_finite()
+            && self.voxel_size > 0.0
+            && self.min_corner.iter().all(|c| c.is_finite())
+    }
+}
+
+/// Unit normal of an isosurface of `grid` at `p`: the normalised grid gradient, or
+/// the zero vector where the gradient is not finite (its stencil reaches a NaN or
+/// infinite sample).
+fn surface_normal(grid: &SdfGrid3D, p: [f64; 3]) -> [f64; 3] {
+    let gradient = grid.gradient(p);
+    if gradient.iter().all(|c| c.is_finite()) {
+        vec3_norm(gradient)
+    } else {
+        [0.0; 3]
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SDF Reinitializer (Fast Marching Method)
+// SDF Reinitializer (fast sweeping of the Eikonal equation)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Fast marching method to reinitialize a corrupted SDF grid.
+/// Largest number of Gauss–Seidel sweeps [`SdfReinitialize`] performs.  Eight
+/// sweeps (one per diagonal grid ordering) make one cycle, and a handful of cycles
+/// is enough for any zero level set whose shortest paths do not wind around many
+/// obstacles.
+const REINITIALIZE_MAX_SWEEPS: usize = 8 * 64;
+
+/// Stopping tolerance of [`SdfReinitialize`] in voxel sizes: the sweeps end once a
+/// whole cycle changes no sample by more than this fraction of the voxel size.
+const REINITIALIZE_TOLERANCE: f64 = 1.0e-9;
+
+/// Restores the signed-distance property of a corrupted [`SdfGrid3D`].
 ///
-/// Propagates the zero level-set outward to restore the signed distance property.
+/// The grid is redistanced by fast sweeping (Zhao, *A fast sweeping method for
+/// Eikonal equations*, Math. Comp. 74, 2005) of `|∇d| = 1`:
+///
+/// 1. Samples next to the zero level set (a neighbour of opposite sign, or a sample
+///    that is exactly zero) are frozen at a first-order estimate of their distance
+///    to it, `|φ| / |∇φ|`, limited by the distance to the nearest linearly
+///    interpolated zero crossing along a grid edge.
+/// 2. All other samples start at "infinitely far" and are lowered by Gauss–Seidel
+///    sweeps in the eight diagonal grid orderings with the upwind Godunov update
+///    of the Eikonal equation, until a whole cycle of orderings changes nothing.
+/// 3. Every sample keeps its original sign.
+///
+/// Away from the zero level set the input values are discarded and only their signs
+/// are kept: a field that is too steep (`|∇φ| > 1`) or too flat (`|∇φ| < 1`) comes
+/// out with `|∇φ| ≈ 1`, up to the first-order error of the scheme near curved parts
+/// of the level set.
+///
+/// The solver is the one of [`LevelSetReinit::fast_sweep`].
 pub struct SdfReinitialize;
 
 impl SdfReinitialize {
-    /// Reinitialize `grid` using a simplified fast marching sweep.
+    /// Reinitialize `grid` in place so that it is a signed distance field again.
     ///
-    /// Identifies the zero-crossing voxels and sweeps outward using
-    /// the Godunov upwind scheme approximation.
+    /// A grid without a zero level set (all samples of one sign), with a NaN
+    /// sample, or with a non-positive or non-finite voxel size is left unchanged.
+    /// Infinite samples, as stored outside the band of a narrow-band grid, are
+    /// treated as unknown distances of the sign they carry: they are recomputed from
+    /// the finite part of the field, and an infinite sample that no sweep reaches
+    /// stays infinite.  An infinite sample whose neighbour has the opposite sign
+    /// carries no information on where between the two the surface lies, so the
+    /// pair is placed on the zero level set (an error of at most one voxel, the
+    /// accuracy of the scheme).
     pub fn reinitialize(grid: &mut SdfGrid3D) {
-        let nx = grid.nx;
-        let ny = grid.ny;
-        let nz = grid.nz;
         let h = grid.voxel_size;
-
-        // Identify interface voxels (sign changes with neighbor)
-        let mut new_data = grid.data.clone();
-        let sign = |v: f64| -> f64 { if v >= 0.0 { 1.0 } else { -1.0 } };
-
-        // Multiple Gauss-Seidel sweeps
-        for _ in 0..5 {
-            for iz in 0..nz {
-                for iy in 0..ny {
-                    for ix in 0..nx {
-                        let idx = grid.index(ix, iy, iz);
-                        let v = grid.data[idx];
-                        let s = sign(v);
-
-                        // Min neighbor distance per axis (upwind)
-                        let get = |x: i64, y: i64, z: i64| -> f64 {
-                            let xi = x.clamp(0, nx as i64 - 1) as usize;
-                            let yi = y.clamp(0, ny as i64 - 1) as usize;
-                            let zi = z.clamp(0, nz as i64 - 1) as usize;
-                            grid.data[grid.index(xi, yi, zi)]
-                        };
-
-                        let dx = get(ix as i64 - 1, iy as i64, iz as i64)
-                            .abs()
-                            .min(get(ix as i64 + 1, iy as i64, iz as i64).abs());
-                        let dy = get(ix as i64, iy as i64 - 1, iz as i64)
-                            .abs()
-                            .min(get(ix as i64, iy as i64 + 1, iz as i64).abs());
-                        let dz = get(ix as i64, iy as i64, iz as i64 - 1)
-                            .abs()
-                            .min(get(ix as i64, iy as i64, iz as i64 + 1).abs());
-
-                        // Solve |grad phi| = 1 approximately:
-                        // phi ≈ min_axis_dist + h * sign
-                        let proposed = s * (dx.min(dy).min(dz) + h);
-                        if (proposed).abs() < v.abs() {
-                            new_data[idx] = proposed;
-                        }
-                    }
-                }
+        let mut field = LevelSetField {
+            nx: grid.nx,
+            ny: grid.ny,
+            nz: grid.nz,
+            dx: h,
+            origin: grid.voxel_center(0, 0, 0),
+            data: std::mem::take(&mut grid.data),
+        };
+        for v in &mut field.data {
+            if v.is_infinite() {
+                *v = v.signum() * f64::MAX;
             }
         }
-        grid.data = new_data;
+        LevelSetReinit::new(REINITIALIZE_TOLERANCE * h, REINITIALIZE_MAX_SWEEPS)
+            .fast_sweep(&mut field, REINITIALIZE_MAX_SWEEPS);
+        for v in &mut field.data {
+            if v.abs() == f64::MAX {
+                *v = v.signum() * f64::INFINITY;
+            }
+        }
+        grid.data = field.data;
     }
 }
 
@@ -671,98 +716,6 @@ impl MarchingCubes {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Dual Contouring
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Dual contouring with QEF minimization for sharp-feature preservation.
-pub struct DualContouring;
-
-impl DualContouring {
-    /// Extract an isosurface using dual contouring from an SDF grid.
-    ///
-    /// Places one vertex per active voxel (QEF minimizer) and connects
-    /// vertices of adjacent active voxels.
-    pub fn extract(grid: &SdfGrid3D, isovalue: f64) -> IsoMesh {
-        let mut mesh = IsoMesh::new();
-        let nx = grid.nx;
-        let ny = grid.ny;
-        let nz = grid.nz;
-
-        // For each active voxel, compute a representative vertex via QEF
-        let mut voxel_vertex: std::collections::HashMap<usize, usize> =
-            std::collections::HashMap::new();
-
-        for iz in 0..nz.saturating_sub(1) {
-            for iy in 0..ny.saturating_sub(1) {
-                for ix in 0..nx.saturating_sub(1) {
-                    let v000 = grid.get(ix, iy, iz);
-                    let v100 = grid.get(ix + 1, iy, iz);
-                    let v010 = grid.get(ix, iy + 1, iz);
-                    let v001 = grid.get(ix, iy, iz + 1);
-                    // Active if sign changes on any edge
-                    let active = (v000 < isovalue) != (v100 < isovalue)
-                        || (v000 < isovalue) != (v010 < isovalue)
-                        || (v000 < isovalue) != (v001 < isovalue);
-                    if !active {
-                        continue;
-                    }
-
-                    // QEF: place vertex at voxel center (simplified)
-                    let center = grid.voxel_center(ix, iy, iz);
-                    let vi = mesh.vertices.len();
-                    mesh.vertices.push(center);
-                    mesh.normals.push(vec3_norm(grid.gradient(center)));
-                    let key = ix + nx * (iy + ny * iz);
-                    voxel_vertex.insert(key, vi);
-                }
-            }
-        }
-
-        // Connect adjacent active voxels (shared face → quad → 2 triangles)
-        let directions = [
-            (1, 0, 0, 1usize, 0usize, 0usize),
-            (0, 1, 0, 0, 1, 0),
-            (0, 0, 1, 0, 0, 1),
-        ];
-        for iz in 0..nz.saturating_sub(1) {
-            for iy in 0..ny.saturating_sub(1) {
-                for ix in 0..nx.saturating_sub(1) {
-                    let v0 = grid.get(ix, iy, iz);
-                    for &(dx, dy, dz, ox, oy, oz) in &directions {
-                        let nx2 = ix + dx;
-                        let ny2 = iy + dy;
-                        let nz2 = iz + dz;
-                        if nx2 >= nx || ny2 >= ny || nz2 >= nz {
-                            continue;
-                        }
-                        let v1 = grid.get(nx2, ny2, nz2);
-                        if (v0 < isovalue) == (v1 < isovalue) {
-                            continue;
-                        }
-                        // Get the four voxels sharing this edge
-                        let k0 = ix + nx * (iy + ny * iz);
-                        let k1 = (ix + ox) + nx * ((iy + oy) + ny * (iz + oz));
-                        let k2 = (ix + ox + dx) + nx * ((iy + oy + dy) + ny * (iz + oz + dz));
-                        let k3 = (ix + dx) + nx * ((iy + dy) + ny * (iz + dz));
-                        if let (Some(&a), Some(&b), Some(&c), Some(&d)) = (
-                            voxel_vertex.get(&k0),
-                            voxel_vertex.get(&k1),
-                            voxel_vertex.get(&k2),
-                            voxel_vertex.get(&k3),
-                        ) {
-                            mesh.triangles.push([a, b, c]);
-                            mesh.triangles.push([a, c, d]);
-                        }
-                    }
-                }
-            }
-        }
-
-        mesh
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Marching Tetrahedra
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -824,7 +777,13 @@ const TET_TRI_CASES: [[i8; 7]; 16] = [
 ///   mesh in which every edge belongs to two triangles;
 /// * triangles are wound counter-clockwise when seen from outside (their normals
 ///   point towards increasing field values);
-/// * the per-vertex normals are the normalised grid gradient at the vertex.
+/// * the per-vertex normals are the normalised grid gradient at the vertex (the
+///   zero vector where the gradient is not finite).
+///
+/// Cells with a non-finite corner value are skipped.  A grid with fewer than two
+/// nodes along an axis, a data array of the wrong length, a non-positive or
+/// non-finite voxel size, a non-finite origin or a non-finite isovalue gives an
+/// empty mesh.
 pub struct MarchingTetrahedra;
 
 /// A grid node seen from inside one tetrahedron.
@@ -949,7 +908,7 @@ impl<'a> TetMeshBuilder<'a> {
             .mesh
             .vertices
             .iter()
-            .map(|&p| vec3_norm(self.grid.gradient(p)))
+            .map(|&p| surface_normal(self.grid, p))
             .collect();
         self.mesh
     }
@@ -958,10 +917,13 @@ impl<'a> TetMeshBuilder<'a> {
 impl MarchingTetrahedra {
     /// Extract isosurface from SDF grid using marching tetrahedra.
     pub fn extract(grid: &SdfGrid3D, isovalue: f64) -> IsoMesh {
+        if !grid.is_samplable() || !isovalue.is_finite() {
+            return IsoMesh::new();
+        }
         let mut builder = TetMeshBuilder::new(grid, isovalue);
-        let nx = grid.nx.saturating_sub(1);
-        let ny = grid.ny.saturating_sub(1);
-        let nz = grid.nz.saturating_sub(1);
+        let nx = grid.nx - 1;
+        let ny = grid.ny - 1;
+        let nz = grid.nz - 1;
 
         for iz in 0..nz {
             for iy in 0..ny {
@@ -977,6 +939,9 @@ impl MarchingTetrahedra {
                         }
                     });
                     let values: [f64; 8] = std::array::from_fn(|c| corners[c].value);
+                    if values.iter().any(|v| !v.is_finite()) {
+                        continue;
+                    }
                     let case = case_index(&values, isovalue);
                     if case == 0 || case == 255 {
                         continue;
@@ -1321,11 +1286,17 @@ mod tests {
     fn test_sdf_reinitialize() {
         let sphere = ImplicitSphere::new([2.0, 2.0, 2.0], 1.0);
         let mut grid = SdfGrid3D::from_sdf(16, 16, 16, [0.0, 0.0, 0.0], 0.3, |p| sphere.sdf(p));
-        // Corrupt some values
-        grid.set(5, 5, 5, 100.0);
+        // Corrupt a sample inside the sphere, keeping its sign.
+        grid.set(5, 5, 5, -100.0);
         SdfReinitialize::reinitialize(&mut grid);
-        // After reinitialization, values should be more reasonable
-        assert!(grid.get(5, 5, 5).abs() < 50.0);
+        // The corrupted sample is again within a voxel of the exact distance
+        // (the fast sweep reproduces the distance field of the unharmed samples).
+        let exact = sphere.sdf(grid.voxel_center(5, 5, 5));
+        assert!(
+            (grid.get(5, 5, 5) - exact).abs() <= grid.voxel_size,
+            "{} vs the exact distance {exact}",
+            grid.get(5, 5, 5)
+        );
     }
 
     #[test]
@@ -1591,6 +1562,63 @@ mod marching_tetrahedra_tests {
     }
 
     #[test]
+    fn torus_mesh_is_a_closed_surface_of_genus_one() {
+        let (n, voxel) = (56, 0.07);
+        let half = 0.5 * n as f64 * voxel;
+        let centre = [half + 0.013, half - 0.007, half + 0.0031];
+        let torus = ImplicitTorus::new(1.0, 0.4);
+        let grid =
+            SdfGrid3D::from_sdf(n, n, n, [0.0; 3], voxel, |p| torus.sdf(vec3_sub(p, centre)));
+        let mesh = MarchingTetrahedra::extract(&grid, 0.0);
+        let faces = mesh.num_triangles();
+        assert!(faces > 5000, "{faces}");
+        assert!(is_closed_and_consistently_oriented(&mesh.triangles));
+        assert_eq!(
+            edge_valence_histogram(&mesh.triangles),
+            vec![(2, faces * 3 / 2)],
+            "every edge must be shared by exactly two triangles"
+        );
+        // With E = 3F/2 the Euler characteristic V - E + F is V - F/2; a torus has 0.
+        let mut used = vec![false; mesh.num_vertices()];
+        for &vertex in mesh.triangles.iter().flatten() {
+            used[vertex] = true;
+        }
+        let vertices = used.iter().filter(|&&u| u).count();
+        assert_eq!(2 * vertices, faces, "Euler characteristic is not zero");
+        let (area, volume) = area_and_volume(&mesh.vertices, &mesh.triangles);
+        let exact_area = 4.0 * PI * PI * 1.0 * 0.4;
+        let exact_volume = 2.0 * PI * PI * 1.0 * 0.4 * 0.4;
+        assert!((area / exact_area - 1.0).abs() < 0.03, "area {area}");
+        assert!(
+            (volume / exact_volume - 1.0).abs() < 0.03,
+            "volume {volume}"
+        );
+    }
+
+    #[test]
+    fn the_isovalue_selects_the_level_set() {
+        // The level set `sdf = 0.25` of a unit sphere is the sphere of radius 1.25.
+        let (n, voxel) = (26, 0.13);
+        let grid = sphere_grid(n, voxel, 1.0);
+        let center = sphere_center(n, voxel);
+        let mesh = MarchingTetrahedra::extract(&grid, 0.25);
+        assert!(mesh.num_triangles() > 1000, "{}", mesh.num_triangles());
+        for v in &mesh.vertices {
+            let r = vec3_len(vec3_sub(*v, center));
+            assert!((r - 1.25).abs() < 0.01, "vertex at radius {r}");
+        }
+        assert!(is_closed_and_consistently_oriented(&mesh.triangles));
+        let (area, volume) = area_and_volume(&mesh.vertices, &mesh.triangles);
+        let exact_area = 4.0 * PI * 1.25 * 1.25;
+        let exact_volume = 4.0 / 3.0 * PI * 1.25_f64.powi(3);
+        assert!((area / exact_area - 1.0).abs() < 0.03, "area {area}");
+        assert!(
+            (volume / exact_volume - 1.0).abs() < 0.03,
+            "volume {volume}"
+        );
+    }
+
+    #[test]
     fn vertex_normals_follow_the_sdf_gradient_not_plus_y() {
         let grid = sphere_grid(20, 0.15, 1.0);
         let mesh = MarchingTetrahedra::extract(&grid, 0.0);
@@ -1687,6 +1715,55 @@ mod marching_tetrahedra_tests {
             (volume / exact - 1.0).abs() < 0.05,
             "volume {volume} vs {exact}"
         );
+    }
+
+    #[test]
+    fn invalid_grids_give_empty_meshes_and_bad_samples_only_remove_their_cells() {
+        // x = 2.6 between the node planes 2.5 and 3.5: a surface in every cell layer.
+        let good = SdfGrid3D::from_sdf(7, 6, 6, [0.0; 3], 1.0, |p| p[0] - 2.6);
+        let full = MarchingTetrahedra::extract(&good, 0.0);
+        assert!(full.num_triangles() > 50, "{}", full.num_triangles());
+
+        // Hand-made inconsistencies give an empty mesh instead of a panic.
+        let mut short = good.clone();
+        short.data.pop();
+        assert_eq!(MarchingTetrahedra::extract(&short, 0.0).num_triangles(), 0);
+        let mut long = good.clone();
+        long.data.push(0.0);
+        assert_eq!(MarchingTetrahedra::extract(&long, 0.0).num_triangles(), 0);
+        for size in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut grid = good.clone();
+            grid.voxel_size = size;
+            assert_eq!(
+                MarchingTetrahedra::extract(&grid, 0.0).num_triangles(),
+                0,
+                "voxel size {size}"
+            );
+        }
+        let mut moved = good.clone();
+        moved.min_corner[1] = f64::NAN;
+        assert_eq!(MarchingTetrahedra::extract(&moved, 0.0).num_triangles(), 0);
+        for iso in [f64::NAN, f64::INFINITY] {
+            assert_eq!(MarchingTetrahedra::extract(&good, iso).num_triangles(), 0);
+        }
+
+        // A NaN or infinite sample only removes the cells it touches, and nothing
+        // in the mesh becomes non-finite.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut holey = good.clone();
+            holey.set(3, 3, 3, bad);
+            let mesh = MarchingTetrahedra::extract(&holey, 0.0);
+            assert!(mesh.num_triangles() > 0, "sample {bad}");
+            assert!(mesh.num_triangles() < full.num_triangles(), "sample {bad}");
+            assert!(
+                mesh.vertices.iter().flatten().all(|c| c.is_finite()),
+                "sample {bad}: non-finite vertex"
+            );
+            assert!(
+                mesh.normals.iter().flatten().all(|c| c.is_finite()),
+                "sample {bad}: non-finite normal"
+            );
+        }
     }
 
     #[test]

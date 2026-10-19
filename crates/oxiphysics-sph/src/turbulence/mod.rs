@@ -9,6 +9,8 @@ mod komegarans_traits;
 mod lesenergybudget_traits;
 mod mixinglength_traits;
 mod mixinglengthmodel_traits;
+#[cfg(test)]
+mod sgs_sign_tests;
 mod sigmamodel_traits;
 pub(crate) mod singular_values;
 mod smagorinskyles_traits;

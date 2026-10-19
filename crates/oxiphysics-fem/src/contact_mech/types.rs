@@ -3,6 +3,10 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use crate::contact_mechanics::{
+    jkr_contact_radius, jkr_elastic_energy_at_radius, jkr_indentation,
+    mindlin_dissipation_per_cycle,
+};
 use std::f64::consts::PI;
 
 /// Discretized contact patch for numerical pressure distribution.
@@ -272,15 +276,25 @@ pub struct MindlinContact {
     pub friction: f64,
 }
 impl MindlinContact {
-    /// Reduced shear modulus G*:
-    ///   1/G* = (2 - nu1) / (4*G1) + (2 - nu2) / (4*G2)
+    /// Reduced shear modulus G* (Johnson / Mindlin convention):
+    ///   1/G* = (2 - nu1) / G1 + (2 - nu2) / G2
+    ///
+    /// With this definition the initial tangential stiffness of the contact is
+    /// k_t = 8 * G* * a, i.e. 4 G a / (2 - nu) for two identical bodies.
     fn reduced_shear_modulus(&self) -> f64 {
         let g1 = self.hertz.solid_a.shear_modulus();
         let g2 = self.hertz.solid_b.shear_modulus();
         let nu1 = self.hertz.solid_a.poisson_ratio;
         let nu2 = self.hertz.solid_b.poisson_ratio;
-        let inv = (2.0 - nu1) / (4.0 * g1) + (2.0 - nu2) / (4.0 * g2);
+        let inv = (2.0 - nu1) / g1 + (2.0 - nu2) / g2;
         1.0 / inv
+    }
+    /// Tangential displacement at the onset of gross slip:
+    ///   delta_s = 3*mu*F_n / (16*G_star*a)
+    fn saturation_displacement(&self, normal_force: f64) -> f64 {
+        let g_star = self.reduced_shear_modulus();
+        let a = self.hertz.contact_radius(normal_force);
+        3.0 * self.friction * normal_force / (16.0 * g_star * a)
     }
     /// Tangential stiffness k_t = 8 * G* * a.
     pub fn tangential_stiffness(&self, normal_force: f64) -> f64 {
@@ -289,7 +303,9 @@ impl MindlinContact {
         8.0 * g_star * a
     }
     /// Mindlin tangential compliance (partial-slip regime):
-    ///   delta_t = (3*mu*F_n / (8*G**a)) * \[1 - (1 - Ft/(mu*Fn))^(2/3)\]
+    ///   delta_t = (3*mu*F_n / (16*G_star*a)) * \[1 - (1 - Ft/(mu*Fn))^(2/3)\]
+    ///
+    /// Its initial slope d(delta_t)/d(Ft) at Ft = 0 equals 1/k_t.
     ///
     /// Returns `None` if `tangential_force >= mu * normal_force` (gross slip).
     pub fn tangential_compliance(&self, tangential_force: f64, normal_force: f64) -> Option<f64> {
@@ -297,20 +313,18 @@ impl MindlinContact {
         if tangential_force >= limit {
             return None;
         }
-        let g_star = self.reduced_shear_modulus();
-        let a = self.hertz.contact_radius(normal_force);
-        let prefactor = 3.0 * limit / (8.0 * g_star * a);
+        let prefactor = self.saturation_displacement(normal_force);
         let term = 1.0 - (tangential_force / limit);
         Some(prefactor * (1.0 - term.powf(2.0 / 3.0)))
     }
     /// Inverse Mindlin relation: given tangential displacement delta_t,
     /// returns the tangential force (partial-slip regime).
+    ///
+    ///   Ft = mu*Fn * \[1 - (1 - delta_t/delta_s)^(3/2)\],  delta_s = 3*mu*Fn/(16*G_star*a)
     pub fn partial_slip_force_disp(&self, delta_t: f64, normal_force: f64) -> f64 {
         let limit = self.friction * normal_force;
-        let g_star = self.reduced_shear_modulus();
-        let a = self.hertz.contact_radius(normal_force);
-        let prefactor = 3.0 * limit / (8.0 * g_star * a);
-        let ratio = (delta_t / prefactor).min(1.0);
+        let prefactor = self.saturation_displacement(normal_force);
+        let ratio = (delta_t / prefactor).clamp(0.0, 1.0);
         limit * (1.0 - (1.0 - ratio).powf(1.5))
     }
     /// Slip annulus inner radius c = a * (1 - Ft/(mu*Fn))^(1/3).
@@ -324,10 +338,15 @@ impl MindlinContact {
         let a = self.hertz.contact_radius(normal_force);
         Some(a * (1.0 - tangential_force / limit).powf(1.0 / 3.0))
     }
-    /// Energy dissipated per cycle in a Mindlin fretting contact.
+    /// Energy dissipated per cycle in a Mindlin fretting contact
+    /// (Mindlin-Deresiewicz), for a tangential force amplitude Q* and
+    /// q = Q*/(mu*F_n) < 1:
     ///
-    /// W_d = (9 * mu^2 * F_n^2) / (10 * k_t) * \[1 - (1 - Q/(mu*F_n))^(5/3)\]
-    /// where Q is the tangential force amplitude.
+    /// W_d = (36 * mu^2 * F_n^2) / (5 * k_t)
+    ///       * \[1 - (1 - q)^(5/3) - (5q/6) * (1 + (1 - q)^(2/3))\]
+    ///
+    /// which scales as Q*^3 for small amplitudes.  The amplitude is capped at
+    /// the onset of gross slip (q = 1).
     pub fn fretting_energy_per_cycle(&self, tangential_amplitude: f64, normal_force: f64) -> f64 {
         let limit = self.friction * normal_force;
         if limit < 1e-30 {
@@ -337,8 +356,8 @@ impl MindlinContact {
         if k_t < 1e-30 {
             return 0.0;
         }
-        let ratio = (tangential_amplitude / limit).min(1.0);
-        (9.0 * limit * limit) / (10.0 * k_t) * (1.0 - (1.0 - ratio).powf(5.0 / 3.0))
+        let ratio = (tangential_amplitude.abs() / limit).min(1.0);
+        mindlin_dissipation_per_cycle(limit, k_t, ratio)
     }
 }
 /// Analytical subsurface stress field for Hertzian contact.
@@ -687,20 +706,21 @@ pub struct JkrContact {
     pub work_of_adhesion: f64,
 }
 impl JkrContact {
-    /// JKR contact radius under applied load F.
-    ///
-    /// a³ = (R*/E*) * \[F + 3πWR* + sqrt(6πWR*F + (3πWR*)²)\]
-    pub fn contact_radius(&self, normal_force: f64) -> f64 {
+    /// Effective radius R* and reduced modulus E* of the contact pair.
+    fn effective_parameters(&self) -> (f64, f64) {
         let r_star = self.hertz.effective_radius();
         let e_star = ElasticSolid::reduced_modulus(&self.hertz.solid_a, &self.hertz.solid_b);
-        let w = self.work_of_adhesion;
-        let term1 = 3.0 * PI * w * r_star;
-        let under_sqrt = 6.0 * PI * w * r_star * normal_force + term1 * term1;
-        let a3 = (r_star / e_star) * (normal_force + term1 + under_sqrt.sqrt());
-        if a3 <= 0.0 {
-            return 0.0;
-        }
-        a3.cbrt()
+        (r_star, e_star)
+    }
+    /// JKR contact radius under applied load F.
+    ///
+    /// a³ = (3R*/(4E*)) * \[F + 3πWR* + sqrt(6πWR*F + (3πWR*)²)\]
+    ///
+    /// Reduces to the Hertz radius for W = 0 and is 0 below the pull-off load
+    /// (see [`jkr_contact_radius`]).
+    pub fn contact_radius(&self, normal_force: f64) -> f64 {
+        let (r_star, e_star) = self.effective_parameters();
+        jkr_contact_radius(normal_force, r_star, e_star, self.work_of_adhesion)
     }
     /// Pull-off force (critical detachment force) in the JKR model.
     ///
@@ -718,22 +738,21 @@ impl JkrContact {
     ///
     /// delta = a²/R* - sqrt(2πWa/E*)
     pub fn indentation(&self, normal_force: f64) -> f64 {
-        let r_star = self.hertz.effective_radius();
-        let e_star = ElasticSolid::reduced_modulus(&self.hertz.solid_a, &self.hertz.solid_b);
+        let (r_star, e_star) = self.effective_parameters();
         let a = self.contact_radius(normal_force);
         if a <= 0.0 {
             return 0.0;
         }
-        a * a / r_star - (2.0 * PI * self.work_of_adhesion * a / e_star).sqrt()
+        jkr_indentation(a, r_star, e_star, self.work_of_adhesion)
     }
-    /// Elastic energy stored in JKR contact.
+    /// Elastic strain energy stored in the JKR contact.
+    ///
+    /// U_E = 8E*a⁵/(15R*²) - 4E*a³δ_p/(3R*) + 2πWa², δ_p = sqrt(2πWa/E*)
+    /// (see [`jkr_elastic_energy_at_radius`]).
     pub fn stored_elastic_energy(&self, normal_force: f64) -> f64 {
+        let (r_star, e_star) = self.effective_parameters();
         let a = self.contact_radius(normal_force);
-        let e_star = ElasticSolid::reduced_modulus(&self.hertz.solid_a, &self.hertz.solid_b);
-        let r_star = self.hertz.effective_radius();
-        let hertz_energy = 8.0 * e_star * a.powi(5) / (15.0 * r_star);
-        let adhesion_energy = PI * self.work_of_adhesion * a * a;
-        hertz_energy - adhesion_energy
+        jkr_elastic_energy_at_radius(a, r_star, e_star, self.work_of_adhesion)
     }
 }
 /// Node-to-segment contact element (2-D segment in 3-D space).

@@ -5,6 +5,7 @@
 use super::functions::*;
 use super::functions::{compute_normal, normalize3_f32, triangle_area};
 use super::types::{StlMesh, StlQualityMetrics, TriangleMesh, WeldedMesh};
+use crate::mesh_quality::functions::weld_vertices as weld_points;
 
 #[cfg(test)]
 mod tests_ext {
@@ -162,33 +163,45 @@ mod tests_ext {
 ///
 /// Returns a [`WeldedMesh`] where vertices closer than `tolerance` are merged
 /// into a single canonical vertex.
+///
+/// The corners of all triangles are visited in order (`v0`, `v1`, `v2` of
+/// triangle 0, then triangle 1, ...).  A corner joins the lowest-indexed
+/// canonical vertex that lies within `tolerance` (Euclidean distance,
+/// inclusive); if there is none it becomes a new canonical vertex.  Canonical
+/// vertices therefore keep their order of first appearance, and a corner is
+/// never merged into a corner that was itself merged away.
+///
+/// With a zero, negative or NaN `tolerance` only corners with identical
+/// coordinates are merged (`-0.0` equals `0.0`).  A corner with a non-finite
+/// coordinate is never merged with anything.
+///
+/// Candidates are found with a uniform grid whose cell size is `tolerance`,
+/// so welding takes expected linear time in the number of corners.  Corner
+/// indices are tracked as `u32` internally; a mesh with more than `u32::MAX`
+/// corners (about 1.4 billion triangles) is returned unwelded, with every
+/// corner kept as its own vertex.
 pub fn weld_vertices(mesh: &StlMesh, tolerance: f32) -> WeldedMesh {
-    let mut unique: Vec<[f32; 3]> = Vec::new();
-    let mut remap: Vec<usize> = Vec::new();
-    let all_verts: Vec<[f32; 3]> = mesh
+    let corners: Vec<[f32; 3]> = mesh
         .triangles
         .iter()
         .flat_map(|t| [t.v0, t.v1, t.v2])
         .collect();
-    for v in &all_verts {
-        let idx = unique.iter().position(|u| {
-            let dx = u[0] - v[0];
-            let dy = u[1] - v[1];
-            let dz = u[2] - v[2];
-            (dx * dx + dy * dy + dz * dz).sqrt() <= tolerance
-        });
-        if let Some(i) = idx {
-            remap.push(i);
-        } else {
-            remap.push(unique.len());
-            unique.push(*v);
-        }
+    if u32::try_from(corners.len()).is_err() {
+        let triangles = (0..mesh.triangles.len())
+            .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
+            .collect();
+        return WeldedMesh {
+            vertices: corners,
+            triangles,
+        };
     }
-    let triangles: Vec<[usize; 3]> = (0..mesh.triangles.len())
-        .map(|i| [remap[i * 3], remap[i * 3 + 1], remap[i * 3 + 2]])
+    let (vertices, remap) = weld_points(&corners, tolerance);
+    let triangles: Vec<[usize; 3]> = remap
+        .chunks_exact(3)
+        .map(|corner| [corner[0] as usize, corner[1] as usize, corner[2] as usize])
         .collect();
     WeldedMesh {
-        vertices: unique,
+        vertices,
         triangles,
     }
 }

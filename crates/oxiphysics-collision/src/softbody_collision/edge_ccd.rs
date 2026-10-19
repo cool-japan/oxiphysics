@@ -8,11 +8,24 @@
 //! Bridson et al. 2002). The root finding, the geometric validation of each root
 //! and the fallback for pairs that only graze the contact shell are provided by
 //! [`ccd_edge_edge_analytic`]; this module adds the mesh-level bookkeeping
-//! (index validation, broad-phase pruning) and the contact normal.
+//! (index validation, broad-phase pruning), the rounding floor of the contact
+//! radius, the rescaling of every pair to a unit-length local frame (the
+//! shared routines use absolute tolerances) and the contact normal.
 
 use super::{add3, cross3, dot3, edge_edge_distance, len3, normalize3, scale3, sub3};
 use crate::deformable_collision::ccd_edge_edge_analytic;
 use crate::soft_body_collision::EdgeCcdResult;
+
+/// Relative floor of the contact radius used to validate a contact.
+///
+/// Two edges that cross exactly are at distance zero only in exact arithmetic:
+/// evaluated at the rounded root time of the coplanarity cubic the distance
+/// comes out around `1e-16` times the magnitude of the coordinates, so a
+/// contact radius of exactly zero would reject the root of every generic
+/// crossing. The radius of a pair is therefore never taken smaller than this
+/// fraction of `1 + max |coordinate|` of its end points. The floor is orders of
+/// magnitude below any physical contact radius, which it leaves unchanged.
+const RADIUS_FLOOR: f64 = 1e-10;
 
 /// An edge whose two end points move linearly over one step.
 #[derive(Clone, Copy)]
@@ -48,11 +61,11 @@ impl MovingEdge {
         add3(scale3(v0, 1.0 - s), scale3(v1, s))
     }
 
-    /// Axis-aligned box enclosing the whole trajectory of the edge, grown by `pad`.
+    /// Axis-aligned box enclosing the whole trajectory of the edge.
     ///
     /// Each end point moves on a straight segment, so the box of the four
     /// positions at `t = 0` and `t = 1` contains the edge at every time.
-    fn swept_bounds(&self, pad: f64) -> ([f64; 3], [f64; 3]) {
+    fn swept_bounds(&self) -> ([f64; 3], [f64; 3]) {
         let mut lo = self.start[0];
         let mut hi = self.start[0];
         for p in self.start.iter().chain(self.end.iter()) {
@@ -61,10 +74,68 @@ impl MovingEdge {
                 *h = h.max(c);
             }
         }
-        (
-            [lo[0] - pad, lo[1] - pad, lo[2] - pad],
-            [hi[0] + pad, hi[1] + pad, hi[2] + pad],
-        )
+        (lo, hi)
+    }
+
+    /// Largest absolute coordinate over the four end point positions.
+    fn magnitude(&self) -> f64 {
+        self.start
+            .iter()
+            .chain(self.end.iter())
+            .flatten()
+            .fold(0.0_f64, |largest, c| largest.max(c.abs()))
+    }
+
+    /// Length of the longer of the two edge vectors (at the start and at the
+    /// end of the step).
+    fn longest_vector(&self) -> f64 {
+        len3(sub3(self.start[1], self.start[0])).max(len3(sub3(self.end[1], self.end[0])))
+    }
+
+    /// The edge with every position mapped to `(position - origin) * inv_scale`.
+    fn rescaled(&self, origin: [f64; 3], inv_scale: f64) -> MovingEdge {
+        let map = |p: [f64; 3]| scale3(sub3(p, origin), inv_scale);
+        MovingEdge {
+            start: [map(self.start[0]), map(self.start[1])],
+            end: [map(self.end[0]), map(self.end[1])],
+        }
+    }
+}
+
+/// A moving edge together with the data the broad phase needs.
+struct PreparedEdge {
+    edge: MovingEdge,
+    /// Lower corner of the box enclosing the whole trajectory.
+    lo: [f64; 3],
+    /// Upper corner of the box enclosing the whole trajectory.
+    hi: [f64; 3],
+    /// Largest absolute coordinate of the end points.
+    magnitude: f64,
+}
+
+impl PreparedEdge {
+    /// Build the edge `(i0, i1)`; `None` if an index is outside `verts0` or `verts1`.
+    fn new(i0: usize, i1: usize, verts0: &[[f64; 3]], verts1: &[[f64; 3]]) -> Option<Self> {
+        let edge = MovingEdge::new(i0, i1, verts0, verts1)?;
+        let (lo, hi) = edge.swept_bounds();
+        Some(PreparedEdge {
+            magnitude: edge.magnitude(),
+            edge,
+            lo,
+            hi,
+        })
+    }
+}
+
+/// Contact radius used to validate the contacts of a pair of edges whose
+/// coordinates are at most `magnitude` in absolute value: `edge_radius`, raised
+/// to the rounding floor (see [`RADIUS_FLOOR`]) when it is smaller. Coordinates
+/// that are not finite leave the radius unchanged.
+fn contact_radius(edge_radius: f64, magnitude: f64) -> f64 {
+    if magnitude.is_finite() {
+        edge_radius.max(RADIUS_FLOOR * (1.0 + magnitude))
+    } else {
+        edge_radius
     }
 }
 
@@ -146,7 +217,11 @@ fn contact_normal(a: &MovingEdge, b: &MovingEdge, toi: f64) -> [f64; 3] {
 ///
 /// Edges with a vertex index outside the position arrays of their mesh are
 /// skipped. The reported `edge_a` / `edge_b` are indices into `edges_a` /
-/// `edges_b`.
+/// `edges_b`. A negative or NaN `edge_radius` can never be reached, so nothing
+/// is reported for it; a radius of zero detects exact crossings (see
+/// [`RADIUS_FLOOR`]). Each pair is evaluated in a local frame whose unit of
+/// length is the longest edge vector of the pair, so the result does not depend
+/// on the units of the mesh.
 pub(super) fn edge_edge_ccd(
     edge_radius: f64,
     edges_a: &[(usize, usize)],
@@ -156,37 +231,55 @@ pub(super) fn edge_edge_ccd(
     verts0_b: &[[f64; 3]],
     verts1_b: &[[f64; 3]],
 ) -> Vec<EdgeCcdResult> {
-    let moving_b: Vec<Option<MovingEdge>> = edges_b
+    if edge_radius.is_nan() || edge_radius < 0.0 {
+        return Vec::new();
+    }
+    let prepared_b: Vec<Option<PreparedEdge>> = edges_b
         .iter()
-        .map(|&(b0, b1)| MovingEdge::new(b0, b1, verts0_b, verts1_b))
+        .map(|&(b0, b1)| PreparedEdge::new(b0, b1, verts0_b, verts1_b))
         .collect();
-    let pad = edge_radius.max(0.0);
     let mut results = Vec::new();
     for (ia, &(a0, a1)) in edges_a.iter().enumerate() {
-        let Some(edge_a) = MovingEdge::new(a0, a1, verts0_a, verts1_a) else {
+        let Some(a) = PreparedEdge::new(a0, a1, verts0_a, verts1_a) else {
             continue;
         };
-        let (lo_a, hi_a) = edge_a.swept_bounds(pad);
-        for (ib, moving) in moving_b.iter().enumerate() {
-            let Some(edge_b) = moving else {
+        for (ib, prepared) in prepared_b.iter().enumerate() {
+            let Some(b) = prepared else {
                 continue;
             };
-            // Broad phase: the swept boxes (grown by the contact radius) must overlap.
-            let (lo_b, hi_b) = edge_b.swept_bounds(0.0);
-            let separated = (0..3).any(|k| lo_a[k] > hi_b[k] || lo_b[k] > hi_a[k]);
+            let radius = contact_radius(edge_radius, a.magnitude.max(b.magnitude));
+            // Broad phase: two edges can only come within `radius` of each other
+            // if their swept boxes, grown by `radius`, overlap.
+            let separated =
+                (0..3).any(|k| a.lo[k] > b.hi[k] + radius || b.lo[k] > a.hi[k] + radius);
             if separated {
                 continue;
             }
+            // Narrow phase in a local frame: the origin is moved to a vertex of
+            // the pair and the longest edge vector becomes the unit of length.
+            // Time of impact and normal do not depend on either, and the
+            // distance and parallelism tolerances of the shared edge-edge
+            // routines are absolute, so they only behave on well-scaled input.
+            let length = a.edge.longest_vector().max(b.edge.longest_vector());
+            let length = if length.is_finite() && length > 0.0 {
+                length
+            } else {
+                1.0
+            };
+            let inv_length = 1.0 / length;
+            let origin = a.edge.start[0];
+            let local_a = a.edge.rescaled(origin, inv_length);
+            let local_b = b.edge.rescaled(origin, inv_length);
             let Some(toi) = ccd_edge_edge_analytic(
-                edge_a.start[0],
-                edge_a.end[0],
-                edge_a.start[1],
-                edge_a.end[1],
-                edge_b.start[0],
-                edge_b.end[0],
-                edge_b.start[1],
-                edge_b.end[1],
-                edge_radius,
+                local_a.start[0],
+                local_a.end[0],
+                local_a.start[1],
+                local_a.end[1],
+                local_b.start[0],
+                local_b.end[0],
+                local_b.start[1],
+                local_b.end[1],
+                radius * inv_length,
             ) else {
                 continue;
             };
@@ -194,7 +287,7 @@ pub(super) fn edge_edge_ccd(
                 edge_a: ia,
                 edge_b: ib,
                 toi,
-                normal: contact_normal(&edge_a, edge_b, toi),
+                normal: contact_normal(&local_a, &local_b, toi),
             });
         }
     }

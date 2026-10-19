@@ -807,7 +807,9 @@ mod tests_extended {
     fn test_coordination_number_at_zero_distance() {
         let cv = CoordinationNumberCV::new(0, vec![1], 1.0, 6, 12, "cn");
         let positions = vec![[0.0; 3]; 2];
-        let _v = cv.value(&positions);
+        // sigma(0) = (1 - 0) / (1 - 0) = 1: a coincident neighbour counts fully.
+        let v = cv.value(&positions);
+        assert!((v - 1.0).abs() < 1e-15, "CN at r = 0 is 1, got {v}");
     }
     #[test]
     fn test_coordination_number_at_large_distance() {
@@ -952,9 +954,9 @@ mod tests_extended {
         }
         // The reference atom carries minus the sum over the neighbours, which
         // the old per-neighbour finite difference scaled by N_nb.
-        for dim in 0..3 {
+        for (dim, reference) in grad[1].iter().enumerate() {
             let neighbours: f64 = [0usize, 2, 3].iter().map(|&j| grad[j][dim]).sum();
-            assert!((grad[1][dim] + neighbours).abs() < 1e-12);
+            assert!((reference + neighbours).abs() < 1e-12);
         }
     }
     #[test]
@@ -1022,7 +1024,7 @@ mod tests_extended {
         // U_1 = U_0 + 2: Bennett's identity returns 2 for every C.
         let du_fwd = vec![2.0f64; 50];
         let du_rev = vec![-2.0f64; 50];
-        for &c_guess in &[0.0, 2.0, 5.0, -3.0] {
+        for &c_guess in &[-5.0, -3.0, 0.0, 2.0, 5.0, 7.0] {
             let df = bar_estimate(&du_fwd, &du_rev, 300.0, c_guess);
             assert!(
                 (df - 2.0).abs() < 1e-9,
@@ -1242,9 +1244,14 @@ pub fn compress_opes_kernels(kernels: &mut Vec<GaussianHill>, compression_thresh
         }
     }
 }
-/// OPES target distribution: log p_tgt(s) = -beta * F(s).
+/// Free energy `F(s) = -k_B*T ln(p_hat(s) / p_hat_max)` of the unbiased system
+/// at each grid point, estimated from OPES kernels (so that
+/// `ln p(s) = -beta * F(s)` up to a constant).
 ///
-/// Returns estimated free energy at each grid point using kernels.
+/// The kernel heights must be the OPES reweighting factors, as deposited by
+/// [`OpesState::update`](crate::metadynamics::OpesState::update); only then
+/// does the kernel sum estimate the unbiased distribution instead of the
+/// biased one.
 pub fn opes_target_free_energy(
     kernels: &[GaussianHill],
     grid: &[f64],

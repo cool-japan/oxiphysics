@@ -229,16 +229,16 @@ Verified: 246 (critical 2, high 49, medium 138, low 57); 89 further raw findings
 - [ ] **F5055** (high, fabrication, easy/small) `medical_viz/types_ext.rs:1014` — IsosurfaceRenderer::marching_cube_triangles groups crossed-edge vertices in triples, no case table
 - [ ] **F5062** (high, fabrication, easy/small) `metaball.rs:415` — Metaball marching cubes chunks crossed edges instead of using tri-table
 - [ ] **F5066** (high, bug, easy/small) `molecular_viz/types.rs:237` — RDF ideal count uses N_A·N_B·ρ, so g(r)→1/N_B
-- [ ] **F5083** (high, perf, medium/medium) `network_visualization.rs:1001` — greedy_modularity recomputes full O(n²·deg) modularity per candidate move
-- [ ] **F5084** (high, bug, medium/small) `network_visualization.rs:1130` — spectral_clustering power-iterates L and gets the largest eigenvector, not the Fiedler vector
-- [ ] **F5085** (high, bug, medium/small) `network_visualization.rs:1139` — approximate_fiedler power-iterates L, converging to largest eigenvector
-- [ ] **F5094** (high, fabrication, easy/small) `neural_rendering.rs:764` — Gaussian3D::eval_density discards covariance, ignores rotation quaternion
-- [ ] **F5097** (high, bug, easy/small) `particle_effects.rs:124` — Fire/Smoke emitters emit zero particles at real frame rates
-- [ ] **F5099** (high, panic, easy/small) `particle_effects.rs:245` — Empty-range random_range panics in emitters and seeding_uniform
-- [ ] **F5104** (high, fabrication, medium/small) `particle_renderer/types.rs:488` — MetaballField::extract_isosurface emits fixed dummy triangle, not marching cubes
-- [ ] **F5129** (high, bug, easy/small) `picking.rs:62` — Ray::from_screen forces view z=-1, wrong direction unless near=1
-- [ ] **F5154** (high, bug, easy/small) `real_time_viz.rs:417` — HiZBuffer::is_occluded tests region MIN depth, culling visible objects
-- [ ] **F5161** (high, bug, medium/small) `scene/types.rs:589` — Shadow-map frustum omits light-view rotation; depth maps outside clip
+- [x] **F5083** (high, perf, medium/medium) `network_visualization.rs:1001` — greedy_modularity recomputes full O(n²·deg) modularity per candidate move
+- [x] **F5084** (high, bug, medium/small) `network_visualization.rs:1130` — spectral_clustering power-iterates L and gets the largest eigenvector, not the Fiedler vector
+- [x] **F5085** (high, bug, medium/small) `network_visualization.rs:1139` — approximate_fiedler power-iterates L, converging to largest eigenvector
+- [x] **F5094** (high, fabrication, easy/small) `neural_rendering.rs:764` — Gaussian3D::eval_density discards covariance, ignores rotation quaternion
+- [x] **F5097** (high, bug, easy/small) `particle_effects.rs:124` — Fire/Smoke emitters emit zero particles at real frame rates
+- [x] **F5099** (high, panic, easy/small) `particle_effects.rs:245` — Empty-range random_range panics in emitters and seeding_uniform
+- [x] **F5104** (high, fabrication, medium/small) `particle_renderer/types.rs:488` — MetaballField::extract_isosurface emits fixed dummy triangle, not marching cubes
+- [x] **F5129** (high, bug, easy/small) `picking.rs:62` — Ray::from_screen forces view z=-1, wrong direction unless near=1
+- [x] **F5154** (high, bug, easy/small) `real_time_viz.rs:417` — HiZBuffer::is_occluded tests region MIN depth, culling visible objects
+- [x] **F5161** (high, bug, medium/small) `scene/types.rs:589` — Shadow-map frustum omits light-view rotation; depth maps outside clip
 - [ ] **F5175** (high, bug, easy/small) `scientific_viz.rs:214` — eigen3_sym flattens eigenvector rows (transposed) and leaves eigenvalues unsorted
 - [ ] **F5178** (high, bug, easy/trivial) `scientific_viz.rs:1021` — classify_fixed_points halves a12 and uses one-sided a22
 - [ ] **F5185** (high, bug, easy/small) `slice_renderer.rs:248` — scalar_to_colormap_slice ignores nu/nv, reshapes to sqrt square

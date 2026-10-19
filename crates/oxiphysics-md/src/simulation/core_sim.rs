@@ -3,7 +3,7 @@
 
 //! Core MD simulation driver (MdSim) and Berendsen thermostat.
 
-use super::config::{Ensemble, KB_REDUCED, MdConfig, MdState};
+use super::config::{Ensemble, KB_REDUCED, MdConfig, MdState, atom_kinetic_energy};
 use super::tracking::KJ_MOL_PER_ANG3_TO_BAR;
 
 // ---------------------------------------------------------------------------
@@ -31,18 +31,19 @@ impl MdSim {
     // Kinetic energy
     // -----------------------------------------------------------------------
 
-    /// Compute kinetic energy (kJ mol⁻¹) from current velocities and masses.
+    /// Compute kinetic energy (kJ mol⁻¹) from current velocities (Å ps⁻¹) and
+    /// masses (amu).
     ///
-    /// KE = ½ Σᵢ mᵢ |vᵢ|²
+    /// KE = ½ Σᵢ mᵢ |vᵢ|² · 0.01
+    ///
+    /// The factor `0.01` converts amu · Å² · ps⁻² to kJ mol⁻¹
+    /// ([`KJMOL_PER_AMU_A2_PS2`](super::KJMOL_PER_AMU_A2_PS2)).
     pub fn compute_kinetic_energy(&self) -> f64 {
         self.state
             .velocities
             .iter()
             .zip(self.state.masses.iter())
-            .map(|(v, &m)| {
-                let v2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
-                0.5 * m * v2
-            })
+            .map(|(v, &m)| atom_kinetic_energy(v, m))
             .sum()
     }
 
@@ -151,12 +152,8 @@ impl MdSim {
         let n = self.state.n_atoms();
 
         // Half-step velocity update: v(t + dt/2) = v(t) + F(t)/(2m) * dt
-        for i in 0..n {
-            let inv_m = 1.0 / self.state.masses[i];
-            for a in 0..3 {
-                self.state.velocities[i][a] += 0.5 * dt * self.state.forces[i][a] * inv_m;
-            }
-        }
+        // (F in kJ mol⁻¹ Å⁻¹, m in amu, v in Å ps⁻¹: the factor 100 is in `velocity_increment`).
+        self.state.kick_velocities(0.5 * dt);
 
         // Full-step position update: x(t + dt) = x(t) + v(t + dt/2) * dt
         for i in 0..n {
@@ -183,12 +180,7 @@ impl MdSim {
         self.state.forces = forces;
 
         // Second half-step velocity update
-        for i in 0..n {
-            let inv_m = 1.0 / self.state.masses[i];
-            for a in 0..3 {
-                self.state.velocities[i][a] += 0.5 * dt * self.state.forces[i][a] * inv_m;
-            }
-        }
+        self.state.kick_velocities(0.5 * dt);
         virial
     }
 

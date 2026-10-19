@@ -796,55 +796,105 @@ pub struct IncompleteCholesky {
 impl IncompleteCholesky {
     /// Compute the IC(0) factorization of a symmetric positive-definite matrix.
     ///
-    /// Only the lower-triangular part of `a` is used.
+    /// Only the lower-triangular part of `a` is used.  `L` has exactly the
+    /// sparsity pattern of that lower triangle (no fill-in; duplicate entries are
+    /// summed and entries that sum to zero are dropped) with the diagonal stored
+    /// last in every row, and satisfies the IC(0) condition
+    /// `(L Lᵀ)_ij = a_ij` for every stored `(i, j)` of the pattern.  For a
+    /// matrix whose Cholesky factor has no fill (a tridiagonal matrix, for
+    /// example) the factorization is exact.
+    ///
+    /// The factorization runs row by row, `L_ij = (a_ij - Σ_k L_ik L_jk) / L_jj`
+    /// for the pattern columns `j` in ascending order and
+    /// `L_ii = sqrt(a_ii - Σ_k L_ik²)`, with the sparse row products evaluated
+    /// through a dense work vector of length `n`.  Time and memory are
+    /// proportional to the number of stored entries; no dense `n × n` matrix is
+    /// formed.
+    ///
+    /// Returns `None` when a pivot `a_ii - Σ_k L_ik²` is not positive and finite
+    /// (the matrix is not positive definite, has a missing diagonal entry, or the
+    /// incomplete factorization breaks down).
+    ///
+    /// # Panics
+    /// Panics if `a` is not square.
     pub fn factor(a: &CsrMatrix) -> Option<Self> {
-        let n = a.nrows;
         assert_eq!(a.nrows, a.ncols, "IC(0) requires square matrix");
-        let mut lval = vec![vec![0.0f64; n]; n];
-        for (r, lval_row) in lval.iter_mut().enumerate() {
-            for k in a.row_ptr[r]..a.row_ptr[r + 1] {
-                let c = a.col_idx[k];
-                if c <= r {
-                    lval_row[c] = a.values[k];
+        let n = a.nrows;
+        let mut row_ptr = Vec::with_capacity(n + 1);
+        let mut col_idx: Vec<usize> = Vec::with_capacity(a.values.len());
+        let mut values: Vec<f64> = Vec::with_capacity(a.values.len());
+        row_ptr.push(0usize);
+        // `l_row[k]` holds L_ik of the row being built (0 outside its pattern).
+        let mut l_row = vec![0.0f64; n];
+        let mut entries: Vec<(usize, f64)> = Vec::new();
+        for i in 0..n {
+            // Lower triangle of row i of A, sorted by column with duplicates summed.
+            entries.clear();
+            for k in a.row_ptr[i]..a.row_ptr[i + 1] {
+                let j = a.col_idx[k];
+                if j <= i {
+                    entries.push((j, a.values[k]));
                 }
             }
-        }
-        for j in 0..n {
-            let sum_sq: f64 = lval[j][..j].iter().map(|&v| v * v).sum();
-            let d = lval[j][j] - sum_sq;
-            if d <= 0.0 {
+            entries.sort_by_key(|&(j, _)| j);
+            let row_start = col_idx.len();
+            let mut diagonal = 0.0f64;
+            let mut position = 0;
+            while position < entries.len() {
+                let j = entries[position].0;
+                let mut a_ij = 0.0f64;
+                while position < entries.len() && entries[position].0 == j {
+                    a_ij += entries[position].1;
+                    position += 1;
+                }
+                if j == i {
+                    diagonal = a_ij;
+                } else if a_ij != 0.0 {
+                    // Σ_k L_ik L_jk over the columns k < j shared by rows i and j.
+                    let (start, end) = (row_ptr[j], row_ptr[j + 1] - 1);
+                    let dot: f64 = col_idx[start..end]
+                        .iter()
+                        .zip(values[start..end].iter())
+                        .map(|(&k, &l_jk)| l_jk * l_row[k])
+                        .sum();
+                    let l_ij = (a_ij - dot) / values[end];
+                    l_row[j] = l_ij;
+                    col_idx.push(j);
+                    values.push(l_ij);
+                }
+            }
+            let sum_sq: f64 = values[row_start..].iter().map(|&v| v * v).sum();
+            let pivot = diagonal - sum_sq;
+            if !(pivot > 0.0 && pivot.is_finite()) {
                 return None;
             }
-            lval[j][j] = d.sqrt();
-            let ljj = lval[j][j];
-            for i in (j + 1)..n {
-                if lval[i][j].abs() < 1e-30 {
-                    continue;
-                }
-                let dot: f64 = lval[i][..j]
-                    .iter()
-                    .zip(lval[j][..j].iter())
-                    .map(|(&a, &b)| a * b)
-                    .sum();
-                lval[i][j] = (lval[i][j] - dot) / ljj;
+            for &j in &col_idx[row_start..] {
+                l_row[j] = 0.0;
             }
+            col_idx.push(i);
+            values.push(pivot.sqrt());
+            row_ptr.push(col_idx.len());
         }
-        let mut rows = Vec::new();
-        let mut cols = Vec::new();
-        let mut vals = Vec::new();
-        for (i, lrow) in lval.iter().enumerate() {
-            for (j, &v) in lrow.iter().enumerate().take(i + 1) {
-                if v.abs() > 1e-30 {
-                    rows.push(i);
-                    cols.push(j);
-                    vals.push(v);
-                }
-            }
-        }
-        let l = CsrMatrix::from_triplets(n, n, &rows, &cols, &vals);
+        let l = CsrMatrix {
+            nrows: n,
+            ncols: n,
+            row_ptr,
+            col_idx,
+            values,
+        };
         Some(IncompleteCholesky { l })
     }
-    /// Apply L^{-1} (forward substitution).
+    /// Diagonal entry `L_ii` of row `i` of the factor (0 if it is not stored).
+    fn diagonal_entry(&self, i: usize) -> f64 {
+        (self.l.row_ptr[i]..self.l.row_ptr[i + 1])
+            .filter(|&k| self.l.col_idx[k] == i)
+            .map(|k| self.l.values[k])
+            .sum()
+    }
+    /// Apply L^{-1} (forward substitution): solves `L y = b`.
+    ///
+    /// A (numerically) zero diagonal entry gives a zero component, as for a
+    /// pseudo-inverse.
     pub fn solve_lower(&self, b: &[f64]) -> Vec<f64> {
         let n = b.len();
         let mut x = vec![0.0f64; n];
@@ -856,45 +906,41 @@ impl IncompleteCholesky {
                     s -= self.l.values[k] * x[j];
                 }
             }
-            let diag = self.l.get(i, i);
+            let diag = self.diagonal_entry(i);
             x[i] = if diag.abs() < 1e-30 { 0.0 } else { s / diag };
         }
         x
     }
-    /// Apply L^T^{-1} (backward substitution).
+    /// Apply L^T^{-1} (backward substitution): solves `Lᵀ x = b`.
+    ///
+    /// `L` is stored by rows, i.e. `Lᵀ` by columns, so the substitution runs in
+    /// the column-oriented form: once `x_i = r_i / L_ii` is known, the term
+    /// `L_ij x_i` of every row `j < i` of `Lᵀ x = b` is subtracted from the
+    /// remaining right-hand side.  The cost is proportional to the number of
+    /// stored entries.  A (numerically) zero diagonal entry gives a zero
+    /// component, as for a pseudo-inverse.
     pub fn solve_upper(&self, b: &[f64]) -> Vec<f64> {
         let n = b.len();
-        let mut x = vec![0.0f64; n];
+        let mut x = b.to_vec();
         for i in (0..n).rev() {
-            let mut s = b[i];
+            let diag = self.diagonal_entry(i);
+            let xi = if diag.abs() < 1e-30 { 0.0 } else { x[i] / diag };
+            x[i] = xi;
             for k in self.l.row_ptr[i]..self.l.row_ptr[i + 1] {
                 let j = self.l.col_idx[k];
                 if j < i {
-                    s -= self.l.values[k] * x[j];
+                    x[j] -= self.l.values[k] * xi;
                 }
             }
-            let diag = self.l.get(i, i);
-            x[i] = if diag.abs() < 1e-30 { 0.0 } else { s / diag };
         }
         x
     }
     /// Apply the IC preconditioner: solve L L^T x = b.
+    ///
+    /// Forward substitution with `L` followed by backward substitution with
+    /// `Lᵀ`; both sweeps touch only the stored entries of `L`.
     pub fn apply(&self, b: &[f64]) -> Vec<f64> {
-        let y = self.solve_lower(b);
-        let n = b.len();
-        let mut x = vec![0.0f64; n];
-        for i in (0..n).rev() {
-            let mut s = y[i];
-            for (row, &xrow) in x.iter().enumerate().take(n).skip(i + 1) {
-                let val = self.l.get(row, i);
-                if val.abs() > 1e-30 {
-                    s -= val * xrow;
-                }
-            }
-            let diag = self.l.get(i, i);
-            x[i] = if diag.abs() < 1e-30 { 0.0 } else { s / diag };
-        }
-        x
+        self.solve_upper(&self.solve_lower(b))
     }
 }
 /// Symmetric SOR (SSOR) preconditioner.
@@ -1249,5 +1295,253 @@ mod tests {
             Err(PhysicsError::InvalidInput { .. })
         ));
         assert!(SparseLu::try_ilu0(&laplacian_2d(4, 4, 1.0)).is_ok());
+    }
+
+    // ── IncompleteCholesky ────────────────────────────────────────────────
+
+    /// Dense product `L Lᵀ` of an incomplete Cholesky factor.
+    fn dense_llt(ic: &IncompleteCholesky) -> Vec<Vec<f64>> {
+        let l = ic.l.to_dense();
+        l.iter()
+            .map(|row_i| {
+                l.iter()
+                    .map(|row_j| row_i.iter().zip(row_j.iter()).map(|(a, b)| a * b).sum())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn max_abs_difference(a: &[f64], b: &[f64]) -> f64 {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f64::max)
+    }
+
+    /// Right-hand side with both signs and several magnitudes.
+    fn test_rhs(n: usize) -> Vec<f64> {
+        (0..n)
+            .map(|i| ((i * 7) % 11) as f64 - 4.0 + 0.25 * (i % 3) as f64)
+            .collect()
+    }
+
+    /// Conjugate gradients with the preconditioner `precondition`; returns the
+    /// solution and the number of iterations to reach a relative residual of 1e-10.
+    fn preconditioned_cg(
+        a: &CsrMatrix,
+        b: &[f64],
+        precondition: impl Fn(&[f64]) -> Vec<f64>,
+    ) -> (Vec<f64>, usize) {
+        let norm = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let dot = |u: &[f64], v: &[f64]| u.iter().zip(v.iter()).map(|(x, y)| x * y).sum::<f64>();
+        let mut x = vec![0.0; b.len()];
+        let mut r = b.to_vec();
+        let mut z = precondition(&r);
+        let mut p = z.clone();
+        let mut rz = dot(&r, &z);
+        for iteration in 0..2000 {
+            if norm(&r) <= 1e-10 * norm(b) {
+                return (x, iteration);
+            }
+            let ap = a.matvec(&p);
+            let alpha = rz / dot(&p, &ap);
+            for k in 0..x.len() {
+                x[k] += alpha * p[k];
+                r[k] -= alpha * ap[k];
+            }
+            z = precondition(&r);
+            let rz_new = dot(&r, &z);
+            let beta = rz_new / rz;
+            rz = rz_new;
+            for k in 0..p.len() {
+                p[k] = z[k] + beta * p[k];
+            }
+        }
+        (x, 2000)
+    }
+
+    #[test]
+    fn ic0_of_a_tridiagonal_matrix_is_the_exact_cholesky_factorization() {
+        let a = laplacian_1d(50, 1.0);
+        let ic = IncompleteCholesky::factor(&a).expect("SPD matrix");
+        let product = dense_llt(&ic);
+        let dense_a = a.to_dense();
+        for (row_p, row_a) in product.iter().zip(dense_a.iter()) {
+            assert!(max_abs_difference(row_p, row_a) < 1e-12);
+        }
+        // apply() is therefore A^{-1}: A * apply(b) = b.
+        let b = test_rhs(50);
+        let x = ic.apply(&b);
+        assert!(relative_residual(&a, &x, &b) < 1e-10);
+        let ax = a.matvec(&x);
+        assert!(max_abs_difference(&ax, &b) < 1e-10);
+    }
+
+    #[test]
+    fn solve_upper_solves_the_transposed_system() {
+        // Regression: solve_upper subtracted L_ij x_j for j < i from a zero
+        // vector, so it returned b_i / L_ii and never solved L^T x = b.
+        for a in [laplacian_1d(30, 0.5), laplacian_2d(6, 5, 0.7)] {
+            let n = a.nrows;
+            let ic = IncompleteCholesky::factor(&a).expect("SPD matrix");
+            let b = test_rhs(n);
+            let x = ic.solve_upper(&b);
+            let lt_x = ic.l.transpose().matvec(&x);
+            assert!(max_abs_difference(&lt_x, &b) < 1e-11, "L^T x != b");
+            let diagonal_only: Vec<f64> = b
+                .iter()
+                .enumerate()
+                .map(|(i, bi)| bi / ic.l.get(i, i))
+                .collect();
+            assert!(
+                max_abs_difference(&x, &diagonal_only) > 1e-3,
+                "solve_upper must not reduce to a diagonal scaling"
+            );
+            let y = ic.solve_lower(&b);
+            let l_y = ic.l.matvec(&y);
+            assert!(max_abs_difference(&l_y, &b) < 1e-11, "L y != b");
+            // apply() = L^{-T} L^{-1}: L L^T (apply b) = b.
+            let z = ic.apply(&b);
+            let l_lt_z = ic.l.matvec(&ic.l.transpose().matvec(&z));
+            assert!(max_abs_difference(&l_lt_z, &b) < 1e-10, "L L^T z != b");
+        }
+    }
+
+    #[test]
+    fn ic0_satisfies_the_defining_condition_on_the_pattern_without_fill() {
+        for (nx, ny) in [(1, 1), (3, 4), (6, 5), (9, 9)] {
+            let a = laplacian_2d(nx, ny, 1.0);
+            let n = a.nrows;
+            let ic = IncompleteCholesky::factor(&a).expect("SPD matrix");
+            // The factor has exactly the pattern of the lower triangle of A,
+            // columns ascending with the diagonal last.
+            assert_eq!(ic.l.nnz(), (a.nnz() + n) / 2, "grid {nx} x {ny}");
+            for i in 0..n {
+                let columns = &ic.l.col_idx[ic.l.row_ptr[i]..ic.l.row_ptr[i + 1]];
+                assert_eq!(columns.last(), Some(&i));
+                assert!(columns.windows(2).all(|w| w[0] < w[1]));
+                assert!(ic.l.get(i, i) > 0.0);
+            }
+            let product = dense_llt(&ic);
+            let dense_a = a.to_dense();
+            let mut dropped_fill = 0.0f64;
+            for i in 0..n {
+                for j in 0..n {
+                    let stored = (a.row_ptr[i]..a.row_ptr[i + 1]).any(|k| a.col_idx[k] == j);
+                    if stored {
+                        assert!(
+                            (product[i][j] - dense_a[i][j]).abs() < 1e-12,
+                            "(L L^T)[{i}][{j}] = {}, a = {}",
+                            product[i][j],
+                            dense_a[i][j]
+                        );
+                    } else {
+                        dropped_fill = dropped_fill.max(product[i][j].abs());
+                    }
+                }
+            }
+            if nx >= 3 && ny >= 3 {
+                // IC(0) is only approximate for a 2-D stencil: the dropped fill is real.
+                assert!(dropped_fill > 0.01, "grid {nx} x {ny}: fill {dropped_fill}");
+            }
+        }
+    }
+
+    #[test]
+    fn ic0_preconditioned_cg_needs_far_fewer_iterations_than_plain_cg() {
+        let a = laplacian_2d(24, 24, 1.0);
+        let ic = IncompleteCholesky::factor(&a).expect("SPD matrix");
+        let b = test_rhs(a.nrows);
+        let (x_plain, plain) = preconditioned_cg(&a, &b, |r| r.to_vec());
+        let (x_ic, with_ic) = preconditioned_cg(&a, &b, |r| ic.apply(r));
+        assert!(relative_residual(&a, &x_plain, &b) < 1e-9);
+        assert!(relative_residual(&a, &x_ic, &b) < 1e-9);
+        assert!(
+            with_ic * 2 < plain,
+            "IC(0)-PCG {with_ic} vs CG {plain} iterations"
+        );
+    }
+
+    #[test]
+    fn ic0_of_a_large_tridiagonal_matrix_needs_no_dense_storage() {
+        // A dense n x n work array (the old implementation) would need 80 GB here.
+        let n = 100_000;
+        let a = laplacian_1d(n, 1.0);
+        let ic = IncompleteCholesky::factor(&a).expect("SPD matrix");
+        assert_eq!(ic.l.nnz(), 2 * n - 1);
+        let b = test_rhs(n);
+        let x = ic.apply(&b);
+        // The matrix has condition number ~4e9, so the plain relative residual is
+        // only ~1e-7 even for an exact Cholesky solve (LAPACK gives 6e-8); the
+        // normwise backward error ||b - A x|| / (||A|| ||x|| + ||b||) is ~1e-16.
+        let ax = a.matvec(&x);
+        let max_norm = |v: &[f64]| v.iter().fold(0.0f64, |m, e| m.max(e.abs()));
+        let residual: Vec<f64> = b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect();
+        let backward_error = max_norm(&residual) / (4.0 * max_norm(&x) + max_norm(&b));
+        assert!(backward_error < 1e-14, "backward error {backward_error}");
+    }
+
+    #[test]
+    fn ic0_uses_only_the_lower_triangle_and_sums_duplicate_entries() {
+        let clean = laplacian_1d(5, 1.0);
+        // Same lower triangle, but: every diagonal entry split in two, columns
+        // listed in descending order, and unrelated junk in the upper triangle.
+        let mut row_ptr = vec![0usize];
+        let mut col_idx = Vec::new();
+        let mut values = Vec::new();
+        for i in 0..5usize {
+            col_idx.push(i);
+            values.push(0.75);
+            if i > 0 {
+                col_idx.push(i - 1);
+                values.push(-1.0);
+            }
+            col_idx.push(i);
+            values.push(1.25);
+            if i + 2 < 5 {
+                col_idx.push(i + 2);
+                values.push(123.0);
+            }
+            row_ptr.push(col_idx.len());
+        }
+        let messy = CsrMatrix {
+            nrows: 5,
+            ncols: 5,
+            row_ptr,
+            col_idx,
+            values,
+        };
+        let expected = IncompleteCholesky::factor(&clean).expect("SPD matrix");
+        let ic = IncompleteCholesky::factor(&messy).expect("SPD lower triangle");
+        assert_eq!(ic.l.nnz(), expected.l.nnz());
+        assert!(max_abs_difference(&ic.l.values, &expected.l.values) < 1e-15);
+        assert_eq!(ic.l.col_idx, expected.l.col_idx);
+        assert_eq!(ic.l.row_ptr, expected.l.row_ptr);
+    }
+
+    #[test]
+    fn ic0_reports_breakdown_for_indefinite_or_degenerate_matrices() {
+        // [[1, 2], [2, 1]] is indefinite: the second pivot is 1 - 4 < 0.
+        let indefinite =
+            CsrMatrix::from_triplets(2, 2, &[0, 0, 1, 1], &[0, 1, 0, 1], &[1.0, 2.0, 2.0, 1.0]);
+        assert!(IncompleteCholesky::factor(&indefinite).is_none());
+        // Missing diagonal entry in row 1.
+        let missing = CsrMatrix::from_triplets(2, 2, &[0, 1], &[0, 0], &[4.0, 1.0]);
+        assert!(IncompleteCholesky::factor(&missing).is_none());
+        // Non-finite entries.
+        let nan = CsrMatrix::from_triplets(1, 1, &[0], &[0], &[f64::NAN]);
+        assert!(IncompleteCholesky::factor(&nan).is_none());
+        let infinite = CsrMatrix::from_triplets(1, 1, &[0], &[0], &[f64::INFINITY]);
+        assert!(IncompleteCholesky::factor(&infinite).is_none());
+        // The empty and the identity matrix factor trivially.
+        let empty = IncompleteCholesky::factor(&CsrMatrix::new(0, 0)).expect("empty matrix");
+        assert_eq!(empty.l.nnz(), 0);
+        assert!(empty.apply(&[]).is_empty());
+        let identity = IncompleteCholesky::factor(&identity_csr(4)).expect("identity");
+        assert_eq!(identity.l.values, vec![1.0; 4]);
+        assert_eq!(
+            identity.apply(&[1.0, -2.0, 3.0, 0.5]),
+            vec![1.0, -2.0, 3.0, 0.5]
+        );
     }
 }

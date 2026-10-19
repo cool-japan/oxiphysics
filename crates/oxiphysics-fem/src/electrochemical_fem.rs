@@ -25,6 +25,8 @@ const FARADAY: f64 = 96485.332;
 const R_GAS: f64 = 8.314462;
 /// Vacuum permittivity (F/m).
 const EPSILON_0: f64 = 8.854187817e-12;
+/// Electrons transferred per O₂ molecule in the oxygen reduction reaction.
+const ORR_ELECTRONS: f64 = 4.0;
 
 // ============================================================================
 // Nernst-Planck FEM
@@ -133,31 +135,72 @@ impl NernstPlanckFem {
         [[c, -c], [-c, c]]
     }
 
-    /// Compute element migration matrix contribution (upwind finite element, 1-D).
+    /// Compute the element drift (migration + convection) matrix (1-D, linear elements).
     ///
-    /// Migration term: -(z F D)/(RT) * ∂(c ∂φ/∂x)/∂x
+    /// The Nernst-Planck flux J = −D ∂c/∂x + v c with drift velocity
+    /// v = −(z D / V_T) ∂φ/∂x + u (V_T = RT/F) is discretised in conservative
+    /// (integrated-by-parts) form, ∫ w c_t − ∫ w' (v c − D_art c'), so that the
+    /// natural boundary condition is zero *total* flux and the assembled drift
+    /// operator has zero column sums (exact mass conservation).
+    ///
+    /// The returned matrix is the element contribution
+    /// `v/2 · [[1, 1], [−1, −1]] + κ/h · [[1, −1], [−1, 1]]`, where the
+    /// artificial diffusivity κ = |v| h α / 2 uses the Il'in–Allen–Southwell
+    /// optimal weight α = coth|Pe| − 1/|Pe|, Pe = v h / (2 D).  Together with the
+    /// physical diffusion matrix this is the Scharfetter–Gummel scheme, whose
+    /// zero-flux steady state reproduces c ∝ exp(−z φ / V_T) exactly at the nodes.
+    ///
+    /// `elem_idx` selects the element (nodes `elem_idx`, `elem_idx + 1`) whose
+    /// nodal fluid velocities are averaged into the convective part of v.
     pub fn element_migration_matrix(
         &self,
         species_idx: usize,
+        elem_idx: usize,
         h_elem: f64,
         dphi_dx: f64,
     ) -> [[f64; 2]; 2] {
         let sp = &self.species[species_idx];
         let vt = self.thermal_voltage();
-        let mu = sp.diffusivity * sp.charge as f64 / vt; // mobility * RT/F factor
-        let a = mu * dphi_dx; // advection speed
-        // Upwind: full upwinding for stability
-        let peclet = a * h_elem / (2.0 * sp.diffusivity + 1e-30);
-        let alpha = peclet.tanh() / peclet.abs().max(1e-30) * peclet.signum();
-        let kappa = a * h_elem / 2.0 * alpha;
-        let base = a / 2.0;
-        [
-            [-base + kappa / h_elem, base - kappa / h_elem],
-            [-base - kappa / h_elem, base + kappa / h_elem],
-        ]
+        // Electrophoretic mobility times F/RT: z D / V_T  (m²/(V·s)).
+        let mobility = sp.diffusivity * sp.charge as f64 / vt;
+        let u_left = self.velocity.get(elem_idx).copied().unwrap_or(0.0);
+        let u_right = self.velocity.get(elem_idx + 1).copied().unwrap_or(u_left);
+        let v = -mobility * dphi_dx + 0.5 * (u_left + u_right);
+        let kappa = 0.5 * v.abs() * h_elem * Self::optimal_upwind_weight(v, h_elem, sp.diffusivity);
+        let base = 0.5 * v;
+        let k = kappa / h_elem;
+        [[base + k, base - k], [-base - k, -base + k]]
     }
 
-    /// Assemble global stiffness matrix for species `species_idx` (tridiagonal, 1-D).
+    /// Il'in–Allen–Southwell optimal upwind weight α = coth|Pe| − 1/|Pe|.
+    ///
+    /// Pe = v h / (2 D) is the element Péclet number.  α → |Pe|/3 as Pe → 0
+    /// (pure Galerkin) and α → 1 as |Pe| → ∞ (full upwinding).
+    fn optimal_upwind_weight(v: f64, h_elem: f64, diffusivity: f64) -> f64 {
+        let num = v.abs() * h_elem;
+        if num == 0.0 {
+            return 0.0;
+        }
+        let den = 2.0 * diffusivity.abs();
+        if den <= num * 1e-12 {
+            // Diffusion-free limit: full upwinding.
+            return 1.0;
+        }
+        let pe = num / den;
+        if pe < 1e-3 {
+            // Series coth(x) − 1/x = x/3 − x³/45 + O(x⁵).
+            pe / 3.0 - pe.powi(3) / 45.0
+        } else {
+            1.0 / pe.tanh() - 1.0 / pe
+        }
+    }
+
+    /// Assemble global system matrix for species `species_idx` (tridiagonal, 1-D).
+    ///
+    /// The matrix is M/dt + K_diff + K_drift with the consistent mass matrix
+    /// M assembled element by element (matching [`Self::assemble_species_rhs`]).
+    /// No boundary rows are modified: the natural boundary condition is zero
+    /// total (diffusive + migrative + convective) flux at both ends.
     ///
     /// Returns (lower, diag, upper) diagonal arrays for a tridiagonal system.
     pub fn assemble_species_matrix(&self, species_idx: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
@@ -167,26 +210,18 @@ impl NernstPlanckFem {
         let mut lower = vec![0.0; n];
         let mut diag = vec![0.0; n];
         let mut upper = vec![0.0; n];
-        // Time derivative mass matrix: M/dt
+        // Consistent mass matrix / dt, assembled per element: h/6 [[2, 1], [1, 2]].
         let mass_c = h / 6.0 / self.dt;
-        for i in 0..n {
-            diag[i] += 2.0 * mass_c;
-            if i + 1 < n {
-                upper[i] += mass_c;
-                lower[i + 1] += mass_c;
-            }
-        }
-        // Diffusion stiffness
-        for i in 0..n - 1 {
-            let phi_l = self.potential[i];
-            let phi_r = self.potential[i + 1];
+        for e in 0..n - 1 {
+            let phi_l = self.potential[e];
+            let phi_r = self.potential[e + 1];
             let dphi_dx = (phi_r - phi_l) / h;
             let dm = self.element_diffusion_matrix(sp.diffusivity, h);
-            let mm = self.element_migration_matrix(species_idx, h, dphi_dx);
-            diag[i] += dm[0][0] + mm[0][0];
-            upper[i] += dm[0][1] + mm[0][1];
-            lower[i + 1] += dm[1][0] + mm[1][0];
-            diag[i + 1] += dm[1][1] + mm[1][1];
+            let mm = self.element_migration_matrix(species_idx, e, h, dphi_dx);
+            diag[e] += 2.0 * mass_c + dm[0][0] + mm[0][0];
+            upper[e] += mass_c + dm[0][1] + mm[0][1];
+            lower[e + 1] += mass_c + dm[1][0] + mm[1][0];
+            diag[e + 1] += 2.0 * mass_c + dm[1][1] + mm[1][1];
         }
         (lower, diag, upper)
     }
@@ -551,274 +586,12 @@ impl ButlerVolmerFem {
 }
 
 // ============================================================================
-// Battery FEM — P2D / DFN Model
+// Battery FEM — P2D / DFN Model (see `battery.rs`)
 // ============================================================================
 
-/// Domain type for the DFN model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DfnDomain {
-    /// Negative electrode (anode).
-    NegativeElectrode,
-    /// Separator.
-    Separator,
-    /// Positive electrode (cathode).
-    PositiveElectrode,
-}
+mod battery;
 
-/// Parameters for one electrode domain in the P2D model.
-#[derive(Debug, Clone)]
-pub struct ElectrodeDomain {
-    /// Domain type.
-    pub domain: DfnDomain,
-    /// Thickness (m).
-    pub thickness: f64,
-    /// Number of macro-scale (x-direction) nodes.
-    pub n_macro: usize,
-    /// Number of micro-scale (r-direction) nodes in each particle.
-    pub n_micro: usize,
-    /// Solid-phase Li diffusivity D_s (m²/s).
-    pub diffusivity_solid: f64,
-    /// Maximum solid concentration c_s_max (mol/m³).
-    pub c_solid_max: f64,
-    /// Particle radius r_p (m).
-    pub particle_radius: f64,
-    /// Electrode porosity ε_l.
-    pub porosity: f64,
-    /// Bruggeman exponent p.
-    pub bruggeman: f64,
-    /// Solid-phase conductivity σ (S/m).
-    pub sigma_solid: f64,
-    /// Exchange current density j₀_ref (A/m²) at c_s_max/2.
-    pub j0_ref: f64,
-}
-
-impl ElectrodeDomain {
-    /// Create a default negative electrode (graphite) parameter set.
-    pub fn default_negative() -> Self {
-        Self {
-            domain: DfnDomain::NegativeElectrode,
-            thickness: 100e-6,
-            n_macro: 10,
-            n_micro: 5,
-            diffusivity_solid: 3.9e-14,
-            c_solid_max: 31370.0,
-            particle_radius: 2.0e-6,
-            porosity: 0.3,
-            bruggeman: 1.5,
-            sigma_solid: 100.0,
-            j0_ref: 1.0,
-        }
-    }
-
-    /// Create a default positive electrode (LiCoO₂) parameter set.
-    pub fn default_positive() -> Self {
-        Self {
-            domain: DfnDomain::PositiveElectrode,
-            thickness: 80e-6,
-            n_macro: 10,
-            n_micro: 5,
-            diffusivity_solid: 1.0e-14,
-            c_solid_max: 51218.0,
-            particle_radius: 3.0e-6,
-            porosity: 0.3,
-            bruggeman: 1.5,
-            sigma_solid: 3.8,
-            j0_ref: 1.0,
-        }
-    }
-
-    /// Effective electrolyte diffusivity D_e_eff = D_e * ε^p (m²/s).
-    pub fn effective_electrolyte_diffusivity(&self, d_electrolyte: f64) -> f64 {
-        d_electrolyte * self.porosity.powf(self.bruggeman)
-    }
-
-    /// Effective electrolyte conductivity κ_eff = κ * ε^p (S/m).
-    pub fn effective_conductivity(&self, kappa: f64) -> f64 {
-        kappa * self.porosity.powf(self.bruggeman)
-    }
-}
-
-/// Pseudo-2D (P2D) Doyle-Fuller-Newman lithium-ion battery FEM model.
-///
-/// Implements the DFN model with:
-/// - Macro-scale 1-D along cell thickness (x direction)
-/// - Micro-scale 1-D radial diffusion inside spherical particles (r direction)
-/// - Butler-Volmer electrode kinetics
-/// - Electrolyte transport (Nernst-Planck)
-#[derive(Debug, Clone)]
-pub struct BatteryFem {
-    /// Negative electrode parameters.
-    pub neg: ElectrodeDomain,
-    /// Positive electrode parameters.
-    pub pos: ElectrodeDomain,
-    /// Separator thickness (m).
-    pub separator_thickness: f64,
-    /// Number of nodes in separator.
-    pub n_sep: usize,
-    /// Electrolyte diffusivity D_e (m²/s).
-    pub d_electrolyte: f64,
-    /// Electrolyte conductivity κ (S/m).
-    pub kappa_electrolyte: f64,
-    /// Li⁺ transference number t₊.
-    pub transference: f64,
-    /// Temperature (K).
-    pub temperature: f64,
-    /// Applied current density (A/m²), positive = discharge.
-    pub applied_current: f64,
-    /// Solid concentration: `c_solid[domain][x_node][r_node]`.
-    pub c_solid: Vec<Vec<Vec<f64>>>,
-    /// Electrolyte concentration along x (mol/m³).
-    pub c_electrolyte: Vec<f64>,
-    /// Solid-phase potential along x in electrode domains (V).
-    pub phi_solid: Vec<Vec<f64>>,
-    /// Electrolyte potential along x (V).
-    pub phi_electrolyte: Vec<f64>,
-    /// Internal (ohmic) resistance of the cell (Ω).
-    ///
-    /// Terminal voltage = OCV − `internal_resistance` × `applied_current`.
-    pub internal_resistance: f64,
-    /// Current time (s).
-    pub time: f64,
-    /// Time step (s).
-    pub dt: f64,
-}
-
-impl BatteryFem {
-    /// Construct a new P2D/DFN battery FEM model with default parameters.
-    pub fn new(applied_current: f64, temperature: f64, dt: f64) -> Self {
-        let neg = ElectrodeDomain::default_negative();
-        let pos = ElectrodeDomain::default_positive();
-        let n_sep = 5_usize;
-        let n_total = neg.n_macro + n_sep + pos.n_macro;
-        // Initialize solid concentration at 50% SOC in both electrodes
-        let c_solid = vec![
-            vec![vec![neg.c_solid_max * 0.5; neg.n_micro]; neg.n_macro],
-            vec![vec![pos.c_solid_max * 0.8; pos.n_micro]; pos.n_macro],
-        ];
-        Self {
-            neg,
-            pos,
-            separator_thickness: 25e-6,
-            n_sep,
-            d_electrolyte: 2.7e-10,
-            kappa_electrolyte: 1.0,
-            transference: 0.363,
-            temperature,
-            applied_current,
-            c_solid,
-            c_electrolyte: vec![1000.0; n_total],
-            phi_solid: vec![vec![0.0; 10], vec![4.2; 10]],
-            phi_electrolyte: vec![0.0; n_total],
-            internal_resistance: 0.0,
-            time: 0.0,
-            dt,
-        }
-    }
-
-    /// Compute total number of macro-scale nodes.
-    pub fn n_total_nodes(&self) -> usize {
-        self.neg.n_macro + self.n_sep + self.pos.n_macro
-    }
-
-    /// Compute state-of-charge (SOC) of negative electrode (volume-averaged).
-    pub fn soc_negative(&self) -> f64 {
-        let c_avg: f64 = self.c_solid[0]
-            .iter()
-            .map(|particle| particle.iter().sum::<f64>() / particle.len() as f64)
-            .sum::<f64>()
-            / self.neg.n_macro as f64;
-        c_avg / self.neg.c_solid_max
-    }
-
-    /// Compute state-of-charge (SOC) of positive electrode (volume-averaged).
-    pub fn soc_positive(&self) -> f64 {
-        let c_avg: f64 = self.c_solid[1]
-            .iter()
-            .map(|particle| particle.iter().sum::<f64>() / particle.len() as f64)
-            .sum::<f64>()
-            / self.pos.n_macro as f64;
-        c_avg / self.pos.c_solid_max
-    }
-
-    /// Compute cell terminal voltage (V).
-    ///
-    /// V_cell = OCP_pos − OCP_neg − I·R_int
-    ///
-    /// where `I` = `applied_current` (A) and `R_int` = `internal_resistance` (Ω).
-    pub fn terminal_voltage(&self) -> f64 {
-        let ocp_pos = ButlerVolmerFem::ocp_licoo2(self.soc_positive());
-        let ocp_neg = ButlerVolmerFem::ocp_graphite(self.soc_negative());
-        let ir_drop = self.applied_current * self.internal_resistance;
-        ocp_pos - ocp_neg - ir_drop
-    }
-
-    /// Advance solid-phase diffusion in spherical particles by one time step.
-    ///
-    /// Solves ∂c_s/∂t = D_s/r² ∂/∂r(r² ∂c_s/∂r) using implicit scheme.
-    pub fn step_solid_diffusion(&mut self, electrode_idx: usize) {
-        let dom = if electrode_idx == 0 {
-            &self.neg
-        } else {
-            &self.pos
-        };
-        let n_r = dom.n_micro;
-        let r_p = dom.particle_radius;
-        let ds = dom.diffusivity_solid;
-        let h_r = r_p / (n_r as f64 - 1.0);
-        let dt = self.dt;
-        let n_x = dom.n_macro;
-        for c_solid_xi in self.c_solid[electrode_idx].iter_mut().take(n_x) {
-            let c = c_solid_xi.clone();
-            // Build tridiagonal for spherical diffusion operator
-            let mut lower = vec![0.0_f64; n_r];
-            let mut diag = vec![0.0_f64; n_r];
-            let mut upper = vec![0.0_f64; n_r];
-            let mut rhs = c.clone();
-            // Implicit diffusion: (I - dt*L) c^{n+1} = c^n
-            for ri in 1..n_r - 1 {
-                let r = ri as f64 * h_r;
-                let coef = ds * dt / (h_r * h_r);
-                let r_p_half = r + 0.5 * h_r;
-                let r_m_half = r - 0.5 * h_r;
-                let a_plus = coef * (r_p_half / r).powi(2);
-                let a_minus = coef * (r_m_half / r).powi(2);
-                lower[ri] = -a_minus;
-                diag[ri] = 1.0 + a_plus + a_minus;
-                upper[ri] = -a_plus;
-            }
-            // Symmetry at r=0 (Neumann): ∂c/∂r = 0
-            diag[0] = 1.0 + 2.0 * ds * dt / (h_r * h_r);
-            upper[0] = -2.0 * ds * dt / (h_r * h_r);
-            // Surface flux BC at r=r_p (from BV current)
-            let j_li = self.applied_current
-                / (3.0 / dom.particle_radius * (1.0 - dom.porosity) * dom.thickness);
-            diag[n_r - 1] = 1.0;
-            lower[n_r - 1] = 0.0;
-            rhs[n_r - 1] = c[n_r - 1] - j_li * dt * h_r / (FARADAY * ds);
-            let new_c = NernstPlanckFem::solve_tridiagonal(&lower, &diag, &upper, &rhs);
-            *c_solid_xi = new_c;
-        }
-    }
-
-    /// Advance the entire DFN model by one time step.
-    pub fn step(&mut self) {
-        self.step_solid_diffusion(0);
-        self.step_solid_diffusion(1);
-        self.time += self.dt;
-    }
-
-    /// Compute C-rate for a given capacity (Ah).
-    pub fn c_rate(&self, capacity_ah: f64) -> f64 {
-        self.applied_current / (capacity_ah * 3600.0)
-    }
-
-    /// Compute specific energy (Wh/kg) given electrode mass density (kg/m³).
-    pub fn specific_energy(&self, mass_density: f64, volume: f64) -> f64 {
-        let energy = self.terminal_voltage() * self.applied_current * self.time;
-        let mass = mass_density * volume;
-        energy / mass / 3600.0
-    }
-}
+pub use battery::{BatteryFem, DfnDomain, ElectrodeDomain};
 
 // ============================================================================
 // Electrochemical Corrosion
@@ -1118,14 +891,65 @@ impl FuelCellFem {
         self.d_oxygen * porosity.powf(1.5) * (1.0 - saturation).powf(1.5)
     }
 
-    /// Compute ORR reaction rate at the cathode catalyst layer (mol/(m³·s)).
+    /// Signed cathode overpotential η_c = V_cell − V_oc (V).
     ///
-    /// Uses Butler-Volmer with cathodic-only approximation (high overpotential):
-    /// j_ORR = j₀ * (c_O2/c_ref) * exp(−α_c F η_c / RT)
+    /// All voltage loss is attributed to the cathode, so η_c is negative while
+    /// the cell delivers power (V_cell < V_oc) and the ORR is driven cathodically.
+    pub fn cathode_overpotential(&self) -> f64 {
+        -self.total_overpotential()
+    }
+
+    /// Compute the areal O₂ consumption rate of the cathode catalyst layer
+    /// (mol O₂/(m²·s)).
+    ///
+    /// Uses the cathodic Tafel branch of Butler-Volmer kinetics (first order
+    /// in O₂):
+    ///
+    /// j_ORR = j₀ (c_O2/c_ref) exp(−α_c F η_c / RT),  rate = j_ORR / (4 F)
+    ///
+    /// where `eta_cathode` is the *signed* cathode overpotential (negative for
+    /// cathodic operation, see [`Self::cathode_overpotential`]); the rate
+    /// therefore grows with |η_c| under load.  The factor 4 is the number of
+    /// electrons transferred per O₂ molecule (O₂ + 4H⁺ + 4e⁻ → 2H₂O).
     pub fn orr_rate(&self, c_o2: f64, eta_cathode: f64) -> f64 {
         let alpha_c = 0.5;
         let f_rt = FARADAY / (R_GAS * self.temperature);
-        self.j0_orr * (c_o2 / self.c_oxygen_ref) * (-alpha_c * f_rt * eta_cathode).exp() / FARADAY // convert A/m² to mol/(m²·s)
+        let j_orr =
+            self.j0_orr * (c_o2 / self.c_oxygen_ref) * (-alpha_c * f_rt * eta_cathode).exp();
+        j_orr / (ORR_ELECTRONS * FARADAY)
+    }
+
+    /// Volumetric first-order ORR rate constant k_v (1/s) in the catalyst layer.
+    ///
+    /// The volumetric O₂ sink is R = k_v c_O2 with
+    /// k_v = rate(c_ref, η_c) / (c_ref · thickness_cl).  Returns 0 when the
+    /// catalyst layer has no thickness.
+    pub fn orr_volumetric_rate_constant(&self, eta_cathode: f64) -> f64 {
+        if self.thickness_cl <= 0.0 || self.c_oxygen_ref <= 0.0 {
+            return 0.0;
+        }
+        self.orr_rate(self.c_oxygen_ref, eta_cathode) / (self.c_oxygen_ref * self.thickness_cl)
+    }
+
+    /// Length of each node's control volume that lies inside the catalyst layer.
+    ///
+    /// The O₂ domain is x ∈ \[0, `thickness_gdl`\] with the catalyst layer
+    /// occupying its last `thickness_cl` (clipped to the domain).  Node *i*
+    /// owns \[x_i − h/2, x_i + h/2\] ∩ \[0, L\]; the returned widths sum to the
+    /// (clipped) catalyst-layer thickness exactly.
+    fn catalyst_layer_widths(&self) -> Vec<f64> {
+        let n = self.n_nodes_per_region;
+        let length = self.thickness_gdl;
+        let h = length / (n as f64 - 1.0);
+        let cl_start = (length - self.thickness_cl.max(0.0)).max(0.0);
+        (0..n)
+            .map(|i| {
+                let x = i as f64 * h;
+                let lo = (x - 0.5 * h).max(0.0).max(cl_start);
+                let hi = (x + 0.5 * h).min(length);
+                (hi - lo).max(0.0)
+            })
+            .collect()
     }
 
     /// Solve proton transport across membrane using FEM (1-D Laplace).
@@ -1155,11 +979,15 @@ impl FuelCellFem {
         self.phi_proton = NernstPlanckFem::solve_tridiagonal(&lower, &diag, &upper, &rhs);
     }
 
-    /// Solve O₂ transport in cathode GDL/CL with ORR sink term.
+    /// Solve steady O₂ transport in the cathode GDL/CL with the ORR sink.
+    ///
+    /// −D_eff c'' + k_v χ_CL c = 0 on \[0, `thickness_gdl`\] with linear
+    /// elements and a lumped sink, c = c_ref at the gas-channel inlet (x = 0)
+    /// and a natural zero-flux condition at the membrane (x = L).
     pub fn solve_oxygen_transport(&mut self) {
         let n = self.n_nodes_per_region;
         let h = self.thickness_gdl / (n as f64 - 1.0);
-        let eta_c = self.total_overpotential();
+        let eta_c = self.cathode_overpotential();
         let d_eff = self.effective_oxygen_diffusivity(self.porosity_gdl, 0.1);
         let mut lower = vec![0.0_f64; n];
         let mut diag = vec![0.0_f64; n];
@@ -1173,36 +1001,46 @@ impl FuelCellFem {
             lower[i + 1] -= k;
             diag[i + 1] += k;
         }
-        // Add ORR sink in cathode CL (last few nodes)
-        let n_cl = (self.thickness_cl / h).ceil() as usize;
-        for (i, diag_i) in diag
-            .iter_mut()
-            .enumerate()
-            .take(n)
-            .skip(n.saturating_sub(n_cl))
-        {
-            let r_o2 = self.orr_rate(self.c_oxygen[i].max(0.0), eta_c.abs()) * FARADAY;
-            *diag_i += r_o2 / self.c_oxygen[i].max(1e-10) * h;
+        // First-order ORR sink in the catalyst layer (lumped, exact CL overlap).
+        let k_v = self.orr_volumetric_rate_constant(eta_c);
+        for (diag_i, w_i) in diag.iter_mut().zip(self.catalyst_layer_widths()) {
+            *diag_i += k_v * w_i;
         }
-        // BCs: inlet c_O2 = c_ref, at membrane ∂c/∂x = 0
+        // Dirichlet inlet c_O2 = c_ref; the membrane end keeps its assembled
+        // row, which is the natural zero-flux (∂c/∂x = 0) condition.
         diag[0] = 1.0;
         upper[0] = 0.0;
         rhs[0] = c_ref;
-        lower[n - 1] = 0.0;
         self.c_oxygen = NernstPlanckFem::solve_tridiagonal(&lower, &diag, &upper, &rhs);
     }
 
-    /// Compute local current density at each node via ORR kinetics (A/m²).
+    /// Compute the local kinetic ORR current density at each node (A/m²).
+    ///
+    /// `current_density[i]` = 4 F · rate(c_O2,i, η_c): the areal current the
+    /// catalyst layer would deliver at the local O₂ concentration.
     pub fn compute_current_density(&mut self) {
-        let eta_c = self.total_overpotential().abs();
+        let eta_c = self.cathode_overpotential();
         self.current_density = self
             .c_oxygen
             .iter()
-            .map(|&c| {
-                let rate = self.orr_rate(c.max(0.0), eta_c);
-                rate * FARADAY * self.thickness_cl
-            })
+            .map(|&c| ORR_ELECTRONS * FARADAY * self.orr_rate(c.max(0.0), eta_c))
             .collect();
+    }
+
+    /// Cell current density delivered by the catalyst layer (A/m²).
+    ///
+    /// j_cell = 4 F ∫_CL k_v c_O2 dx, integrated with the same lumped
+    /// quadrature as the O₂ sink in [`Self::solve_oxygen_transport`], so it
+    /// equals 4 F times the O₂ flux entering from the gas channel.
+    pub fn cell_current_density(&self) -> f64 {
+        let k_v = self.orr_volumetric_rate_constant(self.cathode_overpotential());
+        let consumption: f64 = self
+            .catalyst_layer_widths()
+            .iter()
+            .zip(self.c_oxygen.iter())
+            .map(|(w, &c)| k_v * w * c.max(0.0))
+            .sum();
+        ORR_ELECTRONS * FARADAY * consumption
     }
 
     /// Compute average current density (A/m²).
@@ -1399,17 +1237,163 @@ mod tests {
         assert!((dm[0][1] - dm[1][0]).abs() < 1e-30);
     }
 
+    /// Lumped (row-summed consistent) mass weights: h/2 at the ends, h inside.
+    fn np_mass_weights(np: &NernstPlanckFem) -> Vec<f64> {
+        let n = np.n_nodes;
+        let h = np.length / (n as f64 - 1.0);
+        (0..n)
+            .map(|i| if i == 0 || i == n - 1 { 0.5 * h } else { h })
+            .collect()
+    }
+
+    fn np_total_mass(np: &NernstPlanckFem, s: usize) -> f64 {
+        np_mass_weights(np)
+            .iter()
+            .zip(np.concentration[s].iter())
+            .map(|(w, c)| w * c)
+            .sum()
+    }
+
     #[test]
-    fn test_nernst_planck_step_conserves_mass_approx() {
+    fn test_nernst_planck_uniform_state_is_steady() {
+        // Regression (F1159): LHS and RHS mass matrices used to differ, so a
+        // uniform field grew by ~50 % per step in the interior.
         let species = vec![IonSpecies::new("Cl-", -1, 2.0e-9, 500.0)];
         let mut np = NernstPlanckFem::new(298.15, species, 20, 1e-3, 1e-4);
-        let c_init: f64 = np.concentration[0].iter().sum();
-        np.step();
-        let c_final: f64 = np.concentration[0].iter().sum();
-        // Mass should not blow up
-        assert!(c_final.is_finite());
-        assert!(c_final > 0.0);
-        assert!((c_final - c_init).abs() / c_init < 0.5);
+        for _ in 0..100 {
+            np.step();
+        }
+        for &c in &np.concentration[0] {
+            assert!(
+                ((c - 500.0) / 500.0).abs() < 1e-12,
+                "uniform state drifted: c = {c}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_nernst_planck_conserves_mass_with_drift() {
+        let species = vec![
+            IonSpecies::new("K+", 1, 1.96e-9, 100.0),
+            IonSpecies::new("Cl-", -1, 2.03e-9, 100.0),
+        ];
+        let n = 41;
+        let length = 1e-4;
+        let mut np = NernstPlanckFem::new(298.15, species, n, length, 0.05);
+        let h = length / (n as f64 - 1.0);
+        for i in 0..n {
+            let x = i as f64 * h;
+            np.potential[i] = 0.08 * x / length + 0.01 * (7.0 * x / length).sin();
+            np.velocity[i] = 2.0e-6 * (3.0 * x / length).cos();
+        }
+        let m0: Vec<f64> = (0..2).map(|s| np_total_mass(&np, s)).collect();
+        for _ in 0..100 {
+            np.step();
+        }
+        for (s, &m_init) in m0.iter().enumerate() {
+            let m = np_total_mass(&np, s);
+            assert!(
+                ((m - m_init) / m_init).abs() < 1e-10,
+                "species {s}: mass {m_init} -> {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_nernst_planck_drift_column_sums_vanish() {
+        let species = vec![IonSpecies::new("K+", 1, 1.96e-9, 100.0)];
+        let np = NernstPlanckFem::new(298.15, species, 5, 1e-4, 1e-3);
+        for dphi in [-500.0, -1.0, 0.0, 2.0, 1.0e4] {
+            let mm = np.element_migration_matrix(0, 1, 2.5e-5, dphi);
+            assert!((mm[0][0] + mm[1][0]).abs() < 1e-18);
+            assert!((mm[0][1] + mm[1][1]).abs() < 1e-18);
+        }
+    }
+
+    #[test]
+    fn test_nernst_planck_boltzmann_equilibrium() {
+        // Regression (F1158): with a constant field and zero-flux ends the
+        // long-time profile must be the Boltzmann distribution
+        // c ∝ exp(−z φ / V_T), cations accumulating at low potential.
+        let n = 31;
+        let length = 1e-4;
+        let species = vec![
+            IonSpecies::new("K+", 1, 2.0e-9, 100.0),
+            IonSpecies::new("Cl-", -1, 2.0e-9, 100.0),
+        ];
+        let mut np = NernstPlanckFem::new(298.15, species, n, length, 0.5);
+        let h = length / (n as f64 - 1.0);
+        let dphi_total = 0.05;
+        for i in 0..n {
+            np.potential[i] = dphi_total * i as f64 * h / length;
+        }
+        for _ in 0..400 {
+            np.step();
+        }
+        let vt = np.thermal_voltage();
+        let w = np_mass_weights(&np);
+        for (s, z) in [(0_usize, 1.0_f64), (1, -1.0)] {
+            let boltz: Vec<f64> = np.potential.iter().map(|&p| (-z * p / vt).exp()).collect();
+            let norm_b: f64 = w.iter().zip(&boltz).map(|(a, b)| a * b).sum();
+            let norm_c = np_total_mass(&np, s);
+            // Scharfetter-Gummel is nodally exact at steady state, so the
+            // agreement is far tighter than the 1 % physics requirement.
+            for (i, (b, c)) in boltz.iter().zip(&np.concentration[s]).enumerate() {
+                let expected = b / norm_b;
+                let got = c / norm_c;
+                assert!(
+                    ((got - expected) / expected).abs() < 1e-6,
+                    "species {s} node {i}: got {got}, expected {expected}"
+                );
+            }
+        }
+        // Cations drift towards lower potential, anions towards higher potential.
+        assert!(np.concentration[0][0] > np.concentration[0][n - 1]);
+        assert!(np.concentration[1][0] < np.concentration[1][n - 1]);
+        // Steady state carries (almost) zero flux: the central-difference
+        // flux reconstruction leaves only an O(h²) truncation residual, far
+        // below the pure migration flux z F D c ∂φ/∂x / V_T.
+        let j_mid = np.current_density(0, n / 2);
+        let c_mid = np.concentration[0][n / 2];
+        let j_scale = FARADAY * 2.0e-9 * c_mid * (dphi_total / length) / vt;
+        assert!(j_mid.abs() < 1e-2 * j_scale, "residual current {j_mid}");
+    }
+
+    #[test]
+    fn test_nernst_planck_convection_moves_centroid() {
+        // Regression (F1158): the fluid velocity used to be ignored in step().
+        let n = 201;
+        let length = 1e-3;
+        let species = vec![IonSpecies::new("Na+", 1, 1.0e-11, 0.0)];
+        let mut np = NernstPlanckFem::new(298.15, species, n, length, 0.01);
+        let h = length / (n as f64 - 1.0);
+        let u = 1.0e-5;
+        let x0 = 0.3 * length;
+        let sigma = 0.03 * length;
+        for i in 0..n {
+            let x = i as f64 * h;
+            np.concentration[0][i] = (-(x - x0).powi(2) / (2.0 * sigma * sigma)).exp();
+            np.velocity[i] = u;
+        }
+        let centroid = |np: &NernstPlanckFem| -> f64 {
+            let w = np_mass_weights(np);
+            let m: f64 = w.iter().zip(&np.concentration[0]).map(|(a, c)| a * c).sum();
+            let mx: f64 = (0..n)
+                .map(|i| w[i] * np.concentration[0][i] * i as f64 * h)
+                .sum();
+            mx / m
+        };
+        let c0 = centroid(&np);
+        let n_steps = 2000;
+        for _ in 0..n_steps {
+            np.step();
+        }
+        let shift = centroid(&np) - c0;
+        let expected = u * np.dt * n_steps as f64;
+        assert!(
+            ((shift - expected) / expected).abs() < 0.05,
+            "centroid shift {shift}, expected {expected}"
+        );
     }
 
     #[test]
@@ -1562,81 +1546,6 @@ mod tests {
         }
     }
 
-    // --- BatteryFem ---
-
-    #[test]
-    fn test_battery_fem_creation() {
-        let bat = BatteryFem::new(1.0, 298.15, 1.0);
-        assert_eq!(bat.neg.domain, DfnDomain::NegativeElectrode);
-        assert_eq!(bat.pos.domain, DfnDomain::PositiveElectrode);
-    }
-
-    #[test]
-    fn test_battery_n_total_nodes() {
-        let bat = BatteryFem::new(1.0, 298.15, 1.0);
-        let expected = bat.neg.n_macro + bat.n_sep + bat.pos.n_macro;
-        assert_eq!(bat.n_total_nodes(), expected);
-    }
-
-    #[test]
-    fn test_battery_soc_initial() {
-        let bat = BatteryFem::new(1.0, 298.15, 1.0);
-        let soc_n = bat.soc_negative();
-        let soc_p = bat.soc_positive();
-        assert!((soc_n - 0.5).abs() < 1e-10);
-        assert!((soc_p - 0.8).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_battery_terminal_voltage_range() {
-        let bat = BatteryFem::new(1.0, 298.15, 1.0);
-        let v = bat.terminal_voltage();
-        assert!(v > 2.0 && v < 5.0, "V_cell = {v}");
-    }
-
-    #[test]
-    fn test_battery_ir_drop_terminal_voltage() {
-        // R_int=0.05 Ω, I=2 A → IR drop = 0.1 V; terminal voltage must drop by exactly 0.1 V
-        let mut bat = BatteryFem::new(2.0, 298.15, 1.0);
-        bat.internal_resistance = 0.05;
-        let v_no_r = {
-            let mut b2 = bat.clone();
-            b2.internal_resistance = 0.0;
-            b2.terminal_voltage()
-        };
-        let v_with_r = bat.terminal_voltage();
-        assert!(
-            v_with_r < v_no_r,
-            "IR drop not applied: v_with_r={v_with_r}, v_no_r={v_no_r}"
-        );
-        assert!(
-            (v_no_r - v_with_r - 0.1).abs() < 1e-10,
-            "expected IR drop of 0.1 V, got {:.6}",
-            v_no_r - v_with_r
-        );
-    }
-
-    #[test]
-    fn test_battery_step() {
-        let mut bat = BatteryFem::new(1.0, 298.15, 10.0);
-        bat.step();
-        assert!((bat.time - 10.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_electrode_effective_conductivity() {
-        let neg = ElectrodeDomain::default_negative();
-        let kappa_eff = neg.effective_conductivity(1.0);
-        assert!(kappa_eff < 1.0 && kappa_eff > 0.0);
-    }
-
-    #[test]
-    fn test_electrode_effective_diffusivity() {
-        let pos = ElectrodeDomain::default_positive();
-        let d_eff = pos.effective_electrolyte_diffusivity(2.7e-10);
-        assert!(d_eff < 2.7e-10 && d_eff > 0.0);
-    }
-
     // --- ElectrochemicalCorrosion ---
 
     #[test]
@@ -1761,6 +1670,79 @@ mod tests {
         fc.solve_oxygen_transport();
         // All O2 concentrations should be non-negative
         assert!(fc.c_oxygen.iter().all(|&c| c >= -1e-6));
+    }
+
+    #[test]
+    fn test_orr_rate_increases_with_overpotential_magnitude() {
+        // Regression (F1162): |η| used to be fed into exp(−α_c f η).
+        let fc = FuelCellFem::new(353.15, 0.7, 1.0);
+        let r_small = fc.orr_rate(40.0, -0.3);
+        let r_large = fc.orr_rate(40.0, -0.5);
+        assert!(r_large > r_small, "{r_large} <= {r_small}");
+        assert!(fc.cathode_overpotential() < 0.0);
+        // Rate is first order in O2 and is the O2 flux j/(4F).
+        let r = fc.orr_rate(fc.c_oxygen_ref, 0.0);
+        assert!((r - fc.j0_orr / (4.0 * FARADAY)).abs() < 1e-18);
+    }
+
+    #[test]
+    fn test_oxygen_transport_without_reaction_is_uniform() {
+        let mut fc = FuelCellFem::new(353.15, 0.7, 1.0);
+        fc.j0_orr = 0.0;
+        fc.c_oxygen = vec![1.0; fc.n_nodes_per_region];
+        fc.solve_oxygen_transport();
+        for &c in &fc.c_oxygen {
+            assert!((c - fc.c_oxygen_ref).abs() < 1e-10, "c = {c}");
+        }
+    }
+
+    #[test]
+    fn test_oxygen_membrane_end_is_zero_flux_not_zero_concentration() {
+        // Regression (F1162): the membrane row used to degenerate to diag·c = 0.
+        let mut fc = FuelCellFem::new(353.15, 0.6, 1.0);
+        fc.j0_orr = 5.0;
+        fc.solve_oxygen_transport();
+        let n = fc.n_nodes_per_region;
+        let c_last = fc.c_oxygen[n - 1];
+        assert!(c_last > 0.0, "c at membrane = {c_last}");
+        assert!(c_last < fc.c_oxygen_ref);
+        // Monotone decrease from the inlet towards the reacting layer.
+        for i in 1..n {
+            assert!(fc.c_oxygen[i] <= fc.c_oxygen[i - 1] + 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_oxygen_inlet_flux_balances_orr_sink() {
+        let mut fc = FuelCellFem::new(353.15, 0.6, 1.0);
+        fc.j0_orr = 50.0;
+        fc.thickness_cl = 40e-6;
+        fc.solve_oxygen_transport();
+        let n = fc.n_nodes_per_region;
+        let h = fc.thickness_gdl / (n as f64 - 1.0);
+        let d_eff = fc.effective_oxygen_diffusivity(fc.porosity_gdl, 0.1);
+        let inlet_flux = d_eff * (fc.c_oxygen[0] - fc.c_oxygen[1]) / h;
+        let consumed = fc.cell_current_density() / (4.0 * FARADAY);
+        assert!(inlet_flux > 0.0);
+        assert!(
+            ((inlet_flux - consumed) / consumed).abs() < 1e-10,
+            "inlet {inlet_flux} vs consumed {consumed}"
+        );
+        // The catalyst-layer control widths integrate to the layer thickness.
+        let w_sum: f64 = fc.catalyst_layer_widths().iter().sum();
+        assert!((w_sum - fc.thickness_cl).abs() < 1e-18);
+    }
+
+    #[test]
+    fn test_local_current_density_units() {
+        let mut fc = FuelCellFem::new(353.15, 0.7, 1.0);
+        fc.c_oxygen = vec![fc.c_oxygen_ref; fc.n_nodes_per_region];
+        fc.compute_current_density();
+        let f_rt = FARADAY / (R_GAS * fc.temperature);
+        let expected = fc.j0_orr * (0.5 * f_rt * 0.53).exp();
+        for &j in &fc.current_density {
+            assert!(((j - expected) / expected).abs() < 1e-12, "j = {j}");
+        }
     }
 
     #[test]

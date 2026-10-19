@@ -34,7 +34,7 @@
 //! - [`drude_thermostat_step`]: dual Langevin thermostat update for Drude particles.
 //! - [`swm4ndp_geometry`]: compute M-site position for SWM4-NDP water.
 //! - [`relay_matrix_element`]: dipole relay (interaction) tensor element.
-//! - [`dipole_gradient_force`]: force on atom i from gradient of dipole field.
+//! - [`dipole_gradient_force`]: force on atom i from the charges and fixed dipoles of the others.
 //! - [`polarizable_virial`]: contribution to pressure tensor from polarization.
 
 // ============================================================================
@@ -877,24 +877,39 @@ pub fn swm4ndp_geometry(o: [f64; 3], h1: [f64; 3], h2: [f64; 3]) -> [f64; 3] {
     add3(o, scale3(SWM4NDP_ROM, bis_hat))
 }
 
-/// Force on atom i arising from the gradient of the dipole field.
+/// Electrostatic force on atom `i` from all other atoms, for fixed charges and
+/// dipoles.
 ///
-/// F_i = Σ_{j≠i} μ_j · ∇_i E_{ij}(charge)
+/// With `r = r_i − r_j` the pair energy of the point charges `q` and dipoles `μ` is
 ///
-/// This captures the force due to an external field acting on permanent charges
-/// and induced dipoles, i.e., the electrostatic force on charge q_i from all
-/// induced dipoles μ_j.
+/// ```text
+/// U_ij = q_i q_j / r + q_i (μ_j·r) / r³ − q_j (μ_i·r) / r³
+///        + (μ_i·μ_j) / r³ − 3 (μ_i·r)(μ_j·r) / r⁵
+/// ```
+///
+/// and the result is `F_i = −Σ_{j≠i} ∂U_ij/∂r_i`, which is
+///
+/// ```text
+/// F_i = Σ_j { q_i q_j r / r³
+///           + q_i [3 (μ_j·r) r / r⁵ − μ_j / r³]        (charge i in the field of μ_j)
+///           + q_j [μ_i / r³ − 3 (μ_i·r) r / r⁵]        (dipole i in the field of q_j)
+///           + 3 [(μ_i·μ_j) r + (μ_i·r) μ_j + (μ_j·r) μ_i] / r⁵
+///           − 15 (μ_i·r)(μ_j·r) r / r⁷ }               (dipole i with dipole j)
+/// ```
+///
+/// The dipoles are held fixed, and every pair obeys `F_j = −F_i`.  Returns
+/// `[0; 3]` when `i` is out of range; atoms closer than `1e-12` are skipped.
 pub fn dipole_gradient_force(atoms: &[PolarizableAtom], i: usize) -> [f64; 3] {
     if i >= atoms.len() {
         return [0.0; 3];
     }
-    let ri = atoms[i].position;
+    let ai = &atoms[i];
     let mut force = [0.0_f64; 3];
     for (j, aj) in atoms.iter().enumerate() {
         if j == i {
             continue;
         }
-        let rij = sub3(ri, aj.position);
+        let rij = sub3(ai.position, aj.position);
         let r = norm3(rij);
         if r < 1e-12 {
             continue;
@@ -902,30 +917,17 @@ pub fn dipole_gradient_force(atoms: &[PolarizableAtom], i: usize) -> [f64; 3] {
         let r3 = r * r * r;
         let r5 = r3 * r * r;
         let r7 = r5 * r * r;
-        // Force on q_i from dipole μ_j: F = q_i * E_from_dipole
-        // E_from_dipole = (3*(μ·r)r - μ r²) / r⁵
-        let mu_dot_r = dot3(aj.dipole, rij);
-        let e_dipole = sub3(
-            scale3(3.0 * mu_dot_r / r5, rij),
-            scale3(1.0 / r3, aj.dipole),
-        );
-        force = add3(force, scale3(atoms[i].charge, e_dipole));
-
-        // Force on q_i from charge q_j (for completeness — standard Coulomb)
-        let f_coulomb = scale3(atoms[i].charge * aj.charge / r3, rij);
-        force = add3(force, f_coulomb);
-
-        // Higher-order: gradient of dipole field acting on dipole μ_i
-        // ∂E_α/∂x_β = −(15 r_α r_β (μ·r) − 3 δ_αβ (μ·r) − 3 r_α μ_β − 3 r_β μ_α r²) / r⁷
-        // Contract with μ_i to get force contribution
-        let mu_i_dot_r = dot3(atoms[i].dipole, rij);
-        for alpha in 0..3 {
-            let grad_ea: f64 = -15.0 * rij[alpha] * mu_dot_r / r7
-                + 3.0 * aj.dipole[alpha] / r5
-                + 3.0 * rij[alpha] * dot3(aj.dipole, rij) / r7;
-            force[alpha] += atoms[i].dipole[alpha] * grad_ea;
-            let _ = mu_i_dot_r; // used implicitly
-        }
+        let mu_i_dot_r = dot3(ai.dipole, rij);
+        let mu_j_dot_r = dot3(aj.dipole, rij);
+        let along_r = ai.charge * aj.charge / r3
+            + 3.0 * (ai.charge * mu_j_dot_r - aj.charge * mu_i_dot_r) / r5
+            + 3.0 * dot3(ai.dipole, aj.dipole) / r5
+            - 15.0 * mu_i_dot_r * mu_j_dot_r / r7;
+        let along_mu_j = -ai.charge / r3 + 3.0 * mu_i_dot_r / r5;
+        let along_mu_i = aj.charge / r3 + 3.0 * mu_j_dot_r / r5;
+        force = add3(force, scale3(along_r, rij));
+        force = add3(force, scale3(along_mu_j, aj.dipole));
+        force = add3(force, scale3(along_mu_i, ai.dipole));
     }
     force
 }

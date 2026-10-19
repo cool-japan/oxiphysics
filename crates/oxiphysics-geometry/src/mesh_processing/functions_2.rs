@@ -2,90 +2,26 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::functions::vec3_normalize;
 use super::functions::*;
 use super::functions::{Face, Vertex};
-use super::functions::{vec3_add, vec3_normalize, vec3_scale};
 use super::types::{AnisotropicSizeField, BooleanResult, ProcessMesh};
 
-/// Boolean intersection of two meshes.
+/// Boolean intersection `A ∩ B` of two closed, outward-oriented meshes.
 ///
-/// Keeps only faces of A inside B and faces of B inside A.
+/// Faces are split along the intersection curves and re-triangulated, so the
+/// result is the closed boundary of the intersection (see
+/// [`crate::mesh_boolean::mesh_boolean`]).
 pub fn mesh_intersection(a: &ProcessMesh, b: &ProcessMesh) -> BooleanResult {
-    let offset_b = a.verts.len();
-    let mut verts = a.verts.clone();
-    verts.extend_from_slice(&b.verts);
-    let faces_a: Vec<Face> = a
-        .faces
-        .iter()
-        .filter(|&&[i, j, k]| {
-            let centroid = vec3_scale(
-                vec3_add(vec3_add(a.verts[i], a.verts[j]), a.verts[k]),
-                1.0 / 3.0,
-            );
-            point_in_mesh(centroid, b)
-        })
-        .cloned()
-        .collect();
-    let faces_b: Vec<Face> = b
-        .faces
-        .iter()
-        .filter(|&&[i, j, k]| {
-            let centroid = vec3_scale(
-                vec3_add(vec3_add(b.verts[i], b.verts[j]), b.verts[k]),
-                1.0 / 3.0,
-            );
-            point_in_mesh(centroid, a)
-        })
-        .map(|&[i, j, k]| [i + offset_b, j + offset_b, k + offset_b])
-        .collect();
-    let mut faces = faces_a;
-    faces.extend(faces_b);
-    let mut result = BooleanResult {
-        mesh: ProcessMesh::new(verts, faces),
-        is_exact: false,
-    };
-    result.is_exact = result.is_topologically_exact();
-    result
+    process_mesh_boolean(a, b, crate::mesh_boolean::MeshBooleanOp::Intersection)
 }
-/// Boolean difference A − B.
+/// Boolean difference `A \ B` of two closed, outward-oriented meshes.
 ///
-/// Keeps faces of A outside B and faces of B inside A (flipped).
+/// Faces are split along the intersection curves; the part of `B`'s surface
+/// inside `A` is kept with reversed orientation to bound the carved cavity
+/// (see [`crate::mesh_boolean::mesh_boolean`]).
 pub fn mesh_difference(a: &ProcessMesh, b: &ProcessMesh) -> BooleanResult {
-    let offset_b = a.verts.len();
-    let mut verts = a.verts.clone();
-    verts.extend_from_slice(&b.verts);
-    let faces_a: Vec<Face> = a
-        .faces
-        .iter()
-        .filter(|&&[i, j, k]| {
-            let centroid = vec3_scale(
-                vec3_add(vec3_add(a.verts[i], a.verts[j]), a.verts[k]),
-                1.0 / 3.0,
-            );
-            !point_in_mesh(centroid, b)
-        })
-        .cloned()
-        .collect();
-    let faces_b: Vec<Face> = b
-        .faces
-        .iter()
-        .filter(|&&[i, j, k]| {
-            let centroid = vec3_scale(
-                vec3_add(vec3_add(b.verts[i], b.verts[j]), b.verts[k]),
-                1.0 / 3.0,
-            );
-            point_in_mesh(centroid, a)
-        })
-        .map(|&[i, j, k]| [j + offset_b, i + offset_b, k + offset_b])
-        .collect();
-    let mut faces = faces_a;
-    faces.extend(faces_b);
-    let mut result = BooleanResult {
-        mesh: ProcessMesh::new(verts, faces),
-        is_exact: false,
-    };
-    result.is_exact = result.is_topologically_exact();
-    result
+    process_mesh_boolean(a, b, crate::mesh_boolean::MeshBooleanOp::Difference)
 }
 /// Build a simple unit tetrahedron mesh.
 pub fn make_tetrahedron() -> ProcessMesh {
@@ -465,32 +401,99 @@ mod tests {
         let m = make_icosphere(2);
         assert!(!point_in_mesh([10.0, 0.0, 0.0], &m));
     }
+    /// Enclosed volume of a closed mesh (divergence theorem).
+    fn enclosed_volume(m: &ProcessMesh) -> f64 {
+        m.faces
+            .iter()
+            .map(|&[a, b, c]| {
+                let (p, q, r) = (m.verts[a], m.verts[b], m.verts[c]);
+                p[0] * (q[1] * r[2] - q[2] * r[1]) - p[1] * (q[0] * r[2] - q[2] * r[0])
+                    + p[2] * (q[0] * r[1] - q[1] * r[0])
+            })
+            .sum::<f64>()
+            / 6.0
+    }
+    /// Axis-aligned box `[lo, hi]` as a closed, outward-oriented mesh.
+    fn make_box(lo: [f64; 3], hi: [f64; 3]) -> ProcessMesh {
+        let verts = (0..8)
+            .map(|i| {
+                [
+                    if i & 1 == 0 { lo[0] } else { hi[0] },
+                    if i & 2 == 0 { lo[1] } else { hi[1] },
+                    if i & 4 == 0 { lo[2] } else { hi[2] },
+                ]
+            })
+            .collect();
+        let faces = vec![
+            [0, 2, 1],
+            [1, 2, 3],
+            [4, 5, 6],
+            [5, 7, 6],
+            [0, 1, 4],
+            [1, 5, 4],
+            [2, 6, 3],
+            [3, 6, 7],
+            [0, 4, 2],
+            [2, 4, 6],
+            [1, 3, 5],
+            [3, 7, 5],
+        ];
+        ProcessMesh::new(verts, faces)
+    }
     #[test]
-    fn test_mesh_union_has_faces() {
+    fn test_mesh_booleans_of_offset_boxes_are_exact() {
+        // A = [0,1]^3, B = A + (0.5, 0.25, 0): every face of the overlap is
+        // cut mid-triangle, so whole-face selection cannot get these right.
+        let a = make_box([0.0; 3], [1.0; 3]);
+        let b = make_box([0.5, 0.25, 0.0], [1.5, 1.25, 1.0]);
+        assert!((enclosed_volume(&a) - 1.0).abs() < 1e-12);
+        let overlap = 0.5 * 0.75;
+        for (result, want, what) in [
+            (mesh_union(&a, &b), 2.0 - overlap, "union"),
+            (mesh_intersection(&a, &b), overlap, "intersection"),
+            (mesh_difference(&a, &b), 1.0 - overlap, "difference"),
+        ] {
+            assert!(result.is_exact, "{what}: result is not a closed manifold");
+            let v = enclosed_volume(&result.mesh);
+            assert!(
+                (v - want).abs() < 1e-9,
+                "{what}: volume {v}, expected {want}"
+            );
+        }
+    }
+    #[test]
+    fn test_mesh_union_of_icospheres_is_closed_and_larger() {
         let a = make_icosphere(1);
         let mut b = make_icosphere(1);
         for v in &mut b.verts {
             v[0] += 0.5;
         }
-        let result = mesh_union(&a, &b);
-        assert!(result.mesh.num_faces() > 0);
-    }
-    #[test]
-    fn test_mesh_intersection_smoke() {
-        let a = make_icosphere(1);
-        let mut b = make_icosphere(1);
-        for v in &mut b.verts {
-            v[0] += 0.5;
+        let (va, vb) = (enclosed_volume(&a), enclosed_volume(&b));
+        let union = mesh_union(&a, &b);
+        let inter = mesh_intersection(&a, &b);
+        let diff = mesh_difference(&a, &b);
+        for (r, what) in [
+            (&union, "union"),
+            (&inter, "intersection"),
+            (&diff, "difference"),
+        ] {
+            assert!(r.is_exact, "{what}: result is not a closed manifold");
         }
-        let result = mesh_intersection(&a, &b);
-        let _ = result.mesh.num_faces();
+        let (vu, vi, vd) = (
+            enclosed_volume(&union.mesh),
+            enclosed_volume(&inter.mesh),
+            enclosed_volume(&diff.mesh),
+        );
+        assert!(vi > 0.0 && vi < va && vu > va);
+        assert!((vu + vi - (va + vb)).abs() < 1e-9, "∪ {vu} ∩ {vi}");
+        assert!((vd - (va - vi)).abs() < 1e-9, "\\ {vd} ∩ {vi}");
     }
     #[test]
-    fn test_mesh_difference_smoke() {
+    fn test_mesh_difference_of_identical_meshes_is_empty() {
         let a = make_icosphere(1);
-        let b = make_icosphere(1);
-        let result = mesh_difference(&a, &b);
-        let _ = result.mesh.num_faces();
+        let result = mesh_difference(&a, &a);
+        assert_eq!(result.mesh.num_faces(), 0);
+        assert!(!result.is_exact);
     }
     #[test]
     fn test_anisotropic_remesh_smoke() {

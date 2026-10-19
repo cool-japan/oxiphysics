@@ -195,42 +195,6 @@ pub fn inverse_kinematics_lm(
     }
 }
 /// Solve a 3×3 linear system Ax = b using Cramer's rule.
-/// Compute determinant of an n×n matrix via LU decomposition with partial pivoting.
-pub(super) fn mat_det_lu(a: &[Vec<f64>]) -> f64 {
-    let n = a.len();
-    if n == 0 {
-        return 0.0;
-    }
-    let mut m: Vec<Vec<f64>> = a.to_vec();
-    let mut det = 1.0f64;
-    for col in 0..n {
-        let pivot_row = (col..n)
-            .max_by(|&i, &j| {
-                m[i][col]
-                    .abs()
-                    .partial_cmp(&m[j][col].abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .expect("operation should succeed");
-        if m[pivot_row][col].abs() < 1e-300 {
-            return 0.0;
-        }
-        if pivot_row != col {
-            m.swap(pivot_row, col);
-            det = -det;
-        }
-        det *= m[col][col];
-        let inv = 1.0 / m[col][col];
-        for row in (col + 1)..n {
-            let factor = m[row][col] * inv;
-            let (left, right) = m.split_at_mut(row);
-            for (pivot_val, target) in left[col][col..].iter().zip(right[0][col..].iter_mut()) {
-                *target -= factor * pivot_val;
-            }
-        }
-    }
-    det
-}
 fn solve3x3(a: &[[f64; 3]; 3], b: &Vec3) -> Vec3 {
     let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])

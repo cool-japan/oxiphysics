@@ -12,6 +12,11 @@
 //! a multi-row grid with extra workgroups past the end of the data, and compare
 //! every kernel's result with the CPU reference.
 //!
+//! The limit applies to both dimensions, so a limit of 3 holds at most 3 x 3 = 9
+//! workgroups.  Only 5, 7 or 8 workgroups fold into a grid that has spare
+//! workgroups behind the data (4, 6 and 9 fill their grid exactly, 10 or more do
+//! not fit), so every input below needs one of those counts.
+//!
 //! All GPU tests skip (pass) when no adapter is available.
 
 /// Always-available smoke test so the binary has at least one test without the
@@ -165,7 +170,7 @@ mod gpu_tests {
     #[test]
     fn folded_scan_matches_cpu_and_leaves_block_sums_untouched() {
         let mut backend = skip_if_no_gpu!();
-        for n in [2600usize, 256 * 7 + 1, 256 * 11] {
+        for n in [1100usize, 256 * 6 + 100, 256 * 7 + 1] {
             let data = lcg(n, 0x1234, 9);
             let expected = cpu_exclusive_scan(&data);
             let (scanned, sentinels) = gpu_scan(&mut backend, &data, TINY_LIMIT);
@@ -215,7 +220,7 @@ mod gpu_tests {
     #[test]
     fn folded_reductions_match_cpu_and_do_not_overrun_partials() {
         let mut backend = skip_if_no_gpu!();
-        let data: Vec<f32> = lcg(2600, 77, 8).into_iter().map(|v| v as f32).collect();
+        let data: Vec<f32> = lcg(1700, 77, 8).into_iter().map(|v| v as f32).collect();
         let blocks = data.len().div_ceil(BLOCK);
         let expected_sum: Vec<f32> = (0..blocks)
             .map(|b| {
@@ -261,7 +266,7 @@ mod gpu_tests {
     fn folded_histogram_counts_every_element_once() {
         let mut backend = skip_if_no_gpu!();
         let bins = 16usize;
-        let data = lcg(2600, 5, 40);
+        let data = lcg(1700, 5, 40);
         let mut expected = vec![0u32; bins];
         for &v in &data {
             expected[(v as usize).min(bins - 1)] += 1;
@@ -290,7 +295,7 @@ mod gpu_tests {
     fn folded_sph_cell_histogram_counts_every_key_once() {
         let mut backend = skip_if_no_gpu!();
         let bins = 300usize;
-        let keys = lcg(2600, 99, 300);
+        let keys = lcg(1700, 99, 300);
         let mut expected = vec![0u32; bins];
         for &k in &keys {
             expected[k as usize] += 1;
@@ -318,8 +323,8 @@ mod gpu_tests {
     #[test]
     fn folded_compaction_keeps_the_stable_order() {
         let mut backend = skip_if_no_gpu!();
-        let values = lcg(2600, 31, 1000);
-        let keep: Vec<u32> = lcg(2600, 32, 3)
+        let values = lcg(1700, 31, 1000);
+        let keep: Vec<u32> = lcg(1700, 32, 3)
             .into_iter()
             .map(|v| u32::from(v == 0))
             .collect();
@@ -437,7 +442,7 @@ mod gpu_tests {
     #[test]
     fn folded_radix_sort_is_stable_and_complete() {
         let mut backend = skip_if_no_gpu!();
-        for n in [2600usize, 256 * 5 + 17] {
+        for n in [1700usize, 256 * 4 + 17] {
             // Many duplicate keys, so stability is observable.
             let keys: Vec<u32> = lcg(n, 4242, 1 << 20)
                 .into_iter()
@@ -473,7 +478,7 @@ mod gpu_tests {
     #[test]
     fn folded_sph_integrate_updates_every_particle_exactly_once() {
         let mut backend = skip_if_no_gpu!();
-        let n = 700usize;
+        let n = 400usize;
         let positions: Vec<f32> = (0..n * 3).map(|i| (i / 3) as f32).collect();
         let dt = 0.5f32;
         for limit in [TINY_LIMIT, REAL_LIMIT] {

@@ -4,36 +4,62 @@
 
 use std::f64::consts::PI;
 
-use super::functions::primitive_eri_contracted;
+use super::error::QuantumChemistryError;
+use super::integrals::electron_repulsion_integral;
+use super::kohn_sham::{run_kohn_sham, symmetrize_from_lower};
+use super::molecular_grid::MolecularGridSettings;
+use super::sto3g_basis::sto3g_atom_basis;
 use super::types::BasisFunction;
 use super::types_3::{DftResult, HartreeFockResult, ScfStatus, XcFunctional};
+use super::xc_functional::{
+    B3LYP_EXACT_EXCHANGE, VWN5, XcDual, evaluate_xc, uniform_gas_tau, vwn_epsilon,
+};
 
-/// Density Functional Theory (Kohn-Sham) solver.
+/// Restricted Kohn–Sham density functional theory solver.
+///
+/// The Kohn–Sham equations are solved self-consistently on a Becke molecular
+/// grid ([`MolecularGrid`]): the exchange-correlation potential matrix V_xc is
+/// rebuilt from the current density in every iteration and enters the
+/// Kohn–Sham matrix `F = H_core + J + V_xc − (a₀/2) K` (see
+/// [`run_ks_scf`](Self::run_ks_scf)).  The integrals (S, H_core, ERIs) and the
+/// basis functions are taken from `hf_solver`, which must have been built with
+/// [`HartreeFockSolver::from_atoms`] or [`HartreeFockSolver::from_basis`].
 #[derive(Debug, Clone)]
 pub struct DensityFunctionalTheory {
-    /// HF solver used as framework (Kohn-Sham equations have same structure).
+    /// Integral and basis-set provider (also supplies `max_iter` and the
+    /// convergence thresholds of the SCF).
     pub hf_solver: HartreeFockSolver,
     /// Exchange-correlation functional.
     pub xc: XcFunctional,
-    /// LDA exchange mixing parameter.
+    /// Fraction a₀ of exact (Hartree–Fock) exchange: 0.20 for B3LYP, 0 for the
+    /// pure functionals.  A non-zero value scales the semilocal exchange by
+    /// (1 − a₀) and adds −(a₀/2) K to the Kohn–Sham matrix.
     pub alpha_x: f64,
     /// Pseudopotential correction energy \[Hartree\].
     pub pseudopotential_energy: f64,
+    /// Resolution of the molecular integration grid.
+    pub grid: MolecularGridSettings,
 }
 impl DensityFunctionalTheory {
-    /// Create a KS-DFT solver.
+    /// Create a KS-DFT solver with the default grid.
     pub fn new(hf_solver: HartreeFockSolver, xc: XcFunctional) -> Self {
         Self {
             hf_solver,
             xc,
             alpha_x: match xc {
-                XcFunctional::B3lyp => 0.20,
+                XcFunctional::B3lyp => B3LYP_EXACT_EXCHANGE,
                 _ => 0.0,
             },
             pseudopotential_energy: 0.0,
+            grid: MolecularGridSettings::default(),
         }
     }
-    /// LDA Slater exchange energy density: ε_x = -3/4 * (3/π)^(1/3) * ρ^(1/3).
+    /// Use a different integration grid.
+    pub fn with_grid(mut self, grid: MolecularGridSettings) -> Self {
+        self.grid = grid;
+        self
+    }
+    /// LDA Slater exchange energy per electron: ε_x = -3/4 * (3/π)^(1/3) * ρ^(1/3).
     pub fn lda_exchange_energy_density(rho: f64) -> f64 {
         if rho < 1e-20 {
             return 0.0;
@@ -41,23 +67,14 @@ impl DensityFunctionalTheory {
         let cx = -0.7385587663820224;
         cx * rho.powf(1.0 / 3.0)
     }
-    /// VWN LDA correlation energy density (simplified Vosko-Wilk-Nusair).
+    /// VWN5 (Vosko–Wilk–Nusair functional V, paramagnetic) correlation energy
+    /// per electron ε_c(ρ) \[Hartree\].
     pub fn vwn_correlation_energy_density(rho: f64) -> f64 {
         if rho < 1e-20 {
             return 0.0;
         }
         let rs = (3.0 / (4.0 * PI * rho)).powf(1.0 / 3.0);
-        let a: f64 = 0.0310907;
-        let b: f64 = 3.72744;
-        let c: f64 = 12.9352;
-        let x0: f64 = -0.10498;
-        let x = rs.sqrt();
-        let x2 = rs;
-        let q = (4.0 * c - b * b).sqrt();
-        a * ((x2 + b * x + c).ln() - 2.0 * (x.ln()) + 2.0 * b / q * ((2.0 * x + b) / q).atan()
-            - b * x0 / (x0 * x0 + b * x0 + c)
-                * (((x - x0) * (x - x0) / (x2 + b * x + c)).ln()
-                    + 2.0 * (2.0 * x0 + b) / q * ((2.0 * x + b) / q).atan()))
+        vwn_epsilon(XcDual::constant(rs), &VWN5).v
     }
     /// PBE exchange enhancement factor F_x(s) where s is reduced gradient.
     pub fn pbe_exchange_enhancement(s: f64) -> f64 {
@@ -65,58 +82,42 @@ impl DensityFunctionalTheory {
         let mu = 0.2195149727645171;
         1.0 + kappa - kappa / (1.0 + mu * s * s / kappa)
     }
-    /// Compute the XC energy for a uniform electron density (grid-free approx).
+    /// Exchange-correlation energy of a *uniform* electron gas of density `rho`
+    /// (Bohr⁻³) filling `volume` (Bohr³).
+    ///
+    /// Evaluates the selected functional at ∇ρ = 0 and τ = τ_unif(ρ); for a
+    /// uniform gas the exact exchange of a hybrid equals Slater exchange, so the
+    /// a₀ fraction is added back as Slater exchange.  (GGAs and TPSS reduce to
+    /// their LSDA limit; B3LYP keeps its LYP and VWN(RPA) correlation.)
     pub fn xc_energy_uniform(&self, rho: f64, volume: f64) -> f64 {
-        match self.xc {
-            XcFunctional::Lda => {
-                (Self::lda_exchange_energy_density(rho) + Self::vwn_correlation_energy_density(rho))
-                    * rho
-                    * volume
-            }
-            XcFunctional::Pbe => {
-                let ex = Self::lda_exchange_energy_density(rho);
-                let ec = Self::vwn_correlation_energy_density(rho);
-                (ex + ec) * rho * volume
-            }
-            XcFunctional::B3lyp => {
-                let ex = Self::lda_exchange_energy_density(rho);
-                let ec = Self::vwn_correlation_energy_density(rho);
-                ((1.0 - self.alpha_x) * ex + ec) * rho * volume
-            }
-            XcFunctional::Tpss => {
-                let ex = Self::lda_exchange_energy_density(rho);
-                let ec = Self::vwn_correlation_energy_density(rho);
-                (ex + ec) * rho * volume
-            }
-        }
+        let point = evaluate_xc(self.xc, self.alpha_x, rho, 0.0, uniform_gas_tau(rho));
+        let exact_exchange = self.alpha_x * rho * Self::lda_exchange_energy_density(rho);
+        (point.energy_density + exact_exchange) * volume
     }
     /// Apply a pseudopotential correction to the total energy.
     pub fn set_pseudopotential(&mut self, e_pp: f64) {
         self.pseudopotential_energy = e_pp;
     }
-    /// Run Kohn-Sham SCF (reuses HF structure with XC correction).
-    pub fn run_ks_scf(&self) -> DftResult {
-        let hf_result = self.hf_solver.run_scf();
-        let n = self.hf_solver.n_basis;
-        let mut rho_avg = 0.0;
-        for i in 0..n {
-            rho_avg += hf_result.density_matrix[i][i];
-        }
-        rho_avg /= (n as f64).max(1.0);
-        let xc_e = self.xc_energy_uniform(rho_avg.abs(), 1.0);
-        let kinetic = hf_result
-            .orbital_energies
-            .iter()
-            .take(self.hf_solver.n_electrons / 2)
-            .sum::<f64>();
-        DftResult {
-            energy: hf_result.energy + xc_e + self.pseudopotential_energy,
-            xc_energy: xc_e,
-            kinetic_energy: kinetic,
-            orbital_energies: hf_result.orbital_energies,
-            density_matrix: hf_result.density_matrix,
-            status: hf_result.status,
-        }
+    /// Run the restricted Kohn–Sham SCF.
+    ///
+    /// Starting from the core-Hamiltonian guess, each iteration builds
+    /// J, (a₀ K) and V_xc on the molecular grid from the current density,
+    /// forms F = H_core + J − (a₀/2) K + V_xc, extrapolates it with DIIS and
+    /// diagonalises FC = SCε.  The total energy is
+    /// E = Tr(PH) + ½Tr(PJ) − (a₀/4)Tr(PK) + E_xc + E_nn (+ pseudopotential).
+    /// Convergence requires |ΔE| < `hf_solver.energy_threshold` and
+    /// max|FPS − SPF| < `hf_solver.density_threshold`; otherwise the result is
+    /// returned with [`ScfStatus::NotConverged`].
+    ///
+    /// # Errors
+    /// [`QuantumChemistryError::MissingData`] if the solver carries no basis
+    /// functions, [`QuantumChemistryError::OpenShellReference`] for an odd
+    /// electron count, [`QuantumChemistryError::DimensionMismatch`] for
+    /// inconsistent integrals, [`QuantumChemistryError::SingularOverlap`] for a
+    /// linearly dependent basis and [`QuantumChemistryError::CoincidentNuclei`]
+    /// if no grid can be built.
+    pub fn run_ks_scf(&self) -> Result<DftResult, QuantumChemistryError> {
+        run_kohn_sham(self)
     }
     /// HOMO-LUMO gap in Hartree.
     pub fn homo_lumo_gap(&self, orbital_energies: &[f64]) -> f64 {
@@ -144,6 +145,9 @@ pub enum BasisSetType {
     G6_31GStar,
     /// cc-pVDZ correlation-consistent basis.
     CcPVDZ,
+    /// A user-supplied set of contracted Gaussians
+    /// (see [`HartreeFockSolver::from_basis`]).
+    Custom,
 }
 /// Restricted Hartree-Fock solver using the Roothaan-Hall equations.
 ///
@@ -172,6 +176,14 @@ pub struct HartreeFockSolver {
     pub atomic_charges: Vec<f64>,
     /// Atomic positions \[Bohr\].
     pub atomic_positions: Vec<[f64; 3]>,
+    /// Contracted basis functions (filled by [`from_atoms`](Self::from_atoms);
+    /// empty when the integrals were supplied directly through [`new`](Self::new)).
+    pub basis_functions: Vec<BasisFunction>,
+    /// Index of the atom on which each basis function is centred (parallel to `basis_functions`).
+    pub basis_atoms: Vec<usize>,
+    /// External point charges `(position [Bohr], charge [e])` embedded in the core
+    /// Hamiltonian by [`add_external_point_charges`](Self::add_external_point_charges).
+    pub external_charges: Vec<([f64; 3], f64)>,
 }
 impl HartreeFockSolver {
     /// Create a new Hartree-Fock solver.
@@ -197,9 +209,69 @@ impl HartreeFockSolver {
             eri,
             atomic_charges,
             atomic_positions,
+            basis_functions: Vec::new(),
+            basis_atoms: Vec::new(),
+            external_charges: Vec::new(),
         }
     }
-    /// Compute nuclear-nuclear repulsion energy \[Hartree\].
+    /// Embed external point charges (electrostatic embedding).
+    ///
+    /// Each charge Q_J at R_J (Bohr) acts on the electrons like a nucleus of charge
+    /// Q_J: the core Hamiltonian gains ⟨μ| −Q_J/|r − R_J| |ν⟩ (computed with
+    /// [`BasisFunction::nuclear_attraction_with`]) and
+    /// [`nuclear_repulsion`](Self::nuclear_repulsion) gains Σ_A Z_A Q_J / R_AJ.
+    ///
+    /// # Errors
+    /// [`QuantumChemistryError::MissingData`] if the solver has no basis functions
+    /// (it was not built with [`from_atoms`](Self::from_atoms)),
+    /// [`QuantumChemistryError::InvalidExternalCharge`] for a non-finite charge
+    /// or one that coincides with a nucleus.
+    pub fn add_external_point_charges(
+        &mut self,
+        charges: &[([f64; 3], f64)],
+    ) -> Result<(), QuantumChemistryError> {
+        if charges.is_empty() {
+            return Ok(());
+        }
+        if self.basis_functions.len() != self.n_basis {
+            return Err(QuantumChemistryError::MissingData("basis functions"));
+        }
+        for (index, (pos, q)) in charges.iter().enumerate() {
+            let coincides = self.atomic_positions.iter().any(|r| {
+                (r[0] - pos[0]).powi(2) + (r[1] - pos[1]).powi(2) + (r[2] - pos[2]).powi(2) < 1e-12
+            });
+            if !q.is_finite() || pos.iter().any(|x| !x.is_finite()) || coincides {
+                return Err(QuantumChemistryError::InvalidExternalCharge { index });
+            }
+        }
+        let v_ext = self.external_potential_matrix(charges);
+        for (h_row, v_row) in self.core_hamiltonian.iter_mut().zip(v_ext.iter()) {
+            for (h, v) in h_row.iter_mut().zip(v_row.iter()) {
+                *h += v;
+            }
+        }
+        self.external_charges.extend_from_slice(charges);
+        Ok(())
+    }
+    /// One-electron matrix V_μν = Σ_J ⟨μ| −Q_J/|r − R_J| |ν⟩ of the given point
+    /// charges in the solver's basis (zero-sized if the basis is unknown).
+    pub fn external_potential_matrix(&self, charges: &[([f64; 3], f64)]) -> Vec<Vec<f64>> {
+        let n = self.basis_functions.len();
+        let mut v = vec![vec![0.0_f64; n]; n];
+        for (i, bf_i) in self.basis_functions.iter().enumerate() {
+            for (j, bf_j) in self.basis_functions.iter().enumerate().skip(i) {
+                let v_ij: f64 = charges
+                    .iter()
+                    .map(|(pos, q)| bf_i.nuclear_attraction_with(bf_j, *q, *pos))
+                    .sum();
+                v[i][j] = v_ij;
+                v[j][i] = v_ij;
+            }
+        }
+        v
+    }
+    /// Compute the nuclear repulsion energy \[Hartree\]: nucleus–nucleus repulsion
+    /// plus the interaction of the nuclei with any embedded external point charges.
     pub fn nuclear_repulsion(&self) -> f64 {
         let mut e_nn = 0.0;
         let n = self.atomic_charges.len();
@@ -215,6 +287,17 @@ impl HartreeFockSolver {
                 };
                 if r > 1e-10 {
                     e_nn += self.atomic_charges[i] * self.atomic_charges[j] / r;
+                }
+            }
+        }
+        for (z_a, r_a) in self.atomic_charges.iter().zip(self.atomic_positions.iter()) {
+            for (pos, q) in &self.external_charges {
+                let r = ((r_a[0] - pos[0]).powi(2)
+                    + (r_a[1] - pos[1]).powi(2)
+                    + (r_a[2] - pos[2]).powi(2))
+                .sqrt();
+                if r > 1e-10 {
+                    e_nn += z_a * q / r;
                 }
             }
         }
@@ -277,7 +360,11 @@ impl HartreeFockSolver {
         Self::build_density_from_coeffs(&coeffs, n_occ, n)
     }
     /// Build density matrix P_mn = 2 * Σ_{occ} C_mi * C_ni
-    fn build_density_from_coeffs(coeffs: &[Vec<f64>], n_occ: usize, n: usize) -> Vec<Vec<f64>> {
+    pub(super) fn build_density_from_coeffs(
+        coeffs: &[Vec<f64>],
+        n_occ: usize,
+        n: usize,
+    ) -> Vec<Vec<f64>> {
         let mut density = vec![vec![0.0; n]; n];
         for mu in 0..n {
             for nu in 0..n {
@@ -395,9 +482,10 @@ impl HartreeFockSolver {
     }
     /// Compute two-electron repulsion integrals (μν|λσ) for a given basis set.
     ///
-    /// Uses the exact Boys-function formula for s-type primitive pairs (ss|ss).
-    /// For p-type contributions the zeroth-order (monopole) term is computed via
-    /// the product-Gaussian center — a valid approximation for STO-3G.
+    /// Every unique integral (8-fold permutational symmetry) is evaluated exactly
+    /// with the McMurchie–Davidson scheme
+    /// ([`electron_repulsion_integral`](super::integrals::electron_repulsion_integral)),
+    /// for s, p and higher Cartesian Gaussians alike.
     /// Returns a flat `Vec<f64>` indexed via `Self::eri_index`.
     pub fn compute_eris(&self, basis: &[BasisFunction]) -> Vec<f64> {
         let n = basis.len();
@@ -406,63 +494,44 @@ impl HartreeFockSolver {
         let mut eri = vec![0.0_f64; n_eri];
         for mu in 0..n {
             for nu in 0..=mu {
+                let mn = mu * (mu + 1) / 2 + nu;
                 for lambda in 0..n {
                     for sigma in 0..=lambda {
-                        let idx = self.eri_index(mu, nu, lambda, sigma);
-                        if idx >= eri.len() {
+                        let ls = lambda * (lambda + 1) / 2 + sigma;
+                        if ls > mn {
                             continue;
                         }
-                        let val = primitive_eri_contracted(
-                            &basis[mu],
-                            &basis[nu],
-                            &basis[lambda],
-                            &basis[sigma],
-                        );
-                        eri[idx] = val;
+                        let idx = self.eri_index(mu, nu, lambda, sigma);
+                        if let Some(slot) = eri.get_mut(idx) {
+                            *slot = electron_repulsion_integral(
+                                &basis[mu],
+                                &basis[nu],
+                                &basis[lambda],
+                                &basis[sigma],
+                            );
+                        }
                     }
                 }
             }
         }
         eri
     }
-    /// STO-3G Slater exponent parameters per element (Hehre, Ditchfield, Pople 1969).
-    ///
-    /// Returns `(zeta_s, Some(zeta_p))` for second-row atoms and `(zeta_s, None)` for hydrogen.
-    fn sto3g_zeta(z: u32) -> Option<(f64, Option<f64>)> {
-        match z {
-            1 => Some((1.24, None)),
-            6 => Some((5.67, Some(1.72))),
-            7 => Some((6.67, Some(1.95))),
-            8 => Some((7.66, Some(2.25))),
-            9 => Some((8.65, Some(2.55))),
-            16 => Some((6.92, Some(1.89))),
-            _ => None,
-        }
-    }
-    /// Number of valence electrons contributed by element `z` in a minimal basis treatment.
-    fn valence_electrons(z: u32) -> usize {
-        match z {
-            1 => 1,
-            6 => 4,
-            7 => 5,
-            8 => 6,
-            9 => 7,
-            16 => 6,
-            _ => 0,
-        }
-    }
     /// Construct a `HartreeFockSolver` from atomic positions and atomic numbers.
     ///
-    /// Builds the STO-3G minimal basis, computes the overlap matrix S, the core Hamiltonian
-    /// H_core = T + V_ne (using the Boys function for nuclear attraction integrals), and the
-    /// two-electron repulsion integrals (ERIs) from first principles.
+    /// Builds the all-electron STO-3G basis ([`sto3g_atom_basis`]: 1s for H/He,
+    /// 1s 2s 2p for Li–Ne, 1s 2s 2p 3s 3p for Na–Ar, with genuine Cartesian
+    /// p_x/p_y/p_z components), and evaluates S, H_core = T + V_ne and the ERIs
+    /// exactly (see [`from_basis`](Self::from_basis)).  The electron count is
+    /// Σ Z − `total_charge`, consistent with the full nuclear charges used in
+    /// V_ne and the nuclear repulsion.
     ///
     /// # Arguments
-    /// * `atomic_numbers` — element identifiers (1=H, 6=C, 7=N, 8=O, 9=F, 16=S).
+    /// * `atomic_numbers` — element identifiers (1 = H … 18 = Ar).
     /// * `positions_angstrom` — Cartesian positions in **Ångström**; converted to Bohr internally.
     /// * `total_charge` — net molecular charge (0 for neutral).
     ///
-    /// Returns `None` if an unsupported element is encountered.
+    /// Returns `None` if an unsupported element is encountered, the input is
+    /// empty or inconsistent, or the charge exceeds the total nuclear charge.
     pub fn from_atoms(
         atomic_numbers: &[u32],
         positions_angstrom: &[[f64; 3]],
@@ -478,51 +547,152 @@ impl HartreeFockSolver {
             .map(|p| [p[0] * BOHR, p[1] * BOHR, p[2] * BOHR])
             .collect();
         let mut basis: Vec<BasisFunction> = Vec::new();
-        let mut n_electrons: usize = 0;
-        for (a, &z) in atomic_numbers.iter().enumerate() {
-            let (zs, zp_opt) = Self::sto3g_zeta(z)?;
-            let center = pos_bohr[a];
-            basis.push(BasisFunction::sto3g_s(center, zs));
-            if let Some(zp) = zp_opt {
-                for _ in 0..3 {
-                    basis.push(BasisFunction::sto3g_p(center, zp));
-                }
-            }
-            n_electrons += Self::valence_electrons(z);
+        let mut basis_atoms: Vec<usize> = Vec::new();
+        for (a, (&z, &center)) in atomic_numbers.iter().zip(pos_bohr.iter()).enumerate() {
+            let shells = sto3g_atom_basis(z, center)?;
+            basis_atoms.extend(std::iter::repeat_n(a, shells.len()));
+            basis.extend(shells);
         }
-        let n_electrons = (n_electrons as i64 - total_charge as i64).max(0) as usize;
+        let nuclear_total: i64 = atomic_numbers.iter().map(|&z| i64::from(z)).sum();
+        let n_electrons = usize::try_from(nuclear_total - i64::from(total_charge)).ok()?;
+        let nuclear_charges: Vec<f64> = atomic_numbers.iter().map(|&z| f64::from(z)).collect();
+        Self::from_basis(
+            basis,
+            basis_atoms,
+            nuclear_charges,
+            pos_bohr,
+            n_electrons,
+            BasisSetType::Sto3G,
+        )
+        .ok()
+    }
+    /// Construct a solver for an arbitrary contracted Cartesian Gaussian basis.
+    ///
+    /// Computes the overlap matrix S, the core Hamiltonian H_core = T + V_ne and
+    /// all two-electron integrals exactly (McMurchie–Davidson).
+    ///
+    /// * `basis_atoms[μ]` — index of the atom carrying basis function μ.
+    /// * `nuclear_charges`, `positions_bohr` — nuclei \[e, Bohr\].
+    /// * `n_electrons` — total number of electrons.
+    ///
+    /// # Errors
+    /// [`QuantumChemistryError::DimensionMismatch`] if `basis_atoms` does not
+    /// match `basis`, the nuclear arrays differ in length, or an entry of
+    /// `basis_atoms` is not a valid atom index; [`QuantumChemistryError::MissingData`]
+    /// for an empty basis.
+    pub fn from_basis(
+        basis: Vec<BasisFunction>,
+        basis_atoms: Vec<usize>,
+        nuclear_charges: Vec<f64>,
+        positions_bohr: Vec<[f64; 3]>,
+        n_electrons: usize,
+        basis_type: BasisSetType,
+    ) -> Result<Self, QuantumChemistryError> {
+        if basis.is_empty() {
+            return Err(QuantumChemistryError::MissingData("basis functions"));
+        }
+        if basis_atoms.len() != basis.len() {
+            return Err(QuantumChemistryError::DimensionMismatch {
+                what: "basis-function atom indices",
+                expected: basis.len(),
+                found: basis_atoms.len(),
+            });
+        }
+        if positions_bohr.len() != nuclear_charges.len() {
+            return Err(QuantumChemistryError::DimensionMismatch {
+                what: "nuclear positions",
+                expected: nuclear_charges.len(),
+                found: positions_bohr.len(),
+            });
+        }
+        if let Some(&bad) = basis_atoms.iter().find(|&&a| a >= nuclear_charges.len()) {
+            return Err(QuantumChemistryError::DimensionMismatch {
+                what: "atom index of a basis function",
+                expected: nuclear_charges.len(),
+                found: bad,
+            });
+        }
         let n_basis = basis.len();
-        let overlap: Vec<Vec<f64>> = (0..n_basis)
-            .map(|i| {
-                (0..n_basis)
-                    .map(|j| basis[i].overlap_with(&basis[j]))
-                    .collect()
-            })
-            .collect();
+        let mut overlap = vec![vec![0.0_f64; n_basis]; n_basis];
         let mut h_core = vec![vec![0.0_f64; n_basis]; n_basis];
         for i in 0..n_basis {
-            for j in 0..n_basis {
+            for j in i..n_basis {
+                let s_ij = basis[i].overlap_with(&basis[j]);
                 let t_ij = basis[i].kinetic_with(&basis[j]);
-                let mut v_ij = 0.0;
-                for (a, &z) in atomic_numbers.iter().enumerate() {
-                    v_ij += basis[i].nuclear_attraction_with(&basis[j], z as f64, pos_bohr[a]);
-                }
+                let v_ij: f64 = nuclear_charges
+                    .iter()
+                    .zip(positions_bohr.iter())
+                    .map(|(&z, &c)| basis[i].nuclear_attraction_with(&basis[j], z, c))
+                    .sum();
+                overlap[i][j] = s_ij;
+                overlap[j][i] = s_ij;
                 h_core[i][j] = t_ij + v_ij;
+                h_core[j][i] = t_ij + v_ij;
             }
         }
         let mut solver = Self::new(
             n_basis,
             n_electrons,
-            BasisSetType::Sto3G,
+            basis_type,
             overlap,
             h_core,
-            vec![0.0],
-            atomic_numbers.iter().map(|&z| z as f64).collect(),
-            pos_bohr,
+            Vec::new(),
+            nuclear_charges,
+            positions_bohr,
         );
-        let eri = solver.compute_eris(&basis);
-        solver.eri = eri;
-        Some(solver)
+        solver.eri = solver.compute_eris(&basis);
+        solver.basis_functions = basis;
+        solver.basis_atoms = basis_atoms;
+        Ok(solver)
+    }
+    /// Kinetic-energy matrix T_μν = ⟨μ| −½∇² |ν⟩ of the solver's basis
+    /// (zero-sized if the basis functions are unknown).
+    pub fn kinetic_matrix(&self) -> Vec<Vec<f64>> {
+        let n = self.basis_functions.len();
+        let mut t: Vec<Vec<f64>> = self
+            .basis_functions
+            .iter()
+            .enumerate()
+            .map(|(i, bf_i)| {
+                let mut row = vec![0.0_f64; n];
+                for (slot, bf_j) in row.iter_mut().zip(self.basis_functions.iter()).take(i + 1) {
+                    *slot = bf_i.kinetic_with(bf_j);
+                }
+                row
+            })
+            .collect();
+        symmetrize_from_lower(&mut t);
+        t
+    }
+    /// Coulomb matrix J_μν = Σ_λσ P_λσ (μν|λσ).
+    pub fn coulomb_matrix(&self, density: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        self.two_electron_matrix(density, false)
+    }
+    /// Exchange matrix K_μν = Σ_λσ P_λσ (μλ|νσ).
+    pub fn exchange_matrix(&self, density: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        self.two_electron_matrix(density, true)
+    }
+    fn two_electron_matrix(&self, density: &[Vec<f64>], exchange: bool) -> Vec<Vec<f64>> {
+        let n = self.n_basis;
+        let mut out = vec![vec![0.0_f64; n]; n];
+        for (mu, out_row) in out.iter_mut().enumerate() {
+            for (nu, out_val) in out_row.iter_mut().enumerate().take(mu + 1) {
+                let mut acc = 0.0;
+                for (lambda, row) in density.iter().enumerate().take(n) {
+                    for (sigma, &p) in row.iter().enumerate().take(n) {
+                        let idx = if exchange {
+                            self.eri_index(mu, lambda, nu, sigma)
+                        } else {
+                            self.eri_index(mu, nu, lambda, sigma)
+                        };
+                        acc += p * self.eri.get(idx).copied().unwrap_or(0.0);
+                    }
+                }
+                *out_val = acc;
+            }
+        }
+        symmetrize_from_lower(&mut out);
+        out
     }
 }
 /// QM/MM embedding type.

@@ -2,7 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use super::types::{ContactPair, FrictionStatus};
+use super::types::{FrictionStatus, NodeFaceContact};
+use std::collections::HashMap;
 
 /// Estimate the contact stiffness from material properties using Hertz theory.
 ///
@@ -417,63 +418,284 @@ mod tests_extended {
         assert!(err < 1e-10, "peak pressure validation error = {err}");
     }
 }
-/// Detect node-to-face contact by checking each node against every triangular
-/// face.  Returns all pairs where the signed distance is negative (penetrating)
-/// or within a small tolerance.
-pub fn detect_node_face_contact(nodes: &[[f64; 3]], faces: &[[usize; 3]]) -> Vec<ContactPair> {
-    let mut pairs = Vec::new();
-    let tol = 1e-10_f64;
-    for (node_idx, &node) in nodes.iter().enumerate() {
-        for face in faces.iter() {
-            let v0 = nodes[face[0]];
-            let v1 = nodes[face[1]];
-            let v2 = nodes[face[2]];
-            let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
-            let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
-            let nx = e1[1] * e2[2] - e1[2] * e2[1];
-            let ny = e1[2] * e2[0] - e1[0] * e2[2];
-            let nz = e1[0] * e2[1] - e1[1] * e2[0];
-            let n_len = (nx * nx + ny * ny + nz * nz).sqrt();
-            if n_len < 1e-30 {
+/// Absolute tolerance on the gap (length units) and on the barycentric
+/// coordinates (dimensionless) of the node-face test.
+const NODE_FACE_TOLERANCE: f64 = 1e-10;
+
+/// A face registered in the broad-phase grid is split over at most this many
+/// cells; larger faces are tested against every node instead.
+const MAX_GRID_CELLS_PER_FACE: usize = 512;
+
+#[inline]
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+#[inline]
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[inline]
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// A valid (finite, non-degenerate) triangular master face prepared for the
+/// node-face test.
+struct PreparedFace {
+    /// Index in the face list given to the detector.
+    index: usize,
+    /// Node indices.
+    nodes: [usize; 3],
+    /// Vertex coordinates.
+    vertices: [[f64; 3]; 3],
+    /// Unit normal (right-hand rule).
+    normal: [f64; 3],
+    /// Lower corner of the capture box (see [`prepare_faces`]).
+    lo: [f64; 3],
+    /// Upper corner of the capture box.
+    hi: [f64; 3],
+}
+
+/// Collect the valid faces and compute their capture boxes.
+///
+/// A node can only be reported against a face if it lies in the prism obtained
+/// by extruding the triangle along its normal by `[-max_penetration, tolerance]`
+/// and widening it in-plane by the barycentric tolerance.  The capture box is
+/// the bounding box of the triangle grown by an upper bound of that prism's
+/// distance to the triangle, so the broad phase never misses a candidate:
+///
+/// * the offset along the normal is at most `max(max_penetration, tolerance)`;
+/// * at most two barycentric coordinates of the projected point can be negative,
+///   each by no more than `tolerance`, so the projection is at most
+///   `2 * tolerance * longest_edge` away from the triangle.
+fn prepare_faces(
+    nodes: &[[f64; 3]],
+    faces: &[[usize; 3]],
+    max_penetration: f64,
+) -> Vec<PreparedFace> {
+    let mut prepared = Vec::with_capacity(faces.len());
+    for (index, face) in faces.iter().enumerate() {
+        let (Some(&v0), Some(&v1), Some(&v2)) =
+            (nodes.get(face[0]), nodes.get(face[1]), nodes.get(face[2]))
+        else {
+            continue;
+        };
+        let vertices = [v0, v1, v2];
+        if vertices.iter().flatten().any(|c| !c.is_finite()) {
+            continue;
+        }
+        let e1 = sub3(v1, v0);
+        let e2 = sub3(v2, v0);
+        let n = cross3(e1, e2);
+        let n_len = dot3(n, n).sqrt();
+        if !n_len.is_finite() || n_len < 1e-30 {
+            continue;
+        }
+        let normal = [n[0] / n_len, n[1] / n_len, n[2] / n_len];
+        let longest_edge = dot3(e1, e1)
+            .max(dot3(e2, e2))
+            .max(dot3(sub3(v2, v1), sub3(v2, v1)))
+            .sqrt();
+        let margin =
+            max_penetration.max(NODE_FACE_TOLERANCE) + 2.0 * NODE_FACE_TOLERANCE * longest_edge;
+        let mut lo = v0;
+        let mut hi = v0;
+        for v in &vertices[1..] {
+            for ((l, h), &c) in lo.iter_mut().zip(hi.iter_mut()).zip(v.iter()) {
+                *l = l.min(c);
+                *h = h.max(c);
+            }
+        }
+        for (l, h) in lo.iter_mut().zip(hi.iter_mut()) {
+            *l -= margin;
+            *h += margin;
+        }
+        prepared.push(PreparedFace {
+            index,
+            nodes: *face,
+            vertices,
+            normal,
+            lo,
+            hi,
+        });
+    }
+    prepared
+}
+
+/// Test one node against one face.
+///
+/// Returns `(gap, barycentric)` if the signed distance `gap` of `point` from the
+/// face plane lies in `[-max_penetration, NODE_FACE_TOLERANCE]` and its
+/// orthogonal projection falls inside the triangle (within tolerance).
+fn evaluate_node_face(
+    point: [f64; 3],
+    face: &PreparedFace,
+    max_penetration: f64,
+) -> Option<(f64, [f64; 3])> {
+    let [v0, v1, v2] = face.vertices;
+    let gap = dot3(sub3(point, v0), face.normal);
+    if !(-max_penetration..=NODE_FACE_TOLERANCE).contains(&gap) {
+        return None;
+    }
+    let projected = [
+        point[0] - gap * face.normal[0],
+        point[1] - gap * face.normal[1],
+        point[2] - gap * face.normal[2],
+    ];
+    let w0 = sub3(v1, v0);
+    let w1 = sub3(v2, v0);
+    let w2 = sub3(projected, v0);
+    let d00 = dot3(w0, w0);
+    let d01 = dot3(w0, w1);
+    let d11 = dot3(w1, w1);
+    let d20 = dot3(w2, w0);
+    let d21 = dot3(w2, w1);
+    let denom = d00 * d11 - d01 * d01;
+    if denom.abs() < 1e-30 {
+        return None;
+    }
+    let v = (d11 * d20 - d01 * d21) / denom;
+    let w = (d00 * d21 - d01 * d20) / denom;
+    let u = 1.0 - v - w;
+    if u >= -NODE_FACE_TOLERANCE && v >= -NODE_FACE_TOLERANCE && w >= -NODE_FACE_TOLERANCE {
+        Some((gap, [u, v, w]))
+    } else {
+        None
+    }
+}
+
+/// Uniform-grid broad phase over the capture boxes of the master faces.
+struct FaceGrid {
+    origin: [f64; 3],
+    inv_cell: f64,
+    cells: HashMap<[i64; 3], Vec<usize>>,
+    /// Indices (into the prepared face list, ascending) of faces too large for the grid.
+    oversized: Vec<usize>,
+}
+
+impl FaceGrid {
+    fn cell_index(&self, p: [f64; 3]) -> [i64; 3] {
+        // `as` saturates, so even absurd coordinates cannot overflow.
+        [
+            ((p[0] - self.origin[0]) * self.inv_cell).floor() as i64,
+            ((p[1] - self.origin[1]) * self.inv_cell).floor() as i64,
+            ((p[2] - self.origin[2]) * self.inv_cell).floor() as i64,
+        ]
+    }
+
+    fn build(faces: &[PreparedFace]) -> Self {
+        let mut origin = [f64::INFINITY; 3];
+        let mut extent_sum = 0.0;
+        for face in faces {
+            for (o, &l) in origin.iter_mut().zip(face.lo.iter()) {
+                *o = o.min(l);
+            }
+            extent_sum += face
+                .hi
+                .iter()
+                .zip(face.lo.iter())
+                .map(|(h, l)| h - l)
+                .fold(0.0_f64, f64::max);
+        }
+        // The mean capture-box edge keeps typical faces within a few cells.
+        let cell = (extent_sum / faces.len().max(1) as f64).max(NODE_FACE_TOLERANCE);
+        let mut grid = Self {
+            origin,
+            inv_cell: 1.0 / cell,
+            cells: HashMap::new(),
+            oversized: Vec::new(),
+        };
+        for (slot, face) in faces.iter().enumerate() {
+            let lo = grid.cell_index(face.lo);
+            let hi = grid.cell_index(face.hi);
+            let span = |k: usize| (hi[k].saturating_sub(lo[k]).saturating_add(1)) as u128;
+            let count = span(0).saturating_mul(span(1)).saturating_mul(span(2));
+            if count > MAX_GRID_CELLS_PER_FACE as u128 {
+                grid.oversized.push(slot);
                 continue;
             }
-            let normal = [nx / n_len, ny / n_len, nz / n_len];
-            let d = [node[0] - v0[0], node[1] - v0[1], node[2] - v0[2]];
-            let gap = d[0] * normal[0] + d[1] * normal[1] + d[2] * normal[2];
-            if gap <= tol {
-                let proj = [
-                    node[0] - gap * normal[0],
-                    node[1] - gap * normal[1],
-                    node[2] - gap * normal[2],
-                ];
-                let w0 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
-                let w1 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
-                let w2 = [proj[0] - v0[0], proj[1] - v0[1], proj[2] - v0[2]];
-                let d00 = w0[0] * w0[0] + w0[1] * w0[1] + w0[2] * w0[2];
-                let d01 = w0[0] * w1[0] + w0[1] * w1[1] + w0[2] * w1[2];
-                let d11 = w1[0] * w1[0] + w1[1] * w1[1] + w1[2] * w1[2];
-                let d20 = w2[0] * w0[0] + w2[1] * w0[1] + w2[2] * w0[2];
-                let d21 = w2[0] * w1[0] + w2[1] * w1[1] + w2[2] * w1[2];
-                let denom = d00 * d11 - d01 * d01;
-                if denom.abs() < 1e-30 {
-                    continue;
-                }
-                let v = (d11 * d20 - d01 * d21) / denom;
-                let w = (d00 * d21 - d01 * d20) / denom;
-                let u = 1.0 - v - w;
-                if u >= -tol && v >= -tol && w >= -tol {
-                    pairs.push(ContactPair {
-                        node_a: node_idx,
-                        node_b: face[0],
-                        gap,
-                        normal,
-                        lambda: 0.0,
-                    });
+            for i in lo[0]..=hi[0] {
+                for j in lo[1]..=hi[1] {
+                    for k in lo[2]..=hi[2] {
+                        grid.cells.entry([i, j, k]).or_default().push(slot);
+                    }
                 }
             }
         }
+        grid
     }
-    pairs
+}
+
+/// Detect node-to-face contact between slave nodes and triangular master faces.
+///
+/// Every node is tested against the faces whose capture box contains it
+/// (uniform-grid broad phase).  A pair is reported when
+///
+/// * the node is **not** one of the face's own vertices,
+/// * its signed distance from the face plane (positive on the side the face
+///   normal `(v1 - v0) x (v2 - v0)` points to) satisfies
+///   `-max_penetration <= gap <= 1e-10`, and
+/// * its orthogonal projection falls inside the triangle (barycentric
+///   coordinates `>= -1e-10`).
+///
+/// `max_penetration` (a length) bounds how deep a node may sit below a face and
+/// still be treated as penetrating it; nodes further behind the face plane
+/// belong to other parts of the surface and are ignored.  It must be finite;
+/// negative values are treated as 0, and a non-finite value yields no contacts.
+///
+/// Faces referring to missing nodes, with non-finite coordinates or with zero
+/// area are skipped, as are nodes with non-finite coordinates.  The result is
+/// ordered by node index and then face index.
+pub fn detect_node_face_contact(
+    nodes: &[[f64; 3]],
+    faces: &[[usize; 3]],
+    max_penetration: f64,
+) -> Vec<NodeFaceContact> {
+    if !max_penetration.is_finite() {
+        return Vec::new();
+    }
+    let max_penetration = max_penetration.max(0.0);
+    let prepared = prepare_faces(nodes, faces, max_penetration);
+    if prepared.is_empty() {
+        return Vec::new();
+    }
+    let grid = FaceGrid::build(&prepared);
+    let mut contacts = Vec::new();
+    let mut candidates: Vec<usize> = Vec::new();
+    for (node_idx, &node) in nodes.iter().enumerate() {
+        if node.iter().any(|c| !c.is_finite()) {
+            continue;
+        }
+        candidates.clear();
+        if let Some(cell) = grid.cells.get(&grid.cell_index(node)) {
+            candidates.extend_from_slice(cell);
+        }
+        candidates.extend_from_slice(&grid.oversized);
+        candidates.sort_unstable();
+        for &slot in &candidates {
+            let face = &prepared[slot];
+            if face.nodes.contains(&node_idx) {
+                continue;
+            }
+            if let Some((gap, barycentric)) = evaluate_node_face(node, face, max_penetration) {
+                contacts.push(NodeFaceContact {
+                    node: node_idx,
+                    face: face.index,
+                    face_nodes: face.nodes,
+                    gap,
+                    normal: face.normal,
+                    barycentric,
+                });
+            }
+        }
+    }
+    contacts
 }
 /// Hertz contact force for two elastic spheres given effective modulus,
 /// effective radius, and indentation depth `delta`.
@@ -915,5 +1137,272 @@ mod contact_extended_tests {
         let t1 = rolling_resistance_torque(0.01, 1000.0, 0.05);
         let t2 = rolling_resistance_torque(0.01, 1000.0, 0.10);
         assert!((t2 - 2.0 * t1).abs() < 1e-12);
+    }
+}
+#[cfg(test)]
+mod tests_node_face {
+    use super::*;
+    use crate::contact::*;
+
+    /// Unit square in the z = 0 plane split into two counter-clockwise triangles (normal +z).
+    fn flat_square() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let nodes = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let faces = vec![[0, 1, 2], [0, 2, 3]];
+        (nodes, faces)
+    }
+
+    /// Closed tetrahedron with outward-wound faces.
+    fn tetrahedron() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let nodes = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let faces = vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+        (nodes, faces)
+    }
+
+    #[test]
+    fn test_flat_mesh_has_no_self_contacts() {
+        // Regression: every face vertex used to be reported against its own face (gap 0, u = 1).
+        let (nodes, faces) = flat_square();
+        assert!(detect_node_face_contact(&nodes, &faces, 1e-3).is_empty());
+        assert!(detect_node_face_contact(&nodes, &faces, 10.0).is_empty());
+    }
+
+    #[test]
+    fn test_closed_tetrahedron_at_rest_has_no_contacts() {
+        let (nodes, faces) = tetrahedron();
+        assert!(detect_node_face_contact(&nodes, &faces, 1e-3).is_empty());
+    }
+
+    #[test]
+    fn test_node_far_behind_face_is_not_reported() {
+        let (mut nodes, faces) = flat_square();
+        nodes.push([0.6, 0.2, -1.0]);
+        let found = detect_node_face_contact(&nodes, &faces, 0.01);
+        assert!(
+            found.is_empty(),
+            "node 1 m below the face reported: {found:?}"
+        );
+        // With a deep enough penetration limit the same node is a penetration of 1 m.
+        let deep = detect_node_face_contact(&nodes, &faces, 2.0);
+        assert_eq!(deep.len(), 1);
+        assert_eq!(deep[0].node, 4);
+        assert_eq!(deep[0].face, 0);
+        assert!((deep[0].gap + 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_shallow_penetration_is_reported_with_face_identity() {
+        let (mut nodes, faces) = flat_square();
+        nodes.push([0.5, 0.2, -1e-3]);
+        let found = detect_node_face_contact(&nodes, &faces, 0.01);
+        assert_eq!(found.len(), 1, "expected exactly one contact: {found:?}");
+        let c = &found[0];
+        assert_eq!(c.node, 4);
+        assert_eq!(c.face, 0);
+        assert_eq!(c.face_nodes, [0, 1, 2]);
+        assert!((c.gap + 1e-3).abs() < 1e-12, "gap = {}", c.gap);
+        assert_eq!(c.normal, [0.0, 0.0, 1.0]);
+        // (0.5, 0.2) = u (0,0) + v (1,0) + w (1,1)  ->  w = 0.2, v = 0.3, u = 0.5
+        assert!((c.barycentric[0] - 0.5).abs() < 1e-12);
+        assert!((c.barycentric[1] - 0.3).abs() < 1e-12);
+        assert!((c.barycentric[2] - 0.2).abs() < 1e-12);
+        let sum: f64 = c.barycentric.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-12);
+        assert_eq!(c.nearest_face_node(), 0);
+    }
+
+    #[test]
+    fn test_separated_node_and_node_outside_triangle_are_not_reported() {
+        let (mut nodes, faces) = flat_square();
+        nodes.push([0.6, 0.2, 0.5]); // above the surface: open gap
+        nodes.push([2.0, 0.2, -1e-3]); // below the surface but beside the square
+        assert!(detect_node_face_contact(&nodes, &faces, 0.01).is_empty());
+    }
+
+    #[test]
+    fn test_touching_node_is_reported_with_zero_gap() {
+        let (mut nodes, faces) = flat_square();
+        nodes.push([0.7, 0.1, 0.0]);
+        let found = detect_node_face_contact(&nodes, &faces, 0.01);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].gap.abs() < 1e-12);
+        assert_eq!(found[0].face, 0);
+    }
+
+    #[test]
+    fn test_contact_pair_conversion_uses_nearest_master_node() {
+        let (mut nodes, faces) = flat_square();
+        nodes.push([0.95, 0.05, -2e-3]); // closest to vertex 1 = (1, 0, 0)
+        let found = detect_node_face_contact(&nodes, &faces, 0.01);
+        assert_eq!(found.len(), 1);
+        let pair = found[0].to_contact_pair();
+        assert_eq!(pair.node_a, 4);
+        assert_eq!(pair.node_b, 1);
+        assert!((pair.gap + 2e-3).abs() < 1e-12);
+        assert_eq!(pair.normal, [0.0, 0.0, 1.0]);
+        let triplets = ContactStiffness::assemble(&[pair], 1e6, 15);
+        assert_eq!(triplets.len(), 12);
+    }
+
+    #[test]
+    fn test_tetrahedron_deep_limit_never_pairs_node_with_own_face() {
+        let (nodes, faces) = tetrahedron();
+        let found = detect_node_face_contact(&nodes, &faces, 5.0);
+        assert!(!found.is_empty());
+        for c in &found {
+            assert!(!c.face_nodes.contains(&c.node), "self contact: {c:?}");
+            assert!(c.gap <= 1e-10 && c.gap >= -5.0);
+        }
+    }
+
+    #[test]
+    fn test_degenerate_input_is_skipped_without_panic() {
+        let nodes = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.2, 0.2, -1e-4],
+            [f64::NAN, 0.0, 0.0],
+        ];
+        // face 0: out-of-range index, face 1: zero area, face 2: NaN vertex, face 3: valid
+        let faces = vec![[0, 1, 99], [0, 0, 1], [0, 1, 4], [0, 1, 2]];
+        let found = detect_node_face_contact(&nodes, &faces, 0.01);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].node, 3);
+        assert_eq!(found[0].face, 3);
+        assert!(detect_node_face_contact(&nodes, &faces, f64::NAN).is_empty());
+        assert!(detect_node_face_contact(&nodes, &faces, f64::INFINITY).is_empty());
+        assert!(detect_node_face_contact(&[], &faces, 0.01).is_empty());
+        assert!(detect_node_face_contact(&nodes, &[], 0.01).is_empty());
+        // A negative limit behaves like zero: only nodes on or above the face qualify.
+        assert!(detect_node_face_contact(&nodes, &faces, -1.0).is_empty());
+    }
+
+    /// Deterministic pseudo-random numbers in [0, 1).
+    fn lcg(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+
+    #[test]
+    fn test_broad_phase_matches_brute_force() {
+        // Height-field surface of 12 x 12 cells with 2 triangles each, plus scattered probe nodes.
+        let n = 12usize;
+        let mut nodes: Vec<[f64; 3]> = Vec::new();
+        for j in 0..=n {
+            for i in 0..=n {
+                let x = i as f64 / n as f64;
+                let y = j as f64 / n as f64;
+                nodes.push([x, y, 0.05 * (6.0 * x).sin() * (5.0 * y).cos()]);
+            }
+        }
+        let mut faces: Vec<[usize; 3]> = Vec::new();
+        for j in 0..n {
+            for i in 0..n {
+                let a = j * (n + 1) + i;
+                let b = a + 1;
+                let c = a + n + 1;
+                let d = c + 1;
+                faces.push([a, b, d]);
+                faces.push([a, d, c]);
+            }
+        }
+        let mut state = 0x1234_5678_9abc_def0_u64;
+        for _ in 0..600 {
+            let x = lcg(&mut state);
+            let y = lcg(&mut state);
+            let z = 0.15 * (lcg(&mut state) - 0.5);
+            nodes.push([x, y, z]);
+        }
+        let depth = 0.04;
+        let fast = detect_node_face_contact(&nodes, &faces, depth);
+
+        let prepared = prepare_faces(&nodes, &faces, depth);
+        let mut reference = Vec::new();
+        for (node_idx, &node) in nodes.iter().enumerate() {
+            for face in &prepared {
+                if face.nodes.contains(&node_idx) {
+                    continue;
+                }
+                if let Some((gap, bary)) = evaluate_node_face(node, face, depth) {
+                    reference.push((node_idx, face.index, gap, bary));
+                }
+            }
+        }
+        assert!(
+            reference.len() > 20,
+            "scenario must contain a meaningful number of contacts, got {}",
+            reference.len()
+        );
+        assert_eq!(fast.len(), reference.len());
+        for (c, r) in fast.iter().zip(reference.iter()) {
+            assert_eq!((c.node, c.face), (r.0, r.1));
+            assert_eq!(c.gap, r.2);
+            assert_eq!(c.barycentric, r.3);
+            assert!(!c.face_nodes.contains(&c.node));
+            assert!(c.gap >= -depth && c.gap <= 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_oversized_faces_are_not_missed() {
+        // One huge triangle next to many tiny ones forces the oversized-face path of the grid.
+        let mut nodes = vec![
+            [-100.0, -100.0, 0.0],
+            [100.0, -100.0, 0.0],
+            [0.0, 100.0, 0.0],
+        ];
+        let mut faces = vec![[0, 1, 2]];
+        for k in 0..40 {
+            let x = 0.01 * k as f64 + 20.0;
+            let base = nodes.len();
+            nodes.push([x, 0.0, 5.0]);
+            nodes.push([x + 0.004, 0.0, 5.0]);
+            nodes.push([x, 0.004, 5.0]);
+            faces.push([base, base + 1, base + 2]);
+        }
+        let probe = nodes.len();
+        nodes.push([20.2, 10.0, -0.0005]);
+        let found = detect_node_face_contact(&nodes, &faces, 0.01);
+        let hits: Vec<_> = found.iter().filter(|c| c.node == probe).collect();
+        assert_eq!(hits.len(), 1, "probe must hit the huge face: {found:?}");
+        assert_eq!(hits[0].face, 0);
+        assert!((hits[0].gap + 0.0005).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_capture_box_covers_the_barycentric_tolerance_near_a_vertex() {
+        // Beyond a vertex two barycentric coordinates may both be slightly negative (-0.99e-10), so
+        // the accepted region reaches 0.99e-10 * |e1 + e2| past the vertex: more than one
+        // `1e-10 * longest_edge` along an axis for this large triangle.  A capture box that is only
+        // grown by one edge length times the tolerance would drop the probe from the grid.
+        let edge = 1.0e3_f64;
+        let apex_height = 0.5 * 3.0_f64.sqrt() * edge;
+        let nodes = vec![
+            [0.0, 0.0, 0.0],
+            [edge, 0.0, 0.0],
+            [0.5 * edge, apex_height, 0.0],
+            // v0 - 0.99e-10 * ((edge, 0) + (edge / 2, apex_height))
+            [-0.99e-10 * 1.5 * edge, -0.99e-10 * apex_height, 0.0],
+        ];
+        let faces = vec![[0, 1, 2]];
+        let found = detect_node_face_contact(&nodes, &faces, 0.0);
+        assert_eq!(found.len(), 1, "probe lies inside the tolerance: {found:?}");
+        assert_eq!(found[0].node, 3);
+        assert_eq!(found[0].face, 0);
+        assert_eq!(found[0].gap, 0.0);
+        assert!(found[0].barycentric[1] < 0.0 && found[0].barycentric[2] < 0.0);
+        assert!(found[0].barycentric[1] > -1.0e-10 && found[0].barycentric[2] > -1.0e-10);
     }
 }

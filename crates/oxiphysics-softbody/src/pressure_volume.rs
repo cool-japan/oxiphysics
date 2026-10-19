@@ -8,6 +8,25 @@
 //!
 //! Uses a triangle-mesh surface representation. Volume is computed using the
 //! divergence theorem (signed tetrahedral decomposition).
+//!
+//! # Dynamics
+//!
+//! [`step_body`] integrates the surface vertices with semi-implicit Euler under
+//! gravity, the membrane edge springs ([`membrane_force`]) and, for an
+//! inflatable body, the pressure load ([`pressure_force`]). Two regimes exist,
+//! selected by [`PressurizedBody::enforce_incompressible`]:
+//!
+//! * **Incompressible** (default): the enclosed volume is held at
+//!   [`PressurizedBody::rest_volume`] by iterated position projection followed
+//!   by the PBD velocity update `v = (x − x_start)/Δt`. On a closed mesh the
+//!   nodal pressure force is exactly `p ∂V/∂xᵢ`, i.e. it is parallel to the
+//!   volume-constraint gradient; the constraint reaction therefore absorbs it
+//!   completely and it is not integrated as a load.
+//! * **Inflatable**: the volume is free; the gauge pressure inflates the
+//!   membrane until the edge-spring tension balances it
+//!   (`p ∂V/∂xᵢ + F_spring,i = 0`).
+
+use std::collections::BTreeSet;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector helpers (no nalgebra; use [f64; 3])
@@ -103,6 +122,39 @@ impl SurfaceVertex {
 // Pressurized body
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// An elastic edge of the membrane: a linear spring between two surface
+/// vertices with a fixed rest length.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MembraneEdge {
+    /// Indices of the two end vertices (`vertices[0] < vertices[1]`).
+    pub vertices: [usize; 2],
+    /// Rest length (m).
+    pub rest_length: f64,
+}
+
+/// Collect the unique undirected edges of `triangles` with their current
+/// lengths as rest lengths. Edges referencing missing vertices are skipped.
+fn build_membrane_edges(vertices: &[SurfaceVertex], triangles: &[[usize; 3]]) -> Vec<MembraneEdge> {
+    let mut unique: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for tri in triangles {
+        for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+            unique.insert((a.min(b), a.max(b)));
+        }
+    }
+    unique
+        .into_iter()
+        .filter_map(|(a, b)| {
+            let pa = vertices.get(a)?.position;
+            let pb = vertices.get(b)?.position;
+            let d = v3_sub(pb, pa);
+            Some(MembraneEdge {
+                vertices: [a, b],
+                rest_length: v3_dot(d, d).sqrt(),
+            })
+        })
+        .collect()
+}
+
 /// A closed triangle-mesh soft body inflated by internal pressure.
 ///
 /// The mesh must be a closed, consistently-oriented manifold for the volume
@@ -123,10 +175,30 @@ pub struct PressurizedBody {
     pub valve_coefficient: f64,
     /// Ambient pressure (Pa). Typically 101325 Pa.
     pub ambient_pressure: f64,
+    /// Membrane edge-spring stiffness k (N/m). `0.0` (the default) disables
+    /// membrane elasticity.
+    pub membrane_stiffness: f64,
+    /// Membrane edge springs; built by [`PressurizedBody::new`] from the
+    /// triangle list with the construction-time edge lengths as rest lengths.
+    /// Call [`PressurizedBody::rebuild_membrane_edges`] after editing
+    /// `vertices` or `triangles` to re-capture the rest lengths.
+    pub membrane_edges: Vec<MembraneEdge>,
+    /// If `true` (the default) [`step_body`] holds the enclosed volume at
+    /// `rest_volume` (incompressible fill); if `false` the volume is free and
+    /// `pressure` inflates the membrane against `membrane_stiffness`.
+    pub enforce_incompressible: bool,
+    /// Viscous velocity damping rate (1/s): each step multiplies the vertex
+    /// velocities by `1 / (1 + damping · dt)`. `0.0` (the default) is
+    /// undamped; an inflating membrane needs some damping to settle.
+    pub damping: f64,
 }
 
 impl PressurizedBody {
     /// Create a new `PressurizedBody`.
+    ///
+    /// The body starts incompressible (`enforce_incompressible = true`) with
+    /// no membrane elasticity and no damping; edge rest lengths are captured
+    /// from the initial geometry.
     ///
     /// # Arguments
     /// * `vertices` — surface vertex list
@@ -142,6 +214,7 @@ impl PressurizedBody {
         valve_coefficient: f64,
     ) -> Self {
         let rest_volume = compute_volume_from_verts(&vertices, &triangles);
+        let membrane_edges = build_membrane_edges(&vertices, &triangles);
         Self {
             vertices,
             triangles,
@@ -150,7 +223,17 @@ impl PressurizedBody {
             tensile_strength,
             valve_coefficient,
             ambient_pressure: 101_325.0,
+            membrane_stiffness: 0.0,
+            membrane_edges,
+            enforce_incompressible: true,
+            damping: 0.0,
         }
+    }
+
+    /// Re-capture the membrane edge table and rest lengths from the current
+    /// vertex positions and triangle list.
+    pub fn rebuild_membrane_edges(&mut self) {
+        self.membrane_edges = build_membrane_edges(&self.vertices, &self.triangles);
     }
 
     /// Create a simple axis-aligned box pressurized body.
@@ -259,6 +342,37 @@ pub fn pressure_force(body: &mut PressurizedBody) {
         for &vi in &[tri[0], tri[1], tri[2]] {
             body.vertices[vi].force = v3_add(body.vertices[vi].force, f_each);
         }
+    }
+}
+
+/// Accumulate the membrane edge-spring forces on all surface vertices.
+///
+/// Each [`MembraneEdge`] is a linear spring `F = k (ℓ − ℓ₀) d̂` acting along
+/// the edge (`k` = [`PressurizedBody::membrane_stiffness`]); the two end
+/// vertices receive equal and opposite forces, so the net force is zero.
+/// Zero-length edges (undefined direction) and edges referencing missing
+/// vertices are skipped. Does nothing when the stiffness is not positive.
+///
+/// Forces are added to `body.vertices[i].force`.
+pub fn membrane_force(body: &mut PressurizedBody) {
+    let k = body.membrane_stiffness;
+    if k.is_nan() || k <= 0.0 {
+        return;
+    }
+    for edge in &body.membrane_edges {
+        let [a, b] = edge.vertices;
+        let (Some(va), Some(vb)) = (body.vertices.get(a), body.vertices.get(b)) else {
+            continue;
+        };
+        let d = v3_sub(vb.position, va.position);
+        let len = v3_dot(d, d).sqrt();
+        if len <= f64::MIN_POSITIVE {
+            continue;
+        }
+        // Tension (ℓ > ℓ₀) pulls the end vertices together.
+        let f = v3_scale(d, k * (len - edge.rest_length) / len);
+        body.vertices[a].force = v3_add(body.vertices[a].force, f);
+        body.vertices[b].force = v3_sub(body.vertices[b].force, f);
     }
 }
 
@@ -374,8 +488,22 @@ pub fn burst_criterion(body: &PressurizedBody, wall_thickness: f64) -> (bool, f6
 
 /// Compute the pressure change due to valve flow in one time step.
 ///
-/// Models laminar (linear) flow through a valve:
-///   dP/dt = -k_v × (P_internal - P_ambient)
+/// `pressure` is the **gauge** pressure above ambient, so the valve relaxes it
+/// toward zero. The volumetric flow through the valve is linear in the gauge
+/// pressure, `Q = k_v · p` (m³/s, positive = gas leaving), and the enclosed
+/// gas is isothermal, `P_abs · V = const`, hence
+///
+/// ```text
+/// dp/dt = −(P_abs / V) · Q = −(P_abs / V) · k_v · p,    P_abs = p + P_ambient
+/// ```
+///
+/// `V` is the current enclosed volume (rest volume as a fallback for a
+/// degenerate mesh). The step is explicit Euler, clamped so the gauge pressure
+/// never crosses zero: a body above ambient relaxes down to — never below —
+/// ambient, a body below ambient (`p < 0`, gas flowing in) relaxes up to it,
+/// and `p = 0` stays at zero. A non-positive/NaN `valve_coefficient`, a
+/// non-positive/NaN `dt`, a non-finite pressure or a body without volume leave
+/// the pressure unchanged.
 ///
 /// # Arguments
 /// * `body` — the pressurized body (pressure modified in place)
@@ -383,8 +511,28 @@ pub fn burst_criterion(body: &PressurizedBody, wall_thickness: f64) -> (bool, f6
 ///
 /// Returns the pressure delta applied.
 pub fn valve_flow(body: &mut PressurizedBody, dt: f64) -> f64 {
-    let delta_p = -(body.pressure - body.ambient_pressure) * body.valve_coefficient * dt;
-    body.pressure += delta_p;
+    let p = body.pressure;
+    let k_v = body.valve_coefficient;
+    if !p.is_finite() || p == 0.0 || k_v.is_nan() || k_v <= 0.0 || dt.is_nan() || dt <= 0.0 {
+        return 0.0;
+    }
+    let mut volume = compute_volume_from_verts(&body.vertices, &body.triangles).abs();
+    if volume.is_nan() || volume <= f64::MIN_POSITIVE {
+        volume = body.rest_volume.abs();
+    }
+    if !volume.is_finite() || volume <= f64::MIN_POSITIVE {
+        return 0.0;
+    }
+    let p_abs = (p + body.ambient_pressure).max(0.0);
+    let flow = volumetric_flow_rate(p, k_v);
+    let raw_delta = -(p_abs / volume) * flow * dt;
+    // Relax toward zero gauge pressure without overshooting it.
+    let delta_p = if p > 0.0 {
+        raw_delta.max(-p)
+    } else {
+        raw_delta.min(-p)
+    };
+    body.pressure = p + delta_p;
     delta_p
 }
 
@@ -403,40 +551,91 @@ pub fn volumetric_flow_rate(pressure_diff: f64, valve_coefficient: f64) -> f64 {
 // Simple integration step
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Advance the pressurized body one explicit Euler time step.
+/// Maximum number of volume-projection passes per [`step_body`] call.
+const MAX_VOLUME_PROJECTIONS: usize = 32;
+
+/// Relative volume tolerance `|V − V_rest| / |V_rest|` at which the projection
+/// loop of [`step_body`] stops.
+const VOLUME_PROJECTION_TOLERANCE: f64 = 1.0e-12;
+
+/// Advance the pressurized body one semi-implicit Euler time step.
 ///
-/// 1. Accumulate pressure forces.
-/// 2. Integrate velocities and positions.
-/// 3. Apply incompressibility constraint.
-/// 4. Clear forces.
+/// 1. Accumulate forces on top of whatever is already in `vertex.force`:
+///    the membrane edge springs ([`membrane_force`]) and, **unless**
+///    `enforce_incompressible` is set, the pressure load
+///    ([`pressure_force`]).
+/// 2. Integrate velocities (gravity + forces, then viscous damping) and
+///    positions of the dynamic vertices.
+/// 3. If `enforce_incompressible`: iterate [`incompressibility_constraint`]
+///    until the volume matches `rest_volume` (relative tolerance 1e-12, at
+///    most 32 passes), then apply the PBD velocity update
+///    `v = (x_final − x_start)/Δt` to the dynamic vertices, so the velocity
+///    field carries no volume-changing component.
+/// 4. Clear the forces of **all** vertices, static ones included.
+///
+/// In the incompressible regime the pressure load is not integrated: on a
+/// closed mesh `pressure_force` equals `p ∂V/∂xᵢ`, which is parallel to the
+/// constraint gradient and would be removed again by the projection (while a
+/// large `p` would first throw the vertices far outside the linearisation
+/// range of the constraint). In the inflatable regime the pressure inflates
+/// the membrane against its edge springs.
+///
+/// A non-positive or NaN `dt` leaves the body untouched.
 ///
 /// # Arguments
 /// * `body` — the body to step
 /// * `gravity` — gravitational acceleration (m/s²)
 /// * `dt` — time step (s)
 pub fn step_body(body: &mut PressurizedBody, gravity: [f64; 3], dt: f64) {
-    pressure_force(body);
-    let nv = body.vertices.len();
-    for i in 0..nv {
-        if body.vertices[i].is_static() {
-            continue;
-        }
-        let m_inv = body.vertices[i].inv_mass;
-        // Gravity force = m × g → impulse = g × dt (since accel = g).
-        let gravity_impulse = v3_scale(gravity, dt);
-        // Force impulse.
-        let force_impulse = v3_scale(body.vertices[i].force, m_inv * dt);
-        body.vertices[i].velocity = v3_add(
-            v3_add(body.vertices[i].velocity, gravity_impulse),
-            force_impulse,
-        );
-        body.vertices[i].position = v3_add(
-            body.vertices[i].position,
-            v3_scale(body.vertices[i].velocity, dt),
-        );
-        body.vertices[i].force = [0.0; 3];
+    if dt.is_nan() || dt <= 0.0 {
+        return;
     }
-    incompressibility_constraint(body);
+    if !body.enforce_incompressible {
+        pressure_force(body);
+    }
+    membrane_force(body);
+
+    let enforce = body.enforce_incompressible;
+    let x_start: Vec<[f64; 3]> = if enforce {
+        body.vertices.iter().map(|v| v.position).collect()
+    } else {
+        Vec::new()
+    };
+    let damping_factor = if body.damping > 0.0 {
+        1.0 / (1.0 + body.damping * dt)
+    } else {
+        1.0
+    };
+
+    let gravity_impulse = v3_scale(gravity, dt);
+    for v in body.vertices.iter_mut().filter(|v| !v.is_static()) {
+        let force_impulse = v3_scale(v.force, v.inv_mass * dt);
+        v.velocity = v3_scale(
+            v3_add(v3_add(v.velocity, gravity_impulse), force_impulse),
+            damping_factor,
+        );
+        v.position = v3_add(v.position, v3_scale(v.velocity, dt));
+    }
+
+    if enforce {
+        let scale = body.rest_volume.abs().max(f64::MIN_POSITIVE);
+        for _ in 0..MAX_VOLUME_PROJECTIONS {
+            let violation = incompressibility_constraint(body);
+            if violation.abs() <= VOLUME_PROJECTION_TOLERANCE * scale {
+                break;
+            }
+        }
+        let inv_dt = 1.0 / dt;
+        for (v, x0) in body.vertices.iter_mut().zip(&x_start) {
+            if !v.is_static() {
+                v.velocity = v3_scale(v3_sub(v.position, *x0), inv_dt);
+            }
+        }
+    }
+
+    for v in &mut body.vertices {
+        v.force = [0.0; 3];
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -660,18 +859,19 @@ mod tests {
         );
     }
 
-    // 16. Valve flow reduces internal pressure toward ambient.
+    // 16. Valve flow relaxes a positive gauge pressure toward zero (ambient).
     #[test]
     fn test_valve_flow_reduces_pressure() {
-        let mut body = unit_box_body(); // p=1000 > ambient=101325? No: 1000 < 101325
-        // Set pressure above ambient.
-        body.pressure = 200_000.0;
+        let mut body = unit_box_body();
+        body.pressure = 1000.0; // gauge pressure above ambient
         body.valve_coefficient = 1e-6;
         let p_before = body.pressure;
-        valve_flow(&mut body, 1.0);
+        let dp = valve_flow(&mut body, 1.0);
+        assert!(dp < 0.0, "outflow must lower the pressure, got dp={dp}");
         assert!(
-            body.pressure < p_before,
-            "Valve flow should reduce high pressure toward ambient"
+            body.pressure < p_before && body.pressure > 0.0,
+            "gauge pressure must decrease toward (but not below) 0: {}",
+            body.pressure
         );
     }
 
@@ -693,10 +893,10 @@ mod tests {
         assert!(q.abs() < EPS, "Zero valve coefficient → zero flow");
     }
 
-    // 19. Step body under gravity lowers vertices (zero pressure to avoid explosion).
+    // 19. Step body under gravity lowers vertices.
     #[test]
     fn test_step_body_gravity() {
-        let mut body = PressurizedBody::unit_box(0.5, 0.0, 0.01); // p=0
+        let mut body = PressurizedBody::unit_box(0.5, 0.0, 0.01);
         let initial_y: f64 =
             body.vertices.iter().map(|v| v.position[1]).sum::<f64>() / body.vertices.len() as f64;
         for _ in 0..10 {
@@ -773,17 +973,19 @@ mod tests {
         assert!(p2 > p1, "Higher shear modulus → higher inflation pressure");
     }
 
-    // 26. Valve flow with negative pressure (below ambient) increases pressure.
+    // 26. Valve flow with negative gauge pressure (below ambient) increases pressure.
     #[test]
     fn test_valve_flow_increases_below_ambient() {
         let mut body = unit_box_body();
-        body.pressure = 50_000.0; // below ambient 101325
+        body.pressure = -500.0; // 500 Pa below ambient
         body.valve_coefficient = 1e-6;
         let p_before = body.pressure;
-        valve_flow(&mut body, 1.0);
+        let dp = valve_flow(&mut body, 1.0);
+        assert!(dp > 0.0, "inflow must raise the pressure, got dp={dp}");
         assert!(
-            body.pressure > p_before,
-            "Pressure below ambient should increase toward ambient"
+            body.pressure > p_before && body.pressure < 0.0,
+            "gauge pressure must rise toward (but not above) 0: {}",
+            body.pressure
         );
     }
 
@@ -838,10 +1040,10 @@ mod tests {
         );
     }
 
-    // 30. Step body preserves approximate volume (incompressibility), zero pressure.
+    // 30. Step body preserves the volume (incompressibility).
     #[test]
     fn test_step_body_volume_preservation() {
-        let mut body = PressurizedBody::unit_box(0.5, 0.0, 0.01); // zero pressure
+        let mut body = PressurizedBody::unit_box(0.5, 0.0, 0.01);
         let rest_vol = body.rest_volume;
         for _ in 0..5 {
             step_body(&mut body, [0.0, 0.0, 0.0], 1.0 / 60.0);
@@ -852,5 +1054,469 @@ mod tests {
             rel_err < 0.05,
             "Volume should stay close to rest after steps: rel_err={rel_err}"
         );
+    }
+
+    // ── valve_flow (gauge-pressure semantics) ───────────────────────────────
+
+    // 31. Gauge pressure 0 is the fixed point of the valve.
+    #[test]
+    fn test_valve_flow_zero_gauge_stays_zero() {
+        let mut body = unit_box_body();
+        body.pressure = 0.0;
+        body.valve_coefficient = 1e-3;
+        let dp = valve_flow(&mut body, 1.0);
+        assert_eq!(dp, 0.0);
+        assert_eq!(body.pressure, 0.0, "gauge 0 must not drift toward ambient");
+    }
+
+    // 32. The pressure delta is exactly −(P_abs/V)·k_v·p·dt (isothermal, linear valve).
+    #[test]
+    fn test_valve_flow_matches_isothermal_formula() {
+        let mut body = unit_box_body();
+        body.pressure = 2000.0;
+        body.valve_coefficient = 2e-6;
+        let volume = compute_volume_from_verts(&body.vertices, &body.triangles);
+        let expected = -((2000.0 + 101_325.0) / volume) * 2e-6 * 2000.0 * 0.5;
+        let dp = valve_flow(&mut body, 0.5);
+        assert!((dp - expected).abs() < 1e-9, "dp={dp}, expected={expected}");
+        assert!((body.pressure - (2000.0 + expected)).abs() < 1e-9);
+    }
+
+    // 33. A smaller enclosed volume vents faster (dp ∝ 1/V).
+    #[test]
+    fn test_valve_flow_rate_scales_inversely_with_volume() {
+        let mut small = PressurizedBody::unit_box(0.5, 1000.0, 0.01);
+        let mut large = PressurizedBody::unit_box(1.0, 1000.0, 0.01);
+        small.valve_coefficient = 1e-6;
+        large.valve_coefficient = 1e-6;
+        let dp_small = valve_flow(&mut small, 1.0);
+        let dp_large = valve_flow(&mut large, 1.0);
+        // Volumes differ by a factor 8.
+        assert!(
+            (dp_small / dp_large - 8.0).abs() < 1e-9,
+            "dp_small={dp_small}, dp_large={dp_large}"
+        );
+    }
+
+    // 34. A step that would overshoot is clamped at zero gauge pressure.
+    #[test]
+    fn test_valve_flow_never_crosses_zero() {
+        let mut high = unit_box_body();
+        high.pressure = 1000.0;
+        high.valve_coefficient = 1e-3;
+        valve_flow(&mut high, 10.0);
+        assert_eq!(high.pressure, 0.0, "overshoot must be clamped at 0");
+
+        let mut low = unit_box_body();
+        low.pressure = -500.0;
+        low.valve_coefficient = 1e-3;
+        valve_flow(&mut low, 10.0);
+        assert_eq!(low.pressure, 0.0, "overshoot must be clamped at 0");
+    }
+
+    // 35. Repeated venting converges monotonically to zero gauge pressure
+    //     (the previous model drove the gauge pressure toward +101325 Pa).
+    #[test]
+    fn test_valve_flow_relaxes_to_zero_gauge_pressure() {
+        for start in [5000.0_f64, -5000.0] {
+            let mut body = unit_box_body();
+            body.pressure = start;
+            body.valve_coefficient = 1e-5;
+            let mut previous = body.pressure.abs();
+            for _ in 0..400 {
+                valve_flow(&mut body, 0.1);
+                let now = body.pressure.abs();
+                assert!(now <= previous, "|p| must not grow: {previous} -> {now}");
+                assert!(
+                    body.pressure * start >= 0.0,
+                    "pressure must keep its sign, got {}",
+                    body.pressure
+                );
+                previous = now;
+            }
+            assert!(
+                body.pressure.abs() < 1e-3,
+                "gauge pressure should have relaxed to 0, got {}",
+                body.pressure
+            );
+        }
+    }
+
+    // 36. Invalid parameters leave the pressure unchanged.
+    #[test]
+    fn test_valve_flow_invalid_inputs_are_noops() {
+        let mut body = unit_box_body();
+        body.valve_coefficient = 1e-6;
+        for dt in [0.0, -1.0, f64::NAN] {
+            assert_eq!(valve_flow(&mut body, dt), 0.0);
+            assert_eq!(body.pressure, 1000.0);
+        }
+        body.valve_coefficient = -1e-6;
+        assert_eq!(valve_flow(&mut body, 1.0), 0.0);
+        body.valve_coefficient = f64::NAN;
+        assert_eq!(valve_flow(&mut body, 1.0), 0.0);
+        assert_eq!(body.pressure, 1000.0);
+        body.valve_coefficient = 1e-6;
+        body.pressure = f64::NAN;
+        assert_eq!(valve_flow(&mut body, 1.0), 0.0);
+        assert!(body.pressure.is_nan());
+    }
+
+    // 37. A mesh without enclosed volume (and rest volume) has no gas to vent.
+    #[test]
+    fn test_valve_flow_degenerate_volume_is_noop() {
+        let flat = vec![
+            SurfaceVertex::new([0.0, 0.0, 0.0], 1.0),
+            SurfaceVertex::new([1.0, 0.0, 0.0], 1.0),
+            SurfaceVertex::new([0.0, 1.0, 0.0], 1.0),
+        ];
+        let mut body = PressurizedBody::new(flat, vec![[0, 1, 2]], 500.0, 1e6, 1e-3);
+        assert_eq!(valve_flow(&mut body, 1.0), 0.0);
+        assert_eq!(body.pressure, 500.0);
+    }
+
+    // ── pressure force / membrane ──────────────────────────────────────────
+
+    // 38. On a closed mesh the nodal pressure force equals p ∂V/∂xᵢ.
+    #[test]
+    fn test_pressure_force_equals_pressure_times_volume_gradient() {
+        let mut body = unit_box_body();
+        // Perturb the box so the check is not a symmetry accident.
+        for (i, v) in body.vertices.iter_mut().enumerate() {
+            let f = i as f64;
+            v.position[0] += 0.03 * (f * 1.3).sin();
+            v.position[1] += 0.03 * (f * 0.7).cos();
+            v.position[2] += 0.03 * (f * 2.1).sin();
+        }
+        pressure_force(&mut body);
+        let forces: Vec<[f64; 3]> = body.vertices.iter().map(|v| v.force).collect();
+        let positions: Vec<[f64; 3]> = body.vertices.iter().map(|v| v.position).collect();
+        let delta = 1e-6;
+        for (i, force) in forces.iter().enumerate() {
+            for axis in 0..3 {
+                let mut plus = positions.clone();
+                let mut minus = positions.clone();
+                plus[i][axis] += delta;
+                minus[i][axis] -= delta;
+                let dv = (compute_volume(&plus, &body.triangles)
+                    - compute_volume(&minus, &body.triangles))
+                    / (2.0 * delta);
+                let expected = body.pressure * dv;
+                assert!(
+                    (force[axis] - expected).abs() < 1e-6 * (1.0 + expected.abs()),
+                    "vertex {i} axis {axis}: F={}, p dV/dx={expected}",
+                    force[axis]
+                );
+            }
+        }
+    }
+
+    // 39. A box has 18 membrane edges (12 box edges + 6 face diagonals).
+    #[test]
+    fn test_membrane_edges_of_box() {
+        let body = unit_box_body();
+        assert_eq!(body.membrane_edges.len(), 18);
+        let unit = body
+            .membrane_edges
+            .iter()
+            .filter(|e| (e.rest_length - 1.0).abs() < 1e-12)
+            .count();
+        let diagonal = body
+            .membrane_edges
+            .iter()
+            .filter(|e| (e.rest_length - 2.0_f64.sqrt()).abs() < 1e-12)
+            .count();
+        assert_eq!((unit, diagonal), (12, 6));
+        assert!(
+            body.membrane_edges
+                .iter()
+                .all(|e| e.vertices[0] < e.vertices[1])
+        );
+    }
+
+    // 40. Undeformed membrane exerts no force; a stretched one pulls back
+    //     with zero net force.
+    #[test]
+    fn test_membrane_force_restoring_and_balanced() {
+        let mut body = unit_box_body();
+        body.membrane_stiffness = 500.0;
+        membrane_force(&mut body);
+        assert!(body.vertices.iter().all(|v| v3_norm(v.force) < 1e-9));
+
+        // Uniform 10 % stretch: every vertex is pulled back toward the centre.
+        for v in &mut body.vertices {
+            v.position = v3_scale(v.position, 1.1);
+        }
+        membrane_force(&mut body);
+        let net = body
+            .vertices
+            .iter()
+            .fold([0.0; 3], |acc, v| v3_add(acc, v.force));
+        assert!(v3_norm(net) < 1e-9, "net membrane force {net:?}");
+        for v in &body.vertices {
+            assert!(
+                v3_dot(v.force, v.position) < 0.0,
+                "force must point inward at {:?}",
+                v.position
+            );
+        }
+    }
+
+    // 41. Zero stiffness disables the membrane.
+    #[test]
+    fn test_membrane_force_disabled_without_stiffness() {
+        let mut body = unit_box_body();
+        for v in &mut body.vertices {
+            v.position = v3_scale(v.position, 1.5);
+        }
+        membrane_force(&mut body);
+        assert!(body.vertices.iter().all(|v| v.force == [0.0; 3]));
+    }
+
+    // ── step_body: incompressible regime ───────────────────────────────────
+
+    fn kinetic_energy(body: &PressurizedBody) -> f64 {
+        body.vertices
+            .iter()
+            .filter(|v| !v.is_static())
+            .map(|v| 0.5 * v3_dot(v.velocity, v.velocity) / v.inv_mass)
+            .sum()
+    }
+
+    // 42. A pressurised, volume-constrained body stays at rest: the pressure
+    //     impulse is removed by the projection *and* the velocity update.
+    #[test]
+    fn test_step_body_pressurised_incompressible_stays_at_rest() {
+        let mut body = PressurizedBody::unit_box(0.5, 1.0e3, 0.01);
+        assert!(body.enforce_incompressible);
+        let rest = body.rest_volume;
+        let start: Vec<[f64; 3]> = body.vertices.iter().map(|v| v.position).collect();
+        for _ in 0..1000 {
+            step_body(&mut body, [0.0; 3], 1.0 / 60.0);
+            assert!(kinetic_energy(&body) < 1e-6, "KE={}", kinetic_energy(&body));
+        }
+        let vol = compute_volume_from_verts(&body.vertices, &body.triangles);
+        assert!(((vol - rest) / rest).abs() < 1e-9, "volume drifted: {vol}");
+        for (v, x0) in body.vertices.iter().zip(&start) {
+            assert!(v3_norm(v3_sub(v.position, *x0)) < 1e-6, "vertex moved");
+        }
+    }
+
+    // 43. A body under gravity *and* pressure still falls rigidly with its
+    //     volume intact.
+    #[test]
+    fn test_step_body_pressurised_falls_under_gravity() {
+        let mut body = PressurizedBody::unit_box(0.5, 5.0e3, 0.01);
+        let rest = body.rest_volume;
+        for _ in 0..30 {
+            step_body(&mut body, [0.0, -9.81, 0.0], 1.0 / 60.0);
+        }
+        let mean_y: f64 =
+            body.vertices.iter().map(|v| v.position[1]).sum::<f64>() / body.vertices.len() as f64;
+        // 0.5 s of free fall ≈ 1.2 m (semi-implicit Euler: slightly more).
+        assert!(mean_y < -1.0 && mean_y > -1.5, "mean_y={mean_y}");
+        let vol = compute_volume_from_verts(&body.vertices, &body.triangles);
+        assert!(((vol - rest) / rest).abs() < 1e-9, "volume drifted: {vol}");
+    }
+
+    // 44. PBD velocity update: the volume-changing velocity component is
+    //     removed and the rest (the tangential part) is kept.
+    #[test]
+    fn test_step_body_velocity_update_projects_onto_constraint_tangent() {
+        let mut body = PressurizedBody::unit_box(0.5, 0.0, 0.01);
+        // Explosive initial velocity field: radial, 2·x (≈ 1.7 m/s per corner).
+        let v0: Vec<[f64; 3]> = body
+            .vertices
+            .iter()
+            .map(|v| v3_scale(v.position, 2.0))
+            .collect();
+        for (v, v_init) in body.vertices.iter_mut().zip(&v0) {
+            v.velocity = *v_init;
+        }
+        // ∂V/∂xᵢ of the initial geometry (= pressure_force at p = 1).
+        let mut probe = body.clone();
+        probe.pressure = 1.0;
+        pressure_force(&mut probe);
+        let grad: Vec<[f64; 3]> = probe.vertices.iter().map(|v| v.force).collect();
+        let along: f64 = grad.iter().zip(&v0).map(|(g, v)| v3_dot(*g, *v)).sum();
+        let norm_sq: f64 = grad.iter().map(|g| v3_dot(*g, *g)).sum();
+        assert!(along > 0.5, "the test velocity must expand the body");
+        let mu = along / norm_sq;
+
+        step_body(&mut body, [0.0; 3], 1.0 / 240.0);
+
+        // Volume rate of the new velocity field vanishes ...
+        let rate_after: f64 = grad
+            .iter()
+            .zip(&body.vertices)
+            .map(|(g, v)| v3_dot(*g, v.velocity))
+            .sum();
+        assert!(
+            rate_after.abs() < 0.02 * along,
+            "dV/dt = {rate_after} (was {along})"
+        );
+        // ... and every vertex velocity equals the tangent-space projection
+        // v − μ ∇V of the initial one (to first order in Δt).
+        for (i, ((v, g), v_init)) in body.vertices.iter().zip(&grad).zip(&v0).enumerate() {
+            let expected = v3_sub(*v_init, v3_scale(*g, mu));
+            let err = v3_norm(v3_sub(v.velocity, expected));
+            assert!(
+                err < 0.05 * v3_norm(*v_init),
+                "vertex {i}: v={:?}, expected={expected:?}",
+                v.velocity
+            );
+        }
+    }
+
+    // 45. Forces are cleared on every vertex, static ones included.
+    #[test]
+    fn test_step_body_clears_forces_on_static_vertices() {
+        for enforce in [true, false] {
+            let mut body = unit_box_body();
+            body.enforce_incompressible = enforce;
+            body.membrane_stiffness = 100.0;
+            let pinned = body.vertices[0].position;
+            body.vertices[0] = SurfaceVertex::new_static(pinned);
+            body.vertices[0].force = [1.0, 2.0, 3.0];
+            body.vertices[3].force = [0.5, 0.0, 0.0];
+            step_body(&mut body, [0.0, -9.81, 0.0], 1e-4);
+            for (i, v) in body.vertices.iter().enumerate() {
+                assert_eq!(
+                    v.force, [0.0; 3],
+                    "vertex {i} kept a force (enforce={enforce})"
+                );
+            }
+            assert_eq!(body.vertices[0].position, pinned, "pinned vertex moved");
+            assert_eq!(body.vertices[0].velocity, [0.0; 3]);
+        }
+    }
+
+    // 46. Invalid time steps are ignored.
+    #[test]
+    fn test_step_body_invalid_dt_is_noop() {
+        let mut body = unit_box_body();
+        let before: Vec<[f64; 3]> = body.vertices.iter().map(|v| v.position).collect();
+        for dt in [0.0, -0.01, f64::NAN] {
+            step_body(&mut body, [0.0, -9.81, 0.0], dt);
+            let after: Vec<[f64; 3]> = body.vertices.iter().map(|v| v.position).collect();
+            assert_eq!(before, after);
+            assert!(body.vertices.iter().all(|v| v.velocity == [0.0; 3]));
+        }
+    }
+
+    // ── step_body: inflatable regime ───────────────────────────────────────
+
+    /// Maximum nodal residual |p ∂V/∂xᵢ + F_membrane,i|.
+    fn max_force_residual(body: &PressurizedBody) -> f64 {
+        let mut probe = body.clone();
+        for v in &mut probe.vertices {
+            v.force = [0.0; 3];
+        }
+        pressure_force(&mut probe);
+        membrane_force(&mut probe);
+        probe
+            .vertices
+            .iter()
+            .map(|v| v3_norm(v.force))
+            .fold(0.0, f64::max)
+    }
+
+    fn inflatable_box(pressure: f64) -> PressurizedBody {
+        let mut body = PressurizedBody::unit_box(0.5, pressure, 0.01);
+        body.enforce_incompressible = false;
+        body.membrane_stiffness = 1.0e4;
+        body.damping = 200.0;
+        body
+    }
+
+    // 47. With the volume free, pressure inflates the membrane to a state of
+    //     force balance (pressure load = spring tension), with KE → 0.
+    #[test]
+    fn test_inflatable_box_inflates_to_force_balance() {
+        let mut body = inflatable_box(1000.0);
+        let rest = body.rest_volume;
+        let load_scale = {
+            let mut probe = body.clone();
+            pressure_force(&mut probe);
+            probe
+                .vertices
+                .iter()
+                .map(|v| v3_norm(v.force))
+                .fold(0.0, f64::max)
+        };
+        for _ in 0..4000 {
+            step_body(&mut body, [0.0; 3], 1.0e-4);
+        }
+        let vol = compute_volume_from_verts(&body.vertices, &body.triangles);
+        assert!(
+            vol > 1.02 * rest,
+            "should have inflated: V={vol}, rest={rest}"
+        );
+        assert!(vol < 1.15 * rest, "inflation should be bounded: V={vol}");
+        assert!(kinetic_energy(&body) < 1e-9, "KE={}", kinetic_energy(&body));
+        let residual = max_force_residual(&body);
+        assert!(
+            residual < 1e-3 * load_scale,
+            "residual {residual} vs load scale {load_scale}"
+        );
+    }
+
+    // 48. A higher pressure inflates the same membrane further.
+    #[test]
+    fn test_inflatable_box_volume_grows_with_pressure() {
+        let mut volumes = Vec::new();
+        for pressure in [500.0, 1000.0, 2000.0] {
+            let mut body = inflatable_box(pressure);
+            for _ in 0..4000 {
+                step_body(&mut body, [0.0; 3], 1.0e-4);
+            }
+            volumes.push(compute_volume_from_verts(&body.vertices, &body.triangles));
+        }
+        assert!(
+            volumes[0] > 1.0 && volumes[1] > volumes[0] && volumes[2] > volumes[1],
+            "volumes {volumes:?}"
+        );
+    }
+
+    // 49. A stiffer membrane inflates less.
+    #[test]
+    fn test_inflatable_box_stiffer_membrane_inflates_less() {
+        let mut volumes = Vec::new();
+        for k in [5.0e3, 2.0e4] {
+            let mut body = inflatable_box(1000.0);
+            body.membrane_stiffness = k;
+            for _ in 0..4000 {
+                step_body(&mut body, [0.0; 3], 1.0e-4);
+            }
+            volumes.push(compute_volume_from_verts(&body.vertices, &body.triangles));
+        }
+        assert!(volumes[0] > volumes[1], "volumes {volumes:?}");
+    }
+
+    // 50. Without membrane stiffness damping is the only dissipation and an
+    //     unpressurised free body just keeps its shape.
+    #[test]
+    fn test_unpressurised_inflatable_keeps_shape() {
+        let mut body = inflatable_box(0.0);
+        let rest = body.rest_volume;
+        for _ in 0..500 {
+            step_body(&mut body, [0.0; 3], 1.0e-4);
+        }
+        let vol = compute_volume_from_verts(&body.vertices, &body.triangles);
+        assert!((vol - rest).abs() < 1e-12, "V={vol}");
+    }
+
+    // 51. Rebuilding the edge table re-captures the rest lengths.
+    #[test]
+    fn test_rebuild_membrane_edges_recaptures_rest_lengths() {
+        let mut body = unit_box_body();
+        for v in &mut body.vertices {
+            v.position = v3_scale(v.position, 2.0);
+        }
+        body.rebuild_membrane_edges();
+        body.membrane_stiffness = 100.0;
+        membrane_force(&mut body);
+        assert!(body.vertices.iter().all(|v| v3_norm(v.force) < 1e-9));
+        assert!(body.membrane_edges.iter().all(|e| e.rest_length > 1.9));
     }
 }

@@ -755,10 +755,84 @@ pub fn extract_node_set_coords(mesh: &ExodusMesh, ns_id: u32) -> Option<Vec<[f64
         .collect();
     Some(coords)
 }
+// While refining one tetrahedron the ten node ids involved are held in a table
+// `[v0, v1, v2, v3, m01, m02, m03, m12, m13, m23]`, where `mij` is the midpoint
+// of the edge `vi-vj`.  Slots 0..4 are the parent vertices; the constants below
+// name the midpoint slots.
+const REFINE_M01: usize = 4;
+const REFINE_M02: usize = 5;
+const REFINE_M03: usize = 6;
+const REFINE_M12: usize = 7;
+const REFINE_M13: usize = 8;
+const REFINE_M23: usize = 9;
+/// The four corner children of an 8-subtetrahedron subdivision, one per parent
+/// vertex.  Indices refer to the node table above.  Every entry has the same
+/// orientation as the parent `(v0, v1, v2, v3)`.
+const REFINE_CORNER_TETS: [[usize; 4]; 4] = [
+    [0, REFINE_M01, REFINE_M02, REFINE_M03],
+    [1, REFINE_M12, REFINE_M01, REFINE_M13],
+    [2, REFINE_M02, REFINE_M12, REFINE_M23],
+    [3, REFINE_M13, REFINE_M03, REFINE_M23],
+];
+/// The octahedron left between the corner children has three interior
+/// diagonals; each entry cuts it into four tetrahedra around one of them.
+/// Index 0 is `m02-m13`, index 1 is `m01-m23`, index 2 is `m03-m12`.  All
+/// twelve tetrahedra share the orientation of the parent `(v0, v1, v2, v3)`.
+const REFINE_INTERIOR_TETS: [[[usize; 4]; 4]; 3] = [
+    [
+        [REFINE_M01, REFINE_M02, REFINE_M03, REFINE_M13],
+        [REFINE_M01, REFINE_M12, REFINE_M02, REFINE_M13],
+        [REFINE_M02, REFINE_M03, REFINE_M13, REFINE_M23],
+        [REFINE_M02, REFINE_M12, REFINE_M23, REFINE_M13],
+    ],
+    [
+        [REFINE_M01, REFINE_M23, REFINE_M02, REFINE_M03],
+        [REFINE_M01, REFINE_M23, REFINE_M03, REFINE_M13],
+        [REFINE_M01, REFINE_M23, REFINE_M13, REFINE_M12],
+        [REFINE_M01, REFINE_M23, REFINE_M12, REFINE_M02],
+    ],
+    [
+        [REFINE_M03, REFINE_M12, REFINE_M01, REFINE_M02],
+        [REFINE_M03, REFINE_M12, REFINE_M02, REFINE_M23],
+        [REFINE_M03, REFINE_M12, REFINE_M23, REFINE_M13],
+        [REFINE_M03, REFINE_M12, REFINE_M13, REFINE_M01],
+    ],
+];
+/// Pick the interior diagonal of the middle octahedron with the smallest
+/// length (ties keep the lowest index), returning an index into
+/// [`REFINE_INTERIOR_TETS`].
+fn shortest_interior_diagonal(coords: &[[f64; 3]], table: &[usize; 10]) -> usize {
+    let diagonals = [
+        (REFINE_M02, REFINE_M13),
+        (REFINE_M01, REFINE_M23),
+        (REFINE_M03, REFINE_M12),
+    ];
+    let mut best = 0usize;
+    let mut best_len = f64::INFINITY;
+    for (idx, &(p, q)) in diagonals.iter().enumerate() {
+        let a = coords[table[p] - 1];
+        let b = coords[table[q] - 1];
+        let len_sq = (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
+        if len_sq < best_len {
+            best_len = len_sq;
+            best = idx;
+        }
+    }
+    best
+}
 /// Refine a mesh by midpoint subdivision of TET4 elements.
 ///
-/// Each TET4 is split into 8 smaller tetrahedra by inserting 6 midpoint nodes
-/// on every edge (regular octasection). This produces a conforming mesh.
+/// Each TET4 is split into 8 smaller tetrahedra by inserting a node at the
+/// midpoint of each of its 6 edges (regular octasection): four corner
+/// tetrahedra, one per parent vertex, plus the octahedron left in the middle,
+/// which is cut into four tetrahedra around its shortest diagonal (the choice
+/// that keeps the children best shaped when the parent is distorted).  The
+/// result is conforming because midpoint nodes are shared between elements.
+///
+/// Children keep the orientation of their parent: a positively oriented parent
+/// yields eight children with positive signed volume, each exactly one eighth
+/// of the parent volume, and an inverted parent yields inverted children
+/// instead of being silently re-oriented.
 pub fn refine_tet4_mesh(mesh: &ExodusMesh) -> ExodusMesh {
     let mut out = ExodusMesh::new(&format!("{}_refined", mesh.title));
     for &c in &mesh.coordinates {
@@ -818,18 +892,14 @@ pub fn refine_tet4_mesh(mesh: &ExodusMesh) -> ExodusMesh {
             let m12 = get_mid(v1, v2, &mut out.coordinates, &mut edge_mid);
             let m13 = get_mid(v1, v3, &mut out.coordinates, &mut edge_mid);
             let m23 = get_mid(v2, v3, &mut out.coordinates, &mut edge_mid);
-            let sub_tets = [
-                [v0, m01, m02, m03],
-                [v1, m01, m12, m13],
-                [v2, m02, m12, m23],
-                [v3, m03, m13, m23],
-                [m01, m02, m03, m13],
-                [m01, m02, m12, m13],
-                [m02, m03, m13, m23],
-                [m02, m12, m13, m23],
-            ];
-            for tet in &sub_tets {
-                out.add_element_to_block(bi, tet);
+            let table = [v0, v1, v2, v3, m01, m02, m03, m12, m13, m23];
+            let diagonal = shortest_interior_diagonal(&out.coordinates, &table);
+            for pattern in REFINE_CORNER_TETS
+                .iter()
+                .chain(REFINE_INTERIOR_TETS[diagonal].iter())
+            {
+                let tet = pattern.map(|slot| table[slot]);
+                out.add_element_to_block(bi, &tet);
             }
         }
     }

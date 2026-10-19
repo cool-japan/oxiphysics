@@ -18,7 +18,10 @@
 //!   exact inverse, see [`mrt_moment_matrix`])
 //! - Periodic streaming (pull scheme)
 //! - Macroscopic field extraction
-//! - Force incorporation (Guo forcing)
+//! - Force incorporation (Guo forcing): the body force is stored on the lattice
+//!   ([`D3Q27Lattice::body_force`]) and enters every collision operator with the Guo
+//!   velocity shift `u = (sum f c + F/2) / rho` and the `(1 - omega/2)` source term, so that
+//!   exactly `F` of momentum is injected per step for any relaxation rate
 
 use std::sync::OnceLock;
 
@@ -208,6 +211,68 @@ pub fn transform_from_moments(m_inv: &[f64; Q * Q], moments: &[f64; Q]) -> [f64;
 }
 
 // ---------------------------------------------------------------------------
+// Guo forcing helpers
+// ---------------------------------------------------------------------------
+
+/// `true` when the force vector has a non-zero component.
+#[inline]
+fn has_force(force: [f64; 3]) -> bool {
+    force.iter().any(|&component| component != 0.0)
+}
+
+/// Density and Guo-corrected velocity `u = (sum f c + F/2) / rho` of one cell.
+///
+/// A cell with vanishing density has zero density and velocity.
+fn cell_density_velocity(cell: &[f64; Q], force: [f64; 3]) -> (f64, [f64; 3]) {
+    let mut rho = 0.0_f64;
+    let mut momentum = [0.0_f64; 3];
+    for (&fi, c) in cell.iter().zip(VELOCITIES.iter()) {
+        rho += fi;
+        momentum[0] += fi * f64::from(c[0]);
+        momentum[1] += fi * f64::from(c[1]);
+        momentum[2] += fi * f64::from(c[2]);
+    }
+    if rho.abs() > 1e-15 {
+        (
+            rho,
+            [
+                (momentum[0] + 0.5 * force[0]) / rho,
+                (momentum[1] + 0.5 * force[1]) / rho,
+                (momentum[2] + 0.5 * force[2]) / rho,
+            ],
+        )
+    } else {
+        (0.0, [0.0; 3])
+    }
+}
+
+/// Even and odd (under `e_i -> -e_i`) parts `(G_i^+, G_i^-)` of the undamped Guo source
+/// `G_i = w_i [ (e_i - u)/cs^2 + (e_i . u) e_i / cs^4 ] . F` of direction `i`.
+///
+/// `G_i^+ = w_i [ (e_i . u)(e_i . F)/cs^4 - (u . F)/cs^2 ]` carries the momentum flux and
+/// `G_i^- = w_i (e_i . F)/cs^2` carries the momentum (`sum G_i^- e_i = F`, `sum G_i = 0`).
+#[inline]
+fn guo_source_parts(i: usize, u: [f64; 3], force: [f64; 3]) -> (f64, f64) {
+    let c = VELOCITIES[i];
+    let e = [f64::from(c[0]), f64::from(c[1]), f64::from(c[2])];
+    let eu = e[0] * u[0] + e[1] * u[1] + e[2] * u[2];
+    let ef = e[0] * force[0] + e[1] * force[1] + e[2] * force[2];
+    let uf = u[0] * force[0] + u[1] * force[1] + u[2] * force[2];
+    (
+        WEIGHTS[i] * (eu * ef / (CS2 * CS2) - uf / CS2),
+        WEIGHTS[i] * ef / CS2,
+    )
+}
+
+/// Undamped Guo source `G_i` of all 27 directions for the corrected velocity `u`.
+fn guo_source(u: [f64; 3], force: [f64; 3]) -> [f64; Q] {
+    std::array::from_fn(|i| {
+        let (even, odd) = guo_source_parts(i, u, force);
+        even + odd
+    })
+}
+
+// ---------------------------------------------------------------------------
 // D3Q27Lattice
 // ---------------------------------------------------------------------------
 
@@ -227,6 +292,13 @@ pub struct D3Q27Lattice {
     pub f: Vec<[f64; Q]>,
     /// BGK relaxation rate omega = 1/tau.
     pub omega: f64,
+    /// Uniform body force per unit volume `[Fx, Fy, Fz]` in lattice units.
+    ///
+    /// The force acts on every cell in each collision step (Guo scheme): the equilibrium is
+    /// evaluated at the corrected velocity `u = (sum f c + F/2) / rho`, which is also the
+    /// velocity reported by [`Self::compute_macroscopic`], and the source term
+    /// `(1 - omega/2) G_i` is added to the post-collision populations. Zero by default.
+    pub body_force: [f64; 3],
 }
 
 impl D3Q27Lattice {
@@ -241,6 +313,7 @@ impl D3Q27Lattice {
             nz,
             f: vec![cell; n],
             omega,
+            body_force: [0.0; 3],
         }
     }
 
@@ -268,61 +341,50 @@ impl D3Q27Lattice {
 
     /// Extract macroscopic density and velocity from a distribution array.
     ///
-    /// Returns `(rho, ux, uy, uz)`.
+    /// Returns `(rho, ux, uy, uz)`. The velocity is the Guo-corrected one,
+    /// `u = (sum f c + F/2) / rho` with `F =` [`Self::body_force`], which equals the plain
+    /// `sum f c / rho` when no body force is set. It must be evaluated on pre-collision
+    /// (post-streaming) populations.
     pub fn compute_macroscopic(&self, cell: &[f64; Q]) -> (f64, f64, f64, f64) {
-        let mut rho = 0.0_f64;
-        let mut mx = 0.0_f64;
-        let mut my = 0.0_f64;
-        let mut mz = 0.0_f64;
-        for (i, &fi) in cell.iter().enumerate() {
-            rho += fi;
-            let c = VELOCITIES[i];
-            mx += fi * c[0] as f64;
-            my += fi * c[1] as f64;
-            mz += fi * c[2] as f64;
+        let (rho, u) = cell_density_velocity(cell, self.body_force);
+        (rho, u[0], u[1], u[2])
+    }
+
+    /// BGK collision of one cell, including the Guo source term for a non-zero `force`.
+    ///
+    /// `f_i <- f_i - omega (f_i - feq_i(rho, u)) + (1 - omega/2) G_i(u, F)` with the corrected
+    /// velocity `u = (sum f c + F/2) / rho`.
+    fn collide_cell_bgk(cell: &mut [f64; Q], omega: f64, force: [f64; 3]) {
+        let (rho, u) = cell_density_velocity(cell, force);
+        let feq = Self::equilibrium(rho, u[0], u[1], u[2]);
+        for (fi, &feq_i) in cell.iter_mut().zip(feq.iter()) {
+            *fi -= omega * (*fi - feq_i);
         }
-        if rho.abs() > 1e-15 {
-            (rho, mx / rho, my / rho, mz / rho)
-        } else {
-            (0.0, 0.0, 0.0, 0.0)
+        if has_force(force) {
+            let source = guo_force_term(u[0], u[1], u[2], force[0], force[1], force[2], omega);
+            for (fi, &source_i) in cell.iter_mut().zip(source.iter()) {
+                *fi += source_i;
+            }
         }
     }
 
     /// Perform one BGK collision + periodic streaming step.
     ///
     /// The two sub-steps are:
-    /// 1. **Collision** -- relax towards local equilibrium:
-    ///    `f_i <- f_i - omega * (f_i - feq_i)`
+    /// 1. **Collision** -- relax towards local equilibrium (evaluated at the Guo-corrected
+    ///    velocity when a [`body_force`](Self::body_force) is set), including the forcing term:
+    ///    `f_i <- f_i - omega * (f_i - feq_i) + (1 - omega/2) G_i`
     /// 2. **Streaming** -- propagate with periodic boundary conditions.
     pub fn collide_and_stream(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
         let nz = self.nz;
         let omega = self.omega;
+        let force = self.body_force;
 
         // --- Collision ---
         for cell in self.f.iter_mut() {
-            // Compute macroscopic inline to avoid borrowing `self`.
-            let mut rho = 0.0_f64;
-            let mut mx = 0.0_f64;
-            let mut my = 0.0_f64;
-            let mut mz = 0.0_f64;
-            for (i, &fi) in cell.iter().enumerate() {
-                rho += fi;
-                let c = VELOCITIES[i];
-                mx += fi * c[0] as f64;
-                my += fi * c[1] as f64;
-                mz += fi * c[2] as f64;
-            }
-            let (ux, uy, uz) = if rho.abs() > 1e-15 {
-                (mx / rho, my / rho, mz / rho)
-            } else {
-                (0.0, 0.0, 0.0)
-            };
-            let feq = Self::equilibrium(rho, ux, uy, uz);
-            for (i, fi) in cell.iter_mut().enumerate() {
-                *fi -= omega * (*fi - feq[i]);
-            }
+            Self::collide_cell_bgk(cell, omega, force);
         }
 
         // --- Streaming (pull scheme, periodic) ---
@@ -344,30 +406,13 @@ impl D3Q27Lattice {
         }
     }
 
-    /// Perform collision only (no streaming) using BGK.
+    /// Perform collision only (no streaming) using BGK (with Guo forcing, see
+    /// [`body_force`](Self::body_force)).
     pub fn collide_bgk(&mut self) {
         let omega = self.omega;
+        let force = self.body_force;
         for cell in self.f.iter_mut() {
-            let mut rho = 0.0_f64;
-            let mut mx = 0.0_f64;
-            let mut my = 0.0_f64;
-            let mut mz = 0.0_f64;
-            for (i, &fi) in cell.iter().enumerate() {
-                rho += fi;
-                let c = VELOCITIES[i];
-                mx += fi * c[0] as f64;
-                my += fi * c[1] as f64;
-                mz += fi * c[2] as f64;
-            }
-            let (ux, uy, uz) = if rho.abs() > 1e-15 {
-                (mx / rho, my / rho, mz / rho)
-            } else {
-                (0.0, 0.0, 0.0)
-            };
-            let feq = Self::equilibrium(rho, ux, uy, uz);
-            for (i, fi) in cell.iter_mut().enumerate() {
-                *fi -= omega * (*fi - feq[i]);
-            }
+            Self::collide_cell_bgk(cell, omega, force);
         }
     }
 
@@ -394,96 +439,69 @@ impl D3Q27Lattice {
         }
     }
 
-    /// Perform one MRT-like collision step using two relaxation times (TRT).
+    /// Perform one two-relaxation-time (TRT) collision step.
     ///
     /// The symmetric and anti-symmetric parts of the non-equilibrium
     /// distribution are relaxed at different rates:
     ///   - `s_plus` (omega_even): relaxation rate for symmetric part
     ///   - `s_minus` (omega_odd): relaxation rate for anti-symmetric part
     ///
-    /// This provides the benefits of MRT (reduced spurious modes) while
-    /// being straightforward to implement without a full matrix inverse.
+    /// The operator needs no matrix inverse; for the full 27-moment relaxation see
+    /// [`collide_all_mrt_full`].
     ///
     /// The `s_diag` array is used as follows:
     ///   - s_diag\[0\] = omega_even (symmetric relaxation, controls viscosity)
     ///   - s_diag\[1\] = omega_odd (anti-symmetric relaxation, controls slip)
     ///   - remaining entries are ignored
+    ///
+    /// Every population pair `(i, opposite(i))` is relaxed from a snapshot of the cell taken
+    /// before any population is updated, so the result does not depend on the direction order
+    /// and mass and momentum are conserved to round-off. A non-zero
+    /// [`body_force`](Self::body_force) adds the Guo source with each parity relaxed at its own
+    /// rate: `(1 - s_plus/2) G_i^+ + (1 - s_minus/2) G_i^-`.
     pub fn collide_mrt(&mut self, s_diag: &[f64; Q]) {
         let s_plus = s_diag[0];
         let s_minus = s_diag[1];
+        let force = self.body_force;
+        let forced = has_force(force);
 
         for cell in self.f.iter_mut() {
-            let mut rho = 0.0_f64;
-            let mut mx_val = 0.0_f64;
-            let mut my_val = 0.0_f64;
-            let mut mz_val = 0.0_f64;
-            for (i, &fi) in cell.iter().enumerate() {
-                rho += fi;
-                let c = VELOCITIES[i];
-                mx_val += fi * c[0] as f64;
-                my_val += fi * c[1] as f64;
-                mz_val += fi * c[2] as f64;
-            }
-            let (ux, uy, uz) = if rho.abs() > 1e-15 {
-                (mx_val / rho, my_val / rho, mz_val / rho)
-            } else {
-                (0.0, 0.0, 0.0)
-            };
-
-            let feq = Self::equilibrium(rho, ux, uy, uz);
+            let (rho, u) = cell_density_velocity(cell, force);
+            let feq = Self::equilibrium(rho, u[0], u[1], u[2]);
 
             // TRT collision: decompose non-eq into symmetric and anti-symmetric parts.
+            let f_old = *cell;
             for (i, &opp) in OPPOSITES.iter().enumerate() {
-                let f_neq_i = cell[i] - feq[i];
-                let f_neq_opp = cell[opp] - feq[opp];
+                let f_neq_i = f_old[i] - feq[i];
+                let f_neq_opp = f_old[opp] - feq[opp];
                 let f_neq_plus = 0.5 * (f_neq_i + f_neq_opp);
                 let f_neq_minus = 0.5 * (f_neq_i - f_neq_opp);
-                cell[i] -= s_plus * f_neq_plus + s_minus * f_neq_minus;
+                cell[i] = f_old[i] - (s_plus * f_neq_plus + s_minus * f_neq_minus);
+                if forced {
+                    let (even, odd) = guo_source_parts(i, u, force);
+                    cell[i] += (1.0 - 0.5 * s_plus) * even + (1.0 - 0.5 * s_minus) * odd;
+                }
             }
         }
     }
 
-    /// Apply Guo forcing to incorporate a body force.
+    /// Set the uniform body force `(fx, fy, fz)` acting on all cells (Guo forcing scheme).
     ///
-    /// The forcing term for direction i is:
-    ///   F_i = (1 - omega/2) * w_i * \[(e_i - u)/cs^2 + (e_i . u) * e_i / cs^4\] . F
+    /// The force is stored in [`body_force`](Self::body_force) and applied by every subsequent
+    /// collision ([`collide_and_stream`](Self::collide_and_stream),
+    /// [`collide_bgk`](Self::collide_bgk), [`collide_mrt`](Self::collide_mrt) and
+    /// [`collide_all_mrt_full`]). Per collision step the Guo scheme
     ///
-    /// This modifies the distribution functions in-place.
+    /// 1. evaluates the equilibrium at the corrected velocity `u = (sum f c + F/2) / rho`, and
+    /// 2. adds the source `(1 - omega/2) G_i` with
+    ///    `G_i = w_i [ (e_i - u)/cs^2 + (e_i . u) e_i / cs^4 ] . F`,
+    ///
+    /// which injects exactly `F` of momentum per cell and step for every relaxation rate (the
+    /// `(1 - omega/2)` source alone would inject only `(1 - omega/2) F`). Calling this method
+    /// repeatedly with the same force is harmless; a force set after a collision first acts in
+    /// the next one.
     pub fn apply_guo_forcing(&mut self, fx: f64, fy: f64, fz: f64) {
-        let omega = self.omega;
-
-        for cell in self.f.iter_mut() {
-            let mut rho = 0.0_f64;
-            let mut mx_val = 0.0_f64;
-            let mut my_val = 0.0_f64;
-            let mut mz_val = 0.0_f64;
-            for (i, &fi) in cell.iter().enumerate() {
-                rho += fi;
-                let c = VELOCITIES[i];
-                mx_val += fi * c[0] as f64;
-                my_val += fi * c[1] as f64;
-                mz_val += fi * c[2] as f64;
-            }
-            let (ux, uy, uz) = if rho.abs() > 1e-15 {
-                (mx_val / rho, my_val / rho, mz_val / rho)
-            } else {
-                (0.0, 0.0, 0.0)
-            };
-
-            for (i, fi) in cell.iter_mut().enumerate() {
-                let c = VELOCITIES[i];
-                let ci = [c[0] as f64, c[1] as f64, c[2] as f64];
-                let eu = ci[0] * ux + ci[1] * uy + ci[2] * uz;
-
-                let term_x = (ci[0] - ux) / CS2 + eu * ci[0] / (CS2 * CS2);
-                let term_y = (ci[1] - uy) / CS2 + eu * ci[1] / (CS2 * CS2);
-                let term_z = (ci[2] - uz) / CS2 + eu * ci[2] / (CS2 * CS2);
-
-                let fi_force =
-                    (1.0 - omega / 2.0) * WEIGHTS[i] * (term_x * fx + term_y * fy + term_z * fz);
-                *fi += fi_force;
-            }
-        }
+        self.body_force = [fx, fy, fz];
     }
 
     /// Apply bounce-back to a specific cell (solid wall).
@@ -529,6 +547,11 @@ impl D3Q27Lattice {
                 mz += fi * c[2] as f64;
             }
         }
+        // Guo-corrected momentum: every cell contributes half a force increment.
+        let half_cells = 0.5 * n as f64;
+        mx += half_cells * self.body_force[0];
+        my += half_cells * self.body_force[1];
+        mz += half_cells * self.body_force[2];
         let rho_avg = rho / n as f64;
         let inv = if rho.abs() > 1e-15 { 1.0 / rho } else { 0.0 };
         (rho_avg, mx * inv, my * inv, mz * inv)
@@ -647,8 +670,26 @@ pub fn collide_mrt_full(
     uz: f64,
     rates: &MrtRelaxationRates,
 ) {
+    collide_mrt_full_with_force(f, rho, [ux, uy, uz], [0.0; 3], rates);
+}
+
+/// Full MRT collision of one cell with a Guo body force `force`.
+///
+/// `f* = f - M^{-1} S M (f - feq(rho, u)) + M^{-1} (I - S/2) M G(u, F)` where `G` is the
+/// undamped Guo source `G_i = w_i [ (e_i - u)/cs^2 + (e_i . u) e_i / cs^4 ] . F` and
+/// `u` is the **Guo-corrected** velocity `u = (sum f c + F/2) / rho` (see
+/// [`guo_corrected_velocity`]). The conserved modes are never relaxed (`S = 0`), so the
+/// momentum moment of the source is injected in full: exactly `F` per call, for any rates.
+/// With a zero force this is [`collide_mrt_full`].
+pub fn collide_mrt_full_with_force(
+    f: &mut [f64; Q],
+    rho: f64,
+    u: [f64; 3],
+    force: [f64; 3],
+    rates: &MrtRelaxationRates,
+) {
     let basis = mrt_basis();
-    let feq = D3Q27Lattice::equilibrium(rho, ux, uy, uz);
+    let feq = D3Q27Lattice::equilibrium(rho, u[0], u[1], u[2]);
 
     let mut f_neq = [0.0_f64; Q];
     for (neq, (&fi, &feq_i)) in f_neq.iter_mut().zip(f.iter().zip(feq.iter())) {
@@ -668,6 +709,17 @@ pub fn collide_mrt_full(
     for (fi, &df) in f.iter_mut().zip(delta_f.iter()) {
         *fi -= df;
     }
+
+    if has_force(force) {
+        let mut source_m = transform_to_moments(&basis.m, &guo_source(u, force));
+        for (sm, &s_k) in source_m.iter_mut().zip(s.iter()) {
+            *sm *= 1.0 - 0.5 * s_k;
+        }
+        let source_f = transform_from_moments(&basis.m_inv, &source_m);
+        for (fi, &sf) in f.iter_mut().zip(source_f.iter()) {
+            *fi += sf;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -679,6 +731,11 @@ pub fn collide_mrt_full(
 /// Returns the forcing contribution to add to `f`.
 ///
 /// `F_i = (1 - omega/2) * w_i * [ (e_i - u)/cs^2 + (e_i · u) * e_i / cs^4 ] · F`
+///
+/// `(ux, uy, uz)` must be the **corrected** velocity of [`guo_corrected_velocity`]; the
+/// equilibrium of the same collision is evaluated at this velocity too. The lattice
+/// collisions ([`D3Q27Lattice::collide_bgk`] and friends) do both automatically when
+/// [`D3Q27Lattice::body_force`] is set.
 pub fn guo_force_term(
     ux: f64,
     uy: f64,
@@ -688,17 +745,8 @@ pub fn guo_force_term(
     fz: f64,
     omega: f64,
 ) -> [f64; Q] {
-    let mut fi = [0.0_f64; Q];
-    for (i, fi_i) in fi.iter_mut().enumerate() {
-        let c = VELOCITIES[i];
-        let ci = [c[0] as f64, c[1] as f64, c[2] as f64];
-        let eu = ci[0] * ux + ci[1] * uy + ci[2] * uz;
-        let tx = (ci[0] - ux) / CS2 + eu * ci[0] / (CS2 * CS2);
-        let ty = (ci[1] - uy) / CS2 + eu * ci[1] / (CS2 * CS2);
-        let tz = (ci[2] - uz) / CS2 + eu * ci[2] / (CS2 * CS2);
-        *fi_i = (1.0 - omega / 2.0) * WEIGHTS[i] * (tx * fx + ty * fy + tz * fz);
-    }
-    fi
+    let source = guo_source([ux, uy, uz], [fx, fy, fz]);
+    source.map(|g_i| (1.0 - omega / 2.0) * g_i)
 }
 
 /// Body-force corrected macroscopic velocity.
@@ -948,30 +996,19 @@ pub fn non_equilibrium_stress_tensor(
 /// Apply full MRT collision to all cells in the lattice.
 ///
 /// Uses the shared moment basis (see [`mrt_moment_matrix`]) and the supplied relaxation rates;
-/// the density and velocity of every cell are computed from its populations.
+/// the density and (Guo-corrected) velocity of every cell are computed from its populations
+/// and the lattice [`body_force`](D3Q27Lattice::body_force) enters through
+/// [`collide_mrt_full_with_force`].
 pub fn collide_all_mrt_full(lat: &mut D3Q27Lattice, rates: &MrtRelaxationRates) {
+    let force = lat.body_force;
     for cell in lat.f.iter_mut() {
-        // Compute macroscopic
-        let mut rho = 0.0_f64;
-        let mut mx = 0.0_f64;
-        let mut my = 0.0_f64;
-        let mut mz = 0.0_f64;
-        for (i, &fi) in cell.iter().enumerate() {
-            rho += fi;
-            let c = VELOCITIES[i];
-            mx += fi * c[0] as f64;
-            my += fi * c[1] as f64;
-            mz += fi * c[2] as f64;
-        }
-        let (ux, uy, uz) = if rho.abs() > 1e-15 {
-            (mx / rho, my / rho, mz / rho)
-        } else {
-            (0.0, 0.0, 0.0)
-        };
-        collide_mrt_full(cell, rho, ux, uy, uz, rates);
+        let (rho, u) = cell_density_velocity(cell, force);
+        collide_mrt_full_with_force(cell, rho, u, force, rates);
     }
 }
 
+#[cfg(test)]
+mod forcing_tests;
 #[cfg(test)]
 mod mrt_tests;
 
@@ -1287,12 +1324,14 @@ mod tests {
     #[test]
     fn test_guo_forcing_adds_momentum() {
         let mut lat = D3Q27Lattice::new(3, 3, 3, 1.0);
-        let (_, _, _, mz_before) = lat.global_macroscopic();
+        let n_cells = lat.f.len() as f64;
 
-        // Apply force in z-direction.
+        // Apply force in z-direction: it is stored and injected by the next collision.
         lat.apply_guo_forcing(0.0, 0.0, 1e-4);
+        assert_eq!(lat.body_force, [0.0, 0.0, 1e-4]);
+        lat.collide_bgk();
 
-        // After forcing, total z-momentum should increase.
+        // After one collision the total z-momentum has grown by exactly N * Fz.
         let mut total_mz = 0.0_f64;
         for cell in &lat.f {
             for (i, &fi) in cell.iter().enumerate() {
@@ -1301,8 +1340,9 @@ mod tests {
             }
         }
         assert!(
-            total_mz > mz_before,
-            "Guo forcing should increase z-momentum: before={mz_before}, after total_mz={total_mz}"
+            (total_mz - n_cells * 1e-4).abs() < 1e-12,
+            "Guo forcing should inject Fz per cell: total_mz={total_mz}, expected {}",
+            n_cells * 1e-4
         );
     }
 

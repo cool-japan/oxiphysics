@@ -6,9 +6,19 @@ use oxiphysics_core::math::Vec3;
 use std::collections::HashMap;
 
 use super::functions::{
-    cache_still_valid, closest_point_on_simplex_to_origin, do_simplex_cached, dot3_arr,
-    gjk_distance, gjk_proximity, len3_arr, negate3, scale3_arr, sub3_arr,
+    barycentric_witness, cache_still_valid, do_simplex_cached, dot3_arr, gjk_distance,
+    gjk_proximity, johnson_closest_point, len3_arr, negate3, prune_simplex_to_active, scale3_arr,
+    sub3_arr,
 };
+use crate::narrowphase::gjk::distance::{
+    DUPLICATE_TOLERANCE, STALL_STEPS, STALL_TOLERANCE, certifiable_gap,
+};
+
+/// Maximum number of refinement steps of [`GjkCache::closest_points_cached`].
+const CLOSEST_POINTS_MAX_ITERS: usize = 128;
+/// Distance, relative to the magnitude of the Minkowski-difference vertices,
+/// below which two shapes count as touching (no closest pair is reported).
+const CLOSEST_POINTS_TOUCH_TOL: f64 = 1e-9;
 
 /// Result of a GJK distance query.
 #[derive(Debug, Clone)]
@@ -896,59 +906,89 @@ impl GjkCache {
     /// Compute closest points between two shapes using cached data.
     ///
     /// Returns `Some((closest_on_a, closest_on_b))` if the shapes are separated,
-    /// or `None` if they are intersecting.
+    /// or `None` if they are intersecting or touching (or a support point is not
+    /// finite, in which case no closest pair exists).
+    ///
+    /// This is the distance form of GJK. Each step takes the point `v` of the
+    /// current simplex that is closest to the origin (Johnson's sub-algorithm),
+    /// queries the support point `w` of the Minkowski difference in direction
+    /// `-v` and stops once `|v|^2 - v.w` is a negligible fraction of `|v|^2`: the
+    /// plane through `w` then proves that `v` is the closest point of the
+    /// Minkowski difference, and the witnesses are the barycentric mix of the
+    /// per-vertex support points on the closest simplex feature.
     pub fn closest_points_cached<F>(&mut self, mut support_fn: F) -> Option<([f64; 3], [f64; 3])>
     where
         F: FnMut([f64; 3]) -> CachedSupport,
     {
-        let max_iters = 64;
-        let tol = 1e-8;
-        let init_dir = if self.warm_start && !self.simplex_vertices.is_empty() {
+        let warm_started = self.warm_start && !self.simplex_vertices.is_empty();
+        let init_dir = if warm_started {
             self.last_direction
         } else {
             [1.0, 0.0, 0.0]
         };
-        let mut simplex: Vec<CachedSupport> = Vec::new();
         let first = support_fn(init_dir);
+        let mut size = len3_arr(first.minkowski_point);
+        let mut simplex: Vec<CachedSupport> = Vec::with_capacity(4);
         simplex.push(first);
-        let mut closest_a = first.point_a;
-        let mut closest_b = first.point_b;
-        let mut prev_dist_sq = f64::INFINITY;
-        for _ in 0..max_iters {
-            let closest_mk = closest_point_on_simplex_to_origin(&simplex);
-            let dist_sq = dot3_arr(closest_mk, closest_mk);
-            if dist_sq < tol {
+        let mut previous_distance = f64::INFINITY;
+        let mut stalled_steps = 0;
+        for iteration in 0..CLOSEST_POINTS_MAX_ITERS {
+            let nearest = johnson_closest_point(&simplex);
+            let distance = nearest.distance();
+            if !distance.is_finite() {
                 return None;
             }
-            if (prev_dist_sq - dist_sq).abs() < tol * tol {
+            if nearest.origin_inside || distance <= CLOSEST_POINTS_TOUCH_TOL * size {
                 self.simplex_vertices = simplex;
-                return Some((closest_a, closest_b));
-            }
-            prev_dist_sq = dist_sq;
-            let direction = negate3(closest_mk);
-            let dir_len = len3_arr(direction);
-            if dir_len < 1e-10 {
+                self.stats
+                    .record_query(iteration as u64 + 1, warm_started, 10);
                 return None;
             }
-            let norm_dir = scale3_arr(direction, 1.0 / dir_len);
-            let new_pt = support_fn(norm_dir);
-            let proj = dot3_arr(new_pt.minkowski_point, norm_dir);
-            let cur_dist = dist_sq.sqrt();
-            if cur_dist - proj < tol {
-                closest_a = new_pt.point_a;
-                closest_b = new_pt.point_b;
-                self.simplex_vertices = simplex;
-                return Some((closest_a, closest_b));
+            let witnesses = barycentric_witness(&simplex, &nearest.bary);
+            let direction = scale3_arr(negate3(nearest.closest), 1.0 / distance);
+            let new_pt = support_fn(direction);
+            size = size.max(len3_arr(new_pt.minkowski_point));
+            // `new_pt` is extreme along `direction`, so `lower` bounds the true
+            // distance from below while `distance` bounds it from above.
+            let lower = -dot3_arr(new_pt.minkowski_point, direction);
+            // Rounding noise keeps the gap of nearly touching shapes above any
+            // fixed tolerance: also stop when the support point repeats a vertex
+            // or the distance has stopped decreasing for several steps.
+            let repeated = simplex.iter().any(|vertex| {
+                len3_arr(sub3_arr(vertex.minkowski_point, new_pt.minkowski_point))
+                    <= DUPLICATE_TOLERANCE * size
+            });
+            if iteration > 0 && previous_distance - distance <= STALL_TOLERANCE * previous_distance
+            {
+                stalled_steps += 1;
+            } else {
+                stalled_steps = 0;
             }
+            if distance - lower <= certifiable_gap(distance, size)
+                || repeated
+                || stalled_steps >= STALL_STEPS
+            {
+                self.simplex_vertices = simplex;
+                self.last_direction = direction;
+                self.stats
+                    .record_query(iteration as u64 + 1, warm_started, 10);
+                return Some(witnesses);
+            }
+            previous_distance = distance;
+            prune_simplex_to_active(&mut simplex, &nearest.bary, nearest.num_active);
             simplex.push(new_pt);
-            if simplex.len() > 4 {
-                simplex.remove(0);
-            }
-            closest_a = new_pt.point_a;
-            closest_b = new_pt.point_b;
         }
+        // Iteration budget exhausted: report the best simplex feature found.
+        let nearest = johnson_closest_point(&simplex);
+        let witnesses = barycentric_witness(&simplex, &nearest.bary);
         self.simplex_vertices = simplex;
-        Some((closest_a, closest_b))
+        self.stats
+            .record_query(CLOSEST_POINTS_MAX_ITERS as u64, warm_started, 10);
+        if nearest.origin_inside {
+            None
+        } else {
+            Some(witnesses)
+        }
     }
 }
 /// Cached simplex / witness data from the previous frame's GJK query.

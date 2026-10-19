@@ -3,10 +3,14 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
-use crate::pgs_solver::SolverStats;
+use crate::pgs_solver::{
+    SolverStats, SweepOutcome, post_solve_active, prepare_active, run_position_passes,
+    run_velocity_sweeps,
+};
 use crate::traits::Constraint;
+use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::Vec3;
-use oxiphysics_rigid::RigidBodySet;
+use oxiphysics_rigid::{RigidBody, RigidBodySet};
 
 /// TGS solver with adaptive substep selection.
 ///
@@ -34,12 +38,19 @@ impl AdaptiveTgsSolver {
         }
     }
     /// Determine optimal substep count given maximum velocity and dt.
+    ///
+    /// The result lies in `[min_substeps, max_substeps]`.  The fields are
+    /// public, so an inverted or zero range is tolerated instead of panicking:
+    /// at least one substep is always used and `max_substeps` is raised to
+    /// `min_substeps` if it is smaller.
     pub fn compute_substeps(&self, max_velocity: f64, dt: f64) -> usize {
+        let lowest = self.min_substeps.max(1);
+        let highest = self.max_substeps.max(lowest);
         if max_velocity < 1e-12 || dt < 1e-12 {
-            return self.min_substeps;
+            return lowest;
         }
         let needed = (max_velocity * dt / self.max_displacement_per_substep).ceil() as usize;
-        needed.clamp(self.min_substeps, self.max_substeps)
+        needed.max(lowest).min(highest)
     }
     /// Solve with adaptive substepping.
     pub fn step(
@@ -497,16 +508,33 @@ impl TgsWarmStartState {
         self.age > max_age
     }
 }
+/// Default [`TgsSolver::tolerance`]: the summed per-sweep velocity update (m/s)
+/// below which a substep counts as converged.
+const DEFAULT_TOLERANCE: f64 = 1e-6;
 /// Temporal Gauss-Seidel solver.
 ///
 /// Subdivides the time step into smaller substeps and solves constraints
 /// at each substep.  This provides better stability for stiff constraints
 /// and stacking scenarios compared to a single-step PGS solver.
+///
+/// Every substep runs the same engine as [`PgsSolver`](crate::PgsSolver), at the
+/// substep size `dt / substeps`: inactive constraints
+/// ([`Constraint::is_active`]) are skipped completely, the velocity sweeps stop
+/// as soon as the summed velocity update ([`Constraint::residual`]) drops to
+/// [`tolerance`](TgsSolver::tolerance), [`Constraint::post_solve`] runs once
+/// per substep after the sweeps, and [`Constraint::solve_position`] receives the
+/// substep size (the XPBD joints, for one, need a positive `dt` to correct
+/// their positions).
+///
+/// The [`SolverStats`] of a whole step aggregate the substeps: `iterations_used`
+/// is the number of velocity sweeps actually run, `residual` is the largest
+/// residual a substep ended with (`f64::MAX` if some substep ran no sweep) and
+/// `converged` is `true` only if every substep reached the tolerance.
 #[derive(Debug, Clone)]
 pub struct TgsSolver {
     /// Number of substeps per time step.
     pub substeps: usize,
-    /// Number of velocity iterations per substep.
+    /// Maximum number of velocity iterations per substep.
     pub velocity_iterations: usize,
     /// Number of position iterations per substep.
     pub position_iterations: usize,
@@ -516,6 +544,88 @@ pub struct TgsSolver {
     pub baumgarte_beta: f64,
     /// Enable energy-gain monitoring and damping.
     pub energy_monitoring: bool,
+    /// Convergence tolerance on the summed per-sweep velocity update (m/s).
+    ///
+    /// A substep stops sweeping once the sum over all active constraints of the
+    /// size of the velocity update of the last sweep is at most this value, and
+    /// a step is reported as converged when every substep got there.  The
+    /// default is `1e-6`.
+    pub tolerance: f64,
+}
+/// The bodies a TGS run integrates.
+#[derive(Clone, Copy)]
+enum BodyScope<'a> {
+    /// Every body of the set.
+    All,
+    /// Only the listed bodies (one island).
+    Island(&'a [BodyHandle]),
+}
+impl BodyScope<'_> {
+    /// Call `f` for every body in the scope.
+    fn for_each_body(&self, bodies: &mut RigidBodySet, mut f: impl FnMut(&mut RigidBody)) {
+        match self {
+            BodyScope::All => {
+                for (_handle, body) in bodies.iter_mut() {
+                    f(body);
+                }
+            }
+            BodyScope::Island(handles) => {
+                for &handle in handles.iter() {
+                    if let Some(body) = bodies.get_mut(handle) {
+                        f(body);
+                    }
+                }
+            }
+        }
+    }
+}
+/// Running aggregate of the per-substep sweep outcomes of one step.
+struct StepTotals {
+    substeps_run: usize,
+    iterations: usize,
+    worst_residual: f64,
+    all_converged: bool,
+}
+impl StepTotals {
+    fn new() -> Self {
+        Self {
+            substeps_run: 0,
+            iterations: 0,
+            worst_residual: 0.0,
+            all_converged: true,
+        }
+    }
+    /// Fold in the sweeps of one substep.
+    fn record(&mut self, sweeps: &SweepOutcome) {
+        self.substeps_run += 1;
+        self.iterations += sweeps.iterations;
+        self.worst_residual = self.worst_residual.max(sweeps.residual);
+        self.all_converged &= sweeps.converged;
+    }
+    /// The stats of the step; a step that ran no substep reports "no
+    /// iteration performed" exactly like a PGS solve with a zero budget.
+    fn into_stats(self) -> SolverStats {
+        if self.substeps_run == 0 {
+            return SolverStats {
+                iterations_used: 0,
+                residual: f64::MAX,
+                converged: false,
+            };
+        }
+        SolverStats {
+            iterations_used: self.iterations,
+            residual: self.worst_residual,
+            converged: self.all_converged,
+        }
+    }
+}
+/// Largest penetration the active constraints report.
+fn max_penetration_estimate(constraints: &[Box<dyn Constraint>]) -> f64 {
+    constraints
+        .iter()
+        .filter(|c| c.is_active())
+        .map(|c| c.penetration_estimate())
+        .fold(0.0, f64::max)
 }
 impl TgsSolver {
     /// Create a new TGS solver with explicit substep/iteration counts.
@@ -527,9 +637,13 @@ impl TgsSolver {
             gravity,
             baumgarte_beta: BAUMGARTE_BETA,
             energy_monitoring: false,
+            tolerance: DEFAULT_TOLERANCE,
         }
     }
     /// Create a solver with full control over all parameters.
+    ///
+    /// The convergence [`tolerance`](TgsSolver::tolerance) keeps its default;
+    /// change it with [`with_tolerance`](TgsSolver::with_tolerance).
     pub fn with_options(
         substeps: usize,
         velocity_iterations: usize,
@@ -545,52 +659,42 @@ impl TgsSolver {
             gravity,
             baumgarte_beta,
             energy_monitoring,
+            tolerance: DEFAULT_TOLERANCE,
         }
+    }
+    /// Replace the convergence [`tolerance`](TgsSolver::tolerance).
+    pub fn with_tolerance(mut self, tolerance: f64) -> Self {
+        self.tolerance = tolerance;
+        self
     }
     /// Solve constraints over one full time step using substepping.
     ///
     /// Each substep:
     /// 1. Integrate forces for `sub_dt`
-    /// 2. Prepare + solve velocity constraints
-    /// 3. Solve position constraints (Baumgarte / projection)
+    /// 2. Prepare the active constraints and sweep their velocity rows (at most
+    ///    `velocity_iterations` times, stopping once the summed velocity update
+    ///    drops to `tolerance`)
+    /// 3. Call `post_solve`, then solve the position constraints with `sub_dt`
     /// 4. Optionally monitor energy and damp if gain detected
     /// 5. Integrate positions for `sub_dt`
     ///
-    /// Returns [`SolverStats`] aggregated over all substeps.
+    /// Returns [`SolverStats`] aggregated over all substeps (see [`TgsSolver`]).
+    /// A step with `substeps == 0` or a `dt` that is not positive and finite
+    /// leaves the bodies untouched and reports "no iteration performed".
     pub fn step(
         &self,
         constraints: &mut [Box<dyn Constraint>],
         bodies: &mut RigidBodySet,
         dt: f64,
     ) -> SolverStats {
-        let sub_dt = dt / self.substeps as f64;
-        let mut total_iters = 0usize;
-        for _ in 0..self.substeps {
-            for (_handle, body) in bodies.iter_mut() {
-                body.integrate_forces(sub_dt, &self.gravity);
-            }
-            for c in constraints.iter_mut() {
-                c.prepare(bodies, sub_dt);
-            }
-            self.solve_velocity_constraints(constraints, bodies, sub_dt);
-            total_iters += self.velocity_iterations;
-            self.solve_position_constraints(constraints, bodies);
-            if self.energy_monitoring {
-                self.monitor_energy(bodies);
-            }
-            for (_handle, body) in bodies.iter_mut() {
-                body.integrate_velocity(sub_dt);
-            }
-        }
-        SolverStats {
-            iterations_used: total_iters,
-            residual: 0.0,
-            converged: true,
-        }
+        self.run_substeps(constraints, bodies, dt, BodyScope::All, None)
     }
-    /// Solve with warm-start from a previous-frame [`TgsWarmStartState`].
+    /// Solve with the bookkeeping of a previous-frame [`TgsWarmStartState`].
     ///
-    /// Scales cached impulses by `dt / prev_dt` before the first substep.
+    /// Scales the cached impulses of `state` by `dt / prev_dt`, ages the state
+    /// and runs [`step`](TgsSolver::step).  The cached impulses are not handed
+    /// to the constraints: a constraint that warm starts keeps its own
+    /// accumulated impulses from substep to substep.
     pub fn step_warm(
         &self,
         constraints: &mut [Box<dyn Constraint>],
@@ -609,79 +713,67 @@ impl TgsSolver {
     }
     /// Step with diagnostics collection.
     ///
-    /// Returns both solver stats and a vector of per-substep diagnostics.
+    /// Returns both solver stats and a vector of per-substep diagnostics.  The
+    /// `max_penetration` of a substep is the largest
+    /// [`Constraint::penetration_estimate`] of the active constraints.
     pub fn step_with_diagnostics(
         &self,
         constraints: &mut [Box<dyn Constraint>],
         bodies: &mut RigidBodySet,
         dt: f64,
     ) -> (SolverStats, Vec<SubstepDiagnostics>) {
-        let sub_dt = dt / self.substeps as f64;
-        let mut total_iters = 0usize;
         let mut diagnostics = Vec::with_capacity(self.substeps);
-        for _ in 0..self.substeps {
-            let ke_start = compute_kinetic_energy(bodies);
-            for (_handle, body) in bodies.iter_mut() {
-                body.integrate_forces(sub_dt, &self.gravity);
-            }
-            for c in constraints.iter_mut() {
-                c.prepare(bodies, sub_dt);
-            }
-            self.solve_velocity_constraints(constraints, bodies, sub_dt);
-            total_iters += self.velocity_iterations;
-            self.solve_position_constraints(constraints, bodies);
-            if self.energy_monitoring {
-                self.monitor_energy(bodies);
-            }
-            for (_handle, body) in bodies.iter_mut() {
-                body.integrate_velocity(sub_dt);
-            }
-            let ke_end = compute_kinetic_energy(bodies);
-            let max_vel = compute_max_velocity(bodies);
-            diagnostics.push(SubstepDiagnostics {
-                ke_start,
-                ke_end,
-                max_velocity: max_vel,
-                max_penetration: 0.0,
-            });
-        }
-        let stats = SolverStats {
-            iterations_used: total_iters,
-            residual: 0.0,
-            converged: true,
-        };
+        let stats = self.run_substeps(
+            constraints,
+            bodies,
+            dt,
+            BodyScope::All,
+            Some(&mut diagnostics),
+        );
         (stats, diagnostics)
     }
     /// Run velocity-constraint resolution for a single substep.
     ///
-    /// Iterates `velocity_iterations` times over all constraints, applying
-    /// sequential impulses.
+    /// Sweeps the active constraints at most `velocity_iterations` times,
+    /// applying sequential impulses, and stops as soon as the summed velocity
+    /// update drops to `tolerance`.  The constraints must have been prepared
+    /// for `sub_dt` beforehand.
+    ///
+    /// Returns the stats of the sweeps: the number of sweeps run, the residual
+    /// of the last one and whether it reached the tolerance.
     pub fn solve_velocity_constraints(
         &self,
         constraints: &mut [Box<dyn Constraint>],
         bodies: &mut RigidBodySet,
         sub_dt: f64,
-    ) {
-        for _ in 0..self.velocity_iterations {
-            for c in constraints.iter_mut() {
-                c.solve_velocity(bodies, sub_dt);
-            }
+    ) -> SolverStats {
+        let sweeps = run_velocity_sweeps(
+            constraints,
+            bodies,
+            sub_dt,
+            self.velocity_iterations,
+            self.tolerance,
+            None,
+        );
+        SolverStats {
+            iterations_used: sweeps.iterations,
+            residual: sweeps.residual,
+            converged: sweeps.converged,
         }
     }
     /// Run position-constraint resolution for a single substep.
     ///
-    /// Uses the Baumgarte stabilization term `β * penetration / dt` that is
-    /// baked into each constraint's `solve_position`.
+    /// Runs `position_iterations` passes of [`Constraint::solve_position`] over
+    /// the active constraints, handing each the substep size `sub_dt` (the
+    /// compliance of an XPBD joint scales with `1 / sub_dt²`, so the joints
+    /// cannot correct their positions without it).
     pub fn solve_position_constraints(
         &self,
         constraints: &mut [Box<dyn Constraint>],
         bodies: &mut RigidBodySet,
+        sub_dt: f64,
     ) {
-        for _ in 0..self.position_iterations {
-            for c in constraints.iter_mut() {
-                c.solve_position(bodies, 0.0);
-            }
-        }
+        run_position_passes(constraints, bodies, sub_dt, self.position_iterations);
     }
     /// Solve a single island (a group of mutually interacting bodies).
     ///
@@ -694,34 +786,72 @@ impl TgsSolver {
         bodies: &mut RigidBodySet,
         dt: f64,
     ) -> SolverStats {
+        self.run_substeps(
+            island_constraints,
+            bodies,
+            dt,
+            BodyScope::Island(island_bodies),
+            None,
+        )
+    }
+    /// The substep loop shared by `step`, `step_with_diagnostics` and
+    /// `solve_island`.
+    fn run_substeps(
+        &self,
+        constraints: &mut [Box<dyn Constraint>],
+        bodies: &mut RigidBodySet,
+        dt: f64,
+        scope: BodyScope<'_>,
+        mut diagnostics: Option<&mut Vec<SubstepDiagnostics>>,
+    ) -> SolverStats {
+        let mut totals = StepTotals::new();
+        if self.substeps == 0 || !(dt > 0.0 && dt.is_finite()) {
+            return totals.into_stats();
+        }
         let sub_dt = dt / self.substeps as f64;
-        let mut total_iters = 0usize;
         for _ in 0..self.substeps {
-            for &handle in island_bodies {
-                if let Some(body) = bodies.get_mut(handle) {
-                    body.integrate_forces(sub_dt, &self.gravity);
-                }
-            }
-            for c in island_constraints.iter_mut() {
-                c.prepare(bodies, sub_dt);
-            }
-            self.solve_velocity_constraints(island_constraints, bodies, sub_dt);
-            total_iters += self.velocity_iterations;
-            self.solve_position_constraints(island_constraints, bodies);
+            let ke_start = diagnostics.as_ref().map(|_| compute_kinetic_energy(bodies));
+            scope.for_each_body(bodies, |body| body.integrate_forces(sub_dt, &self.gravity));
+            let sweeps = self.solve_substep(constraints, bodies, sub_dt);
+            totals.record(&sweeps);
             if self.energy_monitoring {
-                self.monitor_energy_island(island_bodies, bodies);
-            }
-            for &handle in island_bodies {
-                if let Some(body) = bodies.get_mut(handle) {
-                    body.integrate_velocity(sub_dt);
+                match scope {
+                    BodyScope::All => self.monitor_energy(bodies),
+                    BodyScope::Island(handles) => self.monitor_energy_island(handles, bodies),
                 }
             }
+            scope.for_each_body(bodies, |body| body.integrate_velocity(sub_dt));
+            if let (Some(out), Some(ke_start)) = (diagnostics.as_deref_mut(), ke_start) {
+                out.push(SubstepDiagnostics {
+                    ke_start,
+                    ke_end: compute_kinetic_energy(bodies),
+                    max_velocity: compute_max_velocity(bodies),
+                    max_penetration: max_penetration_estimate(constraints),
+                });
+            }
         }
-        SolverStats {
-            iterations_used: total_iters,
-            residual: 0.0,
-            converged: true,
-        }
+        totals.into_stats()
+    }
+    /// Constraint phase of one substep: prepare, velocity sweeps, `post_solve`
+    /// and position passes, all at the substep size.
+    fn solve_substep(
+        &self,
+        constraints: &mut [Box<dyn Constraint>],
+        bodies: &mut RigidBodySet,
+        sub_dt: f64,
+    ) -> SweepOutcome {
+        prepare_active(constraints, bodies, sub_dt);
+        let sweeps = run_velocity_sweeps(
+            constraints,
+            bodies,
+            sub_dt,
+            self.velocity_iterations,
+            self.tolerance,
+            None,
+        );
+        post_solve_active(constraints);
+        self.solve_position_constraints(constraints, bodies, sub_dt);
+        sweeps
     }
     /// Compute the Baumgarte bias term for a penetration depth.
     ///

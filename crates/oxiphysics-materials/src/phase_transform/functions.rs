@@ -171,7 +171,8 @@ mod tests {
     fn test_phase_field_solid_fraction_increases_after_step() {
         let nx = 32;
         let ny = 32;
-        let mut pf = PhaseFieldModel2D::new(nx, ny, 2.0, 1.0, 100.0);
+        // Melting point 1200 K: the uniform 1000 K melt is undercooled.
+        let mut pf = PhaseFieldModel2D::new(nx, ny, 2.0, 1.0, 100.0, 1200.0, 1.0);
         for t in pf.temperature.iter_mut() {
             *t = 1000.0;
         }
@@ -182,8 +183,8 @@ mod tests {
         }
         let f1 = pf.solid_fraction();
         assert!(
-            f1 >= f0,
-            "Solid fraction should not decrease after solidification steps: f0={f0}, f1={f1}"
+            f1 > f0,
+            "Solid fraction must grow in an undercooled melt: f0={f0}, f1={f1}"
         );
     }
     #[test]

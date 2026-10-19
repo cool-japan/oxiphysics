@@ -420,8 +420,12 @@ mod tests {
             }
         }
         let (q4, q6) = compute_bond_order_params(&positions, 1.5 * a);
-        assert!((0.0..=1.0).contains(&q4), "Q4={q4} out of [0,1]");
-        assert!((0.0..=1.0).contains(&q6), "Q6={q6} out of [0,1]");
+        assert!((0.0..=1.0 + 1e-12).contains(&q4), "Q4={q4} out of [0,1]");
+        assert!((0.0..=1.0 + 1e-12).contains(&q6), "Q6={q6} out of [0,1]");
+        // Independent reference (complex spherical harmonics, 126 bonds:
+        // 54 nearest-neighbour and 72 face-diagonal pairs).
+        assert!((q4 - 0.218_217_890_235_992_4).abs() < 1e-10, "Q4={q4}");
+        assert!((q6 - 0.176_776_695_296_636_84).abs() < 1e-10, "Q6={q6}");
     }
     #[test]
     fn test_q4_q6_empty() {
@@ -430,6 +434,242 @@ mod tests {
             q4.abs() < 1e-14 && q6.abs() < 1e-14,
             "Empty system: Q4={q4}, Q6={q6}"
         );
+    }
+    #[test]
+    fn test_q4_q6_without_bonds_is_zero() {
+        let positions = [[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]];
+        assert_eq!(compute_bond_order_params(&positions, 1.0), (0.0, 0.0));
+        assert_eq!(compute_bond_order_params(&positions[..1], 10.0), (0.0, 0.0));
+    }
+    #[test]
+    fn test_q4_q6_single_bond_is_one_in_any_direction() {
+        // One bond: Q_lm = Y_lm(r_hat), and the addition theorem gives
+        // sum_m |Y_lm|^2 = (2l+1)/(4 pi), i.e. Q_l = 1 for every direction
+        // (including the poles, where sin(theta) = 0).
+        let directions: [[f64; 3]; 8] = [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -2.0],
+            [0.0, -1.0, 0.0],
+            [0.3, 0.4, -0.2],
+            [-1.0, 2.0, 0.5],
+            [1.0, 1.0, 1.0],
+            [-0.2, -0.7, -0.9],
+        ];
+        for direction in directions {
+            let positions = [[0.0, 0.0, 0.0], direction];
+            let (q4, q6) = compute_bond_order_params(&positions, 10.0);
+            assert!((q4 - 1.0).abs() < 1e-12, "{direction:?}: Q4 = {q4}");
+            assert!((q6 - 1.0).abs() < 1e-12, "{direction:?}: Q6 = {q6}");
+        }
+    }
+    #[test]
+    fn test_q4_q6_fcc_reference_values() {
+        // FCC bulk: Q4 = 0.190941, Q6 = 0.574524.  The 3x3x3 conventional-cell
+        // block (108 atoms, 450 nearest-neighbour bonds) has the same bond
+        // directions with equal weights, so it reproduces the bulk values.
+        let positions = crate::structure::build_fcc(1.0, 3, 3, 3);
+        assert_eq!(positions.len(), 108);
+        let (q4, q6) = compute_bond_order_params(&positions, 0.8);
+        assert!((q4 - 0.190_940_653_956_493).abs() < 1e-9, "Q4 = {q4}");
+        assert!((q6 - 0.574_524_259_714_070).abs() < 1e-9, "Q6 = {q6}");
+    }
+    #[test]
+    fn test_q4_q6_local_environment_reference_values() {
+        // Centre atom plus first shell; the cutoff only admits the
+        // centre-neighbour bonds.  Reference values from complex harmonics.
+        let octahedron = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ];
+        let (q4, q6) = compute_bond_order_params(&octahedron, 1.2);
+        assert!((q4 - 0.763_762_615_825_973).abs() < 1e-10, "sc Q4 = {q4}");
+        assert!((q6 - 0.353_553_390_593_274).abs() < 1e-10, "sc Q6 = {q6}");
+
+        let mut bcc = vec![[0.0, 0.0, 0.0]];
+        for sx in [-0.5, 0.5] {
+            for sy in [-0.5, 0.5] {
+                for sz in [-0.5, 0.5] {
+                    bcc.push([sx, sy, sz]);
+                }
+            }
+        }
+        let (q4, q6) = compute_bond_order_params(&bcc, 0.9);
+        assert!((q4 - 0.509_175_077_217_316).abs() < 1e-10, "bcc Q4 = {q4}");
+        assert!((q6 - 0.628_539_361_054_709).abs() < 1e-10, "bcc Q6 = {q6}");
+
+        // Icosahedron (circumradius 1, edge 1.0515): Q4 = 0 by symmetry and
+        // Q6 = 0.663325, the signature of icosahedral order.
+        let golden = (1.0 + 5.0_f64.sqrt()) / 2.0;
+        let norm = (1.0 + golden * golden).sqrt();
+        let mut icosahedron = vec![[0.0, 0.0, 0.0]];
+        for s1 in [-1.0, 1.0] {
+            for s2 in [-1.0, 1.0] {
+                icosahedron.push([0.0, s1 / norm, s2 * golden / norm]);
+                icosahedron.push([s1 / norm, s2 * golden / norm, 0.0]);
+                icosahedron.push([s2 * golden / norm, 0.0, s1 / norm]);
+            }
+        }
+        let (q4, q6) = compute_bond_order_params(&icosahedron, 1.02);
+        assert!(q4.abs() < 1e-12, "icosahedron Q4 = {q4}");
+        assert!((q6 - 0.663_324_958_071_080).abs() < 1e-10, "Q6 = {q6}");
+    }
+    /// Rotate `p` by `R = Rz(a) Ry(b) Rx(c)`.
+    fn rotate_euler(p: [f64; 3], a: f64, b: f64, c: f64) -> [f64; 3] {
+        let (sa, ca) = a.sin_cos();
+        let (sb, cb) = b.sin_cos();
+        let (sc, cc) = c.sin_cos();
+        let p1 = [p[0], cc * p[1] - sc * p[2], sc * p[1] + cc * p[2]];
+        let p2 = [cb * p1[0] + sb * p1[2], p1[1], -sb * p1[0] + cb * p1[2]];
+        [ca * p2[0] - sa * p2[1], sa * p2[0] + ca * p2[1], p2[2]]
+    }
+    #[test]
+    fn test_q4_q6_are_rotation_and_translation_invariant() {
+        let cluster: [[f64; 3]; 9] = [
+            [0.4, 1.271, 0.882],
+            [-0.879, -0.639, 1.195],
+            [-1.583, 1.028, 0.951],
+            [-0.103, -0.63, -0.709],
+            [-0.784, -0.176, 0.015],
+            [0.171, 1.586, 0.937],
+            [0.391, 1.565, -0.911],
+            [-1.087, 0.36, -1.459],
+            [-1.486, 0.048, -0.108],
+        ];
+        let (q4, q6) = compute_bond_order_params(&cluster, 2.2);
+        // Independent reference (19 bonds) from complex harmonics.
+        assert!((q4 - 0.316_742_355_245_350_55).abs() < 1e-10, "Q4 = {q4}");
+        assert!((q6 - 0.210_609_568_000_522_86).abs() < 1e-10, "Q6 = {q6}");
+        for (a, b, c) in [(0.7, -1.1, 2.3), (2.9, 0.4, -0.6), (-1.7, 3.0, 1.2)] {
+            let rotated: Vec<[f64; 3]> = cluster
+                .iter()
+                .map(|&p| {
+                    let r = rotate_euler(p, a, b, c);
+                    [r[0] + 3.5, r[1] - 1.25, r[2] + 0.75]
+                })
+                .collect();
+            let (r4, r6) = compute_bond_order_params(&rotated, 2.2);
+            assert!(
+                (r4 - q4).abs() < 1e-10,
+                "Q4 changed by rotation: {q4} -> {r4}"
+            );
+            assert!(
+                (r6 - q6).abs() < 1e-10,
+                "Q6 changed by rotation: {q6} -> {r6}"
+            );
+        }
+    }
+    /// Closed-form real harmonics of degree 4 (`x = cos θ`, `s = sin θ`) in the
+    /// layout `[Y_0, √2 Re Y_1, √2 Im Y_1, ...]` of `accumulate_real_harmonics`.
+    fn closed_form_l4(x: f64, s: f64, phi: f64) -> Vec<f64> {
+        let sqrt2 = std::f64::consts::SQRT_2;
+        let radial = [
+            (3.0 / 16.0) * (1.0 / PI).sqrt() * (35.0 * x.powi(4) - 30.0 * x * x + 3.0),
+            -sqrt2 * (3.0 / 8.0) * (5.0 / PI).sqrt() * s * (7.0 * x.powi(3) - 3.0 * x),
+            sqrt2 * (3.0 / 8.0) * (5.0 / (2.0 * PI)).sqrt() * s * s * (7.0 * x * x - 1.0),
+            -sqrt2 * (3.0 / 8.0) * (35.0 / PI).sqrt() * s.powi(3) * x,
+            sqrt2 * (3.0 / 16.0) * (35.0 / (2.0 * PI)).sqrt() * s.powi(4),
+        ];
+        interleave_azimuthal(&radial, phi)
+    }
+    /// Closed-form real harmonics of degree 6, same layout as [`closed_form_l4`].
+    fn closed_form_l6(x: f64, s: f64, phi: f64) -> Vec<f64> {
+        let sqrt2 = std::f64::consts::SQRT_2;
+        let radial = [
+            (1.0 / 32.0)
+                * (13.0 / PI).sqrt()
+                * (231.0 * x.powi(6) - 315.0 * x.powi(4) + 105.0 * x * x - 5.0),
+            -sqrt2
+                * (1.0 / 16.0)
+                * (273.0 / (2.0 * PI)).sqrt()
+                * s
+                * (33.0 * x.powi(5) - 30.0 * x.powi(3) + 5.0 * x),
+            sqrt2
+                * (1.0 / 64.0)
+                * (1365.0 / PI).sqrt()
+                * s
+                * s
+                * (33.0 * x.powi(4) - 18.0 * x * x + 1.0),
+            -sqrt2 * (1.0 / 32.0) * (1365.0 / PI).sqrt() * s.powi(3) * (11.0 * x.powi(3) - 3.0 * x),
+            sqrt2 * (3.0 / 32.0) * (91.0 / (2.0 * PI)).sqrt() * s.powi(4) * (11.0 * x * x - 1.0),
+            -sqrt2 * (3.0 / 32.0) * (1001.0 / PI).sqrt() * s.powi(5) * x,
+            sqrt2 * (1.0 / 64.0) * (3003.0 / PI).sqrt() * s.powi(6),
+        ];
+        interleave_azimuthal(&radial, phi)
+    }
+    /// `[r0, r1 cos φ, r1 sin φ, r2 cos 2φ, r2 sin 2φ, ...]`.
+    fn interleave_azimuthal(radial: &[f64], phi: f64) -> Vec<f64> {
+        let mut out = vec![radial[0]];
+        for (m, &r) in radial.iter().enumerate().skip(1) {
+            out.push(r * (m as f64 * phi).cos());
+            out.push(r * (m as f64 * phi).sin());
+        }
+        out
+    }
+    #[test]
+    fn test_real_harmonics_match_closed_forms() {
+        for (theta, phi) in [(0.3_f64, 0.2_f64), (1.1, -2.0), (2.5, 3.0), (PI / 2.0, 1.0)] {
+            let (x, s) = (theta.cos(), theta.sin());
+            for (l, expected) in [
+                (4, closed_form_l4(x, s, phi)),
+                (6, closed_form_l6(x, s, phi)),
+            ] {
+                let mut acc = vec![0.0; 2 * l + 1];
+                accumulate_real_harmonics(&mut acc, l, x, s, phi);
+                assert_eq!(acc.len(), expected.len());
+                for (k, (got, want)) in acc.iter().zip(&expected).enumerate() {
+                    assert!(
+                        (got - want).abs() < 1e-13,
+                        "l = {l}, component {k}, theta = {theta}, phi = {phi}: {got} vs {want}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn test_real_harmonics_satisfy_the_addition_theorem() {
+        // Orthonormal real harmonics: sum_k y_k^2 = (2l + 1) / (4 pi) in every
+        // direction.  Dropping the sqrt(2) of the m != 0 terms (the old bug)
+        // breaks this.
+        for l in 0..=8_usize {
+            for (theta, phi) in [
+                (0.0_f64, 0.0_f64),
+                (0.4, 1.3),
+                (1.2, -0.7),
+                (PI / 2.0, 2.2),
+                (3.0, 5.0),
+            ] {
+                let mut acc = vec![0.0; 2 * l + 1];
+                accumulate_real_harmonics(&mut acc, l, theta.cos(), theta.sin(), phi);
+                let sum_sq: f64 = acc.iter().map(|y| y * y).sum();
+                let expected = (2 * l + 1) as f64 / (4.0 * PI);
+                assert!(
+                    (sum_sq - expected).abs() < 1e-12,
+                    "l = {l}, theta = {theta}: {sum_sq} vs {expected}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_real_harmonics_at_the_pole_only_have_m_zero() {
+        for l in [4_usize, 6] {
+            let mut acc = vec![0.0; 2 * l + 1];
+            accumulate_real_harmonics(&mut acc, l, 1.0, 0.0, 0.7);
+            assert!((acc[0] - ((2 * l + 1) as f64 / (4.0 * PI)).sqrt()).abs() < 1e-14);
+            assert!(
+                acc[1..].iter().all(|&y| y.abs() < 1e-14),
+                "l = {l}: {acc:?}"
+            );
+        }
+        // A too-short accumulator is left untouched.
+        let mut short = [0.0; 8];
+        accumulate_real_harmonics(&mut short, 4, 0.5, 0.8, 0.3);
+        assert_eq!(short, [0.0; 8]);
     }
     #[test]
     fn test_heat_flux_acf_normalised_at_zero() {

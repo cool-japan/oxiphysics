@@ -16,12 +16,24 @@ pub mod core_sim;
 pub mod forces;
 pub mod generic_sim;
 pub mod plain_sim;
+pub mod plain_thermostats;
+pub mod stochastic;
 pub mod tracking;
 
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_advanced;
+#[cfg(test)]
+mod tests_npt;
+#[cfg(test)]
+mod tests_plain;
+#[cfg(test)]
+mod tests_rdf_histogram;
+#[cfg(test)]
+mod tests_support;
+#[cfg(test)]
+mod tests_units;
 
 // Re-export all public items for backwards compatibility
 pub use advanced::*;
@@ -32,4 +44,5 @@ pub use core_sim::*;
 pub use forces::*;
 pub use generic_sim::*;
 pub use plain_sim::*;
+pub use plain_thermostats::*;
 pub use tracking::*;

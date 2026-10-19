@@ -1,6 +1,7 @@
 //! Auto-generated module structure
 
 pub mod batchnarrowphase_traits;
+mod box_face_clip;
 pub mod contactfilter_traits;
 mod convex_contact;
 pub mod dispatch;

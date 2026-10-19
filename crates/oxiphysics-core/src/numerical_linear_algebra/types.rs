@@ -6,7 +6,7 @@ use std::f64::consts::PI;
 
 use super::functions::{
     axpy, dot, gram, matmul_rect, matmul_rect_t, matvec_block, matvec_block_t, norm2, qr_thin,
-    svd_small, vec_add, vec_scale, vec_sub,
+    svd_small, transpose_dense, vec_add, vec_scale, vec_sub,
 };
 
 /// Collection of eigenvalue solvers.
@@ -350,7 +350,23 @@ impl IterativeSolver {
     }
     /// MINRES — Minimum Residual method for symmetric (possibly indefinite) systems.
     ///
-    /// Minimises the 2-norm of the residual over the Krylov subspace at each step.
+    /// Implements the Paige–Saunders algorithm (Choi, Paige & Saunders, SIAM J.
+    /// Sci. Comput. 33(4), 2011, Algorithm 1).  The Lanczos process produces an
+    /// orthonormal basis `V_k` with `A V_k = V_{k+1} T_k`; the least-squares
+    /// problem `min ‖β₁e₁ − T_k y‖` is solved by applying one reflection per
+    /// step to the new column of `T_k`, and the iterate is updated through the
+    /// three-term recurrence `w_k = (v_k − δ_k w_{k−1} − ε_k w_{k−2}) / γ_k`,
+    /// `x_k = x_{k−1} + c_k φ̄_{k−1} w_k`.  The residual norm over the Krylov
+    /// subspace is therefore minimised at every step and never increases.
+    ///
+    /// `tol` is an absolute tolerance on `‖b − A x‖`.  The recursively updated
+    /// residual estimate `φ̄_k` only triggers the stopping test; `converged` is
+    /// reported after the true residual `‖b − A x‖` has been recomputed, and
+    /// `residual` is always that true residual.  A Lanczos breakdown (the Krylov
+    /// space is exhausted, so the iterate is already the least-squares solution)
+    /// and a recursive estimate that falls below `tol` while the true residual
+    /// does not (the attainable accuracy in floating point has been reached) end
+    /// the run immediately with `converged = false`.
     pub fn minres(
         a: &SparseCSR,
         b: &[f64],
@@ -362,7 +378,7 @@ impl IterativeSolver {
         let mut x = x0.map(|v| v.to_vec()).unwrap_or_else(|| vec![0.0; n]);
         let r = vec_sub(b, &a.matvec(&x));
         let beta1 = norm2(&r);
-        if beta1 < tol {
+        if beta1 == 0.0 || beta1 < tol {
             return SolverResult {
                 x,
                 residual: beta1,
@@ -372,56 +388,72 @@ impl IterativeSolver {
         }
         let mut v_prev = vec![0.0f64; n];
         let mut v_curr = vec_scale(1.0 / beta1, &r);
-        let mut beta = beta1;
-        let mut phi_bar = beta1;
-        let mut rho_bar = 1.0f64;
-        let mut c_prev = 1.0f64;
+        // β_k (zero before the first Lanczos step, where it multiplies v_0 = 0), the
+        // residual-norm estimate φ̄_{k−1}, and the previous reflection
+        // (c_{k−1}, s_{k−1}) with its leftover entry δ_k^{(1)}; initially c_0 = −1.
+        let mut beta = 0.0f64;
+        let mut phi = beta1;
+        let mut c_prev = -1.0f64;
         let mut s_prev = 0.0f64;
-        let mut w = vec![0.0f64; n];
+        let mut delta1 = 0.0f64;
+        let mut eps = 0.0f64;
         let mut w_prev = vec![0.0f64; n];
+        let mut w_curr = vec![0.0f64; n];
+        // Running estimate of ‖A‖ used to recognise a Lanczos breakdown.
+        let mut a_norm = 0.0f64;
+        let mut iterations = 0usize;
         for iter in 0..max_iter {
-            let av = a.matvec(&v_curr);
-            let alpha = dot(&v_curr, &av);
-            let mut v_next: Vec<f64> = (0..n)
-                .map(|i| av[i] - alpha * v_curr[i] - beta * v_prev[i])
-                .collect();
-            let beta_next = norm2(&v_next);
-            if beta_next > 1e-15 {
-                v_next = vec_scale(1.0 / beta_next, &v_next);
+            // Lanczos: A v_k = β_k v_{k−1} + α_k v_k + β_{k+1} v_{k+1}.
+            let mut p = a.matvec(&v_curr);
+            let alpha = dot(&v_curr, &p);
+            axpy(-alpha, &v_curr, &mut p);
+            axpy(-beta, &v_prev, &mut p);
+            let beta_next = norm2(&p);
+            a_norm = a_norm.max(alpha.abs() + beta + beta_next);
+            let breakdown = beta_next <= f64::EPSILON * a_norm;
+            // Apply the previous reflection to the new column of T_k.
+            let delta2 = c_prev * delta1 + s_prev * alpha;
+            let gamma_bar = s_prev * delta1 - c_prev * alpha;
+            let eps_next = s_prev * beta_next;
+            let delta1_next = -c_prev * beta_next;
+            // Current reflection: eliminate β_{k+1}.
+            let gamma = gamma_bar.hypot(beta_next);
+            if !(gamma.is_finite() && gamma > 0.0) {
+                break;
             }
-            let rho = (rho_bar * rho_bar + beta * beta).sqrt();
-            let c = rho_bar / rho;
-            let s = beta / rho;
-            let theta = s * alpha;
-            rho_bar = -c * alpha + s_prev * s * beta;
-            let _ = (c_prev, s_prev, theta);
+            let c = gamma_bar / gamma;
+            let s = beta_next / gamma;
+            let tau = c * phi;
+            phi *= s;
+            // Update the search direction w_k and the iterate.
             let w_new: Vec<f64> = (0..n)
-                .map(|i| (v_curr[i] - theta * w_prev[i] - rho_bar * w[i]) / rho)
+                .map(|i| (v_curr[i] - delta2 * w_curr[i] - eps * w_prev[i]) / gamma)
                 .collect();
-            axpy(c * phi_bar, &w_new, &mut x);
-            phi_bar *= s;
-            if phi_bar.abs() < tol {
-                return SolverResult {
-                    x,
-                    residual: phi_bar.abs(),
-                    iterations: iter + 1,
-                    converged: true,
-                };
-            }
-            v_prev = v_curr;
-            v_curr = v_next;
-            beta = beta_next;
+            axpy(tau, &w_new, &mut x);
+            w_prev = std::mem::replace(&mut w_curr, w_new);
+            eps = eps_next;
+            delta1 = delta1_next;
             c_prev = c;
             s_prev = s;
-            w_prev = w;
-            w = w_new;
+            iterations = iter + 1;
+            if breakdown || phi.abs() < tol {
+                let residual = norm2(&vec_sub(b, &a.matvec(&x)));
+                return SolverResult {
+                    x,
+                    residual,
+                    iterations,
+                    converged: residual < tol || residual == 0.0,
+                };
+            }
+            v_prev = std::mem::replace(&mut v_curr, vec_scale(1.0 / beta_next, &p));
+            beta = beta_next;
         }
-        let res = norm2(&vec_sub(b, &a.matvec(&x)));
+        let residual = norm2(&vec_sub(b, &a.matvec(&x)));
         SolverResult {
             x,
-            residual: res,
-            iterations: max_iter,
-            converged: res < tol,
+            residual,
+            iterations,
+            converged: residual < tol || residual == 0.0,
         }
     }
     /// GMRES(m) with restart for general (non-symmetric) linear systems.
@@ -890,7 +922,9 @@ impl LowRankApproximation {
     /// Randomised SVD: compute a rank-k approximation of A (m x n).
     ///
     /// Uses a random Gaussian test matrix and power iteration to build a
-    /// range sketch, then computes a dense SVD on the projected matrix.
+    /// range sketch, then computes a dense SVD on the projected matrix.  The
+    /// result satisfies `A ≈ U · diag(s) · Vt` with `U` of shape `m×k`, `s`
+    /// sorted in descending order and `Vt` of shape `k×n` (see [`LowRankResult`]).
     pub fn randomized_svd(a: &[f64], m: usize, n: usize, k: usize, n_iter: usize) -> LowRankResult {
         let k = k.min(m).min(n);
         let mut omega = vec![0.0f64; n * k];
@@ -926,9 +960,24 @@ impl LowRankApproximation {
     }
     /// Nyström approximation for symmetric positive semi-definite matrices.
     ///
-    /// Samples k columns to form a sketch, then recovers a rank-k approximation.
+    /// Samples k columns `C = A[:, J]` and the intersection `W = A[J, J]`, and
+    /// forms `A ≈ C W⁺ Cᵀ = G Gᵀ` with `G = C U_w S_w^{-1/2}`, where
+    /// `W = U_w S_w U_wᵀ`.  The result is returned as an eigen-decomposition of
+    /// that rank-k approximation: `u` (`n×k`) holds orthonormal eigenvectors,
+    /// `s` the eigenvalues in descending order and `vt = uᵀ` (`k×n`), so that
+    /// `u · diag(s) · vt` reproduces the approximation.
     pub fn nystrom(a: &[f64], n: usize, k: usize) -> LowRankResult {
         let k = k.min(n);
+        if k == 0 {
+            return LowRankResult {
+                u: Vec::new(),
+                s: Vec::new(),
+                vt: Vec::new(),
+                m: n,
+                n,
+                k: 0,
+            };
+        }
         let step = n / k;
         let cols: Vec<usize> = (0..k).map(|i| i * step).collect();
         let mut c = vec![0.0f64; n * k];
@@ -950,17 +999,20 @@ impl LowRankApproximation {
             .map(|&v| if v > eps { 1.0 / v.sqrt() } else { 0.0 })
             .collect();
         let cuw = matmul_rect(&c, n, k, &uw, k, k);
-        let u: Vec<f64> = (0..n * k)
+        let g: Vec<f64> = (0..n * k)
             .map(|idx| {
                 let j = idx % k;
                 cuw[idx] * s_inv_sqrt[j]
             })
             .collect();
-        let s: Vec<f64> = sw.to_vec();
+        // A ≈ G Gᵀ; with the thin SVD G = U_g Σ V_gᵀ this is U_g Σ² U_gᵀ.
+        let (u, sigma, _vgt) = svd_small(&g, n, k);
+        let s: Vec<f64> = sigma.iter().map(|v| v * v).collect();
+        let vt = transpose_dense(&u, n, k);
         LowRankResult {
-            u: u.clone(),
+            u,
             s,
-            vt: u,
+            vt,
             m: n,
             n,
             k,
@@ -1017,14 +1069,15 @@ impl SSORPreconditioner {
         Self { a, omega }
     }
 }
-/// Result of a low-rank decomposition.
+/// Result of a low-rank decomposition `A ≈ U · diag(s) · Vt`.
 #[derive(Debug, Clone)]
 pub struct LowRankResult {
-    /// Left singular vectors (m x k), stored column-major.
+    /// Left singular vectors `U`, shape `m×k`, stored row-major (stride `k`).
     pub u: Vec<f64>,
-    /// Singular values (length k).
+    /// Singular values (length k), in descending order.
     pub s: Vec<f64>,
-    /// Right singular vectors (n x k), stored column-major.
+    /// Transposed right singular vectors `Vᵀ`, shape `k×n`, stored row-major
+    /// (stride `n`).
     pub vt: Vec<f64>,
     /// Number of rows m.
     pub m: usize,
@@ -1476,11 +1529,19 @@ impl TensorDecomposition {
     /// Tucker decomposition via Higher-Order SVD (HOSVD).
     ///
     /// Decomposes X ≈ G ×_1 U1 ×_2 U2 ×_3 U3 where G is the core tensor.
+    ///
+    /// The factor `U_n` (`shape[n] × r_n`, row-major) holds the leading `r_n` left
+    /// singular vectors of the mode-`n` unfolding.  A mode-`n` unfolding has only
+    /// `min(shape[n], prod(other dims))` singular vectors, so a requested rank
+    /// beyond that is clamped; the core then has shape `r_1 × r_2 × r_3` with the
+    /// clamped ranks.
     pub fn tucker_hosvd(x: &[f64], shape: &[usize], ranks: &[usize]) -> TensorDecompResult {
         assert_eq!(shape.len(), 3, "Tucker HOSVD requires a 3-way tensor");
         assert_eq!(ranks.len(), 3, "ranks must have 3 elements");
         let (i_dim, j_dim, k_dim) = (shape[0], shape[1], shape[2]);
-        let (r1, r2, r3) = (ranks[0], ranks[1], ranks[2]);
+        let r1 = ranks[0].min(i_dim).min(j_dim * k_dim);
+        let r2 = ranks[1].min(j_dim).min(i_dim * k_dim);
+        let r3 = ranks[2].min(k_dim).min(i_dim * j_dim);
         let u1 = Self::mode_unfold_svd(x, i_dim, j_dim * k_dim, r1);
         let u2 = Self::mode_unfold_svd_mode2(x, j_dim, i_dim, k_dim, r2);
         let u3 = Self::mode_unfold_svd_mode3(x, k_dim, i_dim, j_dim, r3);
@@ -1492,10 +1553,17 @@ impl TensorDecomposition {
             iterations: 1,
         }
     }
+    /// Leading `r` left singular vectors of the `m×n` row-major matrix `x`, as an
+    /// `m×r` row-major factor.
     fn mode_unfold_svd(x: &[f64], m: usize, n: usize, r: usize) -> Vec<f64> {
-        let (u, _, _) = svd_small(x, m, n);
-        let r = r.min(m);
-        (0..m * r).map(|idx| u[idx]).collect()
+        let (u, s, _) = svd_small(x, m, n);
+        let stride = s.len();
+        let r = r.min(stride);
+        let mut factor = Vec::with_capacity(m * r);
+        for row in 0..m {
+            factor.extend_from_slice(&u[row * stride..row * stride + r]);
+        }
+        factor
     }
     fn mode_unfold_svd_mode2(
         x: &[f64],
@@ -1512,9 +1580,7 @@ impl TensorDecomposition {
                 }
             }
         }
-        let (u, _, _) = svd_small(&unf, j_dim, i_dim * k_dim);
-        let r = r.min(j_dim);
-        (0..j_dim * r).map(|idx| u[idx]).collect()
+        Self::mode_unfold_svd(&unf, j_dim, i_dim * k_dim, r)
     }
     fn mode_unfold_svd_mode3(
         x: &[f64],
@@ -1531,9 +1597,7 @@ impl TensorDecomposition {
                 }
             }
         }
-        let (u, _, _) = svd_small(&unf, k_dim, i_dim * j_dim);
-        let r = r.min(k_dim);
-        (0..k_dim * r).map(|idx| u[idx]).collect()
+        Self::mode_unfold_svd(&unf, k_dim, i_dim * j_dim, r)
     }
     fn tucker_core(
         x: &[f64],
@@ -1567,7 +1631,13 @@ impl TensorDecomposition {
     }
     /// Tensor Train (TT) decomposition via successive SVDs.
     ///
-    /// Computes a TT-decomposition X ≈ G1 x G2 x ... x Gd with given TT-ranks.
+    /// Computes a TT-decomposition X ≈ G1 x G2 x ... x Gd (TT-SVD, Oseledets 2011).
+    /// Core `G_k` has shape `r_{k-1} × shape[k] × r_k` (row-major, `r_0 = r_d = 1`)
+    /// and the ranks are truncated to `max_rank` (at least 1); singular values at or below
+    /// `tol · ‖unfolding‖_F / sqrt(d - 1)` are dropped.  The first `d - 1` cores
+    /// are the left singular factors of the successive unfoldings, and the last
+    /// core carries the remainder `S Vᵀ`, so the contraction of all cores
+    /// reproduces `X` (exactly when no singular value is truncated).
     pub fn tensor_train(
         x: &[f64],
         shape: &[usize],
@@ -1580,13 +1650,17 @@ impl TensorDecomposition {
         let mut cores: Vec<Vec<f64>> = Vec::with_capacity(d);
         let mut cur = x.to_vec();
         let mut r_prev = 1usize;
-        let mut all_shape = Vec::new();
-        for k in 0..d {
-            let n_k = shape[k];
+        for (k, &n_k) in shape.iter().enumerate() {
+            if k + 1 == d {
+                // The remainder of the sweep is the last core, `r_prev × n_k × 1`.
+                cores.push(cur);
+                break;
+            }
             let n_rest: usize = shape[k + 1..].iter().product();
             let m = r_prev * n_k;
             let n = n_rest;
             let (u, s, vt) = svd_small(&cur, m, n);
+            let rank_bound = s.len();
             let x_norm: f64 = s.iter().map(|v| v * v).sum::<f64>().sqrt();
             let threshold = tol * x_norm / ((d - 1) as f64).sqrt();
             let r_new = s
@@ -1594,26 +1668,23 @@ impl TensorDecomposition {
                 .take_while(|&&sv| sv > threshold)
                 .count()
                 .max(1)
-                .min(max_rank)
-                .min(s.len());
-            let core: Vec<f64> = (0..r_prev * n_k * r_new)
+                .min(max_rank.max(1))
+                .min(rank_bound);
+            let core: Vec<f64> = (0..m * r_new)
                 .map(|idx| {
                     let row = idx / r_new;
                     let col = idx % r_new;
-                    u[row * m.min(n) + col]
+                    u[row * rank_bound + col]
                 })
                 .collect();
             cores.push(core);
-            all_shape.push((r_prev, n_k, r_new));
-            if k + 1 < d {
-                cur = (0..r_new * n)
-                    .map(|idx| {
-                        let row = idx / n;
-                        let col = idx % n;
-                        s[row] * vt[row * n + col]
-                    })
-                    .collect();
-            }
+            cur = (0..r_new * n)
+                .map(|idx| {
+                    let row = idx / n;
+                    let col = idx % n;
+                    s[row] * vt[row * n + col]
+                })
+                .collect();
             r_prev = r_new;
         }
         let flat_cores: Vec<f64> = cores.iter().flat_map(|c| c.iter().copied()).collect();

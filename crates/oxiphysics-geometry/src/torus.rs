@@ -8,6 +8,9 @@ use oxiphysics_core::Aabb;
 use oxiphysics_core::math::{Mat3, Real, Vec3};
 use std::f64::consts::PI;
 
+mod quartic;
+use quartic::solve_quartic;
+
 /// A torus defined by major radius R (center to tube center) and minor radius r (tube radius).
 ///
 /// The torus lies in the XZ plane (Y is the axis of symmetry).
@@ -59,12 +62,14 @@ impl Torus {
         [[ixz, 0.0, 0.0], [0.0, iy, 0.0], [0.0, 0.0, ixz]]
     }
 
-    /// Cast a ray against the torus using an iterative quartic solver approach.
+    /// Cast a ray against the torus by solving the ray/torus quartic.
     ///
     /// The torus implicit equation (centered at origin, axis = Y):
     ///   (x²+y²+z² + R²−r²)² − 4R²(x²+z²) = 0
     ///
-    /// Substituting P+t*D gives a quartic in t which is solved by Ferrari's method.
+    /// Substituting P+t*D gives a quartic in t whose real roots (Ferrari's
+    /// method, polished with Newton's method) are the intersections with the
+    /// surface; the nearest root in `[1e-6, max_toi]` is the hit.
     /// Returns `Some((t, normal))` or `None`.
     pub fn ray_cast_array(
         &self,
@@ -381,11 +386,15 @@ impl Torus {
         }
     }
 
-    /// Test whether a ray intersects the torus and return the hit count.
+    /// Number of intersections of a ray with the torus surface.
     ///
-    /// A finite ray with origin `o`, direction `d`, and parameter `max_toi` can
-    /// intersect the torus at 0, 2, or 4 points.  This counts all positive-t
-    /// intersections within `[0, max_toi]`.
+    /// Counts the real roots of the ray/torus quartic with parameter in
+    /// `[1e-6, max_toi]` (the parameter is measured in multiples of the length
+    /// of `direction`, like [`RayHit::toi`]).  A ray that starts outside and is
+    /// long enough crosses the surface at 0, 2 or 4 points.  A tangent contact
+    /// is a double root and counts twice, because the entry and the exit point
+    /// coincide, so the parity of the count of a long ray from outside stays
+    /// even.  A ray that starts inside the tube sees an odd count.
     pub fn ray_intersection_count(
         &self,
         origin: [f64; 3],
@@ -395,33 +404,16 @@ impl Torus {
         let o = Vec3::new(origin[0], origin[1], origin[2]);
         let d = Vec3::new(direction[0], direction[1], direction[2]);
         let dir_len = d.norm();
-        if dir_len < 1e-12 {
+        if dir_len.is_nan() || dir_len < 1e-12 {
             return 0;
         }
         let dn = d / dir_len;
-
-        let oo = o.dot(&o);
-        let od = o.dot(&dn);
-        let rr = self.major_radius * self.major_radius;
-        let aa = self.minor_radius * self.minor_radius;
-        let c_alpha = oo + rr - aa;
-        let beta = 2.0 * od;
-        let dxz2 = dn.x * dn.x + dn.z * dn.z;
-        let od_xz = o.x * dn.x + o.z * dn.z;
-        let oxz2 = o.x * o.x + o.z * o.z;
-        let c4 = 1.0;
-        let c3 = 2.0 * beta;
-        let c2 = beta * beta + 2.0 * c_alpha - 4.0 * rr * dxz2;
-        let c1 = 2.0 * beta * c_alpha - 8.0 * rr * od_xz;
-        let c0 = c_alpha * c_alpha - 4.0 * rr * oxz2;
-        let roots = solve_quartic(c4, c3, c2, c1, c0);
-
-        roots
+        self.line_intersections(&o, &dn)
             .iter()
-            .filter(|&&t| {
-                !t.is_nan() && !t.is_infinite() && {
-                    let t_actual = t / dir_len;
-                    t_actual >= 1e-6 && t_actual <= max_toi
+            .filter(|t| {
+                !t.is_nan() && {
+                    let toi = **t / dir_len;
+                    toi >= 1e-6 && toi <= max_toi
                 }
             })
             .count()
@@ -474,78 +466,59 @@ impl Torus {
             .collect()
     }
 
-    // -----------------------------------------------------------------------
-    // Internal ray-cast implementation (quartic via Ferrari / companion matrix).
-    // -----------------------------------------------------------------------
-    fn ray_cast_impl(&self, origin: &Vec3, dir: &Vec3, max_toi: Real) -> Option<RayHit> {
-        let r_big = self.major_radius;
-        let r_small = self.minor_radius;
+    /// Distances along the unit vector `d` at which the line `o + t d` crosses
+    /// the torus surface: the real roots of the ray/torus quartic in ascending
+    /// order, a tangent contact listed twice.  Unused slots are `NaN`.
+    ///
+    /// With `P = o + t d` the surface equation
+    /// `(|P|² + R² − r²)² = 4 R² (P_x² + P_z²)` is a quartic in `t`.  It is
+    /// set up from the point of the line closest to the torus centre, so that
+    /// the cubic coefficient vanishes and the coefficients stay of the size of
+    /// the torus however far away the ray starts.
+    fn line_intersections(&self, o: &Vec3, d: &Vec3) -> [f64; 4] {
+        let big = self.major_radius;
+        let small = self.minor_radius;
+        let t_closest = -o.dot(d);
+        let closest = o + d * t_closest;
+        let reach = big + small;
+        let off_axis_sq = closest.norm_squared();
+        // The whole torus lies inside the ball of radius R + r.
+        if off_axis_sq.is_nan() || off_axis_sq > reach * reach * (1.0 + 1e-12) {
+            return [f64::NAN; 4];
+        }
+        let rr = big * big;
+        let c_alpha = off_axis_sq + rr - small * small;
+        let dxz2 = d.x * d.x + d.z * d.z;
+        let od_xz = closest.x * d.x + closest.z * d.z;
+        let oxz2 = closest.x * closest.x + closest.z * closest.z;
+        // (τ² + c_alpha)² − 4R²(dxz2 τ² + 2 od_xz τ + oxz2) = 0 with t = t_closest + τ
+        let roots = solve_quartic(
+            1.0,
+            0.0,
+            2.0 * c_alpha - 4.0 * rr * dxz2,
+            -8.0 * rr * od_xz,
+            c_alpha * c_alpha - 4.0 * rr * oxz2,
+        );
+        roots.map(|tau| t_closest + tau)
+    }
 
-        // Normalize direction for parameter computation; scale toi back after.
+    fn ray_cast_impl(&self, origin: &Vec3, dir: &Vec3, max_toi: Real) -> Option<RayHit> {
+        // Normalize the direction for the distance computation; the reported
+        // `toi` is scaled back to multiples of the original direction.
         let dir_len = dir.norm();
-        if dir_len < 1e-12 {
+        if dir_len.is_nan() || dir_len < 1e-12 {
             return None;
         }
         let d = dir / dir_len;
-        let o = *origin;
-
-        // Coefficients of the quartic  c4*t^4 + c3*t^3 + c2*t^2 + c1*t + c0 = 0
-        // derived from ((ox+t*dx)²+(oy+t*dy)²+(oz+t*dz)² + R²-r²)² = 4R²((ox+t*dx)²+(oz+t*dz)²)
-        let oo = o.dot(&o);
-        let od = o.dot(&d);
-        let _dd = d.dot(&d); // = 1 since d is normalised
-        let rr = r_big * r_big;
-        let aa = r_small * r_small;
-        let alpha = oo - rr - aa; // constant term inside big parens (before squaring)
-        let beta = 2.0 * od;
-        // Let f(t) = oo + 2*od*t + dd*t² + R²-r² -4R²*(... ) is expanded below.
-
-        // Using the parametric form:
-        //   Let S(t) = |o + t*d|² + R² - r² = (dd)*t² + 2*od*t + (oo + R² - r²)
-        //            = t² + beta*t + (oo + rr - aa)   [since dd=1]
-        // Let T(t) = (ox+t*dx)² + (oz+t*dz)²  (XZ only)
-        //          = (dx²+dz²)*t² + 2*(ox*dx+oz*dz)*t + (ox²+oz²)
-        let dxz2 = d.x * d.x + d.z * d.z;
-        let od_xz = o.x * d.x + o.z * d.z;
-        let oxz2 = o.x * o.x + o.z * o.z;
-
-        // Quartic: (t² + beta*t + (oo+rr-aa))² - 4rr*(dxz2*t² + 2*od_xz*t + oxz2) = 0
-        let c_alpha = oo + rr - aa; // = oo + R² - r²
-        // Expand (t² + beta*t + c_alpha)² = t^4 + 2beta t^3 + (beta²+2c_alpha) t² + 2beta*c_alpha t + c_alpha²
-        let c4 = 1.0;
-        let c3 = 2.0 * beta;
-        let c2 = beta * beta + 2.0 * c_alpha - 4.0 * rr * dxz2;
-        let c1 = 2.0 * beta * c_alpha - 8.0 * rr * od_xz;
-        let c0 = c_alpha * c_alpha - 4.0 * rr * oxz2;
-        let _ = alpha; // suppress unused warning
-
-        // Solve quartic numerically – we use a simple companion-matrix eigenvalue
-        // approach via Durand-Kerner / iterative refinement, or fall back to
-        // a straightforward bisection in likely intervals.
-        let roots = solve_quartic(c4, c3, c2, c1, c0);
-
-        let mut best_t = Real::INFINITY;
-        for t_raw in roots {
-            if t_raw.is_nan() || t_raw.is_infinite() {
-                continue;
-            }
-            // Scale back from normalised-direction t to actual t along original dir
-            let t = t_raw / dir_len;
-            if t >= 1e-6 && t <= max_toi && t < best_t {
-                best_t = t;
-            }
-        }
-        if best_t.is_infinite() {
-            return None;
-        }
-
-        let point = o + d * (best_t * dir_len);
-        let normal = torus_normal(&point, r_big);
-        Some(RayHit {
-            point,
-            normal,
-            toi: best_t,
-        })
+        let (distance, toi) = self
+            .line_intersections(origin, &d)
+            .into_iter()
+            .filter(|t| !t.is_nan())
+            .map(|t| (t, t / dir_len))
+            .find(|&(_, toi)| toi >= 1e-6 && toi <= max_toi)?;
+        let point = origin + d * distance;
+        let normal = torus_normal(&point, self.major_radius);
+        Some(RayHit { point, normal, toi })
     }
 }
 
@@ -582,122 +555,6 @@ fn torus_normal(p: &Vec3, big_r: Real) -> Vec3 {
     } else {
         n / len
     }
-}
-
-/// Solve a monic quartic t^4 + (c3/c4)*t^3 + ... analytically via Ferrari's method
-/// or by numerical polishing.  Returns up to 4 real roots (may include duplicates).
-fn solve_quartic(c4: f64, c3: f64, c2: f64, c1: f64, c0: f64) -> [f64; 4] {
-    // Normalise to monic
-    let a = c3 / c4;
-    let b = c2 / c4;
-    let c = c1 / c4;
-    let d = c0 / c4;
-
-    // Depress the quartic: substitute t = u - a/4
-    let p_depr = b - (3.0 * a * a) / 8.0;
-    let q_depr = (a * a * a) / 8.0 - (a * b) / 2.0 + c;
-    let r_depr = -(3.0 * a * a * a * a) / 256.0 + (a * a * b) / 16.0 - (a * c) / 4.0 + d;
-
-    let shift = a / 4.0;
-
-    // Solve the depressed quartic u^4 + p*u^2 + q*u + r = 0 via Ferrari
-    // Resolvent cubic: m^3 + (5p/2)*m^2 + (2p²-r)*m + (p³/2-p*r/2-q²/8-... )
-    // Using standard Ferrari resolvent: 8m³ + 8p*m² + (2p²-8r)*m - q² = 0
-    let (m1, m2, m3) = solve_cubic_3roots(
-        8.0,
-        8.0 * p_depr,
-        2.0 * p_depr * p_depr - 8.0 * r_depr,
-        -(q_depr * q_depr),
-    );
-
-    let mut roots = [f64::NAN; 4];
-    let mut ri = 0usize;
-
-    for m in [m1, m2, m3] {
-        if m.is_nan() {
-            continue;
-        }
-        let two_m_p = 2.0 * m + p_depr;
-        if two_m_p < 0.0 {
-            continue;
-        }
-        let sqrt_2mp = two_m_p.sqrt();
-        if sqrt_2mp < 1e-14 {
-            continue;
-        }
-
-        // Two quadratics:
-        // u² + sqrt(2m+p)*u + (m + q/(2*sqrt(2m+p))) = 0
-        // u² - sqrt(2m+p)*u + (m - q/(2*sqrt(2m+p))) = 0
-        let half_q_over = q_depr / (2.0 * sqrt_2mp);
-
-        for &(s, c_q) in &[(1.0_f64, m + half_q_over), (-1.0_f64, m - half_q_over)] {
-            let disc = (s * sqrt_2mp) * (s * sqrt_2mp) / 4.0 - c_q;
-            // discriminant of u² ∓ sqrt(2m+p)*u + c_q = 0 is (sqrt_2mp/2)² - c_q
-            let disc2 = sqrt_2mp * sqrt_2mp / 4.0 - c_q;
-            if disc2 >= -1e-9 {
-                let sd = disc2.max(0.0).sqrt();
-                let half_b = s * sqrt_2mp / 2.0;
-                let r0 = -half_b + sd - shift;
-                let r1 = -half_b - sd - shift;
-                if ri < 4 {
-                    roots[ri] = r0;
-                    ri += 1;
-                }
-                if ri < 4 {
-                    roots[ri] = r1;
-                    ri += 1;
-                }
-            }
-            let _ = disc; // suppress warning
-        }
-        if ri >= 4 {
-            break;
-        }
-    }
-    roots
-}
-
-/// Returns one real root of the cubic a*t³ + b*t² + c*t + d = 0,
-/// plus two more (may be complex → NAN).
-fn solve_cubic_3roots(a: f64, b: f64, c: f64, d: f64) -> (f64, f64, f64) {
-    // Monic: t³ + (b/a)*t² + (c/a)*t + (d/a) = 0
-    let b = b / a;
-    let c = c / a;
-    let d = d / a;
-
-    // Depress: t = u - b/3
-    let p = c - b * b / 3.0;
-    let q = 2.0 * b * b * b / 27.0 - b * c / 3.0 + d;
-    let shift = b / 3.0;
-
-    let discriminant = -(4.0 * p * p * p + 27.0 * q * q);
-
-    if discriminant >= 0.0 {
-        // Three real roots using trigonometric method
-        let m = 2.0 * (-p / 3.0).sqrt();
-        let theta = ((3.0 * q) / (2.0 * p) * ((-3.0) / p).sqrt())
-            .clamp(-1.0, 1.0)
-            .acos();
-        let r0 = m * (theta / 3.0).cos() - shift;
-        let r1 = m * ((theta - 2.0 * PI) / 3.0).cos() - shift;
-        let r2 = m * ((theta - 4.0 * PI) / 3.0).cos() - shift;
-        (r0, r1, r2)
-    } else {
-        // One real root via Cardano
-        let d_val = -(4.0 * p * p * p + 27.0 * q * q);
-        let inner = -q / 2.0;
-        let outer = (q * q / 4.0 + p * p * p / 27.0).sqrt();
-        let u = cbrt_real(inner + outer);
-        let v = cbrt_real(inner - outer);
-        let r0 = u + v - shift;
-        let _ = d_val; // suppress warning
-        (r0, f64::NAN, f64::NAN)
-    }
-}
-
-fn cbrt_real(x: f64) -> f64 {
-    if x >= 0.0 { x.cbrt() } else { -((-x).cbrt()) }
 }
 
 impl Shape for Torus {
@@ -961,12 +818,15 @@ mod tests {
         let hit = t.ray_cast(&origin, &dir, 100.0);
         assert!(hit.is_some(), "ray through tube should hit");
         let hit = hit.unwrap();
-        // Should hit somewhere between origin and tube; toi must be positive
+        // The ray (3, -10 + t, 0) enters the tube (centre (3, 0, 0), radius 1)
+        // at y = -1, that is at t = 9.
         assert!(
-            hit.toi > 0.0 && hit.toi < 20.0,
-            "toi should be reasonable, got {}",
+            (hit.toi - 9.0).abs() < 1e-9,
+            "toi should be 9, got {}",
             hit.toi
         );
+        assert!((hit.point - Vec3::new(3.0, -1.0, 0.0)).norm() < 1e-9);
+        assert!((hit.normal - Vec3::new(0.0, -1.0, 0.0)).norm() < 1e-9);
     }
 
     #[test]
@@ -984,12 +844,9 @@ mod tests {
         let t = Torus::new(3.0, 1.0);
         let result = t.ray_cast_array([3.0, -10.0, 0.0], [0.0, 1.0, 0.0], 100.0);
         assert!(result.is_some(), "ray should hit");
-        let (toi, _n) = result.unwrap();
-        assert!(
-            toi > 0.0 && toi < 20.0,
-            "toi should be reasonable, got {}",
-            toi
-        );
+        let (toi, n) = result.unwrap();
+        assert!((toi - 9.0).abs() < 1e-9, "toi should be 9, got {toi}");
+        assert!((n[1] + 1.0).abs() < 1e-9 && n[0].abs() < 1e-9 && n[2].abs() < 1e-9);
     }
 
     // ── Expanded tests ──
@@ -1265,10 +1122,13 @@ mod tests {
     #[test]
     fn test_torus_ray_intersection_count_through() {
         let t = Torus::new(3.0, 1.0);
-        // Ray along +Y through a tube: enters and exits the tube = 2 intersections,
-        // but the quartic may produce up to 4 roots (2 real, 2 near-degenerate).
+        // Ray along +Y through a tube: enters at t = 9 and exits at t = 11, so
+        // exactly two intersections (no root is counted twice).
         let count = t.ray_intersection_count([3.0, -10.0, 0.0], [0.0, 1.0, 0.0], 100.0);
-        assert!(count >= 2, "expected >=2 intersections, got {count}");
+        assert_eq!(count, 2, "expected 2 intersections, got {count}");
+        // Stopping before the exit leaves only the entry point.
+        let count = t.ray_intersection_count([3.0, -10.0, 0.0], [0.0, 1.0, 0.0], 10.0);
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -1374,6 +1234,235 @@ mod tests {
         for i in 0..32 {
             let v = 2.0 * PI * i as f64 / 32.0;
             assert!(t.area_element_factor(v) > 0.0, "factor at v={v}");
+        }
+    }
+
+    // ── Ray / torus quartic regression tests ──
+
+    /// Deterministic pseudo-random numbers in `[0, 1)` (64-bit LCG).
+    fn lcg(seed: u64) -> impl FnMut() -> f64 {
+        let mut state = seed;
+        move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    fn real_roots(roots: [f64; 4]) -> Vec<f64> {
+        roots.into_iter().filter(|t| !t.is_nan()).collect()
+    }
+
+    #[test]
+    fn test_torus_line_intersections_through_tube() {
+        let t = Torus::new(3.0, 1.0);
+        let roots = real_roots(
+            t.line_intersections(&Vec3::new(3.0, -10.0, 0.0), &Vec3::new(0.0, 1.0, 0.0)),
+        );
+        assert_eq!(roots.len(), 2, "got {roots:?}");
+        assert!((roots[0] - 9.0).abs() < 1e-9 && (roots[1] - 11.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_torus_x_axis_ray_crosses_the_tube_four_times() {
+        // R = 1, r = 0.5: along the x axis the solid occupies
+        // [-1.5, -0.5] and [0.5, 1.5].
+        let t = Torus::new(1.0, 0.5);
+        let roots =
+            real_roots(t.line_intersections(&Vec3::new(-5.0, 0.0, 0.0), &Vec3::new(1.0, 0.0, 0.0)));
+        let expected = [3.5, 4.5, 5.5, 6.5];
+        assert_eq!(roots.len(), 4, "got {roots:?}");
+        for (r, e) in roots.iter().zip(expected) {
+            assert!((r - e).abs() < 1e-9, "got {roots:?}");
+        }
+        assert_eq!(
+            t.ray_intersection_count([-5.0, 0.0, 0.0], [1.0, 0.0, 0.0], 100.0),
+            4
+        );
+        assert_eq!(
+            t.ray_intersection_count([-5.0, 0.0, 0.0], [1.0, 0.0, 0.0], 5.0),
+            2
+        );
+        let hit = t
+            .ray_cast(&Vec3::new(-5.0, 0.0, 0.0), &Vec3::new(1.0, 0.0, 0.0), 100.0)
+            .expect("x-axis ray hits");
+        assert!((hit.toi - 3.5).abs() < 1e-9);
+        assert!((hit.point - Vec3::new(-1.5, 0.0, 0.0)).norm() < 1e-9);
+        assert!((hit.normal - Vec3::new(-1.0, 0.0, 0.0)).norm() < 1e-9);
+    }
+
+    #[test]
+    fn test_torus_ray_from_the_other_side_and_scaled_direction() {
+        let t = Torus::new(1.0, 0.5);
+        // From +x towards -x the first surface point is x = 1.5.
+        let hit = t
+            .ray_cast(&Vec3::new(5.0, 0.0, 0.0), &Vec3::new(-1.0, 0.0, 0.0), 100.0)
+            .expect("hit");
+        assert!((hit.toi - 3.5).abs() < 1e-9);
+        // A direction of length 2 halves the parameter, not the position.
+        let hit = t
+            .ray_cast(&Vec3::new(5.0, 0.0, 0.0), &Vec3::new(-2.0, 0.0, 0.0), 100.0)
+            .expect("hit");
+        assert!((hit.toi - 1.75).abs() < 1e-9);
+        assert!((hit.point - Vec3::new(1.5, 0.0, 0.0)).norm() < 1e-9);
+        // max_toi is in the same units: 1.7 stops short of the hit.
+        assert!(
+            t.ray_cast(&Vec3::new(5.0, 0.0, 0.0), &Vec3::new(-2.0, 0.0, 0.0), 1.7)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_torus_ray_through_the_hole_misses() {
+        let t = Torus::new(3.0, 1.0);
+        let origin = Vec3::new(0.0, -10.0, 0.0);
+        let dir = Vec3::new(0.0, 1.0, 0.0);
+        assert!(t.ray_cast(&origin, &dir, 100.0).is_none());
+        assert_eq!(
+            t.ray_intersection_count([0.0, -10.0, 0.0], [0.0, 1.0, 0.0], 100.0),
+            0
+        );
+        // A ray passing above the tube.
+        let above = t.ray_cast(
+            &Vec3::new(-10.0, 1.2, 0.0),
+            &Vec3::new(1.0, 0.0, 0.0),
+            100.0,
+        );
+        assert!(above.is_none());
+    }
+
+    #[test]
+    fn test_torus_tangent_ray_grazes_and_counts_each_contact_twice() {
+        let t = Torus::new(3.0, 1.0);
+        // y = 1 touches the top of the tube at x = -3 and x = 3.
+        let origin = Vec3::new(-10.0, 1.0, 0.0);
+        let dir = Vec3::new(1.0, 0.0, 0.0);
+        let hit = t
+            .ray_cast(&origin, &dir, 100.0)
+            .expect("tangent ray touches");
+        assert!((hit.toi - 7.0).abs() < 1e-6, "toi {}", hit.toi);
+        assert!((hit.normal - Vec3::new(0.0, 1.0, 0.0)).norm() < 1e-3);
+        assert_eq!(
+            t.ray_intersection_count([-10.0, 1.0, 0.0], [1.0, 0.0, 0.0], 100.0),
+            4
+        );
+        // Just inside the tangent height the chords open up: |x| = 3 +- sqrt(0.19).
+        let roots = real_roots(
+            t.line_intersections(&Vec3::new(-10.0, 0.9, 0.0), &Vec3::new(1.0, 0.0, 0.0)),
+        );
+        let w = 0.19_f64.sqrt();
+        let expected = [7.0 - w, 7.0 + w, 13.0 - w, 13.0 + w];
+        assert_eq!(roots.len(), 4);
+        for (r, e) in roots.iter().zip(expected) {
+            assert!((r - e).abs() < 1e-9, "got {roots:?}");
+        }
+    }
+
+    #[test]
+    fn test_torus_ray_starting_inside_the_tube_exits_once() {
+        let t = Torus::new(3.0, 1.0);
+        // Origin on the core circle; the +y ray leaves the tube at y = 1.
+        let hit = t
+            .ray_cast(&Vec3::new(3.0, 0.0, 0.0), &Vec3::new(0.0, 1.0, 0.0), 100.0)
+            .expect("exit point");
+        assert!((hit.toi - 1.0).abs() < 1e-9);
+        assert!((hit.normal - Vec3::new(0.0, 1.0, 0.0)).norm() < 1e-9);
+        assert_eq!(
+            t.ray_intersection_count([3.0, 0.0, 0.0], [0.0, 1.0, 0.0], 100.0),
+            1
+        );
+    }
+
+    #[test]
+    fn test_torus_far_away_ray_keeps_full_precision() {
+        // 1e6 away from a small torus: the closest-approach set-up must not
+        // lose the roots to cancellation.
+        let t = Torus::new(1.0, 0.25);
+        let origin = Vec3::new(-1.0e6, 0.0, 0.0);
+        let dir = Vec3::new(1.0, 0.0, 0.0);
+        let hit = t.ray_cast(&origin, &dir, 1.0e7).expect("far ray hits");
+        assert!((hit.toi - (1.0e6 - 1.25)).abs() < 1e-5, "toi {}", hit.toi);
+        let roots = real_roots(t.line_intersections(&origin, &dir));
+        let expected = [1.0e6 - 1.25, 1.0e6 - 0.75, 1.0e6 + 0.75, 1.0e6 + 1.25];
+        assert_eq!(roots.len(), 4);
+        for (r, e) in roots.iter().zip(expected) {
+            assert!((r - e).abs() < 1e-5, "got {roots:?}");
+        }
+    }
+
+    #[test]
+    fn test_torus_random_rays_agree_with_a_signed_distance_scan() {
+        let t = Torus::new(2.0, 0.7);
+        let mut next = lcg(0xbadc_0ffe);
+        let mut matched = 0;
+        let mut hits = 0;
+        for _ in 0..150 {
+            // Origin on a sphere of radius 8 around the torus, aimed at a
+            // random point of the bounding box so that many rays hit.
+            let u = 2.0 * next() - 1.0;
+            let phi = 2.0 * PI * next();
+            let s = (1.0 - u * u).sqrt();
+            let origin = Vec3::new(8.0 * s * phi.cos(), 8.0 * u, 8.0 * s * phi.sin());
+            let target = Vec3::new(
+                -2.7 + 5.4 * next(),
+                -0.7 + 1.4 * next(),
+                -2.7 + 5.4 * next(),
+            );
+            let dir = (target - origin).normalize();
+            let analytic = t.ray_cast(&origin, &dir, 100.0);
+            // Brute force: first sign change of the signed distance.
+            let step = 1.0e-3;
+            let mut previous = t.sdf([origin.x, origin.y, origin.z]);
+            let mut scan: Option<f64> = None;
+            let mut k = 1;
+            while k as f64 * step < 20.0 {
+                let ray_t = k as f64 * step;
+                let p = origin + dir * ray_t;
+                let value = t.sdf([p.x, p.y, p.z]);
+                if (value <= 0.0) != (previous <= 0.0) {
+                    scan = Some(ray_t);
+                    break;
+                }
+                previous = value;
+                k += 1;
+            }
+            if let Some(hit) = &analytic {
+                // Every reported hit is a point of the surface.
+                let on_surface = t.sdf([hit.point.x, hit.point.y, hit.point.z]).abs();
+                assert!(on_surface < 1e-8, "hit not on the surface: {on_surface}");
+                hits += 1;
+            }
+            if let Some(scan_t) = scan {
+                let hit = analytic.as_ref().expect("the scan found a crossing");
+                // The solver never reports a later hit than the scan finds.
+                assert!(hit.toi <= scan_t + 1.0e-6, "toi {} scan {scan_t}", hit.toi);
+                if (hit.toi - scan_t).abs() < 2.0 * step {
+                    matched += 1;
+                }
+            }
+        }
+        assert!(hits > 60, "too few rays hit the torus: {hits}");
+        assert!(matched >= hits - 3, "matched {matched} of {hits}");
+    }
+
+    #[test]
+    fn test_torus_intersection_count_is_even_for_long_rays_from_outside() {
+        let t = Torus::new(2.0, 0.7);
+        let mut next = lcg(0x00dd_ba11);
+        for _ in 0..200 {
+            let u = 2.0 * next() - 1.0;
+            let phi = 2.0 * PI * next();
+            let s = (1.0 - u * u).sqrt();
+            let origin = [8.0 * s * phi.cos(), 8.0 * u, 8.0 * s * phi.sin()];
+            let target = Vec3::new(
+                -2.7 + 5.4 * next(),
+                -0.7 + 1.4 * next(),
+                -2.7 + 5.4 * next(),
+            );
+            let dir = (target - Vec3::new(origin[0], origin[1], origin[2])).normalize();
+            let count = t.ray_intersection_count(origin, [dir.x, dir.y, dir.z], 100.0);
+            assert!(count.is_multiple_of(2) && count <= 4, "count {count}");
         }
     }
 }

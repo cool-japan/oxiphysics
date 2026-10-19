@@ -315,7 +315,14 @@ impl J2ReturnMapping {
 
     /// Radial return mapping.
     ///
-    /// Returns (updated_stress, delta_eps_p, delta_eps_p_equivalent).
+    /// Returns `(updated_stress, delta_eps_p, delta_eps_p_equivalent)`.
+    ///
+    /// All Voigt vectors use the layout `[xx, yy, zz, s1, s2, s3]` with the
+    /// three shear components stored as **engineering** shear (`γ = 2ε` for
+    /// strains, the plain tensor component for stresses).  The plastic strain
+    /// increment `delta_eps_p` therefore follows the same convention as the
+    /// strain vector and the elastic stiffness (shear modulus `G` on the shear
+    /// diagonal), so that `Δσ_shear = -G · Δγ_p` holds component-wise.
     pub fn return_map(&self, trial_stress: &[f64; 6], eps_p_bar: f64) -> ([f64; 6], [f64; 6], f64) {
         let sigma_y = self.sigma_y0 + self.hardening_modulus * eps_p_bar;
         let vm = Self::von_mises(trial_stress);
@@ -352,23 +359,17 @@ impl J2ReturnMapping {
             dev_trial[5] * scale,
         ];
 
-        // Plastic strain increment (Δε_p = Δγ * n̂ where n̂ = dev/||dev||_vm)
-        let n_hat = [
-            dev_trial[0] / vm * 3.0 / 2.0,
-            dev_trial[1] / vm * 3.0 / 2.0,
-            dev_trial[2] / vm * 3.0 / 2.0,
-            dev_trial[3] / vm * 3.0 / 2.0,
-            dev_trial[4] / vm * 3.0 / 2.0,
-            dev_trial[5] / vm * 3.0 / 2.0,
-        ];
-        let delta_eps_p = [
-            delta_gamma * n_hat[0],
-            delta_gamma * n_hat[1],
-            delta_gamma * n_hat[2],
-            delta_gamma * n_hat[3],
-            delta_gamma * n_hat[4],
-            delta_gamma * n_hat[5],
-        ];
+        // Plastic strain increment from the associative flow rule:
+        // Δε_p = Δγ · (3/2) · s_tr / q_tr   (tensor components).
+        // The normal components are the tensor components themselves; the shear
+        // components are stored as engineering shear γ = 2ε, which doubles the
+        // factor 3/2 to 3.  This is what makes the stress drop of every shear
+        // component equal to G · γ_p, i.e. 3GΔγ · τ_tr / q_tr.
+        let mut delta_eps_p = [0.0_f64; 6];
+        for (k, (dep, &dev)) in delta_eps_p.iter_mut().zip(dev_trial.iter()).enumerate() {
+            let tensor_to_voigt = if k < 3 { 1.5 } else { 3.0 };
+            *dep = delta_gamma * tensor_to_voigt * dev / vm;
+        }
 
         (updated_stress, delta_eps_p, delta_gamma)
     }
@@ -708,17 +709,25 @@ impl RambergOsgood {
 // ─── J2 Consistent Tangent Modulus ────────────────────────────────────────────
 
 /// Full 6×6 algorithmic (consistent) tangent modulus for J2 plasticity
-/// with isotropic hardening, in Voigt notation.
+/// with linear isotropic hardening, in Voigt notation with **engineering**
+/// shear strains.
 ///
 /// The consistent tangent ensures quadratic convergence in Newton-Raphson FEM.
-/// It is defined as:
+/// For a radial-return step with plastic multiplier Δγ (the increment of the
+/// equivalent plastic strain) and trial von Mises stress q_tr it is
 ///
-///   C_ep = C_e - (6G²)/(3G+H) * (n⊗n) / σ_y_trial²
-///          - 2G * Δγ/q_tr * (I_dev - n⊗n)
+///   C_ep = K · 1⊗1
+///          + 2G · (1 - 3GΔγ/q_tr) · I_dev
+///          + 6G² · (Δγ/q_tr - 1/(3G+H)) · n⊗n
 ///
-/// where n = s_trial / q_tr is the unit deviatoric stress direction,
-/// Δγ is the plastic consistency parameter, G is the shear modulus,
-/// H is the hardening modulus, and I_dev is the deviatoric projector.
+/// where n = √(3/2) · s_tr / q_tr is the unit (‖n‖ = 1) deviatoric direction of
+/// the trial stress, K the bulk modulus, G the shear modulus, H the hardening
+/// modulus and I_dev the deviatoric projector.  In engineering-shear Voigt
+/// notation `1 = (1,1,1,0,0,0)`, `n` holds the tensor components of the
+/// direction (the shear entries are not doubled), and `I_dev` has `2/3` on the
+/// normal diagonal, `-1/3` on the normal off-diagonal and `1/2` on the shear
+/// diagonal.  It equals the finite-difference derivative of the stress returned
+/// by the radial return with respect to the total strain.
 ///
 /// For the elastic step, returns the elastic stiffness C_e.
 pub struct J2ConsistentTangent {
@@ -771,22 +780,22 @@ impl J2ConsistentTangent {
 
     /// Compute the consistent (algorithmic) tangent modulus.
     ///
-    /// Requires the trial stress, yield stress at start of increment, and
-    /// whether plastic flow occurred.
+    /// Requires the trial stress and the plastic multiplier of the step; an
+    /// elastic step (`delta_gamma = 0`) returns the elastic stiffness.
     ///
     /// # Arguments
     /// * `trial_stress` — trial Voigt stress \[xx,yy,zz,yz,xz,xy\]
-    /// * `sigma_y` — current yield stress (before increment)
     /// * `delta_gamma` — plastic consistency parameter (0 if elastic)
     ///
     /// # Returns
-    /// 6×6 consistent tangent (flat row-major).
+    /// 6×6 consistent tangent (flat row-major, engineering-shear Voigt).
     pub fn compute_consistent_tangent(
         &self,
         trial_stress: &[f64; 6],
         delta_gamma: f64,
     ) -> [f64; 36] {
         let g = self.shear_modulus;
+        let k = self.bulk_modulus;
         let h = self.hardening_modulus;
 
         // Von Mises norm of trial deviatoric stress
@@ -812,8 +821,9 @@ impl J2ConsistentTangent {
             return self.elastic_stiffness();
         }
 
-        // Flow direction n = sqrt(3/2) * s / q_tr  (unit deviatoric direction)
-        let scale = if q_tr > 1e-30 { 1.0 / q_tr } else { 0.0 };
+        // Unit deviatoric direction n = sqrt(3/2) * s_tr / q_tr (tensor norm 1);
+        // the shear entries are the tensor components, not doubled.
+        let scale = 1.5_f64.sqrt() / q_tr;
         let n: [f64; 6] = [
             dev[0] * scale,
             dev[1] * scale,
@@ -823,32 +833,22 @@ impl J2ConsistentTangent {
             dev[5] * scale,
         ];
 
-        // Start from elastic stiffness
-        let mut c = self.elastic_stiffness();
-
-        // Correction 1: -(6G²)/(3G+H) * (n⊗n)
-        let coeff1 = 6.0 * g * g / (3.0 * g + h);
-        for i in 0..6 {
-            for j in 0..6 {
-                c[i * 6 + j] -= coeff1 * n[i] * n[j];
+        // C_ep = K 1⊗1 + 2G (1 - 3GΔγ/q_tr) I_dev + 6G² (Δγ/q_tr - 1/(3G+H)) n⊗n
+        let coeff_dev = 2.0 * g * (1.0 - 3.0 * g * delta_gamma / q_tr);
+        let coeff_n = 6.0 * g * g * (delta_gamma / q_tr - 1.0 / (3.0 * g + h));
+        let mut c = [0.0_f64; 36];
+        for (i, row) in c.chunks_exact_mut(6).enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
+                let volumetric = if i < 3 && j < 3 { k } else { 0.0 };
+                let deviatoric = match (i < 3, j < 3) {
+                    (true, true) if i == j => 2.0 / 3.0,
+                    (true, true) => -1.0 / 3.0,
+                    (false, false) if i == j => 0.5,
+                    _ => 0.0,
+                };
+                *cell = volumetric + coeff_dev * deviatoric + coeff_n * n[i] * n[j];
             }
         }
-
-        // Correction 2: -2G * Δγ/q_tr * (I_dev - n⊗n)
-        // I_dev in Voigt: diagonal [2/3, 2/3, 2/3, 1, 1, 1] - off-diag [-1/3]
-        let coeff2 = 2.0 * g * delta_gamma / q_tr;
-        // I_dev diagonal components
-        let i_dev_diag = [2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0];
-        for i in 0..3 {
-            for j in 0..3 {
-                let i_dev_ij = if i == j { i_dev_diag[i] } else { -1.0 / 3.0 };
-                c[i * 6 + j] -= coeff2 * (i_dev_ij - n[i] * n[j]);
-            }
-        }
-        for k in 3..6 {
-            c[k * 6 + k] -= coeff2 * (i_dev_diag[k] - n[k] * n[k]);
-        }
-
         c
     }
 }
@@ -857,13 +857,15 @@ impl J2ConsistentTangent {
 
 /// Apex return mapping for the Drucker-Prager yield surface.
 ///
-/// When the trial stress is at or above the apex (hydrostatic tensile side),
-/// the stress must be mapped to the apex point, which is the intersection of
-/// the yield surface with the hydrostatic axis.
+/// The yield function `F = √J₂ + α·I₁ − k` is tension-positive, so the apex of
+/// the cone lies on the *tensile* hydrostatic axis at
 ///
-/// Apex stress: p_apex = k / (3α),  q_apex = 0
+/// Apex stress: p_apex = k / (3α),  √J₂_apex = 0
 ///
-/// where α and k are the DP parameters.
+/// where α and k are the DP parameters.  With associative flow the return to
+/// the smooth cone reduces `√J₂` by `G·Δγ` and `I₁` by `9αK·Δγ`; when that
+/// would make `√J₂` negative the cone return is inadmissible and the stress
+/// must be mapped to the apex instead.
 pub struct DruckerPragerApexReturn {
     /// DP friction parameter α.
     pub alpha: f64,
@@ -899,13 +901,39 @@ impl DruckerPragerApexReturn {
         self.k_dp / (3.0 * self.alpha)
     }
 
-    /// Check whether the trial stress state lies above the apex.
+    /// Trial invariants `(√J₂, I₁)` of a Voigt stress.
+    fn trial_invariants(stress: &[f64; 6]) -> (f64, f64) {
+        let i1 = stress[0] + stress[1] + stress[2];
+        let p = i1 / 3.0;
+        let dev = [stress[0] - p, stress[1] - p, stress[2] - p];
+        let j2 = 0.5 * (dev[0].powi(2) + dev[1].powi(2) + dev[2].powi(2))
+            + stress[3].powi(2)
+            + stress[4].powi(2)
+            + stress[5].powi(2);
+        (j2.sqrt(), i1)
+    }
+
+    /// Denominator `G + 9α²K` of the cone-return consistency condition.
+    fn cone_return_denominator(&self) -> f64 {
+        self.shear_modulus + 9.0 * self.alpha * self.alpha * self.bulk_modulus
+    }
+
+    /// Check whether the trial stress must be returned to the apex.
     ///
-    /// The trial mean stress is compared to p_apex. If p < p_apex (hydrostatic
-    /// tension above apex), the apex return is required.
+    /// The trial state yields when `f_tr = √J₂_tr + α·I₁_tr − k > 0`.  The cone
+    /// return then has the multiplier `Δγ = f_tr / (G + 9α²K)` and leaves
+    /// `√J₂ = √J₂_tr − G·Δγ`; the apex return is required exactly when that
+    /// value would be negative.  Elastic states and states that return to the
+    /// smooth part of the cone (for instance any compressive state with a
+    /// sizeable deviatoric stress) do not need it.
     pub fn needs_apex_return(&self, trial_stress: &[f64; 6]) -> bool {
-        let p = (trial_stress[0] + trial_stress[1] + trial_stress[2]) / 3.0;
-        p < self.apex_pressure()
+        let (sqrt_j2, i1) = Self::trial_invariants(trial_stress);
+        let f_tr = sqrt_j2 + self.alpha * i1 - self.k_dp;
+        let denom = self.cone_return_denominator();
+        if f_tr <= 0.0 || denom <= f64::EPSILON {
+            return false;
+        }
+        sqrt_j2 - self.shear_modulus * (f_tr / denom) < 0.0
     }
 
     /// Perform apex return: map trial stress to the apex.
@@ -916,28 +944,35 @@ impl DruckerPragerApexReturn {
         [p_apex, p_apex, p_apex, 0.0, 0.0, 0.0]
     }
 
-    /// Compute the plastic multiplier needed for apex return.
+    /// Plastic multiplier of the smooth-cone return of the trial stress.
     ///
-    /// From consistency: f(σ_apex) = 0 → Δλ = (√J2_tr + α * I1_tr - k) / (3αK + G)
+    /// Consistency of the associative cone return,
+    /// `f_tr − (G + 9α²K)·Δγ = 0`, gives
+    /// `Δγ = (√J₂_tr + α·I₁_tr − k) / (G + 9α²K)`.  It is zero for an elastic
+    /// trial state, and [`DruckerPragerApexReturn::needs_apex_return`] compares
+    /// `G·Δγ` with `√J₂_tr` to decide whether this cone return is admissible.
     pub fn compute_apex_multiplier(&self, trial_stress: &[f64; 6]) -> f64 {
-        let i1 = trial_stress[0] + trial_stress[1] + trial_stress[2];
-        let p = i1 / 3.0;
-        let dev = [
-            trial_stress[0] - p,
-            trial_stress[1] - p,
-            trial_stress[2] - p,
-        ];
-        let j2 = 0.5 * (dev[0].powi(2) + dev[1].powi(2) + dev[2].powi(2))
-            + trial_stress[3].powi(2)
-            + trial_stress[4].powi(2)
-            + trial_stress[5].powi(2);
-        let sqrt_j2 = j2.sqrt();
+        let (sqrt_j2, i1) = Self::trial_invariants(trial_stress);
         let f_tr = sqrt_j2 + self.alpha * i1 - self.k_dp;
-        let denom = 3.0 * self.alpha * self.bulk_modulus + self.shear_modulus;
+        let denom = self.cone_return_denominator();
         if denom.abs() < f64::EPSILON {
             return 0.0;
         }
-        f_tr / denom
+        (f_tr / denom).max(0.0)
+    }
+
+    /// Volumetric plastic strain generated by the apex return.
+    ///
+    /// The apex return resets the mean stress to `p_apex`, so the elastic
+    /// volumetric strain `(p_tr − p_apex)/K` is converted into plastic
+    /// volumetric strain.  It is positive when the trial mean stress lies above
+    /// the apex pressure and zero for a vanishing bulk modulus.
+    pub fn apex_volumetric_plastic_strain(&self, trial_stress: &[f64; 6]) -> f64 {
+        if self.bulk_modulus.abs() < f64::EPSILON {
+            return 0.0;
+        }
+        let p_trial = (trial_stress[0] + trial_stress[1] + trial_stress[2]) / 3.0;
+        (p_trial - self.apex_pressure()) / self.bulk_modulus
     }
 }
 

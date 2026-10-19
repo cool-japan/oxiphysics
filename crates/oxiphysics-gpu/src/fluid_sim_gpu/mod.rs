@@ -12,3 +12,6 @@ pub use types::*;
 
 #[cfg(test)]
 mod flip_tests;
+
+#[cfg(test)]
+mod sph_force_tests;

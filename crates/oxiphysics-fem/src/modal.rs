@@ -10,13 +10,21 @@
 //! - Mode shape normalization (mass, max-component, unit-length)
 //! - Modal Assurance Criterion (MAC)
 //! - Frequency Response Function (FRF)
-//! - Harmonic analysis
+//! - Harmonic analysis (direct solution of the damped dynamic-stiffness system)
+//! - Response spectra of a ground-motion record (exact piecewise-linear SDOF recurrence)
 //! - Modal superposition
 
 use std::f64::consts::PI;
 
 use crate::solvers::conjugate_gradient;
 use crate::sparse::CsrMatrix;
+
+mod harmonic;
+mod harmonic_solve;
+mod response_spectrum;
+
+pub use harmonic::{HarmonicResult, harmonic_analysis};
+pub use response_spectrum::{GroundMotion, ResponseSpectrum, compute_response_spectrum};
 
 /// Result of a modal analysis.
 pub struct ModalResult {
@@ -367,121 +375,6 @@ pub fn frf_sweep(
             frequency_response_function(modal_result, omega, damping_ratios, force_vector)
         })
         .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Harmonic analysis
-// ---------------------------------------------------------------------------
-
-/// Result of harmonic analysis at a single frequency.
-#[derive(Debug, Clone)]
-pub struct HarmonicResult {
-    /// Excitation frequency ω (rad/s).
-    pub omega: f64,
-    /// Real part of displacement response.
-    pub displacement_real: Vec<f64>,
-    /// Imaginary part of displacement response.
-    pub displacement_imag: Vec<f64>,
-    /// Peak displacement magnitude at each DOF.
-    pub displacement_amplitude: Vec<f64>,
-}
-
-/// Perform harmonic analysis using direct frequency response.
-///
-/// Solves (-ω^2 M + iωC + K) u = F for complex displacement u.
-/// Here C is assumed as proportional damping: C = α M + β K.
-///
-/// # Arguments
-/// * `stiffness` - Global stiffness matrix K
-/// * `mass` - Global mass matrix M
-/// * `omega` - Excitation frequency (rad/s)
-/// * `alpha` - Mass-proportional damping coefficient
-/// * `beta` - Stiffness-proportional damping coefficient
-/// * `force_vector` - Applied harmonic force vector
-pub fn harmonic_analysis(
-    stiffness: &CsrMatrix,
-    mass: &CsrMatrix,
-    omega: f64,
-    alpha: f64,
-    beta: f64,
-    force_vector: &[f64],
-) -> HarmonicResult {
-    let n = stiffness.nrows;
-    assert_eq!(force_vector.len(), n);
-
-    // Build the effective real stiffness: K_eff = K - ω^2 M
-    // Build the effective damping: C_eff = α M + β K
-    // Solve two coupled real systems:
-    //   K_eff u_r - ω C_eff u_i = F
-    //   ω C_eff u_r + K_eff u_i = 0
-
-    // For simplicity, solve iteratively using CG on the real part:
-    // (K - ω^2 M) u_r = F - ω(αM + βK) u_i
-    // (K - ω^2 M) u_i = -ω(αM + βK) u_r
-
-    // Start with u_i = 0, iterate a few times
-    let mut u_real = vec![0.0; n];
-    let mut u_imag = vec![0.0; n];
-
-    // Build K_eff as triplets
-    let omega_sq = omega * omega;
-    let mut k_eff_triplets = Vec::new();
-    for row in 0..n {
-        let start = stiffness.row_ptr[row];
-        let end = stiffness.row_ptr[row + 1];
-        for idx in start..end {
-            let col = stiffness.col_indices[idx];
-            let k_val = stiffness.values[idx];
-            let m_val = mass.get(row, col);
-            k_eff_triplets.push((row, col, k_val - omega_sq * m_val));
-        }
-    }
-    let _k_eff = CsrMatrix::from_triplets(n, n, &k_eff_triplets);
-
-    // Make K_eff diagonally dominant for CG to work
-    // Add small regularization if needed
-    let mut k_reg_triplets = k_eff_triplets.clone();
-    for i in 0..n {
-        k_reg_triplets.push((i, i, 1e-10));
-    }
-    let k_reg = CsrMatrix::from_triplets(n, n, &k_reg_triplets);
-
-    for _outer in 0..5 {
-        // Compute ω * C_eff * u_imag
-        // C_eff = α M + β K
-        let m_ui = matvec(mass, &u_imag);
-        let k_ui = matvec(stiffness, &u_imag);
-        let mut rhs_real = force_vector.to_vec();
-        for i in 0..n {
-            rhs_real[i] -= omega * (alpha * m_ui[i] + beta * k_ui[i]);
-        }
-
-        let x0 = u_real.clone();
-        u_real = conjugate_gradient(&k_reg, &rhs_real, &x0, 10 * n, 1e-10);
-
-        // Solve for u_imag
-        let m_ur = matvec(mass, &u_real);
-        let k_ur = matvec(stiffness, &u_real);
-        let mut rhs_imag = vec![0.0; n];
-        for i in 0..n {
-            rhs_imag[i] = -omega * (alpha * m_ur[i] + beta * k_ur[i]);
-        }
-
-        let x0 = u_imag.clone();
-        u_imag = conjugate_gradient(&k_reg, &rhs_imag, &x0, 10 * n, 1e-10);
-    }
-
-    let mut displacement_amplitude = vec![0.0; n];
-    for i in 0..n {
-        displacement_amplitude[i] = (u_real[i] * u_real[i] + u_imag[i] * u_imag[i]).sqrt();
-    }
-
-    HarmonicResult {
-        omega,
-        displacement_real: u_real,
-        displacement_imag: u_imag,
-        displacement_amplitude,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -943,22 +836,6 @@ mod tests {
             "total eff mass = {total}, expected {expected_total}"
         );
     }
-
-    #[test]
-    fn test_harmonic_analysis_basic() {
-        // 1-DOF: K = [[100]], M = [[1]], omega = 0 (static)
-        let k = diagonal_csr(&[100.0]);
-        let m = diagonal_csr(&[1.0]);
-        let force = vec![10.0];
-
-        let result = harmonic_analysis(&k, &m, 0.0, 0.0, 0.0, &force);
-        // Static: u = F / K = 10 / 100 = 0.1
-        assert!(
-            (result.displacement_real[0] - 0.1).abs() < 0.01,
-            "static displacement = {}",
-            result.displacement_real[0]
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1368,137 +1245,6 @@ pub fn cumulative_mass_fraction(
 // Response Spectrum Analysis
 // ---------------------------------------------------------------------------
 
-/// Ground acceleration record for response spectrum analysis.
-#[derive(Debug, Clone)]
-pub struct GroundMotion {
-    /// Time values (seconds).
-    pub time: Vec<f64>,
-    /// Ground acceleration values (m/s²).
-    pub acceleration: Vec<f64>,
-}
-
-/// Response spectrum data: peak response vs. natural period.
-#[derive(Debug, Clone)]
-pub struct ResponseSpectrum {
-    /// Natural periods T (seconds).
-    pub periods: Vec<f64>,
-    /// Spectral acceleration Sa(T) (m/s²).
-    pub spectral_acceleration: Vec<f64>,
-    /// Spectral velocity Sv(T) (m/s).
-    pub spectral_velocity: Vec<f64>,
-    /// Spectral displacement Sd(T) (m).
-    pub spectral_displacement: Vec<f64>,
-}
-
-/// Compute a response spectrum from a ground motion record.
-///
-/// For each natural period T in `periods`:
-/// 1. Compute ω = 2π/T
-/// 2. Integrate the SDOF equation: ẍ + 2ζω ẋ + ω²x = -ẍ_g(t)
-/// 3. Record peak absolute values of x, ẋ, ω²x
-pub fn compute_response_spectrum(
-    ground_motion: &GroundMotion,
-    periods: &[f64],
-    damping_ratio: f64,
-) -> ResponseSpectrum {
-    use std::f64::consts::PI;
-
-    let mut sa = Vec::with_capacity(periods.len());
-    let mut sv = Vec::with_capacity(periods.len());
-    let mut sd = Vec::with_capacity(periods.len());
-
-    for &t_period in periods {
-        let omega_n = 2.0 * PI / t_period.max(1e-6);
-        let omega_d = omega_n * (1.0 - damping_ratio * damping_ratio).max(0.0).sqrt();
-        let zeta = damping_ratio;
-
-        let mut x = 0.0f64;
-        let mut x_dot = 0.0f64;
-        let mut peak_x = 0.0f64;
-        let mut peak_v = 0.0f64;
-
-        let n = ground_motion.time.len();
-        for i in 1..n {
-            let dt = ground_motion.time[i] - ground_motion.time[i - 1];
-            if dt <= 0.0 {
-                continue;
-            }
-
-            // Piecewise-linear interpolation of ground acceleration
-            let ag = ground_motion.acceleration[i];
-
-            // Newmark-beta (average acceleration) integration
-            let gamma = 0.5;
-            let beta_nb = 0.25;
-
-            let k_eff = omega_n * omega_n
-                + gamma / (beta_nb * dt) * 2.0 * zeta * omega_n
-                + 1.0 / (beta_nb * dt * dt);
-
-            let rhs = -ag
-                - (2.0
-                    * zeta
-                    * omega_n
-                    * (x_dot
-                        + (1.0 - gamma)
-                            * dt
-                            * (-2.0 * zeta * omega_n * x_dot - omega_n * omega_n * x + 0.0))
-                    + omega_n * omega_n * x
-                    + x_dot / (beta_nb * dt)
-                    + x / (beta_nb * dt * dt)
-                    - (x_dot + x / (beta_nb * dt)));
-
-            let dx = if k_eff.abs() > 1e-60 {
-                (-ag - 2.0 * zeta * omega_n * x_dot - omega_n * omega_n * x) / k_eff * dt
-            } else {
-                0.0
-            };
-
-            let x_dd = -ag - 2.0 * zeta * omega_n * x_dot - omega_n * omega_n * x;
-            x_dot += x_dd * dt;
-            x += x_dot * dt;
-            let _ = (rhs, dx);
-
-            // Use exact exponential integration for constant-excitation interval
-            let exp_t = (-zeta * omega_n * dt).exp();
-            if omega_d > 1e-30 {
-                let cos_wd = (omega_d * dt).cos();
-                let sin_wd = (omega_d * dt).sin();
-                let x_new = exp_t * (x * cos_wd + (x_dot + zeta * omega_n * x) / omega_d * sin_wd)
-                    - ag / (omega_n * omega_n);
-                let x_dot_new = exp_t
-                    * (-(omega_n.powi(2) * x + zeta * omega_n * (x_dot + zeta * omega_n * x))
-                        / omega_d
-                        * sin_wd
-                        + (x_dot + zeta * omega_n * x) * cos_wd
-                        - zeta * omega_n * x * cos_wd);
-                x = x_new + ag / (omega_n * omega_n);
-                x_dot = x_dot_new;
-            }
-
-            let abs_x = x.abs();
-            let abs_v = x_dot.abs();
-            if abs_x > peak_x {
-                peak_x = abs_x;
-            }
-            if abs_v > peak_v {
-                peak_v = abs_v;
-            }
-        }
-
-        sd.push(peak_x);
-        sv.push(peak_v.max(omega_n * peak_x));
-        sa.push(omega_n * omega_n * peak_x);
-    }
-
-    ResponseSpectrum {
-        periods: periods.to_vec(),
-        spectral_acceleration: sa,
-        spectral_velocity: sv,
-        spectral_displacement: sd,
-    }
-}
-
 /// Perform response spectrum analysis on a multi-DOF system.
 ///
 /// For each mode r:
@@ -1548,23 +1294,26 @@ pub fn response_spectrum_analysis(
 }
 
 /// Linear interpolation in a spectrum table.
+///
+/// `t` below the first period gives the first value and `t` above the last (or
+/// NaN) the last value; an empty table gives `0`.  If the two arrays differ in
+/// length only the common prefix is used.
 fn interpolate_spectrum(periods: &[f64], values: &[f64], t: f64, _zeta: f64) -> f64 {
-    if periods.is_empty() || values.is_empty() {
+    let n = periods.len().min(values.len());
+    let (periods, values) = (&periods[..n], &values[..n]);
+    let (Some(&first_period), Some(&first_value)) = (periods.first(), values.first()) else {
         return 0.0;
+    };
+    if t <= first_period {
+        return first_value;
     }
-    if t <= periods[0] {
-        return values[0];
-    }
-    if t >= *periods.last().expect("periods is non-empty") {
-        return *values.last().expect("values is non-empty");
-    }
-    for i in 0..periods.len() - 1 {
-        if (periods[i]..=periods[i + 1]).contains(&t) {
-            let alpha = (t - periods[i]) / (periods[i + 1] - periods[i]);
-            return values[i] + alpha * (values[i + 1] - values[i]);
+    for (period_pair, value_pair) in periods.windows(2).zip(values.windows(2)) {
+        if (period_pair[0]..=period_pair[1]).contains(&t) {
+            let alpha = (t - period_pair[0]) / (period_pair[1] - period_pair[0]);
+            return value_pair[0] + alpha * (value_pair[1] - value_pair[0]);
         }
     }
-    *values.last().expect("values is non-empty")
+    values.last().copied().unwrap_or(first_value)
 }
 
 // ---------------------------------------------------------------------------
@@ -1706,6 +1455,38 @@ mod tests_extended {
         let values = vec![0.0, 10.0];
         let v = interpolate_spectrum(&periods, &values, 0.5, 0.05);
         assert!((v - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_interpolate_spectrum_degenerate_tables() {
+        // Exactly on the knots, including the last one.
+        let periods = [0.1, 1.0, 10.0];
+        let values = [5.0, 3.0, 1.0];
+        assert_eq!(interpolate_spectrum(&periods, &values, 0.1, 0.0), 5.0);
+        assert_eq!(interpolate_spectrum(&periods, &values, 1.0, 0.0), 3.0);
+        assert_eq!(interpolate_spectrum(&periods, &values, 10.0, 0.0), 1.0);
+        // Interior of the second interval: 3 + (5.5 − 1)/9 · (1 − 3) = 2.
+        let v = interpolate_spectrum(&periods, &values, 5.5, 0.0);
+        assert!((v - 2.0).abs() < 1e-12, "{v}");
+        // Empty tables, a missing values array and NaN never panic.
+        assert_eq!(interpolate_spectrum(&[], &[], 1.0, 0.0), 0.0);
+        assert_eq!(interpolate_spectrum(&periods, &[], 1.0, 0.0), 0.0);
+        assert_eq!(interpolate_spectrum(&[], &values, 1.0, 0.0), 0.0);
+        assert_eq!(interpolate_spectrum(&periods, &values, f64::NAN, 0.0), 1.0);
+        // Differing lengths use the common prefix (the third period has no value).
+        assert_eq!(interpolate_spectrum(&periods, &values[..2], 50.0, 0.0), 3.0);
+        let v = interpolate_spectrum(&periods, &values[..2], 0.55, 0.0);
+        assert!((v - 4.0).abs() < 1e-12, "{v}");
+        // A repeated period (a jump in the table) takes the value of its first occurrence
+        // when it is hit exactly, and interpolates normally elsewhere.
+        let jump_periods = [0.0, 1.0, 1.0, 2.0];
+        let jump_values = [0.0, 1.0, 4.0, 5.0];
+        assert_eq!(
+            interpolate_spectrum(&jump_periods, &jump_values, 1.0, 0.0),
+            1.0
+        );
+        let v = interpolate_spectrum(&jump_periods, &jump_values, 1.5, 0.0);
+        assert!((v - 4.5).abs() < 1e-12, "{v}");
     }
 
     #[test]

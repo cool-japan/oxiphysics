@@ -1543,7 +1543,7 @@ impl FractionalBrownianMotion {
     ///
     /// The result is the Cholesky transform `L z` of the covariance matrix
     /// `Γ_(ij) = γ(|i-j|)`, so it has exactly the fractional-Gaussian-noise law.
-    pub(super) fn hosking_fgn(hurst: f64, normals: &[f64]) -> Vec<f64> {
+    pub(crate) fn hosking_fgn(hurst: f64, normals: &[f64]) -> Vec<f64> {
         let m = normals.len();
         let mut x = vec![0.0f64; m];
         if m == 0 {

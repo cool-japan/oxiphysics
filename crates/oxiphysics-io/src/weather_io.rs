@@ -764,21 +764,26 @@ impl SoundingProfile {
 
     /// Compute the Lifting Condensation Level (LCL) pressure.
     ///
-    /// Uses the surface level temperature and dew point.
+    /// Uses the first level of the profile (the surface when the levels are
+    /// sorted by decreasing pressure): its temperature and dew point (both in
+    /// degrees Celsius) give the LCL temperature through
+    /// [`bolton_lcl_temperature`], and Poisson's relation
+    /// `p_LCL = p * (T_LCL / T)^(1 / 0.2854)` lifts the parcel dry-adiabatically
+    /// from the surface pressure to the LCL.
+    ///
+    /// Returns the LCL pressure in the unit of the level pressure (hPa), or
+    /// `None` when the profile is empty or the surface temperature and dew
+    /// point are not physical (see [`bolton_lcl_temperature`]).
     pub fn compute_lcl_pressure(&self) -> Option<f64> {
-        if self.levels.is_empty() {
+        let surface = self.levels.first()?;
+        let t_k = surface.temperature + 273.15;
+        let td_k = surface.dew_point + 273.15;
+
+        let t_lcl = bolton_lcl_temperature(t_k, td_k);
+        if !t_lcl.is_finite() {
             return None;
         }
-        let surface = &self.levels[0];
-        let t = surface.temperature;
-        let td = surface.dew_point;
-        let p = surface.pressure;
-
-        // Bolton (1980) approximation for LCL temperature
-        let t_lcl = 1.0 / (1.0 / (td + 273.15 - 56.0) + (t - td).ln() / 800.0) + 56.0;
-        // LCL pressure using Poisson's equation
-        let p_lcl = p * ((t_lcl) / (t + 273.15)).powf(3.5);
-        Some(p_lcl)
+        Some(surface.pressure * (t_lcl / t_k).powf(1.0 / BOLTON_KAPPA))
     }
 
     /// Compute the total precipitable water (mm).
@@ -835,12 +840,18 @@ impl SoundingProfile {
             } else if let Some(rest) = line.strip_prefix("# TIME ") {
                 profile.observation_time = rest.trim().to_string();
             } else if line.starts_with("# LAT ") {
+                // "# LAT <lat> LON <lon> ELEV <elev>": a header with a missing
+                // trailing value must not index past the end of the line.
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 6 {
-                    profile.latitude = parts[2].parse().unwrap_or(0.0);
-                    profile.longitude = parts[4].parse().unwrap_or(0.0);
-                    profile.elevation = parts[6].parse().unwrap_or(0.0);
-                }
+                let field = |idx: usize| {
+                    parts
+                        .get(idx)
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0)
+                };
+                profile.latitude = field(2);
+                profile.longitude = field(4);
+                profile.elevation = field(6);
             } else if line.starts_with('#') || line.is_empty() {
                 continue;
             } else {
@@ -1000,6 +1011,35 @@ pub fn virtual_temperature(temperature: f64, mixing_ratio_val: f64) -> f64 {
     temperature * (1.0 + 0.61 * mixing_ratio_val)
 }
 
+/// Exponent `R_d / c_p` of Poisson's relation used by Bolton (1980, eq. 11).
+const BOLTON_KAPPA: f64 = 0.2854;
+
+/// Bolton (1980, eq. 15) temperature of the lifting condensation level.
+///
+/// `T_LCL = 1 / (1 / (T_d - 56) + ln(T / T_d) / 800) + 56`
+///
+/// Both temperatures are absolute: the logarithm is taken of the ratio
+/// `T / T_d`, which is only meaningful in kelvin (a Celsius difference gives a
+/// wildly wrong LCL, and `T == T_d` would give `ln(0)`). A dew point above the
+/// air temperature cannot occur in unsaturated air, so `td_k` is clamped to
+/// `t_k`: saturated air lifts to its own temperature.
+///
+/// `t_k` - Air temperature (K).
+/// `td_k` - Dew point temperature (K).
+///
+/// Returns the LCL temperature in kelvin, or `NaN` when an input is not finite
+/// or the (clamped) dew point is at or below 56 K, where the formula is singular.
+pub fn bolton_lcl_temperature(t_k: f64, td_k: f64) -> f64 {
+    if !t_k.is_finite() || !td_k.is_finite() {
+        return f64::NAN;
+    }
+    let td_k = td_k.min(t_k);
+    if td_k <= 56.0 {
+        return f64::NAN;
+    }
+    1.0 / (1.0 / (td_k - 56.0) + (t_k / td_k).ln() / 800.0) + 56.0
+}
+
 /// Compute the equivalent potential temperature (Bolton 1980).
 ///
 /// `temperature` - Temperature (K).
@@ -1008,7 +1048,7 @@ pub fn virtual_temperature(temperature: f64, mixing_ratio_val: f64) -> f64 {
 pub fn equivalent_potential_temperature(temperature: f64, dew_point: f64, pressure: f64) -> f64 {
     let w = mixing_ratio(dew_point - 273.15, pressure); // Convert K to C for mixing_ratio
     let theta = potential_temperature(temperature, pressure, 1000.0);
-    let t_lcl = 1.0 / (1.0 / (dew_point - 56.0) + (temperature / dew_point).ln() / 800.0) + 56.0;
+    let t_lcl = bolton_lcl_temperature(temperature, dew_point);
     theta
         * (3.376 / t_lcl - 0.00254)
             .exp()
@@ -1042,14 +1082,40 @@ pub fn pressure_altitude(pressure: f64, sea_level_pressure: f64) -> f64 {
 
 /// Compute density altitude.
 ///
+/// The density altitude is the ISA altitude at which the standard atmosphere
+/// has the same air density as the actual air. With the ISA troposphere
+/// relations (`T0 = 288.15 K`, lapse rate `L = 0.0065 K/m`, `n = g / (R L)`):
+///
+/// ```text
+/// rho / rho0 = (1 - L * PA / T0)^n * T0 / T          (pressure ratio / temperature ratio)
+/// DA         = (T0 / L) * (1 - (rho / rho0)^(1 / (n - 1)))
+/// ```
+///
+/// This is exact for the ISA model, in metres throughout; it does not use the
+/// aviation `120 ft per degree` rule of thumb, which is only valid in feet.
+///
 /// `pressure_alt` - Pressure altitude (m).
 /// `oat` - Outside air temperature (C).
 ///
-/// Returns density altitude in meters.
+/// Returns density altitude in meters. At the ISA temperature for the given
+/// pressure altitude the result equals `pressure_alt`. Returns `NaN` when the
+/// inputs are not physical (non-finite, a pressure altitude at or above the
+/// ISA zero-pressure altitude of about 44.3 km, or an absolute temperature at
+/// or below zero).
 pub fn density_altitude(pressure_alt: f64, oat: f64) -> f64 {
-    let isa_temp = 15.0 - 0.0065 * pressure_alt; // ISA temp at this altitude
-    let temp_dev = oat - isa_temp;
-    pressure_alt + 120.0 * temp_dev
+    const T0: f64 = 288.15; // ISA sea-level temperature (K)
+    const LAPSE: f64 = 0.0065; // ISA tropospheric lapse rate (K/m)
+    const G: f64 = 9.80665;
+    const R: f64 = 287.053; // same gas constant as `pressure_altitude`
+
+    let t_k = oat + 273.15;
+    let pressure_ratio_base = 1.0 - LAPSE * pressure_alt / T0;
+    if !pressure_alt.is_finite() || !t_k.is_finite() || t_k <= 0.0 || pressure_ratio_base <= 0.0 {
+        return f64::NAN;
+    }
+    let n = G / (R * LAPSE);
+    let density_ratio = pressure_ratio_base.powf(n) * T0 / t_k;
+    (T0 / LAPSE) * (1.0 - density_ratio.powf(1.0 / (n - 1.0)))
 }
 
 /// Convert between pressure and flight level.
@@ -1742,10 +1808,17 @@ mod tests {
 
     #[test]
     fn test_density_altitude() {
+        // ISA temperature at 1000 m is 15 - 6.5 = 8.5 C; 30 C is 21.5 K warmer,
+        // so the air is thinner: the exact ISA density altitude is ~1742.5 m
+        // (the 120 ft/C rule of thumb applied to metres would give 3580 m).
         let da = density_altitude(1000.0, 30.0);
-        // ISA temp at 1000m = 15 - 6.5 = 8.5C, deviation = 30 - 8.5 = 21.5
-        // DA = 1000 + 120*21.5 = 3580
-        assert!((da - 3580.0).abs() < 1.0, "da={da}");
+        assert!(da > 1735.0 && da < 1750.0, "da={da}");
+        // Sea-level pressure at 25 C: exact value ~353.9 m.
+        let da_sl = density_altitude(0.0, 25.0);
+        assert!(da_sl > 345.0 && da_sl < 362.0, "da_sl={da_sl}");
+        // At the ISA temperature the density altitude equals the pressure altitude.
+        let da_isa = density_altitude(1000.0, 8.5);
+        assert!((da_isa - 1000.0).abs() < 0.5, "da_isa={da_isa}");
     }
 
     #[test]
@@ -1888,3 +1961,6 @@ mod tests {
         assert!((tv - 301.83).abs() < 0.01, "tv={tv}");
     }
 }
+
+#[cfg(test)]
+mod regression_tests;

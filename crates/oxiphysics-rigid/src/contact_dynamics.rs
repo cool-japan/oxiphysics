@@ -84,9 +84,11 @@ pub struct ContactPoint {
     pub penetration: f64,
     /// Accumulated normal impulse (for warm-starting).
     pub accumulated_normal_impulse: f64,
-    /// Accumulated tangential impulse in the first tangent direction.
+    /// Accumulated tangential (friction) impulse along the first tangent of
+    /// [`contact_tangent_frame`]`(normal)`.
     pub accumulated_tangent1_impulse: f64,
-    /// Accumulated tangential impulse in the second tangent direction.
+    /// Accumulated tangential (friction) impulse along the second tangent of
+    /// [`contact_tangent_frame`]`(normal)`.
     pub accumulated_tangent2_impulse: f64,
 }
 
@@ -276,8 +278,27 @@ impl SolverBody {
 /// Sequential impulse solver for contact resolution.
 ///
 /// Implements the Gauss-Seidel iterative impulse solver used in most
-/// physics engines (e.g. Bullet, Box2D). Supports Hertz-based contact
-/// stiffness and a configurable restitution coefficient.
+/// physics engines (e.g. Bullet, Box2D). Every contact point is solved with a
+/// normal row followed by a friction block:
+///
+/// * **Normal row** - drives the relative normal velocity
+///   `vn = (v_a - v_b) . n` (positive = separating) to the target
+///   `e * max(-vn_before, 0) + bias`. `vn_before` is the velocity before the
+///   solve starts and the restitution `e` only acts above
+///   [`restitution_velocity_threshold`](Self::restitution_velocity_threshold);
+///   `bias` is the Baumgarte velocity of
+///   [`position_correction`](Self::position_correction), which pushes
+///   penetrating bodies apart. The accumulated normal impulse never goes
+///   negative: a contact pushes but does not pull.
+/// * **Friction block** - cancels the two tangential velocity components along
+///   the frame of [`contact_tangent_frame`] with one joint 2x2 solve and
+///   projects the accumulated tangential impulse
+///   ([`ContactPoint::accumulated_tangent1_impulse`],
+///   [`ContactPoint::accumulated_tangent2_impulse`]) onto the Coulomb disc of
+///   radius `mu * accumulated_normal_impulse`.
+///
+/// The accumulated impulses of a [`ContactPoint`] are impulses that have
+/// already been applied to the bodies; they are not reset by the solver.
 #[derive(Debug, Clone)]
 pub struct ImpulseResolver {
     /// Number of solver iterations per frame.
@@ -288,6 +309,14 @@ pub struct ImpulseResolver {
     pub hertz_stiffness: f64,
     /// Velocity threshold below which restitution is zeroed (avoids jitter).
     pub restitution_velocity_threshold: f64,
+    /// Penetration recovery. Only [`PositionCorrectionMethod::Baumgarte`] acts
+    /// inside the velocity solver (as a separating-velocity bias on the normal
+    /// row); the other methods leave the normal row unbiased.
+    pub position_correction: PositionCorrection,
+    /// Tangential slip speed (m/s) up to which a contact is treated as sticking:
+    /// the static friction coefficient of the manifold bounds the friction
+    /// impulse then, the dynamic one once the contact slips faster.
+    pub slip_velocity_threshold: f64,
 }
 
 impl Default for ImpulseResolver {
@@ -297,7 +326,42 @@ impl Default for ImpulseResolver {
             default_restitution: 0.3,
             hertz_stiffness: 1.0e6,
             restitution_velocity_threshold: 0.5,
+            position_correction: PositionCorrection::default(),
+            slip_velocity_threshold: 0.01,
         }
+    }
+}
+
+/// Solver data of one contact point that is fixed before the iterations start,
+/// because it depends on the pre-solve velocities only.
+#[derive(Debug, Clone, Copy)]
+struct ContactRows {
+    /// Target relative normal velocity of the normal row (restitution bounce
+    /// plus Baumgarte bias).
+    target_normal_velocity: f64,
+    /// Coulomb coefficient bounding the friction impulse.
+    friction: f64,
+}
+
+/// Mutable references to two distinct bodies of a slice, in the order
+/// `(a, b)`. `None` when an index is out of range or both indices coincide (a
+/// body cannot be in contact with itself).
+fn body_pair_mut(
+    bodies: &mut [SolverBody],
+    ia: usize,
+    ib: usize,
+) -> Option<(&mut SolverBody, &mut SolverBody)> {
+    if ia == ib {
+        return None;
+    }
+    let (low, high) = (ia.min(ib), ia.max(ib));
+    let (head, tail) = bodies.split_at_mut_checked(high)?;
+    let low_body = head.get_mut(low)?;
+    let high_body = tail.first_mut()?;
+    if ia < ib {
+        Some((low_body, high_body))
+    } else {
+        Some((high_body, low_body))
     }
 }
 
@@ -324,69 +388,241 @@ impl ImpulseResolver {
         if denom > 1e-14 { 1.0 / denom } else { 0.0 }
     }
 
-    /// Resolve one contact point with sequential impulse.
+    /// Velocity change along `dj` caused by a unit impulse along `di`, applied
+    /// at the contact point of both bodies (`di` on A, `-di` on B).
+    ///
+    /// This is the (symmetric) effective inverse-mass matrix entry
+    /// `(m_a^-1 + m_b^-1) di.dj + (ra x di).I_a^-1 (ra x dj) + (rb x di).I_b^-1 (rb x dj)`.
+    fn contact_response(
+        ba: &SolverBody,
+        bb: &SolverBody,
+        ra: [f64; 3],
+        rb: [f64; 3],
+        di: [f64; 3],
+        dj: [f64; 3],
+    ) -> f64 {
+        let rotational = |body: &SolverBody, r: [f64; 3]| -> f64 {
+            let ci = v3_cross(r, di);
+            let cj = v3_cross(r, dj);
+            ci[0] * cj[0] * body.inv_inertia[0]
+                + ci[1] * cj[1] * body.inv_inertia[1]
+                + ci[2] * cj[2] * body.inv_inertia[2]
+        };
+        (ba.inv_mass + bb.inv_mass) * v3_dot(di, dj) + rotational(ba, ra) + rotational(bb, rb)
+    }
+
+    /// Relative velocity `v_a - v_b` of the two contact-point velocities.
+    fn relative_velocity(ba: &SolverBody, bb: &SolverBody, ra: [f64; 3], rb: [f64; 3]) -> [f64; 3] {
+        v3_sub(ba.point_velocity(ra), bb.point_velocity(rb))
+    }
+
+    /// Baumgarte separating-velocity bias for a penetration depth, zero unless
+    /// the Baumgarte method is selected.
+    fn penetration_bias(&self, penetration: f64, dt: f64) -> f64 {
+        match self.position_correction.method {
+            PositionCorrectionMethod::Baumgarte => {
+                self.position_correction.baumgarte_bias(penetration, dt)
+            }
+            PositionCorrectionMethod::PseudoVelocity | PositionCorrectionMethod::None => 0.0,
+        }
+    }
+
+    /// Target relative normal velocity of a contact after the solve:
+    /// `e * (-vn_before)` when the contact approaches faster than the
+    /// restitution threshold, plus the Baumgarte bias.
+    fn normal_velocity_target(
+        &self,
+        vn_before: f64,
+        restitution: f64,
+        penetration: f64,
+        dt: f64,
+    ) -> f64 {
+        let approach_speed = -vn_before;
+        let bounce = if approach_speed > self.restitution_velocity_threshold {
+            restitution.max(0.0) * approach_speed
+        } else {
+            0.0
+        };
+        bounce + self.penetration_bias(penetration, dt)
+    }
+
+    /// Normal row: push the relative normal velocity towards
+    /// `target_normal_velocity` with a non-negative accumulated impulse.
+    fn solve_normal_row(
+        ba: &mut SolverBody,
+        bb: &mut SolverBody,
+        cp: &mut ContactPoint,
+        ra: [f64; 3],
+        rb: [f64; 3],
+        target_normal_velocity: f64,
+    ) {
+        let n = cp.normal;
+        let vn = v3_dot(Self::relative_velocity(ba, bb, ra, rb), n);
+        let eff_mass = Self::effective_mass(ba, bb, n, ra, rb);
+        let old = cp.accumulated_normal_impulse;
+        cp.accumulated_normal_impulse = (old + eff_mass * (target_normal_velocity - vn)).max(0.0);
+        let impulse = v3_scale(n, cp.accumulated_normal_impulse - old);
+        ba.apply_impulse(impulse, ra);
+        bb.apply_impulse(v3_scale(impulse, -1.0), rb);
+    }
+
+    /// Friction block: cancel the tangential slip of the contact point and
+    /// project the accumulated tangential impulse onto the Coulomb disc
+    /// `|jt| <= friction * accumulated_normal_impulse`.
+    ///
+    /// Both tangents are solved together with the 2x2 effective-mass matrix.
+    /// Solving them one after the other and re-projecting the 2-vector after
+    /// each row does not converge to the cone solution (the iterate keeps
+    /// cycling between the two tangent directions), the joint solve does.
+    fn solve_friction_block(
+        ba: &mut SolverBody,
+        bb: &mut SolverBody,
+        cp: &mut ContactPoint,
+        ra: [f64; 3],
+        rb: [f64; 3],
+        friction: f64,
+    ) {
+        let (t1, t2) = contact_tangent_frame(cp.normal);
+        let rel_vel = Self::relative_velocity(ba, bb, ra, rb);
+        let slip = [v3_dot(rel_vel, t1), v3_dot(rel_vel, t2)];
+        let k11 = Self::contact_response(ba, bb, ra, rb, t1, t1);
+        let k12 = Self::contact_response(ba, bb, ra, rb, t1, t2);
+        let k22 = Self::contact_response(ba, bb, ra, rb, t2, t2);
+        let det = k11 * k22 - k12 * k12;
+        let (j1, j2) = if k11 > 0.0 && k22 > 0.0 && det > 1e-12 * k11 * k22 {
+            (
+                -(k22 * slip[0] - k12 * slip[1]) / det,
+                -(k11 * slip[1] - k12 * slip[0]) / det,
+            )
+        } else {
+            (
+                -slip[0] * Self::effective_mass(ba, bb, t1, ra, rb),
+                -slip[1] * Self::effective_mass(ba, bb, t2, ra, rb),
+            )
+        };
+
+        let old = [
+            cp.accumulated_tangent1_impulse,
+            cp.accumulated_tangent2_impulse,
+        ];
+        let mut new = [old[0] + j1, old[1] + j2];
+        let limit = friction.max(0.0) * cp.accumulated_normal_impulse;
+        let magnitude = new[0].hypot(new[1]);
+        if magnitude > limit {
+            let shrink = limit / magnitude;
+            new = [new[0] * shrink, new[1] * shrink];
+        }
+        cp.accumulated_tangent1_impulse = new[0];
+        cp.accumulated_tangent2_impulse = new[1];
+        let impulse = v3_add(v3_scale(t1, new[0] - old[0]), v3_scale(t2, new[1] - old[1]));
+        ba.apply_impulse(impulse, ra);
+        bb.apply_impulse(v3_scale(impulse, -1.0), rb);
+    }
+
+    /// Resolve one contact point with sequential impulse: the normal row
+    /// (restitution plus Baumgarte bias) followed by the friction block.
     /// Modifies `ba` and `bb` in place.
+    ///
+    /// * `restitution` - coefficient of restitution of the pair.
+    /// * `friction` - Coulomb coefficient bounding the friction impulse by
+    ///   `friction * cp.accumulated_normal_impulse`.
+    /// * `dt` - time step in seconds, used to turn the penetration depth into
+    ///   the Baumgarte bias velocity.
+    ///
+    /// The current velocities of the bodies are taken as the pre-impact
+    /// velocities for the restitution bounce.
     pub fn resolve_contact(
         &self,
         ba: &mut SolverBody,
         bb: &mut SolverBody,
         cp: &mut ContactPoint,
         restitution: f64,
-        _friction: f64,
+        friction: f64,
+        dt: f64,
     ) {
-        let n = cp.normal;
         let ra = v3_sub(cp.position, ba.position);
         let rb = v3_sub(cp.position, bb.position);
+        let vn_before = v3_dot(Self::relative_velocity(ba, bb, ra, rb), cp.normal);
+        let target = self.normal_velocity_target(vn_before, restitution, cp.penetration, dt);
+        Self::solve_normal_row(ba, bb, cp, ra, rb, target);
+        Self::solve_friction_block(ba, bb, cp, ra, rb, friction);
+    }
 
-        let va = ba.point_velocity(ra);
-        let vb = bb.point_velocity(rb);
-        let rel_vel = v3_sub(va, vb);
-        let vn = v3_dot(rel_vel, n);
-
-        // Only resolve if bodies are approaching
-        if vn > 0.0 {
-            return;
-        }
-
-        let e = if vn.abs() > self.restitution_velocity_threshold {
-            restitution
-        } else {
-            0.0
-        };
-        let eff_mass = Self::effective_mass(ba, bb, n, ra, rb);
-        let j_num = -(1.0 + e) * vn;
-        let j = j_num * eff_mass;
-
-        // Clamp accumulated impulse (non-penetration constraint)
-        let old = cp.accumulated_normal_impulse;
-        cp.accumulated_normal_impulse = (old + j).max(0.0);
-        let delta_j = cp.accumulated_normal_impulse - old;
-
-        let impulse = v3_scale(n, delta_j);
-        ba.apply_impulse(impulse, ra);
-        bb.apply_impulse(v3_scale(impulse, -1.0), rb);
+    /// Solver data of every contact point of a manifold, from the pre-solve
+    /// velocities: the restitution/Baumgarte normal target and the friction
+    /// coefficient (static while the contact sticks, dynamic once it slips
+    /// faster than [`slip_velocity_threshold`](Self::slip_velocity_threshold)).
+    fn prepare_manifold(
+        &self,
+        ba: &SolverBody,
+        bb: &SolverBody,
+        manifold: &ContactManifold,
+        dt: f64,
+    ) -> Vec<ContactRows> {
+        manifold
+            .points
+            .iter()
+            .map(|cp| {
+                let ra = v3_sub(cp.position, ba.position);
+                let rb = v3_sub(cp.position, bb.position);
+                let rel_vel = Self::relative_velocity(ba, bb, ra, rb);
+                let vn = v3_dot(rel_vel, cp.normal);
+                let slip_speed = v3_norm(v3_sub(rel_vel, v3_scale(cp.normal, vn)));
+                let friction = if slip_speed > self.slip_velocity_threshold {
+                    manifold.friction_dynamic
+                } else {
+                    manifold.friction_static
+                };
+                ContactRows {
+                    target_normal_velocity: self.normal_velocity_target(
+                        vn,
+                        manifold.restitution,
+                        cp.penetration,
+                        dt,
+                    ),
+                    friction,
+                }
+            })
+            .collect()
     }
 
     /// Run all iterations over all manifolds in a slice.
-    pub fn solve_manifolds(&self, bodies: &mut [SolverBody], manifolds: &mut [ContactManifold]) {
-        for _iter in 0..self.iterations {
-            for manifold in manifolds.iter_mut() {
-                let ia = manifold.body_a;
-                let ib = manifold.body_b;
-                if ia >= bodies.len() || ib >= bodies.len() {
-                    continue;
+    ///
+    /// The restitution bounce, the Baumgarte bias and the static/dynamic
+    /// friction choice are evaluated once from the velocities before the first
+    /// iteration; each iteration then solves the normal row and the friction
+    /// block of every contact point. `dt` is the time step in seconds.
+    /// Manifolds that refer to a body outside `bodies`, or to the same body
+    /// twice, are skipped.
+    pub fn solve_manifolds(
+        &self,
+        bodies: &mut [SolverBody],
+        manifolds: &mut [ContactManifold],
+        dt: f64,
+    ) {
+        let prepared: Vec<Vec<ContactRows>> = manifolds
+            .iter()
+            .map(|manifold| {
+                match (
+                    bodies.get(manifold.body_a),
+                    bodies.get(manifold.body_b),
+                    manifold.body_a == manifold.body_b,
+                ) {
+                    (Some(ba), Some(bb), false) => self.prepare_manifold(ba, bb, manifold, dt),
+                    _ => Vec::new(),
                 }
-                let restitution = manifold.restitution;
-                let friction = manifold.friction_dynamic;
-                // Split borrow
-                let (a_slice, b_slice) = bodies.split_at_mut(ia.max(ib));
-                let (ba, bb) = if ia < ib {
-                    (&mut a_slice[ia], &mut b_slice[0])
-                } else {
-                    (&mut b_slice[0], &mut a_slice[ib])
+            })
+            .collect();
+        for _iter in 0..self.iterations {
+            for (manifold, rows) in manifolds.iter_mut().zip(&prepared) {
+                let Some((ba, bb)) = body_pair_mut(bodies, manifold.body_a, manifold.body_b) else {
+                    continue;
                 };
-                for cp in manifold.points.iter_mut() {
-                    self.resolve_contact(ba, bb, cp, restitution, friction);
+                for (cp, row) in manifold.points.iter_mut().zip(rows) {
+                    let ra = v3_sub(cp.position, ba.position);
+                    let rb = v3_sub(cp.position, bb.position);
+                    Self::solve_normal_row(ba, bb, cp, ra, rb, row.target_normal_velocity);
+                    Self::solve_friction_block(ba, bb, cp, ra, rb, row.friction);
                 }
             }
         }
@@ -744,7 +980,11 @@ impl Default for PositionCorrection {
 impl PositionCorrection {
     /// Compute the Baumgarte bias velocity for a contact point.
     /// `penetration` — signed overlap (positive = penetrating), `dt` — time step.
+    /// A non-positive or NaN `dt` yields no bias.
     pub fn baumgarte_bias(&self, penetration: f64, dt: f64) -> f64 {
+        if dt.is_nan() || dt <= 0.0 {
+            return 0.0;
+        }
         let corrected = (penetration - self.slop).max(0.0);
         let bias = (self.baumgarte_beta / dt) * corrected;
         bias.min(self.max_correction / dt)
@@ -1224,7 +1464,7 @@ mod tests {
         let mut bb = SolverBody::static_body([0.0, -0.5, 0.0]);
         let mut cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.01);
         let old_vy = ba.vel[1];
-        resolver.resolve_contact(&mut ba, &mut bb, &mut cp, 0.5, 0.4);
+        resolver.resolve_contact(&mut ba, &mut bb, &mut cp, 0.5, 0.4, 1.0 / 60.0);
         assert!(
             (ba.vel[1] - old_vy).abs() < 1e-12,
             "separating contact should not change velocity"
@@ -1240,7 +1480,7 @@ mod tests {
         let mut ba = SolverBody::dynamic([0.0; 3], [0.0, -1.0, 0.0], [0.0; 3], 1.0, [1.0; 3]);
         let mut bb = SolverBody::static_body([0.0, -0.5, 0.0]);
         let mut cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.01);
-        resolver.resolve_contact(&mut ba, &mut bb, &mut cp, 0.5, 0.4);
+        resolver.resolve_contact(&mut ba, &mut bb, &mut cp, 0.5, 0.4, 1.0 / 60.0);
         assert!(ba.vel[1] > -1.0, "velocity should increase after bounce");
     }
 

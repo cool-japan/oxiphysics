@@ -14,6 +14,9 @@ use super::functions::Thermostat;
 use super::types::SvrThermostat;
 
 impl Thermostat for SvrThermostat {
+    /// One SVR step towards the target kinetic energy `K̄ = n_dof·k_B·T/2`;
+    /// see [`SvrThermostat::rescale_factor`].  A system with (numerically)
+    /// zero kinetic energy cannot be rescaled and is left untouched.
     fn apply(&mut self, atoms: &mut AtomSet, target_temp: f64, dt: f64, boltzmann_k: f64) {
         let n = atoms.len();
         if n == 0 {

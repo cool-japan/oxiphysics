@@ -18,6 +18,12 @@
 
 use oxiphysics_core::math::{Mat3, Real, Vec3};
 
+mod quadratic_algebra;
+use quadratic_algebra::{
+    Feature, Mat3x9, Mat9, feature_moment_matrix, mul_3x9_9x9, mul_3x9_vec,
+    symmetric_pseudo_inverse,
+};
+
 // ============================================================================
 // Pure-f64 helper math
 // ============================================================================
@@ -70,7 +76,6 @@ fn mat3_mul(a: Mat3x3, b: Mat3x3) -> Mat3x3 {
     c
 }
 
-#[cfg(test)]
 fn mat3_transpose(m: Mat3x3) -> Mat3x3 {
     [
         [m[0][0], m[1][0], m[2][0]],
@@ -133,6 +138,77 @@ fn polar_rotation_f64(m: Mat3x3) -> Mat3x3 {
         [r_na[(1, 0)], r_na[(1, 1)], r_na[(1, 2)]],
         [r_na[(2, 0)], r_na[(2, 1)], r_na[(2, 2)]],
     ]
+}
+
+// ============================================================================
+// Plastic flow of a rest shape
+// ============================================================================
+
+/// Length of the plastic step that absorbs the positional error `error` of one
+/// particle into the rest shape.
+///
+/// Nothing is absorbed up to the yield `threshold`; beyond it a fraction
+/// `rate` (clamped to at most `1`, so the step never overshoots) of the excess
+/// error is. Returns `0.0` for a non-positive or NaN `rate` and for errors
+/// that do not exceed the threshold.
+fn plastic_step_length(error: f64, threshold: f64, rate: f64) -> f64 {
+    if error > threshold && error > f64::EPSILON && rate > 0.0 {
+        (error - threshold.max(0.0)) * rate.min(1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Subtract the mass-weighted mean from `rest`, restoring `Σ mᵢ qᵢ = 0`.
+fn recentre_rest_positions(rest: &mut [[f64; 3]], masses: &[f64]) {
+    let total: f64 = masses.iter().sum();
+    if total <= 0.0 {
+        return;
+    }
+    let weighted_sum = rest
+        .iter()
+        .zip(masses.iter())
+        .fold([0.0_f64; 3], |acc, (q, &m)| v3_add(acc, v3_scale(*q, m)));
+    let mean = v3_scale(weighted_sum, 1.0 / total);
+    for q in rest.iter_mut() {
+        *q = v3_sub(*q, mean);
+    }
+}
+
+/// Let the rest shape flow plastically so that its goal positions
+/// `R qᵢ + xcm` approach the current positions.
+///
+/// `deviations[i]` is the world-space vector `positionᵢ − goalᵢ` and `steps[i]`
+/// the distance by which goal `i` is to move along it (`0.0` for particles
+/// that do not yield). The goal moves towards the position, so the rest
+/// position moves by the same distance along the deviation expressed in the
+/// rest frame, `Rᵀ (positionᵢ − goalᵢ)`; adding the world-space deviation, or
+/// its negative, would push the goal sideways or away from the deformation as
+/// soon as `R` is not the identity.
+///
+/// The individual moves do not preserve `Σ mᵢ qᵢ = 0`, so the rest shape is
+/// re-centred afterwards: the goals must keep `xcm` as their centre of mass.
+fn flow_rest_shape(
+    rest: &mut [[f64; 3]],
+    masses: &[f64],
+    rotation: &Mat3x3,
+    deviations: &[[f64; 3]],
+    steps: &[f64],
+) {
+    let rotation_transpose = mat3_transpose(*rotation);
+    let mut moved = false;
+    for ((q, deviation), &step) in rest.iter_mut().zip(deviations.iter()).zip(steps.iter()) {
+        let length = v3_norm(*deviation);
+        if step <= 0.0 || length <= f64::EPSILON {
+            continue;
+        }
+        let in_rest_frame = mat3_mul_vec(rotation_transpose, *deviation);
+        *q = v3_add(*q, v3_scale(in_rest_frame, step / length));
+        moved = true;
+    }
+    if moved {
+        recentre_rest_positions(rest, masses);
+    }
 }
 
 // ============================================================================
@@ -272,10 +348,18 @@ impl ShapeMatchingBody {
     ///   `v += stiffness * (goal - pos) / dt`
     ///   `pos += stiffness * (goal - pos)`
     ///
-    /// After updating, optionally accumulates plastic deformation.
+    /// After updating, optionally accumulates plastic deformation: the part of
+    /// a particle's positional error `|goal - pos|` that exceeds
+    /// [`ShapeMatchingBody::plasticity_threshold`] is absorbed into the rest
+    /// shape at [`ShapeMatchingBody::plasticity_rate`], which moves the goal
+    /// towards the (pre-correction) particle position and thereby reduces the
+    /// error of the following steps. The rest shape is re-centred afterwards.
     pub fn apply_shape_matching_force(&mut self, stiffness: f64, dt: f64) {
         let goals = self.goal_positions();
+        let rotation = self.rotation;
         let n = self.positions.len();
+        let mut deviations = vec![[0.0_f64; 3]; n];
+        let mut steps = vec![0.0_f64; n];
         for (i, goal) in goals.iter().enumerate().take(n) {
             let delta = v3_sub(*goal, self.positions[i]);
             let disp = v3_scale(delta, stiffness);
@@ -286,18 +370,24 @@ impl ShapeMatchingBody {
             }
 
             // Plasticity: if positional error exceeds threshold, absorb it.
-            let err = v3_norm(delta);
-            if err > self.plasticity_threshold {
-                let excess = err - self.plasticity_threshold;
-                let plastic_delta = v3_scale(
-                    v3_scale(delta, 1.0 / err.max(1e-12)),
-                    excess * self.plasticity_rate,
-                );
-                // Update rest position towards current to absorb plastic strain.
-                self.rest_positions[i] = v3_add(self.rest_positions[i], plastic_delta);
-                self.accumulated_plastic_deformation += v3_norm(plastic_delta);
+            let step = plastic_step_length(
+                v3_norm(delta),
+                self.plasticity_threshold,
+                self.plasticity_rate,
+            );
+            if step > 0.0 {
+                deviations[i] = v3_scale(delta, -1.0);
+                steps[i] = step;
             }
         }
+        self.accumulated_plastic_deformation += steps.iter().sum::<f64>();
+        flow_rest_shape(
+            &mut self.rest_positions,
+            &self.masses,
+            &rotation,
+            &deviations,
+            &steps,
+        );
     }
 
     /// Reset the rest shape to the current positions (erase all deformation).
@@ -629,12 +719,29 @@ fn mat3_inverse_safe(m: Mat3x3) -> Mat3x3 {
 // QuadraticDeformationBody – quadratic deformation modes
 // ============================================================================
 
-/// Extended shape matching with quadratic deformation modes.
+/// Extended shape matching with quadratic deformation modes (Müller et al.,
+/// 2005, §5.2).
 ///
 /// The rest-position feature vector is extended to 9 components by appending
 /// quadratic terms: `[qx, qy, qz, qx*qx, qy*qy, qz*qz, qx*qy, qy*qz, qx*qz]`.
 ///
-/// This allows bending modes beyond pure affine deformation.
+/// This allows bending modes beyond pure affine deformation. With the
+/// positions relative to the current centre of mass `pᵢ = xᵢ − xcm` the
+/// transformation that best maps the features onto the current shape in the
+/// mass-weighted least-squares sense is
+///
+/// ```text
+/// Ã = Ã_pq Ã_qq,   Ã_pq = Σ mᵢ pᵢ q̃ᵢᵀ  (3×9),   Ã_qq = (Σ mᵢ q̃ᵢ q̃ᵢᵀ)⁻¹  (9×9)
+/// ```
+///
+/// (a pseudo-inverse where the rest points do not excite all nine modes: fewer
+/// than nine particles, planar bodies, …). The goal positions blend it with the
+/// rigid goal, `gᵢ = (β Ã + (1 − β) [R 0 0]) q̃ᵢ + xcm`, where `R` is the
+/// rotation factor of the polar decomposition of the linear 3×3 block of
+/// `Ã_pq`. `β = 0` reproduces rigid shape matching, `β = 1` lets the body take
+/// any quadratic deformation without resistance. An undeformed body, and any
+/// rigidly rotated and translated copy of it, sits exactly at its goals for
+/// every `β`.
 #[derive(Debug, Clone)]
 pub struct QuadraticDeformationBody {
     /// Current positions.
@@ -643,15 +750,27 @@ pub struct QuadraticDeformationBody {
     pub velocities: Vec<[f64; 3]>,
     /// Per-particle masses.
     pub masses: Vec<f64>,
-    /// 9-component extended rest-position feature vectors.
-    rest_features: Vec<[f64; 9]>,
+    /// 9-component extended rest-position feature vectors of the rest offsets
+    /// divided by [`QuadraticDeformationBody::length_scale`].
+    rest_features: Vec<Feature>,
+    /// Characteristic length of the rest shape (mass-weighted RMS distance from
+    /// the rest centre of mass). The features use lengths in units of it, so
+    /// that the linear and quadratic modes are of comparable size whatever the
+    /// units of the body.
+    length_scale: f64,
+    /// Pseudo-inverse `Ã_qq` of the moment matrix `Σ mᵢ q̃ᵢ q̃ᵢᵀ` of the rest
+    /// features, precomputed once.
+    moment_inverse: Mat9,
     /// Stiffness α ∈ \[0, 1\].
     pub stiffness: f64,
+    /// Blend β ∈ \[0, 1\] between the rigid goal (`0`) and the full quadratic
+    /// fit (`1`). Defaults to `0.5`.
+    pub beta: f64,
 }
 
 impl QuadraticDeformationBody {
     /// Compute the 9-component feature vector from a 3D position.
-    fn feature(q: [f64; 3]) -> [f64; 9] {
+    fn feature(q: [f64; 3]) -> Feature {
         [
             q[0],
             q[1],
@@ -679,17 +798,34 @@ impl QuadraticDeformationBody {
         cm = v3_scale(cm, 1.0 / total);
 
         let n = positions.len();
-        let rest_features: Vec<[f64; 9]> = positions
+        let rest_offsets: Vec<[f64; 3]> = positions.iter().map(|p| v3_sub(*p, cm)).collect();
+        let mean_square = rest_offsets
             .iter()
-            .map(|p| Self::feature(v3_sub(*p, cm)))
+            .zip(masses.iter())
+            .map(|(q, &m)| m * v3_dot(*q, *q))
+            .sum::<f64>()
+            / total;
+        let length_scale = if mean_square.is_finite() && mean_square > 0.0 {
+            mean_square.sqrt()
+        } else {
+            1.0
+        };
+        let rest_features: Vec<Feature> = rest_offsets
+            .iter()
+            .map(|q| Self::feature(v3_scale(*q, 1.0 / length_scale)))
             .collect();
+        let moment_inverse =
+            symmetric_pseudo_inverse(&feature_moment_matrix(&rest_features, &masses));
 
         Self {
             positions,
             velocities: vec![[0.0; 3]; n],
             masses,
             rest_features,
+            length_scale,
+            moment_inverse,
             stiffness,
+            beta: 0.5,
         }
     }
 
@@ -705,8 +841,9 @@ impl QuadraticDeformationBody {
         v3_scale(cm, 1.0 / total)
     }
 
-    /// Compute the 3×9 deformation matrix mapping feature space to 3D.
-    pub fn compute_a39(&self) -> [[f64; 9]; 3] {
+    /// The moment matrix `Ã_pq = Σ mᵢ pᵢ q̃ᵢᵀ` (3×9) of the current relative
+    /// positions `pᵢ = xᵢ − xcm` and the (length-scaled) rest features.
+    fn moment_apq(&self) -> Mat3x9 {
         let xcm = self.centre_of_mass();
         let mut a = [[0.0_f64; 9]; 3];
         for ((pos, feat), &mi) in self
@@ -716,10 +853,40 @@ impl QuadraticDeformationBody {
             .zip(self.masses.iter())
         {
             let p = v3_sub(*pos, xcm);
-            for row in 0..3 {
-                for col in 0..9 {
-                    a[row][col] += mi * p[row] * feat[col];
+            for (row, &p_row) in a.iter_mut().zip(p.iter()) {
+                for (entry, &f) in row.iter_mut().zip(feat.iter()) {
+                    *entry += mi * p_row * f;
                 }
+            }
+        }
+        a
+    }
+
+    /// Compute the 3×9 deformation matrix `Ã = Ã_pq Ã_qq` mapping feature space
+    /// to 3D.
+    ///
+    /// It is the least-squares optimal map from the nine rest features
+    /// `[qx, qy, qz, qx², qy², qz², qx·qy, qy·qz, qz·qx]` (rest offsets from the
+    /// rest centre of mass) to the current positions relative to the current
+    /// centre of mass: the relative position of particle `i` is approximated by
+    /// `Ã · feature(qᵢ)`. For a body that is an exact quadratic image of its
+    /// rest shape it reproduces that image. Where the rest shape determines all
+    /// nine modes (for example a 3×3×3 grid) the undeformed body has
+    /// `Ã = [I 0 0]`; otherwise `Ã` is only fixed on the span of the rest
+    /// features, where it still maps every `feature(qᵢ)` to `qᵢ`.
+    pub fn compute_a39(&self) -> [[f64; 9]; 3] {
+        let mut a = mul_3x9_9x9(&self.moment_apq(), &self.moment_inverse);
+        // `a` acts on features of length-scaled offsets; express it in the
+        // features of the offsets themselves: linear columns divide by the
+        // length scale, quadratic columns by its square.
+        let inverse_scale = 1.0 / self.length_scale;
+        for row in a.iter_mut() {
+            for (column, entry) in row.iter_mut().enumerate() {
+                *entry *= if column < 3 {
+                    inverse_scale
+                } else {
+                    inverse_scale * inverse_scale
+                };
             }
         }
         a
@@ -727,19 +894,33 @@ impl QuadraticDeformationBody {
 
     /// Compute goal positions using the quadratic deformation matrix.
     ///
-    /// Goal = A₃₉ * feat(q) + xcm (with stiffness blend).
+    /// `goalᵢ = (β Ã + (1 − β) [R 0 0]) q̃ᵢ + xcm`, where `R` is the rotation
+    /// factor of the polar decomposition of the linear 3×3 block of `Ã_pq`
+    /// (see the type documentation). The result is blended with the current
+    /// positions by `stiffness`: `stiffness = 1` returns the goals themselves.
     pub fn goal_positions(&self) -> Vec<[f64; 3]> {
-        let a39 = self.compute_a39();
+        let a_pq = self.moment_apq();
+        let a_tilde = mul_3x9_9x9(&a_pq, &self.moment_inverse);
+        let linear_block = [
+            [a_pq[0][0], a_pq[0][1], a_pq[0][2]],
+            [a_pq[1][0], a_pq[1][1], a_pq[1][2]],
+            [a_pq[2][0], a_pq[2][1], a_pq[2][2]],
+        ];
+        let rotation = polar_rotation_f64(linear_block);
         let xcm = self.centre_of_mass();
+        let beta = self.beta.clamp(0.0, 1.0);
         self.rest_features
             .iter()
             .zip(self.positions.iter())
             .map(|(feat, cur)| {
-                let mut goal = xcm;
-                for row in 0..3 {
-                    let v: f64 = a39[row].iter().zip(feat.iter()).map(|(a, f)| a * f).sum();
-                    goal[row] += v;
-                }
+                let quadratic = mul_3x9_vec(&a_tilde, feat);
+                // `R q` for the rest offset q = length_scale * feat[0..3].
+                let rigid = v3_scale(
+                    mat3_mul_vec(rotation, [feat[0], feat[1], feat[2]]),
+                    self.length_scale,
+                );
+                let relative = v3_add(v3_scale(quadratic, beta), v3_scale(rigid, 1.0 - beta));
+                let goal = v3_add(xcm, relative);
                 // Stiffness blend
                 [
                     goal[0] * self.stiffness + cur[0] * (1.0 - self.stiffness),
@@ -1007,6 +1188,8 @@ impl PlasticityImprovedBody {
         let r = self.rotation;
 
         let n = self.positions.len();
+        let mut deviations = vec![[0.0_f64; 3]; n];
+        let mut steps = vec![0.0_f64; n];
         for i in 0..n {
             let goal = v3_add(mat3_mul_vec(r, self.plastic_rest[i]), xcm);
             let delta = v3_sub(goal, self.positions[i]);
@@ -1016,18 +1199,24 @@ impl PlasticityImprovedBody {
                 self.velocities[i] = v3_add(self.velocities[i], v3_scale(disp, 1.0 / dt));
             }
 
-            // Improved plasticity with hardening
-            let err = v3_norm(delta);
+            // Improved plasticity with hardening: the goal of a yielding
+            // particle flows towards its (pre-correction) position.
             let effective_yield =
                 (self.yield_stress + self.hardening_modulus * self.plastic_strain[i]).max(1e-12);
-            if err > effective_yield {
-                let excess = err - effective_yield;
-                let dir = v3_scale(delta, 1.0 / err.max(1e-12));
-                let plastic_delta = v3_scale(dir, excess * self.plasticity_rate);
-                self.plastic_rest[i] = v3_add(self.plastic_rest[i], plastic_delta);
-                self.plastic_strain[i] += v3_norm(plastic_delta);
+            let step = plastic_step_length(v3_norm(delta), effective_yield, self.plasticity_rate);
+            if step > 0.0 {
+                deviations[i] = v3_scale(delta, -1.0);
+                steps[i] = step;
+                self.plastic_strain[i] += step;
             }
         }
+        flow_rest_shape(
+            &mut self.plastic_rest,
+            &self.masses,
+            &r,
+            &deviations,
+            &steps,
+        );
     }
 
     /// Total accumulated plastic strain across all particles.
@@ -1364,9 +1553,12 @@ mod tests {
         assert!((feat[6] - 2.0).abs() < 1e-12); // qx*qy = 2
     }
 
-    // SM14. QuadraticDeformationBody: goal positions exist for a small system.
+    // SM14. QuadraticDeformationBody: an undeformed body is at its goals.
+    //
+    // (The goals used to be the raw moment matrix applied to the features, which
+    // scales with mass * length² and does not reproduce the rest shape.)
     #[test]
-    fn test_quadratic_deformation_goals_exist() {
+    fn test_quadratic_deformation_goals_are_the_rest_positions() {
         let rest = vec![
             [1.0, 0.0, 0.0],
             [-1.0, 0.0, 0.0],
@@ -1378,11 +1570,11 @@ mod tests {
         let body = QuadraticDeformationBody::new(rest.clone(), masses, 1.0);
         let goals = body.goal_positions();
         assert_eq!(goals.len(), rest.len());
-        // Goals should be finite.
-        for g in &goals {
-            for &v in g {
-                assert!(v.is_finite(), "goal component should be finite");
-            }
+        for (i, (goal, position)) in goals.iter().zip(body.positions.iter()).enumerate() {
+            assert!(
+                dist3(*goal, *position) < 1e-9,
+                "particle {i}: goal {goal:?} should equal position {position:?}"
+            );
         }
     }
 
@@ -1490,3 +1682,6 @@ mod tests {
         assert!(cm[2].abs() < 1e-12);
     }
 }
+
+#[cfg(test)]
+mod regression_tests;

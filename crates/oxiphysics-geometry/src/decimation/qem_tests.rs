@@ -182,10 +182,11 @@ fn collapse_merges_the_quadrics_of_its_end_points() {
     };
     let before = compute_vertex_quadrics(&mesh);
     // Quadrics are summed over incident faces exactly as the reference does.
-    for v in 0..mesh.vertex_count() {
+    assert_eq!(before.len(), mesh.vertex_count());
+    for (v, reference) in before.iter().enumerate() {
         for i in 0..4 {
             for j in 0..4 {
-                assert!((engine.quadric(v).q[i][j] - before[v].q[i][j]).abs() < 1e-12);
+                assert!((engine.quadric(v).q[i][j] - reference.q[i][j]).abs() < 1e-12);
             }
         }
     }

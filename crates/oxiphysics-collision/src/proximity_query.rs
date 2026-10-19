@@ -749,10 +749,53 @@ pub struct TriTriResult {
     pub distance: f64,
 }
 
+/// Point at which the segment `p -> q` pierces the triangle `(v0, v1, v2)`.
+///
+/// The segment must cross the plane of the triangle (touching it with an end
+/// point counts) at a point inside the triangle. A segment that lies in the
+/// plane of the triangle never pierces it, and neither does any segment through
+/// a zero-area triangle: such configurations are covered by the vertex-face and
+/// edge-edge pairs of the distance search, which are exact for them.
+fn segment_triangle_hit(
+    p: [f64; 3],
+    q: [f64; 3],
+    v0: [f64; 3],
+    v1: [f64; 3],
+    v2: [f64; 3],
+) -> Option<[f64; 3]> {
+    let normal = vcross(vsub(v1, v0), vsub(v2, v0));
+    let normal_len_sq = vlen_sq(normal);
+    if normal_len_sq <= 0.0 {
+        return None;
+    }
+    // Signed distances (scaled by |normal|) of the end points from the plane.
+    let side_p = vdot(normal, vsub(p, v0));
+    let side_q = vdot(normal, vsub(q, v0));
+    let same_side = (side_p > 0.0 && side_q > 0.0) || (side_p < 0.0 && side_q < 0.0);
+    if same_side || (side_p == 0.0 && side_q == 0.0) {
+        return None;
+    }
+    let t = side_p / (side_p - side_q);
+    let hit = vadd(p, vscale(vsub(q, p), t));
+    // The hit point is inside when it lies on the inner side of all three edges.
+    let tolerance = -1e-12 * normal_len_sq;
+    let inside = [(v0, v1), (v1, v2), (v2, v0)]
+        .iter()
+        .all(|&(a, b)| vdot(normal, vcross(vsub(b, a), vsub(hit, a))) >= tolerance);
+    inside.then_some(hit)
+}
+
 /// Computes the minimum distance between two triangles in 3-D.
 ///
-/// Uses an exhaustive search over vertex–triangle and edge–edge pairs following
-/// the approach described in Real-Time Collision Detection §5.2.
+/// Intersecting triangles (crossing, touching or overlapping) have distance
+/// zero: each of the six edges is tested against the other triangle, and the
+/// result then carries the same witness point on both triangles, the centroid
+/// of the piercing points (a point of the intersection, which is convex).
+/// Otherwise the minimum is attained at a feature pair, and an exhaustive search
+/// over vertex–triangle and edge–edge pairs finds it, following the approach
+/// described in Real-Time Collision Detection §5.2. Coplanar triangles that
+/// overlap are handled by that search as well (a vertex inside the other
+/// triangle, or two crossing edges, give distance zero).
 ///
 /// The triangles are defined by their three vertices `a0/a1/a2` and
 /// `b0/b1/b2`.
@@ -773,6 +816,30 @@ pub fn triangle_triangle_distance(
     b1: [f64; 3],
     b2: [f64; 3],
 ) -> TriTriResult {
+    // Intersecting triangles: an edge of one pierces the other.
+    let mut hit_sum = [0.0_f64; 3];
+    let mut hit_count = 0.0_f64;
+    for (p, q) in [(a0, a1), (a1, a2), (a2, a0)] {
+        if let Some(hit) = segment_triangle_hit(p, q, b0, b1, b2) {
+            hit_sum = vadd(hit_sum, hit);
+            hit_count += 1.0;
+        }
+    }
+    for (p, q) in [(b0, b1), (b1, b2), (b2, b0)] {
+        if let Some(hit) = segment_triangle_hit(p, q, a0, a1, a2) {
+            hit_sum = vadd(hit_sum, hit);
+            hit_count += 1.0;
+        }
+    }
+    if hit_count > 0.0 {
+        let witness = vscale(hit_sum, 1.0 / hit_count);
+        return TriTriResult {
+            point_a: witness,
+            point_b: witness,
+            distance: 0.0,
+        };
+    }
+
     let mut best_dist = f64::MAX;
     let mut best_pa = a0;
     let mut best_pb = b0;
@@ -1555,5 +1622,163 @@ mod tests {
             [0.5, 0.5, 0.5],
         );
         assert!(r.is_none(), "collinear vertices span no triangle");
+    }
+
+    // ── triangle_triangle_distance: intersecting triangles ──────────────────
+
+    type Tri = [[f64; 3]; 3];
+
+    fn tri_distance(a: &Tri, b: &Tri) -> TriTriResult {
+        triangle_triangle_distance(a[0], a[1], a[2], b[0], b[1], b[2])
+    }
+
+    /// Deterministic generator in `[0, 1)`.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_unit(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+
+        fn point(&mut self, extent: f64) -> [f64; 3] {
+            [
+                (self.next_unit() * 2.0 - 1.0) * extent,
+                (self.next_unit() * 2.0 - 1.0) * extent,
+                (self.next_unit() * 2.0 - 1.0) * extent,
+            ]
+        }
+    }
+
+    /// Distance between two triangles by alternating projections between the
+    /// two convex sets: a monotone upper bound on the distance that converges
+    /// to it. Independent of the feature-pair search under test.
+    fn alternating_projection_distance(a: &Tri, b: &Tri) -> f64 {
+        let mut p = vscale(vadd(vadd(a[0], a[1]), a[2]), 1.0 / 3.0);
+        let mut best = f64::MAX;
+        for _ in 0..50_000 {
+            let q = point_triangle_closest(b[0], b[1], b[2], p).position;
+            let next = point_triangle_closest(a[0], a[1], a[2], q).position;
+            let d = vdist(next, q);
+            if d > best - 1e-15 {
+                best = best.min(d);
+                break;
+            }
+            best = d;
+            p = next;
+        }
+        best
+    }
+
+    #[test]
+    fn test_tri_tri_piercing_edge_has_zero_distance() {
+        // B stands upright in the plane x = 0 and its edges cross the plane of A
+        // at (0, -0.5, 0) and (0, 0, 0), both inside A. No vertex of either
+        // triangle lies on the other and no two edges meet, so the feature-pair
+        // search alone would report a distance of about one.
+        let a: Tri = [[-2.0, -2.0, 0.0], [2.0, -2.0, 0.0], [0.0, 2.0, 0.0]];
+        let b: Tri = [[0.0, -0.5, -1.0], [0.0, -0.5, 1.0], [0.0, 0.5, 1.0]];
+        for (first, second) in [(&a, &b), (&b, &a)] {
+            let r = tri_distance(first, second);
+            assert_eq!(r.distance, 0.0, "pierced triangle");
+            assert_eq!(r.point_a, r.point_b, "one witness for both triangles");
+            // The witness lies on the segment where B crosses A.
+            let w = r.point_a;
+            assert!(w[0].abs() < EPS && w[2].abs() < EPS, "witness {w:?}");
+            assert!(w[1] >= -0.5 - EPS && w[1] <= EPS, "witness {w:?}");
+        }
+    }
+
+    #[test]
+    fn test_tri_tri_crossed_x_shape_has_zero_distance() {
+        // Two triangles crossing like an X, edges through each other's interior.
+        let a: Tri = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]];
+        let b: Tri = [[-0.3, 0.0, -1.0], [0.3, 0.0, -1.0], [0.0, 0.0, 1.0]];
+        let r = tri_distance(&a, &b);
+        assert_eq!(r.distance, 0.0);
+        assert!(r.point_a[2].abs() < EPS, "witness is in the plane of A");
+        assert!(r.point_a[1].abs() < EPS, "witness is in the plane of B");
+    }
+
+    #[test]
+    fn test_tri_tri_sharing_a_vertex_has_zero_distance() {
+        let a: Tri = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let b: Tri = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+        let r = tri_distance(&a, &b);
+        assert_eq!(r.distance, 0.0);
+        assert!(vlen(r.point_a) < EPS);
+    }
+
+    #[test]
+    fn test_tri_tri_coplanar_overlap_and_gap() {
+        let a: Tri = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]];
+        let overlapping: Tri = [[1.0, 0.5, 0.0], [3.0, 0.5, 0.0], [1.0, 2.5, 0.0]];
+        assert!(tri_distance(&a, &overlapping).distance < EPS);
+        let inside: Tri = [[0.2, 0.2, 0.0], [0.6, 0.2, 0.0], [0.2, 0.6, 0.0]];
+        assert!(tri_distance(&a, &inside).distance < EPS);
+        let apart: Tri = [[4.0, 0.0, 0.0], [5.0, 0.0, 0.0], [4.0, 1.0, 0.0]];
+        let r = tri_distance(&a, &apart);
+        assert!((r.distance - 2.0).abs() < EPS, "gap {}", r.distance);
+        assert!((r.point_a[0] - 2.0).abs() < EPS && (r.point_b[0] - 4.0).abs() < EPS);
+    }
+
+    #[test]
+    fn test_tri_tri_separated_triangle_above_the_plane_keeps_its_distance() {
+        // B passes above A and does not reach its plane: a segment test that
+        // ignored the end-point sides would report an intersection.
+        let a: Tri = [[-2.0, -2.0, 0.0], [2.0, -2.0, 0.0], [0.0, 2.0, 0.0]];
+        let b: Tri = [[0.0, -0.5, 0.25], [0.0, -0.5, 1.0], [0.0, 0.5, 1.0]];
+        let r = tri_distance(&a, &b);
+        assert!((r.distance - 0.25).abs() < EPS, "distance {}", r.distance);
+        // B touches the plane of A outside of A: still a positive distance.
+        let outside: Tri = [[5.0, 0.0, -1.0], [5.0, 0.0, 1.0], [5.0, 1.0, 1.0]];
+        assert!(tri_distance(&a, &outside).distance > 2.9);
+    }
+
+    #[test]
+    fn test_tri_tri_matches_alternating_projections_on_random_pairs() {
+        let mut rng = Lcg(0x7121_9A55_0000_0042);
+        let mut intersecting = 0;
+        for case in 0..300 {
+            let a: Tri = [rng.point(1.0), rng.point(1.0), rng.point(1.0)];
+            let shift = rng.point(0.6);
+            let b: Tri = [
+                vadd(rng.point(1.0), shift),
+                vadd(rng.point(1.0), shift),
+                vadd(rng.point(1.0), shift),
+            ];
+            let exact = tri_distance(&a, &b);
+            let reference = alternating_projection_distance(&a, &b);
+            assert!(
+                exact.distance <= reference + 1e-9,
+                "case {case}: exact {} exceeds the reference upper bound {reference}",
+                exact.distance
+            );
+            if exact.distance == 0.0 {
+                intersecting += 1;
+                assert!(
+                    reference < 1e-3,
+                    "case {case}: reported as intersecting but the triangles are {reference} apart"
+                );
+                assert_eq!(exact.point_a, exact.point_b);
+            } else {
+                assert!(
+                    (exact.distance - vdist(exact.point_a, exact.point_b)).abs() < 1e-9,
+                    "case {case}: witnesses must realise the distance"
+                );
+                assert!(
+                    (reference - exact.distance).abs() < 1e-6,
+                    "case {case}: exact {} vs reference {reference}",
+                    exact.distance
+                );
+            }
+        }
+        assert!(
+            (20..=200).contains(&intersecting),
+            "the sample must contain both intersecting and separated pairs, got {intersecting} intersecting"
+        );
     }
 }

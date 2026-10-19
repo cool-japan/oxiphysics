@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 
+use crate::fortran_fields::parse_real_record;
+
 mod prmtop_text;
 mod rst7_text;
 
@@ -275,14 +277,29 @@ impl Rst7File {
 // MdcrdReader
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Column width of one `F8.3` field of an `mdcrd` record.
+const MDCRD_FIELD_WIDTH: usize = 8;
+
+/// Largest number of values reserved up front for one frame.
+///
+/// `natom` is caller supplied, so the reservation must not follow it blindly:
+/// the vector grows on demand while the frame is actually read.
+const MDCRD_MAX_PREALLOCATED_VALUES: usize = 1 << 16;
+
 /// Reader for AMBER ASCII trajectory files (`mdcrd`).
 ///
 /// Format:
 /// ```text
 /// title
-/// x1 y1 z1 x2 ... (10 values per line, 8.3 format)
-/// [box a b c] (optional, if IFBOX > 0)
+/// x1 y1 z1 x2 ... (10 values per line, 10F8.3)
+/// [box a b c]     (optional, 3F8.3, if IFBOX > 0)
 /// ```
+///
+/// Every field is eight characters wide.  A value that fills its whole column
+/// (`-123.456`, `1000.000`) touches its neighbour without a blank
+/// (`1.000-100.000`), so the records are cut into 8-character columns whenever
+/// blank splitting does not yield numbers; blank-separated records are read as
+/// they are.
 pub struct MdcrdReader<R: BufRead> {
     reader: R,
     /// Number of atoms in each frame.
@@ -290,6 +307,8 @@ pub struct MdcrdReader<R: BufRead> {
     /// Whether each frame includes a periodic box record.
     pub has_box: bool,
     title_consumed: bool,
+    /// Scratch buffer holding the record read last.
+    line: String,
 }
 
 impl<R: BufRead> MdcrdReader<R> {
@@ -303,7 +322,17 @@ impl<R: BufRead> MdcrdReader<R> {
             natom,
             has_box,
             title_consumed: false,
+            line: String::new(),
         }
+    }
+
+    /// Read the next record into the scratch buffer.
+    ///
+    /// Returns `false` at end of file.
+    fn fill_line(&mut self) -> Result<bool, AmberIoError> {
+        self.line.clear();
+        let bytes = self.reader.read_line(&mut self.line)?;
+        Ok(bytes != 0)
     }
 
     /// Consume the title line.  Called automatically by the first `read_frame`.
@@ -316,64 +345,71 @@ impl<R: BufRead> MdcrdReader<R> {
         Ok(title.trim_end().to_string())
     }
 
+    /// Read the periodic-box record that follows the coordinates of a frame.
+    ///
+    /// A missing record (end of file) or a record with fewer than three
+    /// numbers yields `None`; values beyond the third are ignored.
+    fn read_box(&mut self) -> Result<Option<[f64; 3]>, AmberIoError> {
+        if !self.fill_line()? {
+            return Ok(None);
+        }
+        let values = parse_real_record(&self.line, MDCRD_FIELD_WIDTH)
+            .map_err(|e| AmberIoError::ParseError(format!("mdcrd box record: {e}")))?;
+        Ok(match values.as_slice() {
+            [a, b, c, ..] => Some([*a, *b, *c]),
+            _ => None,
+        })
+    }
+
     /// Read the next frame and return coordinates (and optionally box).
     ///
     /// Returns `Ok(None)` at end of file.
+    ///
+    /// # Errors
+    ///
+    /// - [`AmberIoError::UnexpectedEof`] when the file ends inside a frame,
+    /// - [`AmberIoError::ParseError`] when a field is not a number or a record
+    ///   holds more values than the frame still needs (a wrong `natom`),
+    /// - [`AmberIoError::InvalidData`] when `3 * natom` overflows,
+    /// - [`AmberIoError::IoError`] when reading fails.
     pub fn read_frame(&mut self) -> Result<Option<MdcrdFrame>, AmberIoError> {
         if !self.title_consumed {
             self.consume_title()?;
         }
 
-        let n_coords = self.natom * 3;
-        let mut values: Vec<f64> = Vec::with_capacity(n_coords);
-
-        loop {
-            if values.len() >= n_coords {
-                break;
-            }
-            let mut line = String::new();
-            let bytes = self
-                .reader
-                .read_line(&mut line)
-                .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            if bytes == 0 {
-                if values.is_empty() {
-                    return Ok(None);
-                }
-                break;
-            }
-            for tok in line.split_whitespace() {
-                values.push(
-                    tok.parse::<f64>()
-                        .map_err(|e| AmberIoError::ParseError(e.to_string()))?,
-                );
-                if values.len() >= n_coords {
-                    break;
-                }
-            }
-        }
-
-        if values.is_empty() {
+        let n_coords = self.natom.checked_mul(3).ok_or_else(|| {
+            AmberIoError::InvalidData(format!(
+                "natom {} is too large for an mdcrd frame",
+                self.natom
+            ))
+        })?;
+        if n_coords == 0 {
             return Ok(None);
         }
+        let mut values: Vec<f64> = Vec::with_capacity(n_coords.min(MDCRD_MAX_PREALLOCATED_VALUES));
 
-        let box_dims = if self.has_box {
-            let mut line = String::new();
-            self.reader
-                .read_line(&mut line)
-                .map_err(|e| AmberIoError::IoError(e.to_string()))?;
-            let parts: Vec<f64> = line
-                .split_whitespace()
-                .filter_map(|t| t.parse::<f64>().ok())
-                .collect();
-            if parts.len() >= 3 {
-                Some([parts[0], parts[1], parts[2]])
-            } else {
-                None
+        while values.len() < n_coords {
+            if !self.fill_line()? {
+                return if values.is_empty() {
+                    Ok(None)
+                } else {
+                    Err(AmberIoError::UnexpectedEof)
+                };
             }
-        } else {
-            None
-        };
+            let record = parse_real_record(&self.line, MDCRD_FIELD_WIDTH)
+                .map_err(|e| AmberIoError::ParseError(format!("mdcrd coordinates: {e}")))?;
+            let missing = n_coords - values.len();
+            if record.len() > missing {
+                return Err(AmberIoError::ParseError(format!(
+                    "mdcrd record holds {} values but only {missing} are missing from a frame of {} atoms",
+                    record.len(),
+                    self.natom
+                )));
+            }
+            values.extend(record);
+        }
+
+        let box_dims = if self.has_box { self.read_box()? } else { None };
 
         Ok(Some(MdcrdFrame {
             coordinates: values,
@@ -1292,6 +1328,240 @@ mod tests {
         let mut reader = MdcrdReader::new(BufReader::new(Cursor::new(text)), 3, false);
         let result = reader.read_frame().unwrap();
         assert!(result.is_none());
+    }
+
+    /// One frame as `10F8.3` lines followed by an optional `3F8.3` box line.
+    fn mdcrd_frame_text(coords: &[f64], box_dims: Option<[f64; 3]>) -> String {
+        let mut text = String::new();
+        for row in coords.chunks(10) {
+            for value in row {
+                text.push_str(&format!("{value:8.3}"));
+            }
+            text.push('\n');
+        }
+        if let Some(dims) = box_dims {
+            for value in dims {
+                text.push_str(&format!("{value:8.3}"));
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    fn mdcrd_reader(text: String, natom: usize, has_box: bool) -> MdcrdReader<Cursor<String>> {
+        MdcrdReader::new(Cursor::new(text), natom, has_box)
+    }
+
+    #[test]
+    fn test_mdcrd_touching_fields_parse_exactly() {
+        // -123.456 fills its F8.3 column, 999.999 is one character narrower and
+        // 1000.000 fills the column again, so neighbouring fields touch.
+        let coords = [-123.456, 999.999, 1000.000, -100.000, 1.0, -999.999];
+        let text = format!("title\n{}", mdcrd_frame_text(&coords, None));
+        assert!(text.contains("-123.456 999.9991000.000-100.000"), "{text}");
+        let mut reader = mdcrd_reader(text, 2, false);
+        let frame = reader.read_frame().unwrap().unwrap();
+        assert_eq!(frame.coordinates, coords.to_vec());
+        assert_eq!(frame.box_dims, None);
+        assert!(reader.read_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_mdcrd_touching_box_line_parses_exactly() {
+        let coords = [1.0, 2.0, 3.0];
+        let dims = [1000.0, 1000.5, 1001.0];
+        let text = format!("title\n{}", mdcrd_frame_text(&coords, Some(dims)));
+        assert!(text.contains("1000.0001000.5001001.000"), "{text}");
+        let mut reader = mdcrd_reader(text, 1, true);
+        let frame = reader.read_frame().unwrap().unwrap();
+        assert_eq!(frame.coordinates, coords.to_vec());
+        assert_eq!(frame.box_dims, Some(dims));
+    }
+
+    #[test]
+    fn test_mdcrd_many_frames_with_touching_fields_and_boxes() {
+        // 4 atoms = 12 values = a full line of ten plus a line of two.
+        let frame_values = |f: usize| -> Vec<f64> {
+            (0..12)
+                .map(|i| {
+                    if i % 3 == 0 {
+                        -(100.0 + f as f64)
+                    } else {
+                        1000.0 + i as f64
+                    }
+                })
+                .collect()
+        };
+        let mut text = String::from("many frames\n");
+        for f in 0..50 {
+            text.push_str(&mdcrd_frame_text(
+                &frame_values(f),
+                Some([1000.0 + f as f64, 200.0, 300.0]),
+            ));
+        }
+        let mut reader = mdcrd_reader(text, 4, true);
+        let mut count = 0usize;
+        while let Some(frame) = reader.read_frame().unwrap() {
+            assert_eq!(frame.coordinates, frame_values(count), "frame {count}");
+            assert_eq!(
+                frame.box_dims,
+                Some([1000.0 + count as f64, 200.0, 300.0]),
+                "frame {count}"
+            );
+            count += 1;
+        }
+        assert_eq!(count, 50);
+    }
+
+    #[test]
+    fn test_mdcrd_reader_and_amber_parser_agree_on_touching_fields() {
+        let coords = [-123.456, 999.999, 1000.000, -100.000, 1.0, -999.999];
+        let text = format!(
+            "title\n{}{}",
+            mdcrd_frame_text(&coords, Some([1000.0, 1000.0, 1000.0])),
+            mdcrd_frame_text(&coords, Some([999.5, 1000.0, 10.0]))
+        );
+        let parsed = crate::amber::parse_mdcrd(&text, 2, true);
+        let mut reader = mdcrd_reader(text, 2, true);
+        for (index, expected) in parsed.iter().enumerate() {
+            let frame = reader.read_frame().unwrap().unwrap();
+            assert_eq!(frame.coordinates, expected.coords, "frame {index}");
+            assert_eq!(frame.box_dims, expected.box_dims, "frame {index}");
+        }
+        assert_eq!(parsed.len(), 2);
+        assert!(reader.read_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_mdcrd_blank_separated_records_still_parse() {
+        let text = "t\n 1.5 2.5 3.5\n 4.5 5.5 6.5\n".to_string();
+        let mut reader = mdcrd_reader(text, 1, false);
+        assert_eq!(
+            reader.read_frame().unwrap().unwrap().coordinates,
+            vec![1.5, 2.5, 3.5]
+        );
+        assert_eq!(
+            reader.read_frame().unwrap().unwrap().coordinates,
+            vec![4.5, 5.5, 6.5]
+        );
+        assert!(reader.read_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_mdcrd_crlf_line_endings() {
+        let text = "t\r\n   1.000-100.000   3.000\r\n  10.000  20.000  30.000\r\n".to_string();
+        let mut reader = mdcrd_reader(text, 1, true);
+        let frame = reader.read_frame().unwrap().unwrap();
+        assert_eq!(frame.coordinates, vec![1.0, -100.0, 3.0]);
+        assert_eq!(frame.box_dims, Some([10.0, 20.0, 30.0]));
+    }
+
+    #[test]
+    fn test_mdcrd_missing_box_line_at_end_of_file_gives_no_box() {
+        let text = "t\n   1.000   2.000   3.000\n".to_string();
+        let mut reader = mdcrd_reader(text, 1, true);
+        let frame = reader.read_frame().unwrap().unwrap();
+        assert_eq!(frame.coordinates, vec![1.0, 2.0, 3.0]);
+        assert_eq!(frame.box_dims, None);
+    }
+
+    #[test]
+    fn test_mdcrd_file_ending_inside_a_frame_is_an_error() {
+        // 5 atoms = 15 values = two lines; only the first line is present.
+        let coords: Vec<f64> = (0..10).map(f64::from).collect();
+        let text = format!("t\n{}", mdcrd_frame_text(&coords, None));
+        let mut reader = mdcrd_reader(text, 5, false);
+        assert!(matches!(
+            reader.read_frame(),
+            Err(AmberIoError::UnexpectedEof)
+        ));
+    }
+
+    #[test]
+    fn test_mdcrd_non_numeric_field_is_an_error() {
+        let text = "t\n   1.000   x.000   3.000\n".to_string();
+        let mut reader = mdcrd_reader(text, 1, false);
+        match reader.read_frame() {
+            Err(AmberIoError::ParseError(message)) => {
+                assert!(message.contains("x.000"), "{message}");
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_mdcrd_record_longer_than_the_frame_is_an_error() {
+        // The file holds frames of 10 values, the reader expects 6.
+        let coords: Vec<f64> = (0..10).map(f64::from).collect();
+        let text = format!("t\n{}", mdcrd_frame_text(&coords, None));
+        let mut reader = mdcrd_reader(text, 2, false);
+        match reader.read_frame() {
+            Err(AmberIoError::ParseError(message)) => {
+                assert!(message.contains("10 values"), "{message}");
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_mdcrd_mutated_trajectories_never_panic_and_keep_frame_size() {
+        use crate::fortran_fields::test_support::{SplitMix64, mutate_text};
+        let coords = [
+            -123.456, 999.999, 1000.000, -100.000, 1.0, -999.999, 5.5, -5.5, 0.25,
+        ];
+        let with_box = format!(
+            "title\n{}{}",
+            mdcrd_frame_text(&coords, Some([1000.0, 999.5, 10.0])),
+            mdcrd_frame_text(&coords, Some([50.0, 60.0, 70.0]))
+        );
+        let plain = format!(
+            "t\n{}{}",
+            mdcrd_frame_text(&coords, None),
+            mdcrd_frame_text(&coords, None)
+        );
+        let mut rng = SplitMix64::new(0x6D64_0002);
+        let mut accepted = 0usize;
+        let mut rejected = 0usize;
+        for (seed, has_box) in [(with_box, true), (plain, false)] {
+            for round in 0..2000 {
+                let text = mutate_text(&seed, &mut rng, 1 + round % 4);
+                let mut reader = mdcrd_reader(text.clone(), 3, has_box);
+                // Every record is consumed at most once, so a few frames at
+                // most can be read; the bound only guards against a hang.
+                for _ in 0..100 {
+                    match reader.read_frame() {
+                        Ok(Some(frame)) => {
+                            accepted += 1;
+                            assert_eq!(frame.coordinates.len(), 9, "{text}");
+                        }
+                        Ok(None) => break,
+                        Err(_) => {
+                            rejected += 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(accepted > 0, "no damaged trajectory was accepted");
+        assert!(rejected > 0, "no damaged trajectory was rejected");
+    }
+
+    #[test]
+    fn test_mdcrd_degenerate_and_huge_natom_never_panic() {
+        let mut empty = mdcrd_reader("t\n   1.000\n".to_string(), 0, false);
+        assert!(empty.read_frame().unwrap().is_none());
+        let mut huge = mdcrd_reader("t\n   1.000\n".to_string(), usize::MAX, false);
+        assert!(matches!(
+            huge.read_frame(),
+            Err(AmberIoError::InvalidData(_))
+        ));
+        // A large but representable atom count must not reserve its full size.
+        let mut large = mdcrd_reader("t\n   1.000   2.000\n".to_string(), usize::MAX / 4, false);
+        assert!(matches!(
+            large.read_frame(),
+            Err(AmberIoError::UnexpectedEof)
+        ));
     }
 
     // ── MdinFile ──────────────────────────────────────────────────────────────

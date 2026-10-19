@@ -303,11 +303,11 @@ pub(super) fn thinning_skeleton(
         .collect();
     let tree = KdTree::build(boundary, &used);
     let mut depth = vec![0.0_f64; grid.cells.len()];
-    for idx in 0..grid.cells.len() {
-        if grid.cells[idx] {
+    for (idx, (d, &filled)) in depth.iter_mut().zip(&grid.cells).enumerate() {
+        if filled {
             let (x, y, z) = grid.coords(idx);
             let c = grid.center(x, y, z);
-            depth[idx] = tree
+            *d = tree
                 .nearest_filtered(c, |_| true)
                 .map_or(0.0, |(nearest, _)| dist3(c, boundary[nearest]));
         }

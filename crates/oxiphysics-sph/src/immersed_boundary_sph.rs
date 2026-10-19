@@ -526,9 +526,11 @@ impl FluidStructureForce {
 pub enum MotionType {
     /// Body is held stationary.
     Fixed,
-    /// Constant translational velocity (m/s).
+    /// Constant translational velocity (m/s): `x(t) = x₀ + v t`, with `x₀` the
+    /// reference centre [`RigidImmersedBody::initial_centre`].
     ConstantVelocity([f64; 3]),
-    /// Sinusoidal oscillation: `x(t) = A sin(ω t + φ) ê`.
+    /// Sinusoidal oscillation about the reference centre:
+    /// `x(t) = x₀ + A sin(ω t + φ) ê`.
     SinusoidalOscillation {
         /// Amplitude (m).
         amplitude: f64,
@@ -554,11 +556,24 @@ pub enum MotionType {
 ///
 /// Stores the current state (centre of mass position and velocity) and
 /// computes force/torque from the fluid via [`FluidStructureForce`].
+///
+/// The prescription is a function of the absolute time `t` measured from the
+/// reference configuration (`t = 0`, centre [`initial_centre`](Self::initial_centre)),
+/// so [`update_kinematics`](Self::update_kinematics) is idempotent and gives the
+/// same state however the time axis is sampled.
 pub struct RigidImmersedBody {
     /// Underlying Lagrangian marker representation.
     pub body: ImmersedBody,
     /// Centre of mass position (m).
     pub centre: [f64; 3],
+    /// Reference centre of mass at `t = 0` (m).
+    ///
+    /// Anchor of the [`MotionType::Fixed`], [`MotionType::ConstantVelocity`] and
+    /// [`MotionType::SinusoidalOscillation`] prescriptions.  It is the marker
+    /// centroid at construction and is never overwritten by
+    /// [`update_kinematics`](Self::update_kinematics); assign it explicitly to
+    /// re-anchor the motion.
+    pub initial_centre: [f64; 3],
     /// Centre of mass velocity (m/s).
     pub velocity: [f64; 3],
     /// Mass of the rigid body (kg).
@@ -580,6 +595,7 @@ impl RigidImmersedBody {
         Self {
             body,
             centre,
+            initial_centre: centre,
             velocity: [0.0; 3],
             mass,
             inertia_z,
@@ -589,11 +605,15 @@ impl RigidImmersedBody {
         }
     }
 
-    /// Prescribed centre-of-mass position at time `t`.
+    /// Prescribed centre-of-mass position at the absolute time `t`.
+    ///
+    /// The result depends only on `t`, the motion prescription and the reference
+    /// centre [`initial_centre`](Self::initial_centre); it does not depend on the
+    /// current [`centre`](Self::centre) (which `update_kinematics` overwrites).
     pub fn prescribed_position(&self, t: f64) -> [f64; 3] {
         match &self.motion {
-            MotionType::Fixed => self.centre,
-            MotionType::ConstantVelocity(v) => add3(self.centre, scale3(*v, t)),
+            MotionType::Fixed => self.initial_centre,
+            MotionType::ConstantVelocity(v) => add3(self.initial_centre, scale3(*v, t)),
             MotionType::SinusoidalOscillation {
                 amplitude,
                 omega,
@@ -601,7 +621,7 @@ impl RigidImmersedBody {
                 direction,
             } => {
                 let disp = amplitude * (omega * t + phase).sin();
-                add3(self.centre, scale3(*direction, disp))
+                add3(self.initial_centre, scale3(*direction, disp))
             }
             MotionType::CircularOrbit {
                 centre,
@@ -645,7 +665,11 @@ impl RigidImmersedBody {
     }
 
     /// Update marker positions and velocities according to the prescribed motion
-    /// at time `t`.  The markers translate rigidly with the body centre.
+    /// at the absolute time `t` (measured from the reference configuration).
+    ///
+    /// The markers translate rigidly with the body centre by the increment
+    /// between the previous and the new prescribed centre, so repeated calls
+    /// with increasing times (or the same time twice) never compound the motion.
     pub fn update_kinematics(&mut self, t: f64) {
         let new_centre = self.prescribed_position(t);
         let new_vel = self.prescribed_velocity(t);
@@ -1227,6 +1251,137 @@ mod tests {
         // sin(0) = 0, so v = A*ω*cos(0) = A*ω in x
         let expected = 0.1 * 2.0 * PI;
         assert!((vel[0] - expected).abs() < 1e-8, "vel[0] = {}", vel[0]);
+    }
+
+    /// Ring of `n` markers translated so that its centroid sits at `offset`.
+    fn offset_ring(n: usize, offset: [f64; 3]) -> ImmersedBody {
+        let mut body = ImmersedBody::ring(n, 0.5, 0.0, "offset ring");
+        for m in body.markers.iter_mut() {
+            m.position = add3(m.position, offset);
+        }
+        body
+    }
+
+    #[test]
+    fn rigid_body_initial_centre_is_construction_centroid() {
+        let offset = [2.0, -1.0, 0.5];
+        let rb = RigidImmersedBody::new(
+            offset_ring(8, offset),
+            1.0,
+            0.1,
+            MotionType::ConstantVelocity([1.0, 0.0, 0.0]),
+        );
+        for (k, &expected) in offset.iter().enumerate() {
+            assert!((rb.initial_centre[k] - expected).abs() < 1e-12);
+            assert!((rb.centre[k] - expected).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn rigid_body_constant_velocity_update_does_not_compound() {
+        // Absolute time: calling update_kinematics at 0.1, 0.2, 0.3 must move the
+        // body by 0.3 v in total (not 0.1 + 0.3 + 0.6 = 1.0 v as when the already
+        // displaced centre was used as the reference).
+        let offset = [2.0, -1.0, 0.5];
+        let vel = [1.0, -0.5, 0.25];
+        let mut rb = RigidImmersedBody::new(
+            offset_ring(8, offset),
+            1.0,
+            0.1,
+            MotionType::ConstantVelocity(vel),
+        );
+        let marker0 = rb.body.markers[0].position;
+        for t in [0.1, 0.2, 0.3] {
+            rb.update_kinematics(t);
+        }
+        for k in 0..3 {
+            let expected = offset[k] + 0.3 * vel[k];
+            assert!(
+                (rb.centre[k] - expected).abs() < 1e-12,
+                "centre[{k}] = {} expected {expected}",
+                rb.centre[k]
+            );
+            assert!(
+                (rb.body.markers[0].position[k] - (marker0[k] + 0.3 * vel[k])).abs() < 1e-12,
+                "marker did not translate rigidly with the centre"
+            );
+            assert!((rb.velocity[k] - vel[k]).abs() < 1e-14);
+            assert!((rb.body.markers[0].velocity[k] - vel[k]).abs() < 1e-14);
+        }
+        // The centroid of the markers follows the centre exactly.
+        let centroid = rb.body.centroid();
+        for (k, &c) in centroid.iter().enumerate() {
+            assert!((c - rb.centre[k]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn rigid_body_update_kinematics_is_idempotent_for_fixed_time() {
+        let mut rb = RigidImmersedBody::new(
+            offset_ring(6, [1.0, 1.0, 0.0]),
+            1.0,
+            0.1,
+            MotionType::ConstantVelocity([2.0, 0.0, 0.0]),
+        );
+        rb.update_kinematics(0.4);
+        let once = rb.centre;
+        rb.update_kinematics(0.4);
+        rb.update_kinematics(0.4);
+        for (k, &c) in once.iter().enumerate() {
+            assert!((rb.centre[k] - c).abs() < 1e-14);
+        }
+        assert!((rb.centre[0] - (1.0 + 0.8)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rigid_body_sinusoidal_motion_is_anchored_to_the_reference_centre() {
+        // x(t) = c0 + A sin(ω t + φ) ê with φ ≠ 0, sampled at irregular times.
+        // The former implementation re-anchored on the current centre and
+        // random-walked away from this closed form.
+        let c0 = [0.5, -2.0, 1.0];
+        let (amplitude, omega, phase) = (0.2, 2.0 * PI, 0.7);
+        let direction = [0.0, 1.0, 0.0];
+        let motion = MotionType::SinusoidalOscillation {
+            amplitude,
+            omega,
+            phase,
+            direction,
+        };
+        let mut rb = RigidImmersedBody::new(offset_ring(8, c0), 1.0, 0.1, motion);
+        for t in [0.13, 0.29, 0.5, 0.77, 1.0, 1.31] {
+            rb.update_kinematics(t);
+            let disp = amplitude * (omega * t + phase).sin();
+            assert!((rb.centre[0] - c0[0]).abs() < 1e-12, "t = {t}");
+            assert!((rb.centre[1] - (c0[1] + disp)).abs() < 1e-12, "t = {t}");
+            assert!((rb.centre[2] - c0[2]).abs() < 1e-12, "t = {t}");
+        }
+        // After exactly one period the body is back at the t = 0 state.
+        rb.update_kinematics(0.0);
+        let start = rb.centre;
+        rb.update_kinematics(1.0);
+        for (k, &c) in start.iter().enumerate() {
+            assert!(
+                (rb.centre[k] - c).abs() < 1e-12,
+                "centre[{k}] after one period = {} vs {}",
+                rb.centre[k],
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn rigid_body_fixed_motion_stays_at_the_reference_centre() {
+        let c0 = [3.0, 0.0, -1.0];
+        let mut rb = RigidImmersedBody::new(offset_ring(8, c0), 1.0, 0.1, MotionType::Fixed);
+        let marker0 = rb.body.markers[3].position;
+        for t in [0.5, 1.5, 7.0] {
+            rb.update_kinematics(t);
+        }
+        for k in 0..3 {
+            assert!((rb.centre[k] - c0[k]).abs() < 1e-12);
+            assert!((rb.body.markers[3].position[k] - marker0[k]).abs() < 1e-12);
+            assert_eq!(rb.velocity[k], 0.0);
+        }
     }
 
     #[test]

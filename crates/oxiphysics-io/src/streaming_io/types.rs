@@ -8,56 +8,74 @@ use super::functions::{chunk_from_bytes, chunk_to_bytes, delta_decode, delta_enc
 
 /// Run-length encoder/decoder for byte streams (trajectory data).
 ///
-/// Format: repeated runs are encoded as `[0xFF, count, value]`; literals are
-/// passed through.  This mirrors the f32 variant in `CompressionStream` but
-/// operates on raw bytes.
+/// Format: a run is encoded as the three bytes `[0xFF, count, value]` with
+/// `count` in `1..=254`.  Every other byte is a literal and is copied through
+/// unchanged.  Because `0xFF` is the run marker, a literal `0xFF` byte is
+/// never copied through: it is always sent as a run token (`[0xFF, 1, 0xFF]`
+/// for a single byte), which keeps the stream unambiguous for arbitrary binary
+/// input.  Runs of other values are tokenised only from length 3 on, where the
+/// three-byte token is no longer than the run itself.
 #[derive(Debug, Clone, Default)]
 pub struct RleEncoder;
 impl RleEncoder {
+    /// Longest run a single token can describe.
+    const MAX_RUN: usize = 254;
+    /// Byte that introduces a run token.
+    const MARKER: u8 = 0xFF;
     /// Encode a byte slice using RLE.
+    ///
+    /// The output decodes back to exactly `data` with [`decode`](Self::decode),
+    /// whatever the byte values are.
     pub fn encode(data: &[u8]) -> Vec<u8> {
-        if data.is_empty() {
-            return Vec::new();
-        }
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(data.len());
         let mut i = 0;
         while i < data.len() {
             let val = data[i];
             let mut run = 1usize;
-            while i + run < data.len() && data[i + run] == val && run < 254 {
+            while i + run < data.len() && data[i + run] == val && run < Self::MAX_RUN {
                 run += 1;
             }
-            if run >= 3 {
-                out.push(0xFF);
+            if run >= 3 || val == Self::MARKER {
+                out.push(Self::MARKER);
+                // `run` is at most MAX_RUN (254), so the narrowing is lossless.
                 out.push(run as u8);
                 out.push(val);
             } else {
-                for j in 0..run {
-                    out.push(data[i + j]);
-                }
+                out.extend_from_slice(&data[i..i + run]);
             }
             i += run;
         }
         out
     }
-    /// Decode a byte slice produced by `encode`.
-    pub fn decode(data: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
+    /// Decode a byte slice produced by [`encode`](Self::encode).
+    ///
+    /// # Errors
+    /// Returns an error if a `0xFF` marker is followed by fewer than two bytes
+    /// (truncated stream) or carries a zero run length.
+    pub fn decode(data: &[u8]) -> Result<Vec<u8>, String> {
+        let mut out = Vec::with_capacity(data.len());
         let mut i = 0;
         while i < data.len() {
-            if data[i] == 0xFF && i + 2 < data.len() {
-                let count = data[i + 1] as usize;
-                let val = data[i + 2];
-                for _ in 0..count {
-                    out.push(val);
+            if data[i] == Self::MARKER {
+                let token_end = i + 3;
+                if token_end > data.len() {
+                    return Err(format!(
+                        "RLE stream truncated: run marker at byte {i} needs 2 more bytes, {} remain",
+                        data.len() - i - 1
+                    ));
                 }
-                i += 3;
+                let count = usize::from(data[i + 1]);
+                if count == 0 {
+                    return Err(format!("RLE stream corrupt: zero-length run at byte {i}"));
+                }
+                out.resize(out.len() + count, data[i + 2]);
+                i = token_end;
             } else {
                 out.push(data[i]);
                 i += 1;
             }
         }
-        out
+        Ok(out)
     }
 }
 /// A cached trajectory frame.
@@ -614,18 +632,49 @@ pub struct ChunkedReader {
 }
 impl ChunkedReader {
     /// Open the file and index all frames.
+    ///
+    /// Every frame is `[length: u64 LE][length bytes of payload]`.  The index
+    /// is built only from frames that lie completely inside the file.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be read, if a frame length does not
+    /// fit in memory, or if a frame header or payload extends past the end of
+    /// the file (a truncated file, a corrupt length, or fewer than eight
+    /// trailing bytes).
     pub fn open(path: &str) -> Result<Self, String> {
         let data = std::fs::read(path).map_err(|e| e.to_string())?;
         let mut offsets = Vec::new();
         let mut pos = 0usize;
-        while pos + 8 <= data.len() {
-            let frame_len = u64::from_le_bytes(
-                data[pos..pos + 8]
+        while pos < data.len() {
+            let frame_no = offsets.len();
+            let header_end = pos
+                .checked_add(8)
+                .filter(|&end| end <= data.len())
+                .ok_or_else(|| {
+                    format!(
+                        "truncated frame header: frame {frame_no} at byte {pos} has only {} of 8 length bytes",
+                        data.len() - pos
+                    )
+                })?;
+            let declared = u64::from_le_bytes(
+                data[pos..header_end]
                     .try_into()
                     .map_err(|_| "bad length field")?,
-            ) as usize;
+            );
+            let frame_len = usize::try_from(declared).map_err(|_| {
+                format!("corrupt frame {frame_no}: length {declared} does not fit in memory")
+            })?;
+            let next = header_end
+                .checked_add(frame_len)
+                .filter(|&end| end <= data.len())
+                .ok_or_else(|| {
+                    format!(
+                        "truncated frame: frame {frame_no} at byte {pos} declares {declared} payload bytes but only {} remain",
+                        data.len() - header_end
+                    )
+                })?;
             offsets.push(pos as u64);
-            pos += 8 + frame_len;
+            pos = next;
         }
         let total = offsets.len();
         Ok(Self {
@@ -648,11 +697,24 @@ impl ChunkedReader {
         }
         use std::io::{Read, Seek, SeekFrom};
         let mut file = std::fs::File::open(&self.path).map_err(|e| e.to_string())?;
-        file.seek(SeekFrom::Start(self.offsets[frame_idx]))
+        let file_len = file.metadata().map_err(|e| e.to_string())?.len();
+        let offset = self.offsets[frame_idx];
+        file.seek(SeekFrom::Start(offset))
             .map_err(|e| e.to_string())?;
         let mut len_buf = [0u8; 8];
         file.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
-        let frame_len = u64::from_le_bytes(len_buf) as usize;
+        let declared = u64::from_le_bytes(len_buf);
+        // The file may have been truncated or rewritten since `open` indexed
+        // it, so re-check the length before allocating a buffer for it.
+        let available = file_len.saturating_sub(offset).saturating_sub(8);
+        if declared > available {
+            return Err(format!(
+                "corrupt frame {frame_idx}: declares {declared} payload bytes but only {available} remain in the file"
+            ));
+        }
+        let frame_len = usize::try_from(declared).map_err(|_| {
+            format!("corrupt frame {frame_idx}: length {declared} does not fit in memory")
+        })?;
         let mut frame_data = vec![0u8; frame_len];
         file.read_exact(&mut frame_data)
             .map_err(|e| e.to_string())?;
@@ -1223,64 +1285,95 @@ impl ChunkedWriter {
         Ok(())
     }
 }
-/// Lightweight LZ4-style run-length encoding for float arrays.
+/// Run-length encoding for `f32` arrays.
 ///
-/// Encodes repeated identical values efficiently.
+/// Format: the stream is a sequence of items.  A run of identical values
+/// (compared bitwise, so `0.0` and `-0.0` are different and NaN payloads are
+/// preserved) is a six-byte token `[0xFF, count, value]` with the value as four
+/// little-endian bytes and `count` in `1..=255`.  Any other item is a literal:
+/// the four little-endian bytes of one value.  A literal never starts with
+/// `0xFF`: a value whose low byte is `0xFF` is always sent as a (possibly
+/// single-element) run token, so decoding is unambiguous for every bit pattern.
 #[derive(Debug, Clone, Default)]
 pub struct CompressionStream;
 impl CompressionStream {
+    /// Longest run a single token can describe.
+    const MAX_RUN: usize = 255;
+    /// Byte that introduces a run token.
+    const MARKER: u8 = 0xFF;
     /// Compress a slice of f32 values using run-length encoding.
+    ///
+    /// The result decodes bit-exactly with
+    /// [`decompress_f32`](Self::decompress_f32).
     pub fn compress_f32(data: &[f32]) -> Vec<u8> {
-        if data.is_empty() {
-            return Vec::new();
-        }
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(data.len() * 4);
         let mut i = 0;
         while i < data.len() {
             let val = data[i];
+            let bits = val.to_bits();
             let mut run = 1usize;
-            while i + run < data.len() && data[i + run] == val && run < 255 {
+            while i + run < data.len() && data[i + run].to_bits() == bits && run < Self::MAX_RUN {
                 run += 1;
             }
-            if run > 2 {
-                out.push(0xFF);
+            let bytes = val.to_le_bytes();
+            if run > 2 || bytes[0] == Self::MARKER {
+                out.push(Self::MARKER);
+                // `run` is at most MAX_RUN (255), so the narrowing is lossless.
                 out.push(run as u8);
-                out.extend_from_slice(&val.to_le_bytes());
+                out.extend_from_slice(&bytes);
             } else {
-                for j in 0..run {
-                    out.extend_from_slice(&data[i + j].to_le_bytes());
+                for _ in 0..run {
+                    out.extend_from_slice(&bytes);
                 }
             }
             i += run;
         }
         out
     }
-    /// Decompress f32 values.
-    pub fn decompress_f32(data: &[u8]) -> Vec<f32> {
-        let mut out = Vec::new();
+    /// Decompress f32 values produced by [`compress_f32`](Self::compress_f32).
+    ///
+    /// # Errors
+    /// Returns an error if a run token is shorter than six bytes or has a zero
+    /// count, or if the stream ends in the middle of a four-byte literal.
+    pub fn decompress_f32(data: &[u8]) -> Result<Vec<f32>, String> {
+        let mut out = Vec::with_capacity(data.len() / 4);
         let mut i = 0;
         while i < data.len() {
-            if i + 4 <= data.len() && data[i] == 0xFF && i + 1 < data.len() {
-                let count = data[i + 1] as usize;
-                if i + 6 <= data.len() {
-                    let val =
-                        f32::from_le_bytes([data[i + 2], data[i + 3], data[i + 4], data[i + 5]]);
-                    for _ in 0..count {
-                        out.push(val);
-                    }
-                    i += 6;
-                    continue;
+            if data[i] == Self::MARKER {
+                let token_end = i + 6;
+                if token_end > data.len() {
+                    return Err(format!(
+                        "f32 RLE stream truncated: run token at byte {i} needs 6 bytes, {} remain",
+                        data.len() - i
+                    ));
                 }
-            }
-            if i + 4 <= data.len() {
-                let val = f32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]);
-                out.push(val);
-                i += 4;
+                let count = usize::from(data[i + 1]);
+                if count == 0 {
+                    return Err(format!(
+                        "f32 RLE stream corrupt: zero-length run at byte {i}"
+                    ));
+                }
+                let val = f32::from_le_bytes([data[i + 2], data[i + 3], data[i + 4], data[i + 5]]);
+                out.resize(out.len() + count, val);
+                i = token_end;
             } else {
-                break;
+                let literal_end = i + 4;
+                if literal_end > data.len() {
+                    return Err(format!(
+                        "f32 RLE stream truncated: literal at byte {i} needs 4 bytes, {} remain",
+                        data.len() - i
+                    ));
+                }
+                out.push(f32::from_le_bytes([
+                    data[i],
+                    data[i + 1],
+                    data[i + 2],
+                    data[i + 3],
+                ]));
+                i = literal_end;
             }
         }
-        out
+        Ok(out)
     }
     /// Compression ratio (compressed / original).
     pub fn compression_ratio(original: &[f32], compressed: &[u8]) -> f64 {

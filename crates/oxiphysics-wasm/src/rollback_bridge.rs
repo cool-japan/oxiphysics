@@ -6,6 +6,7 @@
 //! Exposes a JSON-oriented surface around rollback frames, desync detection,
 //! and a tick-based snapshot ring buffer suitable for use across the WASM boundary.
 
+use oxiphysics_core::fnv1a_64;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use wasm_bindgen::prelude::*;
@@ -45,14 +46,14 @@ pub struct WasmFrameRecord {
 }
 
 impl WasmFrameRecord {
-    /// Compute FNV-1a 64-bit hash of byte slice.
+    /// Compute the 64-bit FNV-1a hash of a byte slice.
+    ///
+    /// Delegates to [`oxiphysics_core::fnv1a_64`], the single workspace-wide
+    /// definition (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`)
+    /// that the native `RollbackWorld` and the Python bindings also use, so
+    /// hashes exchanged between peers on different targets are identical.
     pub fn hash_bytes(data: &[u8]) -> u64 {
-        let mut hash: u64 = 14_695_981_039_346_656_037;
-        for &b in data {
-            hash ^= b as u64;
-            hash = hash.wrapping_mul(1_099_511_628_211);
-        }
-        hash
+        fnv1a_64(data)
     }
 }
 
@@ -531,5 +532,42 @@ mod tests {
             WasmRollbackSession::new(0),
             Err(WasmRollbackError::ZeroCapacity)
         );
+    }
+
+    /// The bridge hash is the standard 64-bit FNV-1a, i.e. the same function the
+    /// native `RollbackWorld` and the Python bindings use.
+    #[test]
+    fn test_hash_bytes_is_standard_fnv1a_64() {
+        assert_eq!(WasmFrameRecord::hash_bytes(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(WasmFrameRecord::hash_bytes(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(
+            WasmFrameRecord::hash_bytes(b"foobar"),
+            0x8594_4171_f739_67e8
+        );
+        assert_eq!(
+            WasmFrameRecord::hash_bytes(&5_i64.to_le_bytes()),
+            0x0de2_1504_f16d_c720
+        );
+        for data in [&b""[..], b"a", b"hello rollback", &[0xab, 0xcd]] {
+            assert_eq!(WasmFrameRecord::hash_bytes(data), fnv1a_64(data));
+        }
+    }
+
+    /// A frame recorded by the session stores the standard hash, and the
+    /// `compute_hash` JS helper agrees with it for values exact in an `f64`.
+    #[test]
+    fn test_recorded_frame_hash_matches_shared_definition() {
+        let mut session = WasmRollbackSession::new(4).expect("valid capacity");
+        let snap: Vec<u8> = 5_i64.to_le_bytes().to_vec();
+        session.record_frame(snap.clone(), "{}".to_string());
+        let frame = session.buffer.get(0).expect("tick 0 should exist");
+        assert_eq!(frame.snapshot_hash, 0x0de2_1504_f16d_c720);
+        assert_eq!(frame.snapshot_hash, fnv1a_64(&snap));
+        assert_eq!(
+            WasmFrameRecord::compute_hash_js(&snap),
+            frame.snapshot_hash as f64
+        );
+        assert_eq!(frame.snapshot_hash_lo_js(), 0xf16d_c720);
+        assert_eq!(frame.snapshot_hash_hi_js(), 0x0de2_1504);
     }
 }

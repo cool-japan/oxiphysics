@@ -639,7 +639,36 @@ mod tests {
         let b = AabbGpu::new([5.0, 5.0, 5.0], [6.0, 6.0, 6.0]);
         let (intersect, dist) = kernel.gjk_intersect(&a, &b);
         assert!(!intersect);
-        assert!(dist > 0.0);
+        // The gap is 4 along every axis: distance 4 * sqrt(3).  A search
+        // direction that is not normalised used to report 6 * sqrt(3).
+        let expected = 4.0_f32 * 3.0_f32.sqrt();
+        assert!(
+            (dist - expected).abs() < 1.0e-5,
+            "distance {dist} != {expected}"
+        );
+    }
+    #[test]
+    fn test_gjk_single_axis_gap_is_reported_exactly() {
+        // A = [0, 1]^3 and B = [1.1, 2.1] x [0, 1]^2 are 0.1 apart along x.  The
+        // Minkowski-difference search used to report 2.1 here.
+        let kernel = NarrowphaseGpuKernel::new();
+        let np = GpuNarrowphase::new(32);
+        let a = unit_box();
+        let b = AabbGpu::new([1.1, 0.0, 0.0], [2.1, 1.0, 1.0]);
+        let (intersect, dist) = kernel.gjk_intersect(&a, &b);
+        assert!(!intersect);
+        assert!((dist - 0.1).abs() < 1.0e-6, "distance {dist}");
+        let res = np.gjk_distance(&a, &b);
+        assert!(!res.intersecting);
+        assert!(
+            (res.distance - 0.1).abs() < 1.0e-6,
+            "distance {}",
+            res.distance
+        );
+        // The same query with the shapes swapped.
+        let (intersect_ba, dist_ba) = kernel.gjk_intersect(&b, &a);
+        assert!(!intersect_ba);
+        assert!((dist_ba - 0.1).abs() < 1.0e-6, "distance {dist_ba}");
     }
     #[test]
     fn test_manifold_add_points() {
@@ -961,7 +990,16 @@ mod tests {
         let b = AabbGpu::new([5.0, 5.0, 5.0], [6.0, 6.0, 6.0]);
         let res = np.gjk_distance(&a, &b);
         assert!(!res.intersecting);
-        assert!(res.distance > 0.0_f32);
+        let expected = 4.0_f32 * 3.0_f32.sqrt();
+        assert!(
+            (res.distance - expected).abs() < 1.0e-5_f32,
+            "distance {} != {expected}",
+            res.distance
+        );
+        for k in 0..3 {
+            assert_eq!(res.closest_a[k], 1.0);
+            assert_eq!(res.closest_b[k], 5.0);
+        }
     }
     #[test]
     fn test_gjk_axis_is_unit() {

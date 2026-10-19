@@ -18,6 +18,54 @@ pub struct ContactPair {
     /// Lagrange multiplier.
     pub lambda: f64,
 }
+/// A node-to-face contact found by
+/// [`detect_node_face_contact`](super::functions::detect_node_face_contact).
+///
+/// Unlike [`ContactPair`] it keeps the identity of the master face and the
+/// position of the projected slave node on it, which is what a node-to-face
+/// contact formulation needs to distribute forces to the three face nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeFaceContact {
+    /// Index of the slave node.
+    pub node: usize,
+    /// Index of the master face in the face list given to the detector.
+    pub face: usize,
+    /// Node indices of the master face (in the order of the face list entry).
+    pub face_nodes: [usize; 3],
+    /// Signed gap along the face normal (negative = penetration).
+    pub gap: f64,
+    /// Unit face normal (right-hand rule on the vertex order), pointing from
+    /// the master face towards the slave side.
+    pub normal: [f64; 3],
+    /// Barycentric weights `[u, v, w]` of the projection of the slave node on
+    /// the face with respect to `face_nodes[0]`, `face_nodes[1]`, `face_nodes[2]`.
+    pub barycentric: [f64; 3],
+}
+impl NodeFaceContact {
+    /// Master node that is closest to the projected contact point, i.e. the
+    /// face vertex with the largest barycentric weight.
+    pub fn nearest_face_node(&self) -> usize {
+        let mut best = 0;
+        for k in 1..3 {
+            if self.barycentric[k] > self.barycentric[best] {
+                best = k;
+            }
+        }
+        self.face_nodes[best]
+    }
+    /// Convert to the node-pair representation used by
+    /// [`ContactStiffness::assemble`]: the master node is the face vertex
+    /// nearest to the contact point.
+    pub fn to_contact_pair(&self) -> ContactPair {
+        ContactPair {
+            node_a: self.node,
+            node_b: self.nearest_face_node(),
+            gap: self.gap,
+            normal: self.normal,
+            lambda: 0.0,
+        }
+    }
+}
 /// 2-D axis-aligned bounding box.
 #[derive(Debug, Clone, Copy)]
 pub struct Aabb2d {

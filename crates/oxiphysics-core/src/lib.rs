@@ -19,6 +19,7 @@ mod error;
 pub mod exact_predicates;
 pub mod extended_precision;
 pub mod graph;
+pub mod hash;
 pub mod interpolation;
 pub mod interval;
 pub mod linalg;
@@ -43,6 +44,7 @@ pub mod world;
 
 pub use dual_quaternion::*;
 pub use error::*;
+pub use hash::{FNV1A_64_OFFSET_BASIS, FNV1A_64_PRIME, fnv1a_64};
 pub use interpolation::{
     AkimaSpline, BSplineBasis, BSplineCurve, CatmullRomSpline, Grid3Params, HermiteSpline,
     MonotoneCubicSpline, NaturalCubicSpline, NurbsCurve, RBFInterpolation, RbfKernel,

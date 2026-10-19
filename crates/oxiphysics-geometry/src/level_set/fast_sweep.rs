@@ -225,9 +225,22 @@ mod tests {
         (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
     }
 
-    /// Nodes well away from the interface, the sphere centre and the grid faces,
-    /// where the redistanced gradient magnitude is checked.
-    fn band_nodes(field: &LevelSetField, radius: f64) -> Vec<(usize, usize, usize)> {
+    /// Nodes of the central box `|x|, |y|, |z| <= 0.8` that are at least
+    /// `interface_cells` cells from the sphere surface and at least `centre_cells`
+    /// cells from the sphere centre.
+    ///
+    /// The first-order upwind scheme resolves a circular front with a gradient
+    /// error of about `0.5 h / r` (`r` the distance from the centre of curvature,
+    /// up to `0.58 h / r` along the cube diagonals), so the unit-gradient checks
+    /// leave out the neighbourhood of the centre, where the solution has a conical
+    /// singularity and the grid cannot resolve the curvature.
+    fn band_nodes(
+        field: &LevelSetField,
+        radius: f64,
+        interface_cells: f64,
+        centre_cells: f64,
+    ) -> Vec<(usize, usize, usize)> {
+        let h = field.dx;
         let mut nodes = Vec::new();
         for iz in 1..field.nz - 1 {
             for iy in 1..field.ny - 1 {
@@ -235,7 +248,10 @@ mod tests {
                     let r = radius_of(field, ix, iy, iz);
                     let p = field.node_pos(ix, iy, iz);
                     let inside_box = p.iter().all(|c| c.abs() <= 0.8);
-                    if inside_box && r > 0.15 && (r - radius).abs() >= 0.1 {
+                    if inside_box
+                        && r >= centre_cells * h
+                        && (r - radius).abs() >= interface_cells * h
+                    {
                         nodes.push((ix, iy, iz));
                     }
                 }
@@ -249,29 +265,28 @@ mod tests {
         (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt()
     }
 
-    #[test]
-    fn over_compressed_sphere_field_is_redistanced_to_unit_gradient() {
-        let (n, radius) = (33, 0.5);
-        let mut field = scaled_sphere(n, radius, 2.0);
+    /// Redistance `scale * (|x| - radius)` on an `n^3` grid and check the unit
+    /// gradient (central differences) and the signed distance on the band nodes.
+    fn assert_redistanced_sphere(n: usize, radius: f64, scale: f64) {
+        let mut field = scaled_sphere(n, radius, scale);
         let before = field.data.clone();
-        let reinit = LevelSetReinit::new(1e-12, 100);
-        reinit.fast_sweep(&mut field, 24);
+        LevelSetReinit::new(1e-12, 100).fast_sweep(&mut field, 24);
 
-        let nodes = band_nodes(&field, radius);
-        assert!(nodes.len() > 1000, "band too small: {}", nodes.len());
+        let nodes = band_nodes(&field, radius, 2.0, 14.0);
+        assert!(nodes.len() > 20_000, "band too small: {}", nodes.len());
         let dx = field.dx;
         for &(ix, iy, iz) in &nodes {
             let g = gradient_magnitude(&field, ix, iy, iz);
             assert!(
                 (g - 1.0).abs() <= 0.05,
-                "|grad phi| = {g} at ({ix},{iy},{iz}), r = {}",
+                "scale {scale}: |grad phi| = {g} at ({ix},{iy},{iz}), r = {}",
                 radius_of(&field, ix, iy, iz)
             );
             let exact = radius_of(&field, ix, iy, iz) - radius;
             let value = field.get(ix, iy, iz);
             assert!(
                 (value - exact).abs() <= dx,
-                "phi = {value} but signed distance is {exact}"
+                "scale {scale}: phi = {value} but signed distance is {exact}"
             );
         }
         // The inside/outside classification never changes.
@@ -282,17 +297,128 @@ mod tests {
     }
 
     #[test]
+    fn over_compressed_sphere_field_is_redistanced_to_unit_gradient() {
+        assert_redistanced_sphere(65, 0.6, 2.0);
+    }
+
+    #[test]
     fn under_compressed_sphere_field_is_redistanced_to_unit_gradient() {
-        let (n, radius) = (33, 0.5);
-        let mut field = scaled_sphere(n, radius, 0.25);
-        LevelSetReinit::new(1e-12, 100).fast_sweep(&mut field, 24);
-        for &(ix, iy, iz) in &band_nodes(&field, radius) {
-            let g = gradient_magnitude(&field, ix, iy, iz);
-            assert!(
-                (g - 1.0).abs() <= 0.05,
-                "|grad phi| = {g} at ({ix},{iy},{iz})"
-            );
+        assert_redistanced_sphere(65, 0.6, 0.25);
+    }
+
+    #[test]
+    fn the_initial_slope_of_the_field_does_not_matter() {
+        // Only the sign and the zero level set of the input count: a field that is
+        // 100 times steeper or 100 times flatter gives the same distances.
+        let radius = 0.6;
+        let mut reference = scaled_sphere(25, radius, 1.0);
+        LevelSetReinit::new(0.0, 100).fast_sweep(&mut reference, 64);
+        for scale in [100.0, 10.0, 0.1, 0.01] {
+            let mut field = scaled_sphere(25, radius, scale);
+            LevelSetReinit::new(0.0, 100).fast_sweep(&mut field, 64);
+            for (a, b) in field.data.iter().zip(reference.data.iter()) {
+                assert!((a - b).abs() <= 1e-12, "scale {scale}: {a} vs {b}");
+            }
         }
+    }
+
+    #[test]
+    fn gradient_error_shrinks_in_proportion_to_the_grid_spacing() {
+        // The upwind Godunov scheme is first-order accurate: on a fixed region of
+        // space the error of the gradient halves when the spacing halves.
+        let radius = 0.6;
+        let worst_error = |n: usize| -> f64 {
+            let mut field = scaled_sphere(n, radius, 2.0);
+            LevelSetReinit::new(1e-12, 100).fast_sweep(&mut field, 24);
+            let mut worst = 0.0f64;
+            for iz in 1..n - 1 {
+                for iy in 1..n - 1 {
+                    for ix in 1..n - 1 {
+                        let r = radius_of(&field, ix, iy, iz);
+                        let p = field.node_pos(ix, iy, iz);
+                        let inside_box = p.iter().all(|c| c.abs() <= 0.8);
+                        if inside_box && r >= 0.45 && (r - radius).abs() >= 0.1 {
+                            let g = gradient_magnitude(&field, ix, iy, iz);
+                            worst = worst.max((g - 1.0).abs());
+                        }
+                    }
+                }
+            }
+            worst
+        };
+        let coarse = worst_error(33);
+        let fine = worst_error(65);
+        assert!(fine < 0.05, "fine grid error {fine}");
+        assert!(
+            coarse > 1.5 * fine,
+            "halving the spacing must roughly halve the error: {coarse} vs {fine}"
+        );
+    }
+
+    #[test]
+    fn converged_field_satisfies_the_discrete_eikonal_equation() {
+        // At the fixed point every node away from the interface is the solution of
+        //   sum_axes ((u - a_axis)^+)^2 = h^2,
+        // with a_axis the smaller neighbouring distance along that axis.
+        let n = 21;
+        let mut field = scaled_sphere(n, 0.55, 3.0);
+        // One node of the opposite sign inside and one outside the sphere add two
+        // small extra interfaces, so that the distance field is far from a plain
+        // sphere distance and every Godunov branch occurs.
+        field.set(10, 10, 14, 0.2);
+        field.set(4, 15, 9, -0.25);
+        LevelSetReinit::new(0.0, 100).fast_sweep(&mut field, 4000);
+
+        let h = field.dx;
+        let mut free_nodes = 0usize;
+        let mut branches = [0usize; 3];
+        for iz in 0..n {
+            for iy in 0..n {
+                for ix in 0..n {
+                    let u = field.get(ix, iy, iz).abs();
+                    let own_sign = field.get(ix, iy, iz) > 0.0;
+                    let mut minima = [f64::INFINITY; 3];
+                    let mut touches_interface = field.get(ix, iy, iz) == 0.0;
+                    for (axis, minimum) in minima.iter_mut().enumerate() {
+                        for step in [-1i64, 1] {
+                            let mut at = [ix as i64, iy as i64, iz as i64];
+                            at[axis] += step;
+                            if !(0..n as i64).contains(&at[axis]) {
+                                continue;
+                            }
+                            let other = field.get(at[0] as usize, at[1] as usize, at[2] as usize);
+                            if other != 0.0 && (other > 0.0) != own_sign {
+                                touches_interface = true;
+                            }
+                            *minimum = minimum.min(other.abs());
+                        }
+                    }
+                    if touches_interface {
+                        continue;
+                    }
+                    free_nodes += 1;
+                    let residual: f64 = minima
+                        .iter()
+                        .filter(|a| a.is_finite())
+                        .map(|&a| (u - a).max(0.0).powi(2))
+                        .sum();
+                    assert!(
+                        (residual - h * h).abs() <= 1e-9 * h * h,
+                        "node ({ix},{iy},{iz}): residual {residual} vs h^2 = {}",
+                        h * h
+                    );
+                    let active = minima.iter().filter(|&&a| a < u).count();
+                    if let Some(count) = active.checked_sub(1).and_then(|k| branches.get_mut(k)) {
+                        *count += 1;
+                    }
+                }
+            }
+        }
+        assert!(free_nodes > 4000, "only {free_nodes} free nodes");
+        assert!(
+            branches.iter().all(|&count| count > 0),
+            "every Godunov branch must be exercised: {branches:?}"
+        );
     }
 
     #[test]
@@ -355,8 +481,8 @@ mod tests {
     #[test]
     fn two_dimensional_slab_is_supported() {
         // A single layer along z: the missing axis must contribute nothing.
-        let (nx, ny) = (41, 41);
-        let dx = 0.05;
+        let (nx, ny) = (61, 61);
+        let dx = 2.0 / 60.0;
         let mut field = LevelSetField::new(nx, ny, 1, dx, [-1.0, -1.0, 0.0]);
         for iy in 0..ny {
             for ix in 0..nx {
@@ -366,18 +492,25 @@ mod tests {
             }
         }
         LevelSetReinit::new(1e-12, 100).fast_sweep(&mut field, 16);
+        let mut checked = 0usize;
         for iy in 5..ny - 5 {
             for ix in 5..nx - 5 {
                 let p = field.node_pos(ix, iy, 0);
                 let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
-                if r > 0.15 && (r - 0.5).abs() > 0.1 {
+                // Two cells away from the circle and eight cells away from its
+                // centre, where the first-order scheme cannot resolve the curvature.
+                if r >= 8.0 * dx && (r - 0.5).abs() >= 2.0 * dx {
                     let g = field.gradient(ix, iy, 0);
                     // `gradient` is not defined for a one-layer axis; use x and y.
                     let magnitude = (g[0] * g[0] + g[1] * g[1]).sqrt();
                     assert!((magnitude - 1.0).abs() <= 0.05, "|grad| = {magnitude}");
+                    let value = field.get(ix, iy, 0);
+                    assert!((value - (r - 0.5)).abs() <= dx, "phi = {value} at r = {r}");
+                    checked += 1;
                 }
             }
         }
+        assert!(checked > 1500, "only {checked} nodes checked");
     }
 
     #[test]

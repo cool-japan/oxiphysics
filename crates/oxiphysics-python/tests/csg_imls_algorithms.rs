@@ -50,18 +50,27 @@ fn test_csg_intersection_produces_triangles() {
 }
 
 #[test]
-fn test_csg_subtraction_removes_triangles() {
+fn test_csg_operations_split_faces_and_give_exact_volumes() {
+    // A = [-1, 1]^3, B = A + (0.5, 0, 0): the overlap cuts A's +X and B's -X
+    // faces mid-triangle, so whole-triangle selection cannot be exact.
     let a = unit_cube([0.0, 0.0, 0.0], 1.0);
     let b = unit_cube([0.5, 0.0, 0.0], 1.0);
-    // A and B have 12 triangles each; naively stitched that is 24.
-    // The difference A\B keeps only A's outside-B triangles, so it must be
-    // strictly fewer than 24.
-    let diff_result = mesh_boolean(&a, &b, MeshBooleanOp::Difference);
-    assert!(
-        diff_result.triangles.len() < 24,
-        "subtraction result should have fewer triangles than the two input meshes combined (diff={}, combined=24)",
-        diff_result.triangles.len()
-    );
+    for (op, want) in [
+        (MeshBooleanOp::Union, 10.0),
+        (MeshBooleanOp::Intersection, 6.0),
+        (MeshBooleanOp::Difference, 2.0),
+    ] {
+        let result = mesh_boolean(&a, &b, op);
+        assert!(
+            oxiphysics::geometry::mesh_boolean::is_watertight(&result),
+            "{op:?} result must be watertight"
+        );
+        let v = result.signed_volume();
+        assert!(
+            (v - want).abs() < 1e-9,
+            "{op:?} volume {v}, expected {want}"
+        );
+    }
 }
 
 #[test]

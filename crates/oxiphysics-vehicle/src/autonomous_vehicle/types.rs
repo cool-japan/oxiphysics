@@ -4,6 +4,7 @@
 
 // TODO(P4): public API churn
 use super::functions::*;
+use crate::{VehicleError, VehicleResult};
 use rand::{Rng, RngExt};
 use std::ops::{Add, Sub};
 
@@ -278,15 +279,26 @@ pub enum TrafficSignType {
     /// Unknown / unrecognised sign.
     Unknown,
 }
-/// A SLAM particle holding a pose hypothesis and a local landmark map.
+/// A FastSLAM particle: one pose hypothesis together with its own landmark
+/// map (one 2-D Gaussian per landmark).
 #[derive(Debug, Clone)]
 pub struct SlamParticle {
     /// Hypothesis pose: (x, y, yaw).
     pub pose: (f64, f64, f64),
     /// Weight.
     pub weight: f64,
-    /// Known landmarks observed by this particle.
+    /// Landmark map of this particle: a Gaussian position estimate per
+    /// observed landmark, built by [`SlamParticle::observe`].
     pub landmarks: Vec<Landmark>,
+}
+/// Uniform noise sample in `[-half_width, half_width)`; zero for a
+/// non-positive (or NaN) half width, for which the range would be empty.
+fn symmetric_uniform(rng: &mut impl Rng, half_width: f64) -> f64 {
+    if half_width > 0.0 {
+        rng.random_range(-half_width..half_width)
+    } else {
+        0.0
+    }
 }
 impl SlamParticle {
     /// Create a particle at a given pose with uniform weight.
@@ -298,6 +310,10 @@ impl SlamParticle {
         }
     }
     /// Propagate pose with a motion model: delta_s (forward), delta_theta (turn).
+    ///
+    /// The translation and rotation noise are uniform in
+    /// `[-noise_s, noise_s)` and `[-noise_theta, noise_theta)`; a zero noise
+    /// level gives deterministic odometry.
     pub fn propagate(
         &mut self,
         delta_s: f64,
@@ -306,28 +322,134 @@ impl SlamParticle {
         noise_theta: f64,
         rng: &mut impl Rng,
     ) {
-        let ns: f64 = rng.random_range(-noise_s..noise_s);
-        let nt: f64 = rng.random_range(-noise_theta..noise_theta);
+        let ns: f64 = symmetric_uniform(rng, noise_s);
+        let nt: f64 = symmetric_uniform(rng, noise_theta);
         let (x, y, yaw) = self.pose;
         let yaw_new = yaw + delta_theta + nt;
         let x_new = x + (delta_s + ns) * yaw_new.cos();
         let y_new = y + (delta_s + ns) * yaw_new.sin();
         self.pose = (x_new, y_new, yaw_new);
     }
-    /// Update weight based on range observations to known landmarks.
+    /// Update the weight from one scan of range-bearing observations.
     ///
-    /// `observations`: (landmark_id, measured_range).
-    pub fn update_weight(&mut self, observations: &[(usize, f64)], range_sigma: f64) {
-        for &(lid, measured_range) in observations {
-            if let Some(lm) = self.landmarks.iter().find(|l| l.id == lid) {
-                let (x, y, _) = self.pose;
-                let pred_range = ((lm.position.x - x).powi(2) + (lm.position.y - y).powi(2)).sqrt();
-                let err = measured_range - pred_range;
-                let sigma2 = range_sigma * range_sigma;
-                let likelihood = (-0.5 * err * err / sigma2).exp();
-                self.weight *= likelihood;
+    /// Runs [`SlamParticle::observe`] (landmark map update) and multiplies the
+    /// weight by the likelihood of the scan under this particle's pose and
+    /// map.  `observations`: `(landmark_id, measured_range, measured_bearing)`.
+    pub fn update_weight(
+        &mut self,
+        observations: &[(usize, f64, f64)],
+        range_sigma: f64,
+        bearing_sigma: f64,
+    ) {
+        let log_likelihood = self.observe(observations, range_sigma, bearing_sigma);
+        self.weight *= log_likelihood.exp();
+    }
+    /// FastSLAM 1.0 measurement update of this particle.
+    ///
+    /// `observations` are `(landmark_id, range, bearing)` triples with the
+    /// bearing measured from the particle's heading (rad), and the sensor
+    /// noise is `diag(range_sigma², bearing_sigma²)`.  Observations are
+    /// processed one after the other:
+    ///
+    /// * a landmark seen for the first time is initialised at
+    ///   `pose + range * (cos, sin)(yaw + bearing)` with covariance
+    ///   `G⁻¹ R G⁻ᵀ`, `G` being the Jacobian of the (range, bearing) model
+    ///   with respect to the landmark position; it does not change the weight;
+    /// * a known landmark is corrected with an EKF update (Joseph form), and
+    ///   the log-density of the innovation `N(ν; 0, S)`, `S = G Σ Gᵀ + R`,
+    ///   (bearing innovation wrapped to `[-π, π)`) is accumulated.
+    ///
+    /// Observations with non-finite or negative range, and landmarks exactly at
+    /// the sensor position (degenerate bearing), are skipped.  Returns the
+    /// total log-likelihood of the scan; the weight itself is not modified.
+    pub fn observe(
+        &mut self,
+        observations: &[(usize, f64, f64)],
+        range_sigma: f64,
+        bearing_sigma: f64,
+    ) -> f64 {
+        let noise = [
+            range_sigma * range_sigma,
+            0.0,
+            0.0,
+            bearing_sigma * bearing_sigma,
+        ];
+        let mut log_likelihood = 0.0;
+        for &(id, range, bearing) in observations {
+            if !range.is_finite() || !bearing.is_finite() || range < 0.0 {
+                continue;
+            }
+            match self.landmarks.iter().position(|l| l.id == id) {
+                Some(index) => {
+                    log_likelihood += self.correct_landmark(index, range, bearing, &noise);
+                }
+                None => {
+                    let landmark = self.initial_landmark(id, range, bearing, &noise);
+                    self.landmarks.push(landmark);
+                }
             }
         }
+        log_likelihood
+    }
+    /// Landmark initialised from its first range-bearing sighting.
+    fn initial_landmark(&self, id: usize, range: f64, bearing: f64, noise: &[f64; 4]) -> Landmark {
+        let (x, y, yaw) = self.pose;
+        let (sin_phi, cos_phi) = (yaw + bearing).sin_cos();
+        // Inverse of G = [[cos, sin], [-sin/r, cos/r]] at the measured point.
+        let g_inv = [cos_phi, -range * sin_phi, sin_phi, range * cos_phi];
+        let cov = mat2_mul(&mat2_mul(&g_inv, noise), &mat2_transpose(&g_inv));
+        Landmark::new(id, Vec2::new(x + range * cos_phi, y + range * sin_phi), cov)
+    }
+    /// EKF correction of landmark `index`; returns the innovation
+    /// log-likelihood (zero when the observation cannot be linearised).
+    fn correct_landmark(
+        &mut self,
+        index: usize,
+        range: f64,
+        bearing: f64,
+        noise: &[f64; 4],
+    ) -> f64 {
+        let (x, y, yaw) = self.pose;
+        let Some(landmark) = self.landmarks.get_mut(index) else {
+            return 0.0;
+        };
+        let dx = landmark.position.x - x;
+        let dy = landmark.position.y - y;
+        let q = dx * dx + dy * dy;
+        let predicted_range = q.sqrt();
+        if predicted_range < 1e-9 {
+            return 0.0;
+        }
+        let g = [dx / predicted_range, dy / predicted_range, -dy / q, dx / q];
+        let g_t = mat2_transpose(&g);
+        let sigma = landmark.cov;
+        let s = mat2_add(&mat2_mul(&mat2_mul(&g, &sigma), &g_t), noise);
+        let Some((det_s, s_inv)) = mat2_det_inverse(&s) else {
+            return 0.0;
+        };
+        if det_s <= 0.0 {
+            return 0.0;
+        }
+        let nu = [
+            range - predicted_range,
+            wrap_angle(bearing - (dy.atan2(dx) - yaw)),
+        ];
+        // K = Sigma G^T S^-1
+        let gain = mat2_mul(&mat2_mul(&sigma, &g_t), &s_inv);
+        landmark.position.x += gain[0] * nu[0] + gain[1] * nu[1];
+        landmark.position.y += gain[2] * nu[0] + gain[3] * nu[1];
+        // Joseph form: Sigma' = (I - K G) Sigma (I - K G)^T + K R K^T.
+        let kg = mat2_mul(&gain, &g);
+        let i_kg = [1.0 - kg[0], -kg[1], -kg[2], 1.0 - kg[3]];
+        let updated = mat2_add(
+            &mat2_mul(&mat2_mul(&i_kg, &sigma), &mat2_transpose(&i_kg)),
+            &mat2_mul(&mat2_mul(&gain, noise), &mat2_transpose(&gain)),
+        );
+        let off_diagonal = 0.5 * (updated[1] + updated[2]);
+        landmark.cov = [updated[0], off_diagonal, off_diagonal, updated[3]];
+        let mahalanobis = nu[0] * (s_inv[0] * nu[0] + s_inv[1] * nu[1])
+            + nu[1] * (s_inv[2] * nu[0] + s_inv[3] * nu[1]);
+        -std::f64::consts::TAU.ln() - 0.5 * det_s.ln() - 0.5 * mahalanobis
     }
 }
 /// 2-D point / vector.
@@ -404,20 +526,35 @@ impl std::ops::Sub for Vec2 {
         Self::new(self.x - rhs.x, self.y - rhs.y)
     }
 }
-/// Particle-filter SLAM.
+/// Default sensor bearing noise (rad) of a new [`ParticleFilterSlam`].
+const DEFAULT_BEARING_SIGMA: f64 = 0.02;
+/// Particle-filter SLAM (FastSLAM 1.0).
+///
+/// A Rao-Blackwellised particle filter: every particle carries a pose
+/// hypothesis and, conditioned on that pose, an independent EKF per landmark
+/// ([`SlamParticle::landmarks`]).  [`ParticleFilterSlam::predict`] samples the
+/// motion model, [`ParticleFilterSlam::update`] corrects the particle maps with
+/// range-bearing observations (known landmark identities) and re-weights the
+/// particles, and [`ParticleFilterSlam::resample`] concentrates the particle
+/// set on the likely pose hypotheses.
 #[derive(Debug, Clone)]
 pub struct ParticleFilterSlam {
     /// Particle set.
     pub particles: Vec<SlamParticle>,
-    /// Motion noise (std dev for translation).
+    /// Motion noise: half width of the uniform translation noise (m).
     pub noise_s: f64,
-    /// Motion noise (std dev for rotation).
+    /// Motion noise: half width of the uniform rotation noise (rad).
     pub noise_theta: f64,
-    /// Sensor range noise (m).
+    /// Sensor range noise (m), standard deviation.
     pub range_sigma: f64,
+    /// Sensor bearing noise (rad), standard deviation.
+    pub bearing_sigma: f64,
 }
 impl ParticleFilterSlam {
     /// Create a filter with `n` particles initialised at origin.
+    ///
+    /// The bearing noise starts at 0.02 rad; change it with
+    /// [`ParticleFilterSlam::with_bearing_sigma`].
     pub fn new(n: usize, noise_s: f64, noise_theta: f64, range_sigma: f64) -> Self {
         let particles = (0..n)
             .map(|_| SlamParticle::new(0.0, 0.0, 0.0, 1.0 / n as f64))
@@ -427,44 +564,91 @@ impl ParticleFilterSlam {
             noise_s,
             noise_theta,
             range_sigma,
+            bearing_sigma: DEFAULT_BEARING_SIGMA,
         }
+    }
+    /// Set the sensor bearing noise (rad, standard deviation).
+    pub fn with_bearing_sigma(mut self, bearing_sigma: f64) -> Self {
+        self.bearing_sigma = bearing_sigma;
+        self
     }
     /// Propagate all particles with odometry.
     pub fn predict(&mut self, delta_s: f64, delta_theta: f64) {
         let mut rng = rand::rng();
+        self.predict_with_rng(delta_s, delta_theta, &mut rng);
+    }
+    /// [`ParticleFilterSlam::predict`] with a caller-supplied random source
+    /// (for reproducible runs).
+    pub fn predict_with_rng(&mut self, delta_s: f64, delta_theta: f64, rng: &mut impl Rng) {
         for p in &mut self.particles {
-            p.propagate(
-                delta_s,
-                delta_theta,
-                self.noise_s,
-                self.noise_theta,
-                &mut rng,
-            );
+            p.propagate(delta_s, delta_theta, self.noise_s, self.noise_theta, rng);
         }
     }
-    /// Update weights from range observations.
-    pub fn update(&mut self, observations: &[(usize, f64)]) {
-        for p in &mut self.particles {
-            p.update_weight(observations, self.range_sigma);
+    /// Update the particle maps and weights from range-bearing observations
+    /// `(landmark_id, range, bearing)`.
+    ///
+    /// Every particle runs [`SlamParticle::observe`]; the resulting scan
+    /// log-likelihoods are turned into weights relative to the best particle
+    /// (log-sum-exp scaling), so that a poor scan cannot underflow all weights
+    /// at once, and the weights are normalised.
+    pub fn update(&mut self, observations: &[(usize, f64, f64)]) {
+        let range_sigma = self.range_sigma;
+        let bearing_sigma = self.bearing_sigma;
+        let log_likelihoods: Vec<f64> = self
+            .particles
+            .iter_mut()
+            .map(|p| p.observe(observations, range_sigma, bearing_sigma))
+            .collect();
+        let best = log_likelihoods
+            .iter()
+            .copied()
+            .filter(|v| v.is_finite())
+            .fold(f64::NEG_INFINITY, f64::max);
+        if best.is_finite() {
+            for (p, ll) in self.particles.iter_mut().zip(log_likelihoods.iter()) {
+                p.weight *= if ll.is_finite() {
+                    (ll - best).exp()
+                } else {
+                    0.0
+                };
+            }
         }
         self.normalise_weights();
     }
     /// Normalise particle weights.
+    ///
+    /// If the total weight is not a finite number above `1e-300` (all
+    /// hypotheses have been rejected, or a weight is NaN) the weights are reset
+    /// to uniform instead of being divided by a vanishing sum.
     pub fn normalise_weights(&mut self) {
+        let n = self.particles.len();
         let sum: f64 = self.particles.iter().map(|p| p.weight).sum();
-        if sum > 1e-30 {
+        if sum.is_finite() && sum > 1e-300 {
             for p in &mut self.particles {
                 p.weight /= sum;
+            }
+        } else {
+            let uniform = 1.0 / n.max(1) as f64;
+            for p in &mut self.particles {
+                p.weight = uniform;
             }
         }
     }
     /// Systematic resampling.
     pub fn resample(&mut self) {
+        let mut rng = rand::rng();
+        self.resample_with_rng(&mut rng);
+    }
+    /// [`ParticleFilterSlam::resample`] with a caller-supplied random source.
+    ///
+    /// The weights are normalised first (a vanishing total resets them to
+    /// uniform); afterwards every particle has weight `1 / n`.
+    pub fn resample_with_rng(&mut self, rng: &mut impl Rng) {
         let n = self.particles.len();
         if n == 0 {
             return;
         }
-        let mut rng = rand::rng();
+        self.normalise_weights();
         let step = 1.0 / n as f64;
         let start: f64 = rng.random_range(0.0_f64..step);
         let mut cumsum = self.particles[0].weight;
@@ -484,6 +668,50 @@ impl ParticleFilterSlam {
             p.weight = w;
         }
         self.particles = new_particles;
+    }
+    /// Effective sample size `1 / Σ w²` of the normalised weights: `n` for
+    /// uniform weights down to `1` when one particle carries all the weight.
+    /// Resampling is customarily triggered when it falls below `n / 2`.
+    pub fn effective_sample_size(&self) -> f64 {
+        let sum: f64 = self.particles.iter().map(|p| p.weight).sum();
+        let sum_sq: f64 = self.particles.iter().map(|p| p.weight * p.weight).sum();
+        if sum > 0.0 && sum_sq > 0.0 {
+            sum * sum / sum_sq
+        } else {
+            self.particles.len() as f64
+        }
+    }
+    /// The particle with the largest weight (the first one on ties).
+    pub fn best_particle(&self) -> Option<&SlamParticle> {
+        self.particles
+            .iter()
+            .fold(None, |best: Option<&SlamParticle>, p| match best {
+                Some(b) if b.weight >= p.weight => Some(b),
+                _ => Some(p),
+            })
+    }
+    /// Weighted mean estimate of the world position of landmark `id` over all
+    /// particles that have observed it, or `None` if no particle has.
+    pub fn landmark_estimate(&self, id: usize) -> Option<Vec2> {
+        let (mut sum_x, mut sum_y, mut sum_w) = (0.0, 0.0, 0.0);
+        let (mut plain_x, mut plain_y, mut count) = (0.0, 0.0, 0.0);
+        for p in &self.particles {
+            if let Some(l) = p.landmarks.iter().find(|l| l.id == id) {
+                sum_x += p.weight * l.position.x;
+                sum_y += p.weight * l.position.y;
+                sum_w += p.weight;
+                plain_x += l.position.x;
+                plain_y += l.position.y;
+                count += 1.0;
+            }
+        }
+        if sum_w > 0.0 {
+            Some(Vec2::new(sum_x / sum_w, sum_y / sum_w))
+        } else if count > 0.0 {
+            Some(Vec2::new(plain_x / count, plain_y / count))
+        } else {
+            None
+        }
     }
     /// Weighted mean pose estimate.
     pub fn mean_pose(&self) -> (f64, f64, f64) {
@@ -665,7 +893,14 @@ impl PotentialFieldPlanner {
         path
     }
 }
-/// Unscented Kalman Filter state (simplified 3-D pose: \[x, y, yaw\]).
+/// Unscented Kalman filter for a planar unicycle pose \[x, y, yaw\].
+///
+/// The filter uses the scaled unscented transform with the usual `alpha`,
+/// `beta`, `kappa` parameters: `lambda = alpha² (n + kappa) − n` with `n = 3`
+/// and `2n + 1 = 7` sigma points built from the columns of the lower Cholesky
+/// factor of `(n + lambda) P`.  [`UkfState::predict`] propagates them through
+/// the unicycle motion model and [`UkfState::update`] corrects the state with a
+/// position measurement.  Yaw residuals are wrapped to `[-π, π)` everywhere.
 #[derive(Debug, Clone)]
 pub struct UkfState {
     /// Mean state vector \[x, y, yaw\].
@@ -679,6 +914,8 @@ pub struct UkfState {
     /// UKF kappa parameter.
     pub kappa: f64,
 }
+/// State dimension of [`UkfState`].
+const UKF_DIM: usize = 3;
 impl UkfState {
     /// Create a new UKF state at origin with unit covariance.
     pub fn new() -> Self {
@@ -694,31 +931,196 @@ impl UkfState {
             kappa: 0.0,
         }
     }
-    /// Generate 2n+1 sigma points for n=3.
-    pub fn sigma_points(&self) -> [[f64; 3]; 7] {
-        let n = 3usize;
-        let lambda = self.alpha * self.alpha * (n as f64 + self.kappa) - n as f64;
-        let scale = ((n as f64 + lambda) * self.cov[0]).sqrt();
-        let mut pts = [[0.0f64; 3]; 7];
-        pts[0] = self.mean;
-        for i in 0..n {
-            let s = (self.cov[i * 3 + i] * (n as f64 + lambda)).sqrt();
-            let mut p = self.mean;
-            let mut m = self.mean;
-            p[i] += s;
-            m[i] -= s;
-            pts[1 + i] = p;
-            pts[1 + n + i] = m;
+    /// Spread factor `n + lambda = alpha² (n + kappa)` of the unscented
+    /// transform; it must be a positive finite number.
+    fn spread(&self) -> VehicleResult<f64> {
+        let spread = self.alpha * self.alpha * (UKF_DIM as f64 + self.kappa);
+        if spread.is_finite() && spread > 0.0 {
+            Ok(spread)
+        } else {
+            Err(VehicleError::invalid_param(
+                "alpha/kappa",
+                "the sigma-point spread alpha² (n + kappa) must be positive and finite",
+            ))
         }
-        let _ = scale;
-        pts
     }
-    /// Predict with a constant-velocity model (delta_t).
-    pub fn predict(&mut self, delta_t: f64, process_noise: f64) {
-        self.mean[0] += 1.0 * delta_t;
-        for i in 0..3 {
-            self.cov[i * 3 + i] += process_noise;
+    /// Mean and covariance weights `(Wm, Wc)` of the 7 sigma points:
+    /// `Wm0 = lambda / (n + lambda)`, `Wc0 = Wm0 + 1 − alpha² + beta` and
+    /// `Wi = 1 / (2 (n + lambda))` for the other six.
+    pub fn weights(&self) -> VehicleResult<([f64; 7], [f64; 7])> {
+        let spread = self.spread()?;
+        let lambda = spread - UKF_DIM as f64;
+        let mut wm = [0.5 / spread; 7];
+        let mut wc = [0.5 / spread; 7];
+        wm[0] = lambda / spread;
+        wc[0] = wm[0] + 1.0 - self.alpha * self.alpha + self.beta;
+        Ok((wm, wc))
+    }
+    /// Generate the 2n+1 sigma points for n=3: the mean, followed by the mean
+    /// plus and minus `sqrt(n + lambda)` times each column of the lower
+    /// Cholesky factor of the covariance (so the off-diagonal terms of the
+    /// covariance are honoured).
+    ///
+    /// The covariance is read through its lower triangle.  Fails if it is not
+    /// positive semi-definite (or not finite) or if `alpha` / `kappa` do not
+    /// give a positive spread.
+    pub fn sigma_points(&self) -> VehicleResult<[[f64; 3]; 7]> {
+        let scale = self.spread()?.sqrt();
+        let factor = cholesky3_psd(&self.cov)
+            .ok_or_else(|| VehicleError::general("UKF covariance is not positive semi-definite"))?;
+        let mut pts = [self.mean; 7];
+        for column in 0..UKF_DIM {
+            for (row, mean_row) in self.mean.iter().enumerate() {
+                let offset = scale * factor[row * UKF_DIM + column];
+                pts[1 + column][row] = mean_row + offset;
+                pts[1 + UKF_DIM + column][row] = mean_row - offset;
+            }
         }
+        Ok(pts)
+    }
+    /// Unscented prediction through the unicycle model with forward speed `v`
+    /// (m/s) and yaw rate `omega` (rad/s) over `dt` seconds:
+    ///
+    /// `x += v cos(yaw) dt`, `y += v sin(yaw) dt`, `yaw += omega dt`.
+    ///
+    /// The sigma points are propagated individually, the yaw of the mean is
+    /// computed from wrapped residuals, the covariance is
+    /// `Σ Wc_i (χ_i − mean)(χ_i − mean)ᵀ + diag(q)` and `q` is the additive
+    /// per-step process-noise variance of `[x, y, yaw]`.
+    pub fn predict(&mut self, dt: f64, v: f64, omega: f64, q: [f64; 3]) -> VehicleResult<()> {
+        if !(dt.is_finite() && dt >= 0.0) {
+            return Err(VehicleError::invalid_param(
+                "dt",
+                "must be finite and non-negative",
+            ));
+        }
+        if !(v.is_finite() && omega.is_finite()) {
+            return Err(VehicleError::invalid_param("v/omega", "must be finite"));
+        }
+        if q.iter()
+            .any(|variance| !(variance.is_finite() && *variance >= 0.0))
+        {
+            return Err(VehicleError::invalid_param(
+                "q",
+                "process-noise variances must be finite and non-negative",
+            ));
+        }
+        let (wm, wc) = self.weights()?;
+        let mut points = self.sigma_points()?;
+        for point in &mut points {
+            let yaw = point[2];
+            point[0] += v * yaw.cos() * dt;
+            point[1] += v * yaw.sin() * dt;
+            point[2] = yaw + omega * dt;
+        }
+        // Yaw of the mean from wrapped residuals about the propagated centre
+        // point: robust against the 2π jump and against the negative centre
+        // weight of small-alpha parameterisations.
+        let yaw_ref = points[0][2];
+        let mut mean = [0.0f64; 3];
+        for (point, w) in points.iter().zip(wm.iter()) {
+            mean[0] += w * point[0];
+            mean[1] += w * point[1];
+            mean[2] += w * wrap_angle(point[2] - yaw_ref);
+        }
+        mean[2] = wrap_angle(yaw_ref + mean[2]);
+        let mut cov = [0.0f64; 9];
+        for (point, w) in points.iter().zip(wc.iter()) {
+            let d = [
+                point[0] - mean[0],
+                point[1] - mean[1],
+                wrap_angle(point[2] - mean[2]),
+            ];
+            add_scaled_outer3(&mut cov, *w, &d, &d);
+        }
+        for (i, variance) in q.iter().enumerate() {
+            cov[i * UKF_DIM + i] += variance;
+        }
+        self.mean = mean;
+        self.cov = Self::symmetrised(cov);
+        Ok(())
+    }
+    /// Unscented measurement update with a position measurement `z = [x, y]`
+    /// (m) of isotropic variance `r` (m²).
+    ///
+    /// The sigma points are mapped through the measurement function
+    /// `h(state) = [x, y]`, giving the predicted measurement, the innovation
+    /// covariance `S = Σ Wc_i dz_i dz_iᵀ + r I` and the state-measurement
+    /// cross-covariance `Pxz`.  The state is corrected with the Kalman gain
+    /// `K = Pxz S⁻¹` and the covariance becomes `P − K S Kᵀ`; the yaw
+    /// residuals use wrapped angles.  Fails if `S` is singular.
+    pub fn update(&mut self, z: [f64; 2], r: f64) -> VehicleResult<()> {
+        if !(z[0].is_finite() && z[1].is_finite()) {
+            return Err(VehicleError::invalid_param("z", "must be finite"));
+        }
+        if !(r.is_finite() && r >= 0.0) {
+            return Err(VehicleError::invalid_param(
+                "r",
+                "measurement variance must be finite and non-negative",
+            ));
+        }
+        let (wm, wc) = self.weights()?;
+        let points = self.sigma_points()?;
+        let mut z_pred = [0.0f64; 2];
+        for (point, w) in points.iter().zip(wm.iter()) {
+            z_pred[0] += w * point[0];
+            z_pred[1] += w * point[1];
+        }
+        let mut s = [r, 0.0, 0.0, r];
+        let mut p_xz = [0.0f64; 6];
+        for (point, w) in points.iter().zip(wc.iter()) {
+            let dz = [point[0] - z_pred[0], point[1] - z_pred[1]];
+            let dx = [
+                point[0] - self.mean[0],
+                point[1] - self.mean[1],
+                wrap_angle(point[2] - self.mean[2]),
+            ];
+            s[0] += w * dz[0] * dz[0];
+            s[1] += w * dz[0] * dz[1];
+            s[2] += w * dz[1] * dz[0];
+            s[3] += w * dz[1] * dz[1];
+            for (row, dx_i) in p_xz.chunks_exact_mut(2).zip(dx.iter()) {
+                row[0] += w * dx_i * dz[0];
+                row[1] += w * dx_i * dz[1];
+            }
+        }
+        let (_, s_inv) = mat2_det_inverse(&s)
+            .ok_or_else(|| VehicleError::general("UKF innovation covariance is singular"))?;
+        // K = Pxz S^-1 (3x2).
+        let mut gain = [0.0f64; 6];
+        for (k_row, p_row) in gain.chunks_exact_mut(2).zip(p_xz.chunks_exact(2)) {
+            k_row[0] = p_row[0] * s_inv[0] + p_row[1] * s_inv[2];
+            k_row[1] = p_row[0] * s_inv[1] + p_row[1] * s_inv[3];
+        }
+        let innovation = [z[0] - z_pred[0], z[1] - z_pred[1]];
+        for (m, k_row) in self.mean.iter_mut().zip(gain.chunks_exact(2)) {
+            *m += k_row[0] * innovation[0] + k_row[1] * innovation[1];
+        }
+        self.mean[2] = wrap_angle(self.mean[2]);
+        // P -= K S K^T
+        for (i, k_i) in gain.chunks_exact(2).enumerate() {
+            for (j, k_j) in gain.chunks_exact(2).enumerate() {
+                let ks_j = [s[0] * k_j[0] + s[1] * k_j[1], s[2] * k_j[0] + s[3] * k_j[1]];
+                self.cov[i * UKF_DIM + j] -= k_i[0] * ks_j[0] + k_i[1] * ks_j[1];
+            }
+        }
+        let mut cov = Self::symmetrised(self.cov);
+        for i in 0..UKF_DIM {
+            // Roundoff can push a vanishing variance marginally below zero.
+            cov[i * UKF_DIM + i] = cov[i * UKF_DIM + i].max(0.0);
+        }
+        self.cov = cov;
+        Ok(())
+    }
+    /// `(A + Aᵀ) / 2` of a row-major 3x3 matrix.
+    fn symmetrised(a: [f64; 9]) -> [f64; 9] {
+        let mut out = a;
+        for i in 0..UKF_DIM {
+            for j in 0..UKF_DIM {
+                out[i * UKF_DIM + j] = 0.5 * (a[i * UKF_DIM + j] + a[j * UKF_DIM + i]);
+            }
+        }
+        out
     }
 }
 /// A 2-D probabilistic occupancy grid using log-odds representation.
@@ -963,13 +1365,25 @@ impl EkfState {
         self.p = mat5x5_mul(&ikh, &self.p);
     }
 }
-/// A landmark in the map.
+/// A landmark in the map: a Gaussian estimate of its world position.
 #[derive(Debug, Clone, Copy)]
 pub struct Landmark {
-    /// World position (m).
+    /// Estimated world position (m).
     pub position: Vec2,
     /// Landmark ID.
     pub id: usize,
+    /// Position covariance (m²), row-major 2x2 `[xx, xy, yx, yy]`.
+    pub cov: [f64; 4],
+}
+impl Landmark {
+    /// Landmark `id` at `position` with position covariance `cov`.
+    pub fn new(id: usize, position: Vec2, cov: [f64; 4]) -> Self {
+        Self { position, id, cov }
+    }
+    /// Landmark whose position is known exactly (zero covariance).
+    pub fn known(id: usize, position: Vec2) -> Self {
+        Self::new(id, position, [0.0; 4])
+    }
 }
 /// A node in the RRT tree.
 #[derive(Debug, Clone)]

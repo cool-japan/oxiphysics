@@ -16,6 +16,7 @@
 //! - [`EinsteinModel`] — Einstein heat capacity model
 //! - [`NuclearQuantumEffect`] — proton tunnelling fraction, H/D isotope fractionation
 
+use crate::solid_state_md::debye_cv_function;
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -190,10 +191,13 @@ impl PathIntegralEstimator {
         r.iter().sum::<f64>() / self.n_beads as f64
     }
 
-    /// Primitive kinetic energy estimator (1-D):
-    ///   T_prim = P/(2β²mω_P²) - (1/(2m)) Σ (rₖ₊₁ - rₖ)²·(mωP)²
+    /// Primitive (thermodynamic) kinetic energy estimator (1-D):
     ///
-    /// where ωP = √P / (ℏβ).
+    /// ```text
+    /// T_prim = P / (2β) − Σₖ ½ m ω_P² (rₖ₊₁ − rₖ)²
+    /// ```
+    ///
+    /// where `ω_P = √P / (ℏβ)` and the ring is closed (`r_P ≡ r_0`).
     pub fn primitive_kinetic_energy(&self, r: &[f64]) -> f64 {
         let p = self.n_beads as f64;
         let beta = 1.0 / (KB * self.temperature);
@@ -211,17 +215,30 @@ impl PathIntegralEstimator {
     }
 
     /// Centroid virial kinetic energy estimator (1-D):
-    ///   T_vir = kBT/2 + (1/2P) Σₖ (rₖ − r_c)·fₖ
     ///
-    /// where `r_c` is the centroid and `f` are forces on beads.
+    /// ```text
+    /// T_cv = kB T / 2 + (1 / 2P) Σₖ (rₖ − r_c) · ∂V/∂rₖ
+    ///      = kB T / 2 − (1 / 2P) Σₖ (rₖ − r_c) · fₖ
+    /// ```
+    ///
+    /// where `r_c` is the centroid and `forces[k]` is the physical force
+    /// `fₖ = −∂V/∂rₖ` (the negative gradient of the full potential, not the
+    /// ring-polymer spring force) acting on bead `k`.  For a harmonic potential
+    /// `V = mω²r²/2` the force is `fₖ = −mω²rₖ`, so the correction is the
+    /// non-negative term `(mω²/2P) Σₖ (rₖ − r_c)²` and `T_cv ≥ kB T / 2`, as
+    /// required for a quantum kinetic energy.
+    ///
+    /// Beads without a matching entry in `forces` (and vice versa) are ignored.
     pub fn centroid_virial_kinetic_energy(&self, r: &[f64], forces: &[f64]) -> f64 {
         let rc = self.centroid(r);
         let p = self.n_beads as f64;
-        let mut virial_sum = 0.0;
-        for k in 0..self.n_beads {
-            virial_sum += (r[k] - rc) * forces[k];
-        }
-        0.5 * KB * self.temperature + virial_sum / (2.0 * p)
+        let virial_sum: f64 = r
+            .iter()
+            .zip(forces.iter())
+            .take(self.n_beads)
+            .map(|(&rk, &fk)| (rk - rc) * fk)
+            .sum();
+        0.5 * KB * self.temperature - virial_sum / (2.0 * p)
     }
 
     /// Quantum kinetic energy estimate from bead spread:
@@ -512,41 +529,79 @@ impl DebyeModel {
         }
     }
 
-    /// Debye integral D(x_D) = (3/x_D³) ∫₀^x_D x³/(eˣ−1) dx via 100-point Gauss quadrature.
+    /// Debye *energy* function `D₃(x) = (3/x³) ∫₀ˣ t³/(eᵗ − 1) dt` at `x = θ_D/T`.
     ///
-    /// Uses Simpson's rule with 1000 sub-intervals.
+    /// `D₃` gives the thermal part of the internal energy,
+    /// `U_th = 3 N k_B T · D₃(θ_D/T)`.  It is **not** the heat-capacity function:
+    /// `D₃(1) = 0.674` whereas `C_V(θ_D)/(3 N k_B) = 0.952`.
+    ///
+    /// Integrating the heat-capacity integral by parts gives the exact identity
+    ///
+    /// ```text
+    /// C_V / (3 N k_B) = 4 D₃(x) − 3x / (eˣ − 1),
+    /// ```
+    ///
+    /// so `D₃ = [c(x) + 3x/(eˣ − 1)] / 4`, where `c(x)` is the accurate (~1e-13)
+    /// heat-capacity function [`crate::solid_state_md::debye_cv_function`].
+    /// Both terms are non-negative, so no cancellation occurs at any `x`.
+    /// `D₃(0) = 1` (classical limit) and `D₃(x) → π⁴/(5x³)` for `x → ∞`.
     fn debye_integral(x_d: f64) -> f64 {
-        if x_d < 1e-10 {
-            return 1.0;
-        } // T >> θD limit
-        let n = 1000usize;
-        let h = x_d / n as f64;
-        let mut sum = 0.0;
-        for k in 0..=n {
-            let x = k as f64 * h;
-            let f = if x < 1e-10 {
-                // x³/(eˣ-1) → x² as x→0
-                x * x
-            } else {
-                x.powi(3) / (x.exp() - 1.0)
-            };
-            let weight = if k == 0 || k == n {
-                1.0
-            } else if k % 2 == 1 {
-                4.0
-            } else {
-                2.0
-            };
-            sum += weight * f;
-        }
-        sum * h / 3.0 * 3.0 / x_d.powi(3)
+        let cv_function = debye_cv_function(x_d);
+        // x / (eˣ − 1) → 1 for x → 0 and → 0 for x → ∞.
+        let bose_term = if x_d == 0.0 { 1.0 } else { x_d / x_d.exp_m1() };
+        0.25 * (cv_function + 3.0 * bose_term)
     }
 
-    /// Heat capacity at constant volume Cv(T) (J K⁻¹).
+    /// Heat capacity at constant volume `C_V(T)` (J K⁻¹).
+    ///
+    /// ```text
+    /// C_V = 9 N k_B (T/θ_D)³ ∫₀^{θ_D/T} x⁴ eˣ / (eˣ − 1)² dx
+    ///     = 3 N k_B [4 D₃(θ_D/T) − 3 (θ_D/T) / (e^{θ_D/T} − 1)]
+    /// ```
+    ///
+    /// It follows the Debye `T³` law [`DebyeModel::low_temperature_cv`] for
+    /// `T ≪ θ_D`, equals `2.855 N k_B` at `T = θ_D` and approaches the
+    /// Dulong-Petit limit [`DebyeModel::dulong_petit_limit`] from below for
+    /// `T ≫ θ_D`.  The integral is evaluated by the shared, overflow-free
+    /// quadrature in [`crate::solid_state_md::debye_cv_function`].
+    ///
+    /// Returns `0.0` for `T ≤ 0` (all modes frozen out) and `NaN` for a `NaN`
+    /// temperature.
     pub fn heat_capacity(&self, temperature: f64) -> f64 {
-        let x_d = self.debye_temperature / temperature;
-        let d = Self::debye_integral(x_d);
-        3.0 * self.n_atoms as f64 * KB * d
+        if temperature.is_nan() {
+            return f64::NAN;
+        }
+        if temperature <= 0.0 {
+            return 0.0;
+        }
+        3.0 * self.n_atoms as f64 * KB * debye_cv_function(self.debye_temperature / temperature)
+    }
+
+    /// Thermal vibrational energy above the zero-point level (J):
+    /// `U_th(T) = 3 N k_B T · D₃(θ_D/T)`.
+    ///
+    /// It tends to the classical `3 N k_B T` for `T ≫ θ_D` and to
+    /// `(3π⁴/5) N k_B T⁴/θ_D³` for `T ≪ θ_D`; its temperature derivative is
+    /// [`DebyeModel::heat_capacity`].  Returns `0.0` for `T ≤ 0` and `NaN` for a
+    /// `NaN` temperature.
+    pub fn thermal_energy(&self, temperature: f64) -> f64 {
+        if temperature.is_nan() {
+            return f64::NAN;
+        }
+        if temperature <= 0.0 {
+            return 0.0;
+        }
+        3.0 * self.n_atoms as f64
+            * KB
+            * temperature
+            * Self::debye_integral(self.debye_temperature / temperature)
+    }
+
+    /// Total vibrational energy `U(T) = E₀ + U_th(T)` (J), the sum of the
+    /// zero-point energy [`DebyeModel::zero_point_energy`] and the thermal energy
+    /// [`DebyeModel::thermal_energy`].
+    pub fn internal_energy(&self, temperature: f64) -> f64 {
+        self.zero_point_energy() + self.thermal_energy(temperature)
     }
 
     /// High-temperature (Dulong-Petit) limit: Cv → 3 N kB.
@@ -560,7 +615,7 @@ impl DebyeModel {
         12.0 * PI.powi(4) / 5.0 * self.n_atoms as f64 * KB * ratio.powi(3)
     }
 
-    /// Zero-point energy per atom: E_0 = (9/8) kB θD.
+    /// Total zero-point energy of the `N` atoms: `E₀ = (9/8) N k_B θ_D`.
     pub fn zero_point_energy(&self) -> f64 {
         9.0 / 8.0 * KB * self.debye_temperature * self.n_atoms as f64
     }
@@ -851,6 +906,127 @@ mod tests {
         assert!(spread.abs() < 1e-50);
     }
 
+    /// Pre-fix centroid-virial formula `kBT/2 + (1/2P) Σ (rₖ − r_c)·fₖ`, kept
+    /// here only to pin down the sign convention of the corrected estimator.
+    fn legacy_virial_with_plus_sign(pie: &PathIntegralEstimator, r: &[f64], f: &[f64]) -> f64 {
+        let rc = pie.centroid(r);
+        let sum: f64 = r.iter().zip(f).map(|(&rk, &fk)| (rk - rc) * fk).sum();
+        0.5 * KB * pie.temperature + sum / (2.0 * pie.n_beads as f64)
+    }
+
+    #[test]
+    fn test_pie_virial_estimator_harmonic_beads_exceeds_classical() {
+        // Spread-out beads in V = m w² r²/2 with the physical force f_k = −m w² r_k:
+        // T_cv = kBT/2 + (m w²/2P) Σ (r_k − r_c)², strictly above kBT/2.
+        let mass = M_PROTON;
+        let omega = 3.0e14;
+        let temperature = 300.0;
+        let pie = PathIntegralEstimator::new(4, mass, temperature);
+        let r = [1.0e-11, 3.0e-11, -2.0e-11, 0.5e-11];
+        let forces: Vec<f64> = r.iter().map(|&x| -mass * omega * omega * x).collect();
+        let t_cv = pie.centroid_virial_kinetic_energy(&r, &forces);
+        let rc = pie.centroid(&r);
+        let spread: f64 = r.iter().map(|&x| (x - rc).powi(2)).sum();
+        let expected = 0.5 * KB * temperature + mass * omega * omega / (2.0 * 4.0) * spread;
+        assert!(
+            t_cv > 0.5 * KB * temperature,
+            "T_cv = {t_cv} must exceed kBT/2 = {}",
+            0.5 * KB * temperature
+        );
+        assert!(
+            (t_cv - expected).abs() <= 1e-12 * expected.abs(),
+            "T_cv = {t_cv}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_pie_virial_estimator_sign_convention_is_minus_force() {
+        // The corrected estimator is the old '+' formula evaluated with the force
+        // sign flipped, and a gradient (+dV/dr) input reproduces the old value.
+        let mass = M_PROTON;
+        let omega = 2.0e14;
+        let pie = PathIntegralEstimator::new(6, mass, 250.0);
+        let r = [2.0e-11, -1.0e-11, 0.4e-11, 1.5e-11, -2.2e-11, 0.9e-11];
+        let force: Vec<f64> = r.iter().map(|&x| -mass * omega * omega * x).collect();
+        let neg_force: Vec<f64> = force.iter().map(|&f| -f).collect();
+        let corrected = pie.centroid_virial_kinetic_energy(&r, &force);
+        let legacy_on_flipped = legacy_virial_with_plus_sign(&pie, &r, &neg_force);
+        assert!(
+            (corrected - legacy_on_flipped).abs() <= 1e-12 * corrected.abs(),
+            "corrected = {corrected}, legacy(−f) = {legacy_on_flipped}"
+        );
+        // Feeding +dV/dr (instead of the force) lands on the old, wrong value
+        // below the classical kinetic energy.
+        let wrong = pie.centroid_virial_kinetic_energy(&r, &neg_force);
+        let legacy_on_force = legacy_virial_with_plus_sign(&pie, &r, &force);
+        assert!((wrong - legacy_on_force).abs() <= 1e-12 * wrong.abs());
+        assert!(wrong < 0.5 * KB * 250.0);
+    }
+
+    /// Bead positions of a 1-D ring polymer in `V = m w² r²/2` whose real normal-mode
+    /// amplitudes all equal their canonical rms value.
+    ///
+    /// The primitive and centroid-virial estimators are quadratic forms that are
+    /// diagonal in the normal modes, so this configuration returns exactly their
+    /// canonical average.  The mode variance is
+    /// `1/(β m [ω_P² 4 sin²(π j/P) + ω²/P])` with `ω_P² = P/(βħ)²`.
+    fn harmonic_ring_polymer_snapshot(
+        p: usize,
+        mass: f64,
+        omega: f64,
+        temperature: f64,
+    ) -> Vec<f64> {
+        let beta = 1.0 / (KB * temperature);
+        let omega_p_sq = p as f64 / (beta * HBAR).powi(2);
+        let variance = |j: usize| {
+            let s = (PI * j as f64 / p as f64).sin();
+            1.0 / (beta * mass * (omega_p_sq * 4.0 * s * s + omega * omega / p as f64))
+        };
+        let norm = (2.0 / p as f64).sqrt();
+        (0..p)
+            .map(|k| {
+                let mut x = 0.0;
+                for j in 1..p / 2 {
+                    let angle = 2.0 * PI * (j * k) as f64 / p as f64;
+                    x += norm * variance(j).sqrt() * (angle.cos() + angle.sin());
+                }
+                let alternating = if k % 2 == 0 { 1.0 } else { -1.0 };
+                x + alternating * variance(p / 2).sqrt() / (p as f64).sqrt()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_pie_estimators_reproduce_harmonic_oscillator_kinetic_energy() {
+        // beta*hbar*omega = 4: <T> = (hbar w / 4) coth(beta hbar w / 2) per degree
+        // of freedom, i.e. 1.0373 * hbar w / 4 against the classical kBT/2 = hbar w / 8.
+        let mass = M_PROTON;
+        let omega = 2.0e14;
+        let temperature = HBAR * omega / (4.0 * KB);
+        let p = 32;
+        let pie = PathIntegralEstimator::new(p, mass, temperature);
+        let r = harmonic_ring_polymer_snapshot(p, mass, omega, temperature);
+        let forces: Vec<f64> = r.iter().map(|&x| -mass * omega * omega * x).collect();
+        let t_prim = pie.primitive_kinetic_energy(&r);
+        let t_cv = pie.centroid_virial_kinetic_energy(&r, &forces);
+        let exact = 0.25 * HBAR * omega / (0.5 * HBAR * omega / (KB * temperature)).tanh();
+        assert!(
+            (t_cv - exact).abs() / exact < 0.01,
+            "centroid virial {t_cv} vs exact {exact}"
+        );
+        assert!(
+            (t_prim - exact).abs() / exact < 0.01,
+            "primitive {t_prim} vs exact {exact}"
+        );
+        // Both are unbiased estimators of the same finite-P canonical average.
+        assert!(
+            (t_cv - t_prim).abs() <= 1e-9 * exact,
+            "virial {t_cv} and primitive {t_prim} must coincide on average"
+        );
+        // The quantum kinetic energy is well above the classical value.
+        assert!(t_cv > 1.9 * 0.5 * KB * temperature);
+    }
+
     // ---- TunnellingRate ----
 
     #[test]
@@ -1018,6 +1194,106 @@ mod tests {
         let cv2 = dm.heat_capacity(100.0);
         let cv3 = dm.heat_capacity(500.0);
         assert!(cv1 < cv2 && cv2 < cv3);
+    }
+
+    #[test]
+    fn test_debye_cv_at_debye_temperature_is_2p855_nk() {
+        // C_V(T = theta_D) = 3 N kB [4 D3(1) − 3/(e − 1)] = 2.8551964 N kB.
+        // The energy function D3 alone would give 3 D3(1) = 2.0232 N kB.
+        let n_atoms = 100;
+        let dm = DebyeModel::new(300.0, n_atoms);
+        let nk = n_atoms as f64 * KB;
+        let cv = dm.heat_capacity(300.0);
+        assert!(
+            (cv / nk - 2.855_196_407).abs() < 1e-8,
+            "C_V(theta_D) = {} N kB",
+            cv / nk
+        );
+        let energy_function_value = 3.0 * 0.674_415_564_078 * nk;
+        assert!((cv - energy_function_value).abs() > 0.5 * nk);
+    }
+
+    #[test]
+    fn test_debye_cv_follows_t3_law_well_below_debye_temperature() {
+        let dm = DebyeModel::new(400.0, 25);
+        for fraction in [50.0, 100.0, 200.0] {
+            let t = dm.debye_temperature / fraction;
+            let ratio = dm.heat_capacity(t) / dm.low_temperature_cv(t);
+            assert!(
+                (ratio - 1.0).abs() < 1e-6,
+                "C_V / C_T3 at theta/{fraction} = {ratio}"
+            );
+        }
+        // At theta/10 the T³ law is still within a few percent, but no better.
+        let t = dm.debye_temperature / 10.0;
+        let ratio = dm.heat_capacity(t) / dm.low_temperature_cv(t);
+        assert!((ratio - 0.972_971_339_6).abs() < 1e-8, "ratio = {ratio}");
+    }
+
+    #[test]
+    fn test_debye_cv_approaches_dulong_petit_from_below() {
+        let dm = DebyeModel::new(300.0, 64);
+        let dulong_petit = dm.dulong_petit_limit();
+        let cv_10_theta = dm.heat_capacity(3000.0);
+        // C_V/3NkB = 1 − x²/20 + ... with x = 0.1.
+        assert!(cv_10_theta < dulong_petit);
+        assert!(
+            (cv_10_theta / dulong_petit - 0.999_500_178_5).abs() < 1e-9,
+            "C_V(10 theta)/3NkB = {}",
+            cv_10_theta / dulong_petit
+        );
+        let mut previous = 0.0;
+        for t in [
+            5.0, 20.0, 60.0, 150.0, 300.0, 600.0, 1500.0, 6000.0, 60000.0,
+        ] {
+            let cv = dm.heat_capacity(t);
+            assert!(cv > previous, "C_V must increase with T (T = {t})");
+            assert!(cv <= dulong_petit * (1.0 + 1e-12));
+            previous = cv;
+        }
+    }
+
+    #[test]
+    fn test_debye_cv_degenerate_temperatures() {
+        let dm = DebyeModel::new(300.0, 10);
+        assert_eq!(dm.heat_capacity(0.0), 0.0);
+        assert_eq!(dm.heat_capacity(-12.0), 0.0);
+        assert!(dm.heat_capacity(f64::NAN).is_nan());
+        // A vanishing Debye temperature means no freeze-out at all.
+        let classical = DebyeModel::new(0.0, 10);
+        assert!((classical.heat_capacity(300.0) - classical.dulong_petit_limit()).abs() < 1e-30);
+    }
+
+    #[test]
+    fn test_debye_thermal_energy_derivative_is_heat_capacity() {
+        // C_V = dU/dT ties the energy function D3 to the Cv function.
+        let dm = DebyeModel::new(350.0, 40);
+        for t in [20.0, 90.0, 350.0, 1000.0] {
+            let h = 1e-3 * t;
+            let derivative = (dm.internal_energy(t + h) - dm.internal_energy(t - h)) / (2.0 * h);
+            let cv = dm.heat_capacity(t);
+            assert!(
+                (derivative - cv).abs() < 1e-5 * cv,
+                "dU/dT = {derivative}, C_V = {cv} at T = {t}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_debye_thermal_energy_limits() {
+        let dm = DebyeModel::new(300.0, 12);
+        let nk = 12.0 * KB;
+        // High temperature: equipartition 3 N kB T (minus the small x/8 correction).
+        let t_hot = 1.0e5;
+        assert!((dm.thermal_energy(t_hot) / (3.0 * nk * t_hot) - 1.0).abs() < 2e-3);
+        // Low temperature: (3 pi^4 / 5) N kB T^4 / theta^3.
+        let t_cold = 3.0_f64;
+        let t4_law = 3.0 * PI.powi(4) / 5.0 * nk * t_cold.powi(4) / 300.0_f64.powi(3);
+        assert!((dm.thermal_energy(t_cold) / t4_law - 1.0).abs() < 1e-9);
+        // Zero temperature leaves only the zero-point energy.
+        assert_eq!(dm.thermal_energy(0.0), 0.0);
+        assert_eq!(dm.internal_energy(0.0), dm.zero_point_energy());
+        assert!(dm.thermal_energy(f64::NAN).is_nan());
     }
 
     // ---- EinsteinModel ----

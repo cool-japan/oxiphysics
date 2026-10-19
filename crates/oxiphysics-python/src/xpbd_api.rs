@@ -154,17 +154,38 @@ mod tests {
     #[test]
     fn test_xpbd_solver_step() {
         let mut solver = PyXpbdSolver::new();
-        // Pin a particle at origin, add a free particle above
+        // A pendulum: a particle pinned at the origin and a free particle one
+        // rod length to its side, so that gravity acts across the rod.
         let i0 = solver.add_particle([0.0, 0.0, 0.0], 0.0); // pinned
-        let i1 = solver.add_particle([0.0, 1.0, 0.0], 1.0); // free
+        let i1 = solver.add_particle([1.0, 0.0, 0.0], 1.0); // free
         solver.add_distance_constraint(i0, i1, 1.0, 0.0);
         solver.step(1.0 / 60.0);
-        // Position should change but constraint should be maintained
         let p0 = solver.particle_position(i0).expect("p0 should exist");
         let p1 = solver.particle_position(i1).expect("p1 should exist");
-        // Pinned particle should not move
-        assert!((p0[0]).abs() < 1e-9);
-        // Free particle should have moved due to gravity
-        assert!(p1[1] < 1.0);
+        // The pinned particle does not move.
+        assert_eq!(p0, [0.0, 0.0, 0.0]);
+        // The free particle falls (about g t^2 / 2 = 1.4e-3 in one step) ...
+        assert!(p1[1] < -1.0e-3, "pendulum bob y = {}", p1[1]);
+        assert!(p1[2].abs() < 1e-12, "no motion out of the plane");
+        // ... while the rod keeps its length, so the bob swings along the circle.
+        let rod_length = (p1[0] * p1[0] + p1[1] * p1[1] + p1[2] * p1[2]).sqrt();
+        assert!(
+            (rod_length - 1.0).abs() < 1e-9,
+            "rod length {rod_length} must stay 1"
+        );
+        assert!(p1[0] < 1.0, "the bob moves inwards along the circle");
+    }
+
+    #[test]
+    fn test_xpbd_rod_along_gravity_holds_the_particle_in_place() {
+        // A rigid rod standing on the pin: gravity pushes the free particle
+        // into the rod, which restores the distance exactly.
+        let mut solver = PyXpbdSolver::new();
+        let i0 = solver.add_particle([0.0, 0.0, 0.0], 0.0);
+        let i1 = solver.add_particle([0.0, 1.0, 0.0], 1.0);
+        solver.add_distance_constraint(i0, i1, 1.0, 0.0);
+        solver.step(1.0 / 60.0);
+        let p1 = solver.particle_position(i1).expect("p1 should exist");
+        assert!((p1[1] - 1.0).abs() < 1e-9, "bob y = {}", p1[1]);
     }
 }

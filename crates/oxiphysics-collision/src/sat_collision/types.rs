@@ -129,9 +129,33 @@ impl ObbCollision {
         let overlap = f64::min(max_a, max_b) - f64::max(min_a, min_b);
         if overlap < 0.0 { None } else { Some(overlap) }
     }
+    /// Penetration of the two boxes along `axis`: the shortest translation of one
+    /// box along the (normalised) axis after which the projections of the boxes
+    /// no longer overlap. `None` if the axis separates the boxes (or has no
+    /// direction).
+    ///
+    /// This is the quantity a minimum-translation search has to minimise. It
+    /// equals the length of the common part of the two projected intervals only
+    /// while neither interval contains the other: for a box that lies within the
+    /// extent of the other along the axis the interval overlap is just the
+    /// thickness of the inner box, whereas the translation needed to separate
+    /// them is larger.
+    pub fn penetration_on_axis(obb_a: &Obb, obb_b: &Obb, axis: [f64; 3]) -> Option<f64> {
+        let len = length(axis);
+        if len < 1e-12 {
+            return None;
+        }
+        let norm_axis = scale(axis, 1.0 / len);
+        let (min_a, max_a) = obb_a.project_onto_axis(norm_axis);
+        let (min_b, max_b) = obb_b.project_onto_axis(norm_axis);
+        let push = f64::min(max_a - min_b, max_b - min_a);
+        if push < 0.0 { None } else { Some(push) }
+    }
     /// Full OBB–OBB SAT test using 15 candidate axes.
     /// Returns `None` if separated, or `Some(SatContact)` with the minimum
-    /// penetration axis.
+    /// penetration axis: the axis (oriented from B toward A) with the shortest
+    /// separating translation, see [`ObbCollision::penetration_on_axis`], and
+    /// that translation as `depth`.
     pub fn obb_obb_sat(obb_a: &Obb, obb_b: &Obb) -> Option<SatContact> {
         let mut min_depth = f64::MAX;
         let mut best_normal = [0.0f64; 3];
@@ -139,11 +163,21 @@ impl ObbCollision {
             face_a: 0,
             face_b: 0,
         };
-        let mut test = |axis: [f64; 3], feature: ContactFeature| -> bool {
-            match Self::test_overlap_on_axis(obb_a, obb_b, axis) {
+        // A cross-product axis only wins when it beats the best face overlap by
+        // more than rounding noise. Without the margin the cross product of two
+        // parallel-face edges (equal to the face axis up to rounding) could win
+        // and a flat face contact would be reported as a single edge contact.
+        let extent = obb_a
+            .half_extents
+            .iter()
+            .chain(obb_b.half_extents.iter())
+            .fold(1.0_f64, |m, h| m.max(h.abs()));
+        let edge_bias = 1e-6 * extent;
+        let mut test = |axis: [f64; 3], feature: ContactFeature, bias: f64| -> bool {
+            match Self::penetration_on_axis(obb_a, obb_b, axis) {
                 None => false,
                 Some(overlap) => {
-                    if overlap < min_depth {
+                    if overlap < min_depth - bias {
                         min_depth = overlap;
                         let diff = sub(obb_a.center, obb_b.center);
                         let norm = normalize(axis);
@@ -165,6 +199,7 @@ impl ObbCollision {
                     face_a: i * 2,
                     face_b: 0,
                 },
+                0.0,
             ) {
                 return None;
             }
@@ -176,6 +211,7 @@ impl ObbCollision {
                     face_a: 0,
                     face_b: j * 2,
                 },
+                0.0,
             ) {
                 return None;
             }
@@ -190,6 +226,7 @@ impl ObbCollision {
                             edge_a: i,
                             edge_b: j,
                         },
+                        edge_bias,
                     )
                 {
                     return None;
@@ -222,30 +259,191 @@ pub struct SatContactPointGenerator;
 impl SatContactPointGenerator {
     /// Generate contact points from an OBB-OBB SAT result.
     ///
-    /// Uses the minimum-overlap axis to determine contact type, then
-    /// extracts the relevant vertex/edge/face points.
+    /// `contact` is the result of [`ObbCollision::obb_obb_sat`] for the boxes
+    /// `obb_a` and `obb_b` (normal from B toward A). The returned points lie
+    /// half-way through the overlap of the two boxes:
+    ///
+    /// * **Face contact** (`FaceFace`, `FaceEdge`, `VertexFace`): the face of
+    ///   the box whose face normal is best aligned with the contact normal is
+    ///   the *reference face*; the most anti-parallel face of the other box is
+    ///   the *incident face*. The incident quad is clipped against the four side
+    ///   planes of the reference face (Sutherland-Hodgman, see
+    ///   [`ContactManifoldBuilder::clip_polygon_by_plane`]) and the points of the
+    ///   clipped polygon that lie below the reference plane are kept. Every
+    ///   returned point is the middle of the segment between such an incident
+    ///   point and its projection onto the reference plane, so the result is the
+    ///   contact patch (typically four points, at most eight) halfway between
+    ///   the two surfaces.
+    /// * **Edge contact** (`EdgeEdge`): the two box edges (along the local axes
+    ///   `edge_a` of A and `edge_b` of B) that face each other along the normal
+    ///   are located and the middle of the segment between their closest points
+    ///   is returned (one point).
+    ///
+    /// The contact normal is taken from `contact`, not recomputed, so the points
+    /// are consistent with the axis the SAT test selected. The feature indices
+    /// of a face contact are not used to pick the faces: the faces are derived
+    /// from the normal, which also identifies the reference box when A and B
+    /// both present a face along the axis.
     pub fn from_obb_obb(obb_a: &Obb, obb_b: &Obb, contact: &SatContact) -> Vec<[f64; 3]> {
+        let normal = Self::unit_normal_toward_a(obb_a, obb_b, contact.normal);
         match &contact.contact_type {
-            ContactFeature::FaceFace { .. } => {
-                let support_b = obb_b.support(scale(contact.normal, -1.0));
-                let ref_d = dot(obb_a.center, contact.normal) + contact.depth * 0.5;
-                let proj = dot(support_b, contact.normal);
-                let adjusted = add(support_b, scale(contact.normal, ref_d - proj));
-                vec![adjusted]
-            }
             ContactFeature::EdgeEdge { edge_a, edge_b } => {
-                let dir_a = obb_a.axes[edge_a % 3];
-                let dir_b = obb_b.axes[edge_b % 3];
-                let p_a = obb_a.support(scale(contact.normal, -1.0));
-                let p_b = obb_b.support(contact.normal);
-                let (cp, _) = edge_edge_contact(p_a, dir_a, p_b, dir_b);
-                vec![cp]
+                Self::edge_edge_point(obb_a, obb_b, normal, edge_a % 3, edge_b % 3)
             }
-            ContactFeature::VertexFace { .. } | ContactFeature::FaceEdge { .. } => {
-                let v = obb_b.support(scale(contact.normal, -1.0));
-                vec![v]
+            ContactFeature::FaceFace { .. }
+            | ContactFeature::FaceEdge { .. }
+            | ContactFeature::VertexFace { .. } => {
+                let patch = Self::face_contact_patch(obb_a, obb_b, normal);
+                if patch.is_empty() {
+                    vec![Self::support_midpoint(obb_a, normal, contact.depth)]
+                } else {
+                    patch
+                }
             }
         }
+    }
+    /// Unit contact normal pointing from B toward A; the direction between the
+    /// centres (or +Y for coincident centres) when `normal` has no direction.
+    fn unit_normal_toward_a(obb_a: &Obb, obb_b: &Obb, normal: [f64; 3]) -> [f64; 3] {
+        let len = length(normal);
+        if len > 1e-12 {
+            return scale(normal, 1.0 / len);
+        }
+        let centres = sub(obb_a.center, obb_b.center);
+        let centres_len = length(centres);
+        if centres_len > 1e-12 {
+            scale(centres, 1.0 / centres_len)
+        } else {
+            [0.0, 1.0, 0.0]
+        }
+    }
+    /// The face of `obb` whose outward normal is best aligned with `outward`:
+    /// `(local axis index, outward face normal, |cosine| of the alignment)`.
+    fn best_face(obb: &Obb, outward: [f64; 3]) -> (usize, [f64; 3], f64) {
+        let mut axis = 0;
+        let mut alignment = -1.0;
+        let mut sign = 1.0;
+        for (k, ax) in obb.axes.iter().enumerate() {
+            let d = dot(*ax, outward);
+            if d.abs() > alignment {
+                alignment = d.abs();
+                axis = k;
+                sign = if d >= 0.0 { 1.0 } else { -1.0 };
+            }
+        }
+        (axis, scale(obb.axes[axis], sign), alignment)
+    }
+    /// Face-contact patch: clip the incident face against the reference face.
+    /// Empty when nothing of the incident face lies over the reference face.
+    fn face_contact_patch(obb_a: &Obb, obb_b: &Obb, normal: [f64; 3]) -> Vec<[f64; 3]> {
+        // A face of A looks toward B along -normal, a face of B toward A along
+        // +normal. The box that presents its face more squarely is the reference.
+        let (axis_a, face_a, alignment_a) = Self::best_face(obb_a, scale(normal, -1.0));
+        let (axis_b, face_b, alignment_b) = Self::best_face(obb_b, normal);
+        let (reference, ref_axis, ref_normal, incident) = if alignment_a >= alignment_b - 1e-9 {
+            (obb_a, axis_a, face_a, obb_b)
+        } else {
+            (obb_b, axis_b, face_b, obb_a)
+        };
+        let (inc_axis, inc_normal, _) = Self::best_face(incident, scale(ref_normal, -1.0));
+
+        // Corners of the incident face, in cyclic order.
+        let inc_u = (inc_axis + 1) % 3;
+        let inc_v = (inc_axis + 2) % 3;
+        let inc_centre = add(
+            incident.center,
+            scale(inc_normal, incident.half_extents[inc_axis]),
+        );
+        let du = scale(incident.axes[inc_u], incident.half_extents[inc_u]);
+        let dv = scale(incident.axes[inc_v], incident.half_extents[inc_v]);
+        let mut polygon = vec![
+            add(add(inc_centre, du), dv),
+            add(sub(inc_centre, du), dv),
+            sub(sub(inc_centre, du), dv),
+            sub(add(inc_centre, du), dv),
+        ];
+
+        // Clip against the four side planes of the reference face.
+        for side in [(ref_axis + 1) % 3, (ref_axis + 2) % 3] {
+            let axis = reference.axes[side];
+            let offset = dot(reference.center, axis);
+            let half = reference.half_extents[side];
+            polygon = ContactManifoldBuilder::clip_polygon_by_plane(&polygon, axis, offset - half);
+            polygon = ContactManifoldBuilder::clip_polygon_by_plane(
+                &polygon,
+                scale(axis, -1.0),
+                -(offset + half),
+            );
+        }
+
+        // Keep the points below the reference plane; each contact point is the
+        // middle between the incident point and its projection onto the plane.
+        let plane = dot(reference.center, ref_normal) + reference.half_extents[ref_axis];
+        let largest_half = obb_a
+            .half_extents
+            .iter()
+            .chain(obb_b.half_extents.iter())
+            .fold(0.0_f64, |m, h| m.max(h.abs()));
+        let slop = 1e-9 * (1.0 + largest_half);
+        let mut points: Vec<[f64; 3]> = Vec::with_capacity(polygon.len());
+        for p in polygon {
+            let depth = plane - dot(p, ref_normal);
+            if depth < -slop {
+                continue;
+            }
+            let point = add(p, scale(ref_normal, 0.5 * depth.max(0.0)));
+            let repeated = points
+                .last()
+                .is_some_and(|last| length(sub(*last, point)) <= slop);
+            if !repeated {
+                points.push(point);
+            }
+        }
+        // The clip can repeat the first vertex at the end of the loop.
+        if points.len() > 1
+            && let (Some(first), Some(last)) = (points.first(), points.last())
+            && length(sub(*first, *last)) <= slop
+        {
+            points.pop();
+        }
+        points
+    }
+    /// Middle between A's vertex that lies deepest toward B (the support point
+    /// of A along `-normal`) and the point one `depth` further along `normal`.
+    /// Used when a face contact leaves no clipped patch.
+    fn support_midpoint(obb_a: &Obb, normal: [f64; 3], depth: f64) -> [f64; 3] {
+        let deepest_a = obb_a.support(scale(normal, -1.0));
+        add(deepest_a, scale(normal, 0.5 * depth))
+    }
+    /// The edge of `obb` parallel to local axis `axis` that lies farthest in
+    /// direction `toward`, as `(start, direction)` with `direction` spanning the
+    /// whole edge (length `2 * half_extent`).
+    fn support_edge(obb: &Obb, axis: usize, toward: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+        let mut middle = obb.center;
+        for (k, ax) in obb.axes.iter().enumerate() {
+            if k == axis {
+                continue;
+            }
+            let sign = if dot(*ax, toward) >= 0.0 { 1.0 } else { -1.0 };
+            middle = add(middle, scale(*ax, sign * obb.half_extents[k]));
+        }
+        let half = scale(obb.axes[axis], obb.half_extents[axis]);
+        (sub(middle, half), scale(half, 2.0))
+    }
+    /// Edge-edge contact point: the middle of the closest points of the real
+    /// edges (A's along local axis `axis_a`, B's along `axis_b`) that face each
+    /// other along `normal` (pointing from B toward A).
+    fn edge_edge_point(
+        obb_a: &Obb,
+        obb_b: &Obb,
+        normal: [f64; 3],
+        axis_a: usize,
+        axis_b: usize,
+    ) -> Vec<[f64; 3]> {
+        let (start_a, dir_a) = Self::support_edge(obb_a, axis_a, scale(normal, -1.0));
+        let (start_b, dir_b) = Self::support_edge(obb_b, axis_b, normal);
+        let (_, _, on_a, on_b) = closest_points_on_segments(start_a, dir_a, start_b, dir_b);
+        vec![scale(add(on_a, on_b), 0.5)]
     }
 }
 /// SAT test between an OBB and a triangle.
@@ -967,6 +1165,10 @@ impl ContactManifoldBuilder {
 /// SAT test between an OBB and a capsule.
 pub struct ObbCapsuleCollision;
 impl ObbCapsuleCollision {
+    /// Relative distance below which the capsule axis counts as touching or
+    /// crossing the box, so that the contact normal cannot come from the
+    /// (undefined) direction of a zero distance.
+    const TOUCH_TOLERANCE: f64 = 1e-12;
     /// Compute the closest point on the OBB surface to a query point.
     pub fn closest_point_on_obb(obb: &Obb, q: [f64; 3]) -> [f64; 3] {
         let d = sub(q, obb.center);
@@ -978,32 +1180,214 @@ impl ObbCapsuleCollision {
         }
         result
     }
+    /// Closest pair of points between the segment `p0 -> p1` and the solid OBB.
+    ///
+    /// Returns `(point_on_segment, point_on_box)`.
+    ///
+    /// * When the segment touches or crosses the box the two points coincide:
+    ///   they are the middle of the part of the segment inside the box, found by
+    ///   clipping the segment against the three slabs of the box.
+    /// * Otherwise, in the frame of the box, the squared distance from the point
+    ///   `p(s) = p0 + s (p1 - p0)` to the box is `sum_k e_k(s)^2`, where `e_k`
+    ///   is the excess of coordinate `k` beyond `+-half_extent_k`. Each `e_k` is
+    ///   zero inside the slab and linear in `s` outside it, so the distance is a
+    ///   convex piecewise quadratic of `s` whose pieces change at the (at most
+    ///   six) parameters where a coordinate crosses a slab boundary. The minimum
+    ///   of every piece is found in closed form, which makes the result exact;
+    ///   no iteration or tolerance is involved.
+    pub fn closest_points_segment_obb(
+        obb: &Obb,
+        p0: [f64; 3],
+        p1: [f64; 3],
+    ) -> ([f64; 3], [f64; 3]) {
+        let to_local = |p: [f64; 3]| {
+            let rel = sub(p, obb.center);
+            [
+                dot(rel, obb.axes[0]),
+                dot(rel, obb.axes[1]),
+                dot(rel, obb.axes[2]),
+            ]
+        };
+        let half = obb.half_extents;
+        let start = to_local(p0);
+        let dir = sub(to_local(p1), start);
+        let clamp_to_box = |p: [f64; 3]| {
+            [
+                p[0].max(-half[0]).min(half[0]),
+                p[1].max(-half[1]).min(half[1]),
+                p[2].max(-half[2]).min(half[2]),
+            ]
+        };
+        let distance_sq = |s: f64| {
+            let p = add(start, scale(dir, s));
+            let nearest = clamp_to_box(p);
+            let excess = sub(p, nearest);
+            dot(excess, excess)
+        };
+        let to_world_pair = |s: f64| {
+            let on_segment = add(p0, scale(sub(p1, p0), s));
+            let nearest = clamp_to_box(add(start, scale(dir, s)));
+            let mut on_box = obb.center;
+            for (axis, coordinate) in obb.axes.iter().zip(nearest.iter()) {
+                on_box = add(on_box, scale(*axis, *coordinate));
+            }
+            (on_segment, on_box)
+        };
+
+        // The part of the segment inside the box: clip it against the slabs.
+        let mut inside_from = 0.0_f64;
+        let mut inside_to = 1.0_f64;
+        let mut within_slabs = true;
+        for k in 0..3 {
+            if dir[k] == 0.0 {
+                within_slabs &= start[k].abs() <= half[k];
+            } else {
+                let a = (-half[k] - start[k]) / dir[k];
+                let b = (half[k] - start[k]) / dir[k];
+                inside_from = inside_from.max(a.min(b));
+                inside_to = inside_to.min(a.max(b));
+            }
+        }
+        if within_slabs && inside_from <= inside_to {
+            return to_world_pair(0.5 * (inside_from + inside_to));
+        }
+
+        // Parameters at which a coordinate crosses a slab boundary.
+        let mut cuts = vec![0.0_f64, 1.0];
+        for k in 0..3 {
+            if dir[k] != 0.0 {
+                for bound in [-half[k], half[k]] {
+                    let s = (bound - start[k]) / dir[k];
+                    if s > 0.0 && s < 1.0 {
+                        cuts.push(s);
+                    }
+                }
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+
+        let mut best_s = 0.0;
+        let mut best = f64::INFINITY;
+        for pair in cuts.windows(2) {
+            let (lo, hi) = (pair[0], pair[1]);
+            if hi <= lo {
+                continue;
+            }
+            // On (lo, hi) every coordinate is below, inside or above its slab,
+            // so the squared distance is `quad * s^2 + 2 * lin * s + const`.
+            let mid = 0.5 * (lo + hi);
+            let mut quad = 0.0;
+            let mut lin = 0.0;
+            for k in 0..3 {
+                let at_mid = start[k] + mid * dir[k];
+                let offset = if at_mid > half[k] {
+                    start[k] - half[k]
+                } else if at_mid < -half[k] {
+                    start[k] + half[k]
+                } else {
+                    continue;
+                };
+                quad += dir[k] * dir[k];
+                lin += offset * dir[k];
+            }
+            let s = if quad > 0.0 {
+                (-lin / quad).max(lo).min(hi)
+            } else {
+                mid
+            };
+            let value = distance_sq(s);
+            if value < best {
+                best = value;
+                best_s = s;
+            }
+        }
+
+        to_world_pair(best_s)
+    }
+    /// Minimum-translation axis and depth for a capsule whose axis crosses the
+    /// box, as `(normal from the box toward the capsule, depth)`.
+    ///
+    /// The Minkowski difference of the box and the capsule axis is a convex
+    /// polytope whose faces have the normals of the three box axes and of the
+    /// cross products of each box axis with the capsule axis; the capsule radius
+    /// then only inflates it. The shortest translation that separates the shapes
+    /// is therefore found among those six axes: along a unit axis `L` it is
+    /// `r_box + r_capsule - |c . L|`, with `r_box = sum_k h_k |u_k . L|`,
+    /// `r_capsule = radius + |d . L| / 2` and `c` the offset between the
+    /// capsule midpoint and the box centre.
+    fn crossing_axis(obb: &Obb, capsule: &Capsule) -> ([f64; 3], f64) {
+        let dir = capsule.axis();
+        let dir_len = length(dir);
+        let midpoint = scale(add(capsule.p0, capsule.p1), 0.5);
+        let offset = sub(midpoint, obb.center);
+        let mut best_overlap = f64::INFINITY;
+        let mut best_axis = [0.0, 1.0, 0.0];
+        let mut consider = |axis: [f64; 3]| {
+            let box_radius: f64 = (0..3)
+                .map(|k| obb.half_extents[k] * dot(obb.axes[k], axis).abs())
+                .sum();
+            let capsule_radius = capsule.radius + 0.5 * dot(dir, axis).abs();
+            let separation = dot(offset, axis);
+            let overlap = box_radius + capsule_radius - separation.abs();
+            if overlap < best_overlap {
+                best_overlap = overlap;
+                best_axis = if separation >= 0.0 {
+                    axis
+                } else {
+                    scale(axis, -1.0)
+                };
+            }
+        };
+        for axis in obb.axes {
+            consider(axis);
+        }
+        for axis in obb.axes {
+            let crossed = cross(axis, dir);
+            let crossed_len = length(crossed);
+            if crossed_len > 1e-9 * dir_len {
+                consider(scale(crossed, 1.0 / crossed_len));
+            }
+        }
+        (best_axis, best_overlap.max(0.0))
+    }
     /// Test OBB vs Capsule for intersection.
     ///
-    /// Returns `Some(depth, contact_point, normal)` if intersecting.
+    /// Returns `Some((depth, contact_point, normal))` if the capsule penetrates
+    /// the box, `None` otherwise.
+    ///
+    /// * `normal` is the unit direction from the OBB toward the capsule; moving
+    ///   the capsule by `depth` along it just separates the shapes.
+    /// * `contact_point` lies in both shapes. When the capsule axis stays outside
+    ///   the box it is half-way between the box point closest to the axis and
+    ///   the deepest point of the capsule; when the axis crosses the box it is
+    ///   the middle of the part of the axis inside the box.
+    ///
+    /// The capsule axis is a segment, so the shapes overlap exactly when the
+    /// segment is closer to the box than the radius. The closest pair of the
+    /// segment and the box is computed exactly
+    /// ([`ObbCapsuleCollision::closest_points_segment_obb`]); when the axis stays
+    /// outside the box, `depth = radius - distance` and the normal is the
+    /// direction of that pair. When the axis touches or crosses the box the
+    /// closest pair has no direction, and the minimum-translation axis is taken
+    /// from the box axes and their cross products with the capsule axis.
     pub fn test(obb: &Obb, capsule: &Capsule) -> Option<(f64, [f64; 3], [f64; 3])> {
-        let closest_on_axis = capsule.closest_axis_point(obb.center);
-        let closest_on_obb = Self::closest_point_on_obb(obb, closest_on_axis);
-        let diff = sub(closest_on_axis, closest_on_obb);
+        let (on_axis, on_obb) = Self::closest_points_segment_obb(obb, capsule.p0, capsule.p1);
+        let diff = sub(on_axis, on_obb);
         let dist = length(diff);
-        if dist < capsule.radius {
-            let depth = capsule.radius - dist;
-            let normal = if dist > 1e-10 {
-                scale(diff, 1.0 / dist)
-            } else {
-                let center_diff = sub(closest_on_axis, obb.center);
-                let cl = length(center_diff);
-                if cl > 1e-10 {
-                    scale(center_diff, 1.0 / cl)
-                } else {
-                    [0.0, 1.0, 0.0]
-                }
-            };
-            let contact_point = add(closest_on_obb, scale(normal, depth * 0.5));
-            Some((depth, contact_point, normal))
-        } else {
-            None
+        if dist >= capsule.radius {
+            return None;
         }
+        let extent = obb.half_extents.iter().fold(0.0_f64, |m, h| m.max(h.abs()));
+        if dist > Self::TOUCH_TOLERANCE * (1.0 + extent) {
+            let normal = scale(diff, 1.0 / dist);
+            let depth = capsule.radius - dist;
+            let contact_point = sub(on_obb, scale(normal, 0.5 * depth));
+            return Some((depth, contact_point, normal));
+        }
+        // The closest pair is the middle of the part of the axis inside the box:
+        // a point of the capsule that lies in the box.
+        let (normal, depth) = Self::crossing_axis(obb, capsule);
+        Some((depth, on_axis, normal))
     }
 }
 /// SAT test between two arbitrary convex polyhedra.

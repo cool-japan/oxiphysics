@@ -7,6 +7,8 @@
 //! triangles, capsules, meshes, and point clouds. Uses `[f64; 3]` for 3D
 //! vectors (no nalgebra dependency).
 
+use crate::proximity_query::triangle_triangle_distance;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector math helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -710,37 +712,88 @@ impl PointMeshDist {
 /// Minimum distance query between two triangle meshes.
 pub struct MeshMeshDist;
 
+/// Axis-aligned bounds `(min, max)` of a triangle.
+fn triangle_bounds(tri: &[[f64; 3]; 3]) -> ([f64; 3], [f64; 3]) {
+    let mut lo = tri[0];
+    let mut hi = tri[0];
+    for v in &tri[1..] {
+        for k in 0..3 {
+            lo[k] = lo[k].min(v[k]);
+            hi[k] = hi[k].max(v[k]);
+        }
+    }
+    (lo, hi)
+}
+
+/// Squared Euclidean distance between two axis-aligned boxes (zero when they
+/// overlap or touch).
+fn box_gap_sq(lo_a: [f64; 3], hi_a: [f64; 3], lo_b: [f64; 3], hi_b: [f64; 3]) -> f64 {
+    (0..3)
+        .map(|k| {
+            let gap = (lo_b[k] - hi_a[k]).max(lo_a[k] - hi_b[k]).max(0.0);
+            gap * gap
+        })
+        .sum()
+}
+
+/// The triangles of an index buffer (three indices per triangle; trailing
+/// indices that do not complete a triangle are ignored).
+fn mesh_triangles(verts: &[[f64; 3]], indices: &[usize]) -> Vec<[[f64; 3]; 3]> {
+    indices
+        .chunks_exact(3)
+        .map(|tri| [verts[tri[0]], verts[tri[1]], verts[tri[2]]])
+        .collect()
+}
+
 impl MeshMeshDist {
-    /// Brute-force minimum distance between two meshes.
+    /// Exact minimum distance between two triangle meshes.
     ///
-    /// Returns (distance, tri_idx_a, tri_idx_b, witness_a, witness_b).
+    /// Every triangle of `A` is compared with every triangle of `B` using the
+    /// exact triangle-triangle distance ([`triangle_triangle_distance`]):
+    /// the minimum over vertex-face and edge-edge feature pairs, and zero for
+    /// triangles that cross, touch or overlap. A pair is skipped without being
+    /// examined when the bounding boxes of its two triangles are already
+    /// farther apart than the best distance found so far, and the search stops
+    /// as soon as a pair with distance zero is found. Meshes that intersect
+    /// therefore report distance zero.
+    ///
+    /// Returns `(distance, tri_idx_a, tri_idx_b, witness_a, witness_b)`, where
+    /// the witnesses are the closest points on the two triangles (identical for
+    /// intersecting meshes). When either mesh has no triangles the distance is
+    /// `f64::INFINITY` and the rest is zeroed.
+    ///
+    /// # Panics
+    ///
+    /// Panics when an index is out of range for its vertex slice.
     pub fn query(
         verts_a: &[[f64; 3]],
         idx_a: &[usize],
         verts_b: &[[f64; 3]],
         idx_b: &[usize],
     ) -> (f64, usize, usize, [f64; 3], [f64; 3]) {
-        let na = idx_a.len() / 3;
-        let nb = idx_b.len() / 3;
+        let tris_a = mesh_triangles(verts_a, idx_a);
+        let tris_b = mesh_triangles(verts_b, idx_b);
+        let bounds_b: Vec<([f64; 3], [f64; 3])> = tris_b.iter().map(triangle_bounds).collect();
+
         let mut min_dist = f64::INFINITY;
         let mut best = (0usize, 0usize, [0.0f64; 3], [0.0f64; 3]);
 
-        for ta in 0..na {
-            let v0a = verts_a[idx_a[3 * ta]];
-            let v1a = verts_a[idx_a[3 * ta + 1]];
-            let v2a = verts_a[idx_a[3 * ta + 2]];
-            // Centroid of triangle A as query point
-            let centroid_a = scale3(add3(add3(v0a, v1a), v2a), 1.0 / 3.0);
-            for tb in 0..nb {
-                let v0b = verts_b[idx_b[3 * tb]];
-                let v1b = verts_b[idx_b[3 * tb + 1]];
-                let v2b = verts_b[idx_b[3 * tb + 2]];
-                let (q_b, _) = PointTriangleDist::closest_point(centroid_a, v0b, v1b, v2b);
-                let (q_a, _) = PointTriangleDist::closest_point(q_b, v0a, v1a, v2a);
-                let d = dist3(q_a, q_b);
-                if d < min_dist {
-                    min_dist = d;
-                    best = (ta, tb, q_a, q_b);
+        'search: for (ta, tri_a) in tris_a.iter().enumerate() {
+            let (lo_a, hi_a) = triangle_bounds(tri_a);
+            for (tb, tri_b) in tris_b.iter().enumerate() {
+                let (lo_b, hi_b) = bounds_b[tb];
+                if box_gap_sq(lo_a, hi_a, lo_b, hi_b) >= min_dist * min_dist {
+                    continue;
+                }
+                let pair = triangle_triangle_distance(
+                    tri_a[0], tri_a[1], tri_a[2], tri_b[0], tri_b[1], tri_b[2],
+                );
+                if pair.distance < min_dist {
+                    min_dist = pair.distance;
+                    best = (ta, tb, pair.point_a, pair.point_b);
+                    if min_dist <= 0.0 {
+                        break 'search;
+                    }
                 }
             }
         }
@@ -1103,5 +1156,170 @@ mod tests {
         let r = SpatialQueryResult::new(1.0, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
         assert!(r.valid);
         assert!((r.distance - 1.0).abs() < 1e-12);
+    }
+
+    // ── MeshMeshDist ─────────────────────────────────────────────────────────
+
+    /// Closed cube mesh `[lo, lo + size]^3` as (vertices, 12 triangles).
+    fn cube_mesh(lo: [f64; 3], size: f64) -> (Vec<[f64; 3]>, Vec<usize>) {
+        let mut verts = Vec::new();
+        for i in 0..8usize {
+            verts.push([
+                lo[0] + if i & 1 == 0 { 0.0 } else { size },
+                lo[1] + if i & 2 == 0 { 0.0 } else { size },
+                lo[2] + if i & 4 == 0 { 0.0 } else { size },
+            ]);
+        }
+        let quads: [[usize; 4]; 6] = [
+            [0, 1, 3, 2],
+            [4, 6, 7, 5],
+            [0, 4, 5, 1],
+            [2, 3, 7, 6],
+            [0, 2, 6, 4],
+            [1, 5, 7, 3],
+        ];
+        let mut indices = Vec::new();
+        for q in quads {
+            indices.extend_from_slice(&[q[0], q[1], q[2], q[0], q[2], q[3]]);
+        }
+        (verts, indices)
+    }
+
+    fn assert_vec_close(a: [f64; 3], b: [f64; 3], what: &str) {
+        assert!(dist3(a, b) < 1e-9, "{what}: {a:?} vs {b:?}");
+    }
+
+    #[test]
+    fn test_mesh_mesh_dist_separated_cubes() {
+        let (va, ia) = cube_mesh([0.0; 3], 1.0);
+        let (vb, ib) = cube_mesh([3.0, 0.0, 0.0], 1.0);
+        let (d, ta, tb, wa, wb) = MeshMeshDist::query(&va, &ia, &vb, &ib);
+        assert!((d - 2.0).abs() < 1e-12, "distance {d}");
+        assert!((dist3(wa, wb) - d).abs() < 1e-12);
+        assert!(
+            (wa[0] - 1.0).abs() < 1e-12,
+            "witness on the facing face of A"
+        );
+        assert!(
+            (wb[0] - 3.0).abs() < 1e-12,
+            "witness on the facing face of B"
+        );
+        assert!(ta < 12 && tb < 12);
+    }
+
+    #[test]
+    fn test_mesh_mesh_dist_closest_features_are_edges_not_face_centres() {
+        // B is offset diagonally so that the closest features are two parallel
+        // edges (a vertex/edge pair away from every triangle centroid).
+        let (va, ia) = cube_mesh([0.0; 3], 1.0);
+        let (vb, ib) = cube_mesh([1.5, 1.5, 0.0], 1.0);
+        let (d, _, _, wa, wb) = MeshMeshDist::query(&va, &ia, &vb, &ib);
+        assert!((d - 0.5_f64.sqrt()).abs() < 1e-12, "distance {d}");
+        assert!((wa[0] - 1.0).abs() < 1e-12 && (wa[1] - 1.0).abs() < 1e-12);
+        assert!((wb[0] - 1.5).abs() < 1e-12 && (wb[1] - 1.5).abs() < 1e-12);
+        assert!((wa[2] - wb[2]).abs() < 1e-12, "the edges are parallel to z");
+    }
+
+    #[test]
+    fn test_mesh_mesh_dist_corner_to_corner() {
+        let (va, ia) = cube_mesh([0.0; 3], 1.0);
+        let (vb, ib) = cube_mesh([2.0, 2.0, 2.0], 1.0);
+        let (d, _, _, wa, wb) = MeshMeshDist::query(&va, &ia, &vb, &ib);
+        assert!((d - 3.0_f64.sqrt()).abs() < 1e-12, "distance {d}");
+        assert_vec_close(wa, [1.0, 1.0, 1.0], "corner of A");
+        assert_vec_close(wb, [2.0, 2.0, 2.0], "corner of B");
+    }
+
+    #[test]
+    fn test_mesh_mesh_dist_intersecting_cubes_report_zero() {
+        let (va, ia) = cube_mesh([0.0; 3], 1.0);
+        let (vb, ib) = cube_mesh([0.5, 0.5, 0.5], 1.0);
+        let (d, _, _, wa, wb) = MeshMeshDist::query(&va, &ia, &vb, &ib);
+        assert_eq!(d, 0.0);
+        assert_eq!(wa, wb);
+        // Cubes sharing a face plane region.
+        let (vc, ic) = cube_mesh([1.0, 0.0, 0.0], 1.0);
+        let (d, _, _, _, _) = MeshMeshDist::query(&va, &ia, &vc, &ic);
+        assert_eq!(d, 0.0, "cubes touching along a face");
+    }
+
+    #[test]
+    fn test_mesh_mesh_dist_crossed_triangles_and_shared_vertex() {
+        let a = [[-2.0, -2.0, 0.0], [2.0, -2.0, 0.0], [0.0, 2.0, 0.0]];
+        let b = [[0.0, -0.5, -1.0], [0.0, -0.5, 1.0], [0.0, 0.5, 1.0]];
+        let (d, ta, tb, wa, wb) = MeshMeshDist::query(&a, &[0, 1, 2], &b, &[0, 1, 2]);
+        assert_eq!((d, ta, tb), (0.0, 0, 0));
+        assert_eq!(wa, wb);
+        let c = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let e = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+        let (d, _, _, wa, _) = MeshMeshDist::query(&c, &[0, 1, 2], &e, &[0, 1, 2]);
+        assert_eq!(d, 0.0);
+        assert_vec_close(wa, [0.0; 3], "shared vertex");
+    }
+
+    #[test]
+    fn test_mesh_mesh_dist_nested_surfaces_are_apart() {
+        // A small cube inside a larger one: the surfaces never meet.
+        let (va, ia) = cube_mesh([0.0; 3], 1.0);
+        let (vb, ib) = cube_mesh([-1.0; 3], 3.0);
+        let (d, _, _, _, _) = MeshMeshDist::query(&va, &ia, &vb, &ib);
+        assert!((d - 1.0).abs() < 1e-12, "distance {d}");
+    }
+
+    #[test]
+    fn test_mesh_mesh_dist_empty_meshes() {
+        let (va, ia) = cube_mesh([0.0; 3], 1.0);
+        let (d, ta, tb, wa, wb) = MeshMeshDist::query(&va, &ia, &[], &[]);
+        assert!(d.is_infinite());
+        assert_eq!((ta, tb, wa, wb), (0, 0, [0.0; 3], [0.0; 3]));
+        let (d, _, _, _, _) = MeshMeshDist::query(&[], &[], &va, &ia);
+        assert!(d.is_infinite());
+        // Trailing indices that do not complete a triangle are ignored.
+        let (d, _, _, _, _) = MeshMeshDist::query(&va, &[0, 1], &va, &ia);
+        assert!(d.is_infinite());
+    }
+
+    #[test]
+    fn test_mesh_mesh_dist_pruned_search_equals_brute_force() {
+        use crate::proximity_query::triangle_triangle_distance;
+        let mut state = 0x5EED_1234_ABCD_0007u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for case in 0..25 {
+            let mut build = |offset: f64, triangles: usize| {
+                let verts: Vec<[f64; 3]> = (0..triangles * 3)
+                    .map(|_| [next() * 4.0 + offset, next() * 4.0, next() * 4.0])
+                    .collect();
+                let indices: Vec<usize> = (0..triangles * 3).collect();
+                (verts, indices)
+            };
+            let (va, ia) = build(0.0, 20);
+            let (vb, ib) = build(6.0, 20);
+            let (d, ta, tb, wa, wb) = MeshMeshDist::query(&va, &ia, &vb, &ib);
+            let mut expected = f64::INFINITY;
+            for i in 0..20 {
+                for j in 0..20 {
+                    let r = triangle_triangle_distance(
+                        va[3 * i],
+                        va[3 * i + 1],
+                        va[3 * i + 2],
+                        vb[3 * j],
+                        vb[3 * j + 1],
+                        vb[3 * j + 2],
+                    );
+                    expected = expected.min(r.distance);
+                }
+            }
+            assert!(
+                (d - expected).abs() < 1e-12,
+                "case {case}: pruned {d} vs brute force {expected}"
+            );
+            assert!((dist3(wa, wb) - d).abs() < 1e-9, "case {case}: witnesses");
+            assert!(ta < 20 && tb < 20);
+        }
     }
 }

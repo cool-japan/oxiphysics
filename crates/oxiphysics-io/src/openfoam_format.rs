@@ -37,6 +37,7 @@
 use std::fmt::Write as FmtWrite;
 
 use crate::Error as IoError;
+use crate::openfoam::strip_foam_comments;
 
 // ── Boundary patch ────────────────────────────────────────────────────────────
 
@@ -117,123 +118,331 @@ impl FoamField {
 
 // ── Parser helpers ────────────────────────────────────────────────────────────
 
-/// Extract the content of a `(…)` block from a whitespace-normalised string.
-///
-/// Returns the text between the first `(` and the matching `)`.
-fn extract_paren_block(s: &str) -> Option<&str> {
-    let start = s.find('(')?;
-    let end = s.rfind(')')?;
-    if end > start {
-        Some(&s[start + 1..end])
-    } else {
-        None
-    }
+/// A parenthesised OpenFOAM list `[N] ( ... )` located inside a larger text.
+struct ListBlock<'a> {
+    /// The size written in front of the opening parenthesis, when present.
+    declared: Option<usize>,
+    /// The text between the opening parenthesis and its matching closing one.
+    body: &'a str,
+    /// The text after the matching closing parenthesis.
+    rest: &'a str,
 }
 
-/// Parse a `nonuniform List`scalar` block.
-fn parse_scalar_list(list_text: &str) -> Result<Vec<f64>, IoError> {
-    let body = extract_paren_block(list_text)
-        .ok_or_else(|| IoError::Parse("missing ( ) in scalar list".into()))?;
-    body.split_whitespace()
-        .filter(|s| !s.is_empty())
-        .map(|tok| {
-            tok.parse::<f64>()
-                .map_err(|e| IoError::Parse(e.to_string()))
-        })
-        .collect()
-}
-
-/// Parse a `nonuniform List`vector` block — each entry is `(vx vy vz)`.
-fn parse_vector_list(list_text: &str) -> Result<Vec<f64>, IoError> {
-    let body = extract_paren_block(list_text)
-        .ok_or_else(|| IoError::Parse("missing outer ( ) in vector list".into()))?;
-    let mut values: Vec<f64> = Vec::new();
-    let mut remaining = body.trim();
-    while !remaining.is_empty() {
-        if let Some(open) = remaining.find('(') {
-            let close = remaining[open..].find(')').map(|i| open + i);
-            if let Some(close) = close {
-                let triple = &remaining[open + 1..close];
-                for tok in triple.split_whitespace() {
-                    values.push(
-                        tok.parse::<f64>()
-                            .map_err(|e| IoError::Parse(e.to_string()))?,
-                    );
-                }
-                remaining = &remaining[close + 1..];
-            } else {
-                break;
-            }
-        } else {
-            break;
+impl ListBlock<'_> {
+    /// Fail when the declared size differs from the number of entries found.
+    fn check_count(&self, found: usize, what: &str) -> Result<(), IoError> {
+        match self.declared {
+            Some(declared) if declared != found => Err(IoError::Parse(format!(
+                "{what} list declares {declared} entries but holds {found}"
+            ))),
+            _ => Ok(()),
         }
     }
+}
+
+/// Find the first `( ... )` block of `s`.
+///
+/// The closing parenthesis is the one that matches the first opening
+/// parenthesis (nested ones are counted), so anything that follows the list,
+/// such as a `boundaryField` section full of parentheses, is never swallowed
+/// into it.  `what` names the list in error messages.
+fn read_list_block<'a>(s: &'a str, what: &str) -> Result<ListBlock<'a>, IoError> {
+    let open = s
+        .find('(')
+        .ok_or_else(|| IoError::Parse(format!("missing ( ) in {what}")))?;
+    let mut depth = 0usize;
+    let mut close = None;
+    for (offset, c) in s[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    close = Some(open + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close.ok_or_else(|| IoError::Parse(format!("unbalanced parentheses in {what}")))?;
+    Ok(ListBlock {
+        declared: declared_size(&s[..open])?,
+        body: &s[open + 1..close],
+        rest: &s[close + 1..],
+    })
+}
+
+/// The list size written directly in front of an opening parenthesis, such as
+/// the `3` of `List<scalar> 3 (` or of `3(`.  Digits that end an identifier or
+/// a number are not a size.
+fn declared_size(before: &str) -> Result<Option<usize>, IoError> {
+    let before = before.trim_end();
+    let digits_start = before
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map(|(index, _)| index);
+    let Some(start) = digits_start else {
+        return Ok(None);
+    };
+    if before[..start]
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-' | '+' | '$'))
+    {
+        return Ok(None);
+    }
+    before[start..]
+        .parse::<usize>()
+        .map(Some)
+        .map_err(|e| IoError::Parse(format!("bad list size '{}': {e}", &before[start..])))
+}
+
+/// Parse a scalar list `[N] ( v0 v1 ... )`; the declared size must match.
+fn parse_scalar_list(list_text: &str) -> Result<Vec<f64>, IoError> {
+    let block = read_list_block(list_text, "scalar list")?;
+    let values = block
+        .body
+        .split_whitespace()
+        .map(|tok| {
+            tok.parse::<f64>()
+                .map_err(|e| IoError::Parse(format!("bad scalar '{tok}': {e}")))
+        })
+        .collect::<Result<Vec<f64>, IoError>>()?;
+    block.check_count(values.len(), "scalar")?;
     Ok(values)
+}
+
+/// Parse consecutive `(x y z)` groups into a flat `[x, y, z, ...]` vector and
+/// the number of groups.
+fn parse_vector_groups(body: &str) -> Result<(Vec<f64>, usize), IoError> {
+    let mut values = Vec::new();
+    let mut count = 0usize;
+    let mut remaining = body.trim();
+    while !remaining.is_empty() {
+        let inner = remaining.strip_prefix('(').ok_or_else(|| {
+            IoError::Parse(format!(
+                "expected '(' at the start of a vector, found '{}'",
+                remaining.chars().take(20).collect::<String>()
+            ))
+        })?;
+        let close = inner
+            .find(')')
+            .ok_or_else(|| IoError::Parse("unterminated vector, missing ')'".into()))?;
+        let components = inner[..close]
+            .split_whitespace()
+            .map(|tok| {
+                tok.parse::<f64>()
+                    .map_err(|e| IoError::Parse(format!("bad vector component '{tok}': {e}")))
+            })
+            .collect::<Result<Vec<f64>, IoError>>()?;
+        if components.len() != 3 {
+            return Err(IoError::Parse(format!(
+                "a vector needs 3 components, found {}",
+                components.len()
+            )));
+        }
+        values.extend_from_slice(&components);
+        count += 1;
+        remaining = inner[close + 1..].trim_start();
+    }
+    Ok((values, count))
+}
+
+/// Parse a vector list `[N] ( (x y z) ... )` into a flat `[x, y, z, ...]`
+/// vector; the declared size must match.
+fn parse_vector_list(list_text: &str) -> Result<Vec<f64>, IoError> {
+    let block = read_list_block(list_text, "vector list")?;
+    let (values, count) = parse_vector_groups(block.body)?;
+    block.check_count(count, "vector")?;
+    Ok(values)
+}
+
+/// The text that follows the `internalField` keyword, or `None` when the
+/// keyword is absent.  Mentions such as `$internalField` or a longer
+/// identifier do not count.
+fn internal_field_entry(src: &str) -> Option<&str> {
+    const KEY: &str = "internalField";
+    src.match_indices(KEY).find_map(|(pos, _)| {
+        let before_ok = src[..pos]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '_' | '$' | ':')));
+        let after = &src[pos + KEY.len()..];
+        let after_ok = after.chars().next().is_none_or(char::is_whitespace);
+        (before_ok && after_ok).then_some(after)
+    })
+}
+
+/// Split the leading word (ended by whitespace, `(` or `;`) off `s`.
+fn split_keyword(s: &str) -> (&str, &str) {
+    let s = s.trim_start();
+    let end = s
+        .find(|c: char| c.is_whitespace() || c == '(' || c == ';')
+        .unwrap_or(s.len());
+    s.split_at(end)
+}
+
+/// The text of a `nonuniform` entry starting at its list: skips the optional
+/// `List<element>` marker and refuses to run on into later entries.
+fn nonuniform_list<'a>(rest: &'a str, element: &str) -> Result<&'a str, IoError> {
+    let rest = rest.trim_start();
+    let marker = format!("List<{element}>");
+    let list_text = if rest.starts_with("List<") {
+        rest.strip_prefix(marker.as_str())
+            .ok_or_else(|| IoError::Parse(format!("expected a {marker} internalField")))?
+    } else {
+        rest
+    };
+    match (list_text.find('('), list_text.find(';')) {
+        (None, _) => Err(IoError::Parse(
+            "nonuniform internalField without a list".into(),
+        )),
+        (Some(open), Some(end)) if end < open => Err(IoError::Parse(
+            "nonuniform internalField without a list".into(),
+        )),
+        _ => Ok(list_text),
+    }
+}
+
+/// Largest cell count a uniform `internalField` is expanded to.
+const MAX_UNIFORM_CELLS: usize = 1 << 26;
+
+/// Repeat the components of a uniform value once per cell.
+fn expand_uniform(components: &[f64], n_cells: usize) -> Result<Vec<f64>, IoError> {
+    if n_cells > MAX_UNIFORM_CELLS {
+        return Err(IoError::Parse(format!(
+            "cannot expand a uniform field to {n_cells} cells (limit {MAX_UNIFORM_CELLS})"
+        )));
+    }
+    let mut values = Vec::with_capacity(n_cells * components.len());
+    for _ in 0..n_cells {
+        values.extend_from_slice(components);
+    }
+    Ok(values)
+}
+
+/// Values of the `internalField` entry `entry` of a scalar field.
+fn parse_scalar_internal_field(entry: &str, src: &str) -> Result<Vec<f64>, IoError> {
+    let (keyword, rest) = split_keyword(entry);
+    match keyword {
+        "uniform" => {
+            let token = rest
+                .split(|c: char| c.is_whitespace() || c == ';')
+                .find(|t| !t.is_empty())
+                .ok_or_else(|| IoError::Parse("missing uniform value".into()))?;
+            let value: f64 = token
+                .parse()
+                .map_err(|e: std::num::ParseFloatError| IoError::Parse(e.to_string()))?;
+            expand_uniform(&[value], detect_n_cells(src))
+        }
+        "nonuniform" => parse_scalar_list(nonuniform_list(rest, "scalar")?),
+        other => Err(IoError::Parse(format!(
+            "unsupported internalField form '{other}'"
+        ))),
+    }
+}
+
+/// Values (flat `[x, y, z, ...]`) of the `internalField` entry `entry` of a
+/// vector field.
+fn parse_vector_internal_field(entry: &str, src: &str) -> Result<Vec<f64>, IoError> {
+    let (keyword, rest) = split_keyword(entry);
+    match keyword {
+        "uniform" => {
+            let rest = rest.trim_start();
+            if !rest.starts_with('(') {
+                return Err(IoError::Parse(
+                    "a uniform vector internalField needs (x y z)".into(),
+                ));
+            }
+            let block = read_list_block(rest, "uniform vector")?;
+            let components = block
+                .body
+                .split_whitespace()
+                .map(|tok| {
+                    tok.parse::<f64>()
+                        .map_err(|e| IoError::Parse(format!("bad vector component '{tok}': {e}")))
+                })
+                .collect::<Result<Vec<f64>, IoError>>()?;
+            if components.len() != 3 {
+                return Err(IoError::Parse(format!(
+                    "a vector needs 3 components, found {}",
+                    components.len()
+                )));
+            }
+            expand_uniform(&components, detect_n_cells(src))
+        }
+        "nonuniform" => parse_vector_list(nonuniform_list(rest, "vector")?),
+        other => Err(IoError::Parse(format!(
+            "unsupported internalField form '{other}'"
+        ))),
+    }
 }
 
 // ── Public parsers ────────────────────────────────────────────────────────────
 
 /// Parse an OpenFOAM scalar field file (simplified).
 ///
-/// Recognises the `internalField nonuniform List`scalar` section.
+/// Recognises the `internalField` entry in its `uniform <value>` and
+/// `nonuniform List<scalar> N ( ... )` forms (the size may be glued to the
+/// parenthesis, `N( ... )`).  Only the `internalField` entry is read, so
+/// parentheses and lists in the `boundaryField` section never reach the cell
+/// values; the declared list size must match the number of values.
 ///
 /// # Errors
 /// Returns `Error::Parse` on malformed input.
 pub fn parse_foam_scalar(src: &str, name: impl Into<String>) -> Result<FoamField, IoError> {
-    // Find the List<scalar> block
-    let marker = "List<scalar>";
-    if let Some(pos) = src.find(marker) {
-        let after = &src[pos + marker.len()..];
-        // skip the count line then read (…)
-        let values = parse_scalar_list(after)?;
-        let mut field = FoamField::new_scalar(name, values);
-        // parse simple boundary patches
-        field.patches = parse_boundary_patches(src);
-        return Ok(field);
-    }
-    // Try uniform value
-    let uniform_marker = "internalField   uniform";
-    if let Some(pos) = src.find(uniform_marker) {
-        let after = &src[pos + uniform_marker.len()..];
-        let tok = after
-            .split_whitespace()
-            .next()
-            .ok_or_else(|| IoError::Parse("missing uniform value".into()))?;
-        let val: f64 = tok
-            .trim_end_matches(';')
-            .parse()
-            .map_err(|e: std::num::ParseFloatError| IoError::Parse(e.to_string()))?;
-        let n_cells = detect_n_cells(src);
-        let mut field = FoamField::new_scalar(name, vec![val; n_cells]);
-        field.patches = parse_boundary_patches(src);
-        return Ok(field);
-    }
-    Err(IoError::Parse(
-        "could not find internalField in foam scalar file".into(),
-    ))
+    let cleaned = strip_foam_comments(src);
+    let values = match internal_field_entry(&cleaned) {
+        Some(entry) => parse_scalar_internal_field(entry, src)?,
+        None => {
+            // Bare snippet without the keyword: read the first scalar list.
+            let marker = "List<scalar>";
+            let pos = cleaned.find(marker).ok_or_else(|| {
+                IoError::Parse("could not find internalField in foam scalar file".into())
+            })?;
+            parse_scalar_list(&cleaned[pos + marker.len()..])?
+        }
+    };
+    let mut field = FoamField::new_scalar(name, values);
+    field.patches = parse_boundary_patches(src);
+    Ok(field)
 }
 
 /// Parse an OpenFOAM vector field file (simplified).
 ///
-/// Recognises the `internalField nonuniform List`vector` section.
+/// Recognises the `internalField` entry in its `uniform (x y z)` and
+/// `nonuniform List<vector> N ( (x y z) ... )` forms.  Only the
+/// `internalField` entry is read, so the vectors of `value uniform (...)`
+/// entries in the `boundaryField` section are never mistaken for cells; the
+/// declared list size must match the number of vectors.
 ///
 /// # Errors
 /// Returns `Error::Parse` on malformed input.
 pub fn parse_foam_vector(src: &str, name: impl Into<String>) -> Result<FoamField, IoError> {
-    let marker = "List<vector>";
-    if let Some(pos) = src.find(marker) {
-        let after = &src[pos + marker.len()..];
-        let values = parse_vector_list(after)?;
-        let mut field = FoamField::new_vector(name, values);
-        field.patches = parse_boundary_patches(src);
-        return Ok(field);
-    }
-    Err(IoError::Parse(
-        "could not find List<vector> in foam vector file".into(),
-    ))
+    let cleaned = strip_foam_comments(src);
+    let values = match internal_field_entry(&cleaned) {
+        Some(entry) => parse_vector_internal_field(entry, src)?,
+        None => {
+            // Bare snippet without the keyword: read the first vector list.
+            let marker = "List<vector>";
+            let pos = cleaned.find(marker).ok_or_else(|| {
+                IoError::Parse("could not find internalField in foam vector file".into())
+            })?;
+            parse_vector_list(&cleaned[pos + marker.len()..])?
+        }
+    };
+    let mut field = FoamField::new_vector(name, values);
+    field.patches = parse_boundary_patches(src);
+    Ok(field)
 }
 
-/// Detect number of cells from `// nCells: N` comment if present, otherwise 0.
+/// Detect the number of cells from a `// nCells: N` comment.
+///
+/// A field file does not store its cell count, so without that comment a
+/// `uniform` internal field is represented by a single cell (`1`).
 fn detect_n_cells(src: &str) -> usize {
     for line in src.lines() {
         let trimmed = line.trim();
@@ -416,65 +625,61 @@ impl FoamMesh {
 ///
 /// Format: `n`\n(\n(x y z)\n…\n)`
 fn parse_foam_points(src: &str) -> Result<Vec<f64>, IoError> {
-    let body = extract_paren_block(src)
-        .ok_or_else(|| IoError::Parse("missing ( ) in points file".into()))?;
-    let mut pts: Vec<f64> = Vec::new();
-    for chunk in body.split('(').skip(1) {
-        let close = chunk
-            .find(')')
-            .ok_or_else(|| IoError::Parse("missing ) in point".into()))?;
-        let triple = &chunk[..close];
-        for tok in triple.split_whitespace() {
-            pts.push(
-                tok.parse::<f64>()
-                    .map_err(|e| IoError::Parse(e.to_string()))?,
-            );
-        }
-    }
-    Ok(pts)
+    let cleaned = strip_foam_comments(src);
+    let block = read_list_block(&cleaned, "points file")?;
+    let (points, count) = parse_vector_groups(block.body)?;
+    block.check_count(count, "points")?;
+    Ok(points)
 }
 
 /// Parse a simplified OpenFOAM `owner` or `neighbour` file (ASCII).
 fn parse_foam_index_list(src: &str) -> Result<Vec<usize>, IoError> {
-    let body = extract_paren_block(src)
-        .ok_or_else(|| IoError::Parse("missing ( ) in index list".into()))?;
-    body.split_whitespace()
-        .filter(|s| !s.is_empty())
+    let cleaned = strip_foam_comments(src);
+    let block = read_list_block(&cleaned, "index list")?;
+    let indices = block
+        .body
+        .split_whitespace()
         .map(|tok| {
             tok.parse::<usize>()
-                .map_err(|e| IoError::Parse(e.to_string()))
+                .map_err(|e| IoError::Parse(format!("bad cell index '{tok}': {e}")))
         })
-        .collect()
+        .collect::<Result<Vec<usize>, IoError>>()?;
+    block.check_count(indices.len(), "index")?;
+    Ok(indices)
 }
 
 /// Parse a simplified OpenFOAM `faces` file (ASCII).
 ///
 /// Each face entry: `n(p0 p1 … pn-1)`
 fn parse_foam_faces(src: &str) -> Result<Vec<Vec<usize>>, IoError> {
-    let body = extract_paren_block(src)
-        .ok_or_else(|| IoError::Parse("missing outer ( ) in faces file".into()))?;
+    let cleaned = strip_foam_comments(src);
+    let outer = read_list_block(&cleaned, "faces file")?;
     let mut faces: Vec<Vec<usize>> = Vec::new();
-    let mut cursor = body.trim();
-    loop {
-        cursor = cursor.trim_start();
-        if cursor.is_empty() {
-            break;
+    let mut cursor = outer.body.trim();
+    while !cursor.is_empty() {
+        let open = cursor
+            .find('(')
+            .ok_or_else(|| IoError::Parse("missing ( ) in face".into()))?;
+        let prefix = cursor[..open].trim();
+        if !prefix.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(IoError::Parse(format!(
+                "unexpected text '{prefix}' in the faces list"
+            )));
         }
-        // The face entry starts with an optional count followed by '('
-        let Some(open) = cursor.find('(') else { break };
-        let close = cursor[open..].find(')').map(|i| open + i);
-        let Some(close) = close else { break };
-        let face_str = &cursor[open + 1..close];
-        let pts: Vec<usize> = face_str
+        let face = read_list_block(cursor, "face")?;
+        let vertices = face
+            .body
             .split_whitespace()
-            .map(|t| {
-                t.parse::<usize>()
-                    .map_err(|e| IoError::Parse(e.to_string()))
+            .map(|tok| {
+                tok.parse::<usize>()
+                    .map_err(|e| IoError::Parse(format!("bad vertex index '{tok}': {e}")))
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        faces.push(pts);
-        cursor = &cursor[close + 1..];
+            .collect::<Result<Vec<usize>, IoError>>()?;
+        face.check_count(vertices.len(), "face")?;
+        faces.push(vertices);
+        cursor = face.rest.trim_start();
     }
+    outer.check_count(faces.len(), "faces")?;
     Ok(faces)
 }
 
@@ -504,6 +709,9 @@ pub fn read_foam_mesh(
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod list_tests;
 
 #[cfg(test)]
 mod tests {

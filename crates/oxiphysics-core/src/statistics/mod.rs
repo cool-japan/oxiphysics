@@ -8,3 +8,6 @@ pub mod welfordonline_traits;
 // Re-export all types
 pub use functions::*;
 pub use types::*;
+
+#[cfg(test)]
+mod regression_tests;

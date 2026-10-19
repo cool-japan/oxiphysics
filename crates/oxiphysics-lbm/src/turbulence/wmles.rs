@@ -8,6 +8,7 @@
 //! - [`collide_stream_wmles`]: Combined collision and streaming with WMLES closure.
 //! - [`wmles_eddy_viscosity_profile`]: Wall-normal eddy viscosity profile.
 
+use super::functions::smagorinsky_tau;
 use crate::turbulent_channel::ChannelFlow;
 use crate::wall_model::WallModeledLes;
 
@@ -119,10 +120,6 @@ pub fn collide_stream_wmles(channel: &mut ChannelFlow, coupling: &WmlesChannelCo
     let cs = coupling.cs_smag;
     let forcing = channel.forcing;
 
-    // cs^2 / (2*cs4): Smagorinsky coefficient for tau computation
-    // tau_eff = 0.5*(tau + sqrt(tau^2 + 18*cs^2*|Pi_neq|/(rho*cs4)))
-    let cs4 = 1.0 / 9.0; // cs^2 in LBM = 1/3; cs4 = (1/3)^2 = 1/9
-
     // Collision step
     for i in 0..nx {
         for j in 0..ny {
@@ -154,9 +151,7 @@ pub fn collide_stream_wmles(channel: &mut ChannelFlow, coupling: &WmlesChannelCo
                 // Interior: Smagorinsky SGS
                 let tau_base = 3.0 * nu + 0.5;
                 let pi_mag = pi_neq_magnitude(&channel.f_dist, base, rho, ux, uy);
-                let tau_eff = 0.5
-                    * (tau_base
-                        + (tau_base * tau_base + 18.0 * cs * cs * pi_mag / (rho * cs4)).sqrt());
+                let tau_eff = smagorinsky_tau(tau_base, cs, pi_mag, rho);
                 1.0 / tau_eff.max(0.5 + 1e-10)
             };
 

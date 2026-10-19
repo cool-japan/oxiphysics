@@ -55,11 +55,22 @@ pub fn beta_mol_kjmol(temp: f64) -> f64 {
 /// Compute the log-sum-exp of a slice to avoid numerical overflow.
 ///
 /// ln Σ_i exp(x_i) = x_max + ln Σ_i exp(x_i - x_max)
+///
+/// An empty slice, or a slice whose entries are all `−∞`, gives `−∞` (the
+/// logarithm of an empty or vanishing sum); a `+∞` entry gives `+∞` and a NaN
+/// entry gives NaN.
 pub fn log_sum_exp(values: &[f64]) -> f64 {
     if values.is_empty() {
         return f64::NEG_INFINITY;
     }
+    if values.iter().any(|x| x.is_nan()) {
+        return f64::NAN;
+    }
     let xmax = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if !xmax.is_finite() {
+        // Every term is exp(−∞) = 0, or one of them is infinite.
+        return xmax;
+    }
     let sum: f64 = values.iter().map(|&x| (x - xmax).exp()).sum();
     xmax + sum.ln()
 }
@@ -310,48 +321,90 @@ pub fn fermi(x: f64) -> f64 {
     1.0 / (1.0 + x.exp())
 }
 
+/// Natural logarithm of the Fermi function, `ln f(x) = −ln(1 + eˣ)`.
+///
+/// Evaluated as `−softplus(x)`, so it neither overflows for large positive `x`
+/// nor underflows for large negative `x`: `ln f(+∞) = −∞` and `ln f(−∞) = 0`.
+#[inline]
+fn log_fermi(x: f64) -> f64 {
+    -(x.max(0.0) + (-x.abs()).exp().ln_1p())
+}
+
+/// `ln ⟨f(β·ΔU + offset)⟩`, the logarithm of the arithmetic mean of the Fermi
+/// weights of the samples `du`, evaluated in log space.
+///
+/// The result is `−∞` when every weight vanishes; `du` must not be empty.
+fn log_mean_fermi(du: &[f64], beta: f64, offset: f64) -> f64 {
+    let log_weights: Vec<f64> = du.iter().map(|&d| log_fermi(beta * d + offset)).collect();
+    log_sum_exp(&log_weights) - (du.len() as f64).ln()
+}
+
+/// `⟨f²⟩/⟨f⟩² − 1` of the Fermi weights `f(β·ΔU + offset)` of the samples `du`,
+/// evaluated in log space (the ratio is the squared relative standard deviation of
+/// the weights).  Returns NaN when every weight vanishes; `du` must not be empty.
+fn fermi_relative_variance(du: &[f64], beta: f64, offset: f64) -> f64 {
+    let log_weights: Vec<f64> = du.iter().map(|&d| log_fermi(beta * d + offset)).collect();
+    let log_squares: Vec<f64> = log_weights.iter().map(|&lw| 2.0 * lw).collect();
+    // ⟨f²⟩/⟨f⟩² = n Σ f² / (Σ f)²
+    let ln_ratio =
+        (du.len() as f64).ln() + log_sum_exp(&log_squares) - 2.0 * log_sum_exp(&log_weights);
+    if !ln_ratio.is_finite() {
+        return f64::NAN;
+    }
+    ln_ratio.exp_m1().max(0.0)
+}
+
 /// Single BAR iteration to update the free energy estimate ΔA_n+1.
 ///
-/// Solves the BAR self-consistent equation:
-///   Σ_{A} f(β(ΔU_AB − M − ΔA)) = Σ_{B} f(β(ΔU_BA + M − ΔA))
+/// Solves the BAR self-consistent equation (Bennett 1976; Shirts et al. 2003)
+///
+/// ```text
+/// Σ_{i∈A} f(β(ΔU_AB,i − ΔA + M)) = Σ_{j∈B} f(β(ΔU_BA,j + ΔA − M)),     M = k_B T ln(n_A / n_B),
+/// ```
+///
+/// where `f(x) = 1/(1 + eˣ)`.  Bennett's identity
+///
+/// ```text
+/// ΔA = C + k_B T ln( ⟨f(β(ΔU_BA + C))⟩_B / ⟨f(β(ΔU_AB − C))⟩_A )
+/// ```
+///
+/// holds for any shift `C`; the iteration evaluates both averages at
+/// `C = ΔA_prev − M`, the optimal shift for the sample sizes `n_A` and `n_B`, and
+/// returns the right-hand side.  The fixed point of the iteration is the solution
+/// of the BAR equation above, which for unequal sample sizes differs from the
+/// `M = 0` solution by `k_B T ln(n_A / n_B)`.
 ///
 /// `du_ab` = U_B − U_A values sampled from A (kJ mol⁻¹).
 /// `du_ba` = U_A − U_B values sampled from B (kJ mol⁻¹).
-/// `da_prev` current estimate of ΔA (kJ mol⁻¹).
+/// `da_prev` current estimate of ΔA = A_B − A_A (kJ mol⁻¹).
 /// `temp` temperature (K).
 /// `m` = k_B T ln(n_A / n_B) (kJ mol⁻¹).
 ///
-/// Returns the updated ΔA estimate.
+/// The averages are evaluated in log space, so energy differences of thousands of
+/// `k_B T` neither overflow nor underflow.  Returns `da_prev` unchanged when
+/// either sample set is empty or when every Fermi weight of one side vanishes.
 pub fn bar_iteration(du_ab: &[f64], du_ba: &[f64], da_prev: f64, temp: f64, m: f64) -> f64 {
     if du_ab.is_empty() || du_ba.is_empty() {
         return da_prev;
     }
     let b = beta_mol_kjmol(temp);
-    // Bennett self-consistent equation (Bennett 1976):
-    //   ΔA_new = ΔA + (1/β) ln( <f(β(ΔU_BA + M))>_B / <f(β(ΔU_AB − M))>_A )
-    // where M = ΔA + (1/β) ln(n_A/n_B).
-    // Denominator (B side): mean of f(β(ΔU_BA + m + ΔA)) over B
-    let den: f64 = du_ba
-        .iter()
-        .map(|&du| fermi(b * (du + m + da_prev)))
-        .sum::<f64>()
-        / du_ba.len() as f64;
-    // Numerator (A side): mean of f(β(ΔU_AB − m − ΔA)) over A
-    let num: f64 = du_ab
-        .iter()
-        .map(|&du| fermi(b * (du - m - da_prev)))
-        .sum::<f64>()
-        / du_ab.len() as f64;
-    if num.abs() < 1.0e-30 {
+    // Optimal Bennett shift C = ΔA − M = ΔA + k_B T ln(n_B / n_A).
+    let shift = da_prev - m;
+    // A side: ⟨f(β(ΔU_AB − C))⟩_A;  B side: ⟨f(β(ΔU_BA + C))⟩_B.
+    let ln_num = log_mean_fermi(du_ab, b, -b * shift);
+    let ln_den = log_mean_fermi(du_ba, b, b * shift);
+    let ln_ratio = ln_den - ln_num;
+    if !ln_ratio.is_finite() {
         return da_prev;
     }
-    // Update: ΔA_new = ΔA + (1/β) ln(den/num)
-    da_prev + (den / num).ln() / b
+    // ΔA = C + k_B T ln(den / num)
+    shift + ln_ratio / b
 }
 
 /// Run BAR self-consistent iteration to convergence.
 ///
-/// Returns (ΔA, n_iterations_used).
+/// The shift `M = k_B T ln(n_A / n_B)` is derived from the sample sizes, see
+/// [`bar_iteration`].  Returns (ΔA, n_iterations_used).
 pub fn bar_converge(
     du_ab: &[f64],
     du_ba: &[f64],
@@ -377,11 +430,21 @@ pub fn bar_converge(
     (da, max_iter)
 }
 
-/// BAR statistical uncertainty via the analytical formula (Shirts et al. 2003).
+/// BAR statistical uncertainty via the analytical formula (Bennett 1976; Shirts
+/// et al. 2003).
 ///
-/// σ²(ΔA) = (1/β²) \[ 1/(n_A ⟨f²⟩_A) + 1/(n_B ⟨f²⟩_B) − 1/n_A − 1/n_B \]
+/// ```text
+/// σ²(ΔA) = (1/β²) [ (⟨f²⟩_A/⟨f⟩_A² − 1)/n_A + (⟨f²⟩_B/⟨f⟩_B² − 1)/n_B ]
+/// ```
 ///
-/// Returns 1-σ error in kJ mol⁻¹.
+/// where `f_A = f(β(ΔU_AB − ΔA + M))` is evaluated on the samples from A,
+/// `f_B = f(β(ΔU_BA + ΔA − M))` on the samples from B and `M = k_B T ln(n_A / n_B)`,
+/// the same arguments as in [`bar_iteration`].  The expression is the variance of
+/// the logarithm of the ratio of the two Fermi averages; it vanishes when the
+/// weights are constant (a pure shift of the potential).
+///
+/// Returns the 1-σ error in kJ mol⁻¹, `0.0` for an empty sample set and NaN when
+/// every Fermi weight of one side vanishes (no overlap between the states).
 pub fn bar_uncertainty(du_ab: &[f64], du_ba: &[f64], da: f64, temp: f64) -> f64 {
     if du_ab.is_empty() || du_ba.is_empty() {
         return 0.0;
@@ -390,17 +453,10 @@ pub fn bar_uncertainty(du_ab: &[f64], du_ba: &[f64], da: f64, temp: f64) -> f64 
     let na = du_ab.len() as f64;
     let nb = du_ba.len() as f64;
     let m = (na / nb).ln() / b;
-    let fa2: f64 = du_ab
-        .iter()
-        .map(|&du| fermi(b * (du - m - da)).powi(2))
-        .sum::<f64>()
-        / na;
-    let fb2: f64 = du_ba
-        .iter()
-        .map(|&du| fermi(b * (du + m + da)).powi(2))
-        .sum::<f64>()
-        / nb;
-    let var = (1.0 / (b * b)) * (1.0 / (na * fa2.max(1.0e-30)) + 1.0 / (nb * fb2.max(1.0e-30)));
+    let shift = da - m;
+    let relative_variance_a = fermi_relative_variance(du_ab, b, -b * shift);
+    let relative_variance_b = fermi_relative_variance(du_ba, b, b * shift);
+    let var = (relative_variance_a / na + relative_variance_b / nb) / (b * b);
     var.sqrt()
 }
 
@@ -408,11 +464,29 @@ pub fn bar_uncertainty(du_ab: &[f64], du_ba: &[f64], da: f64, temp: f64) -> f64 
 // Multistate BAR (MBAR)
 // ---------------------------------------------------------------------------
 
-/// MBAR free energy estimator via self-consistent iteration.
+/// MBAR free energy estimator via self-consistent iteration (Shirts & Chodera 2008).
 ///
-/// `energies[k][n]` is the energy of configuration n evaluated at state k
-/// (kJ mol⁻¹).  `n_k[k]` is the number of samples from state k.
-/// Returns the reduced free energies f_k = −ln Z_k (units of k_B T).
+/// The `N = Σ_k n_k` configurations drawn from the K states are pooled into one
+/// list; their order does not matter, only how many came from each state.
+/// `energies[k][n]` is the energy (kJ mol⁻¹) of the pooled configuration `n`
+/// evaluated in state `k`, so every row has `N` entries.  `n_k[k]` is the number
+/// of samples that were drawn from state `k`.
+///
+/// The reduced free energies `f_k = −ln Z_k` (units of `k_B T`, normalised to
+/// `f_0 = 0`) solve
+///
+/// ```text
+/// f_k = −ln Σ_{n=1}^{N} exp(−u_k(x_n)) / Σ_{l=1}^{K} N_l exp(f_l − u_l(x_n)),     u = β U,
+/// ```
+///
+/// which is iterated in log space until the largest change of any `f_k` is below
+/// `tol` or `max_iter` iterations have been done.  The denominators are formed
+/// once per configuration and iteration, so one iteration costs `O(K N)`.
+///
+/// Returns an empty vector when the input is malformed: no states, `n_k.len()` or
+/// a row length of `energies` that does not match the pooled sample count, a
+/// non-positive or non-finite temperature, a NaN energy, or a configuration whose
+/// energy is infinite in every state.  Returns zeros when there are no samples.
 pub fn mbar_free_energies(
     energies: &[Vec<f64>],
     n_k: &[usize],
@@ -421,57 +495,61 @@ pub fn mbar_free_energies(
     tol: f64,
 ) -> Vec<f64> {
     let k_states = energies.len();
-    if k_states == 0 {
+    if k_states == 0 || n_k.len() != k_states {
         return Vec::new();
     }
-    let b = beta_mol_kjmol(temp);
     let n_total: usize = n_k.iter().sum();
+    let temperature_is_valid = temp > 0.0 && temp.is_finite();
+    if !temperature_is_valid || energies.iter().any(|row| row.len() != n_total) {
+        return Vec::new();
+    }
     if n_total == 0 {
         return vec![0.0; k_states];
     }
-    // Initial guess: f_k = 0
-    let mut f = vec![0.0f64; k_states];
-    // log N_k
+    let b = beta_mol_kjmol(temp);
+    // Reduced potentials u_k(x_n) = β U_k(x_n) of the pooled configurations.
+    let reduced: Vec<Vec<f64>> = energies
+        .iter()
+        .map(|row| row.iter().map(|&e| b * e).collect())
+        .collect();
+    // ln N_l; a state without samples has ln 0 = −∞ and drops out of the denominators.
     let log_nk: Vec<f64> = n_k.iter().map(|&n| (n as f64).ln()).collect();
 
+    let mut f = vec![0.0f64; k_states];
+    // ln Σ_l N_l exp(f_l − u_l(x_n)) for every pooled configuration n.
+    let mut log_den = vec![0.0f64; n_total];
+    // Scratch buffers of the two log-sum-exp reductions (over states, over samples).
+    let mut state_terms = vec![0.0f64; k_states];
+    let mut sample_terms = vec![0.0f64; n_total];
+
     for _iter in 0..max_iter {
-        let mut f_new = vec![0.0f64; k_states];
-        // For each state k, f_k = −ln Σ_n [ Σ_j N_j exp(f_j - β U_kn) /
-        //                                       Σ_l N_l exp(f_l - β U_ln) ]
-        // Self-consistent update using log-space arithmetic
-        for k in 0..k_states {
-            let mut log_sum = f64::NEG_INFINITY;
-            let mut sample_count = 0usize;
-            for j in 0..k_states {
-                let nj = n_k[j];
-                for n in 0..nj {
-                    if n >= energies[k].len() || n >= energies[j].len() {
-                        continue;
-                    }
-                    // log weight numerator: f_j - β U_kn
-                    // denominator: log Σ_l N_l exp(f_l - β U_ln)
-                    let log_num = f[j] + log_nk[j] - b * energies[k][n];
-                    // log denominator
-                    let mut log_den = f64::NEG_INFINITY;
-                    for l in 0..k_states {
-                        if n < energies[l].len() {
-                            let term = f[l] + log_nk[l] - b * energies[l][n];
-                            // log-sum-exp accumulation
-                            log_den = log_sum_exp(&[log_den, term]);
-                        }
-                    }
-                    let log_w = log_num - log_den;
-                    log_sum = log_sum_exp(&[log_sum, log_w]);
-                    sample_count += 1;
-                }
+        for (n, den) in log_den.iter_mut().enumerate() {
+            for (l, term) in state_terms.iter_mut().enumerate() {
+                *term = log_nk[l] + f[l] - reduced[l][n];
             }
-            let _ = sample_count;
-            f_new[k] = -log_sum;
+            *den = log_sum_exp(&state_terms);
+            if !den.is_finite() {
+                // NaN energy, or a configuration that no state can generate.
+                return Vec::new();
+            }
         }
+        // f_k = −ln Σ_n exp(−u_k(x_n) − ln den_n)
+        let mut f_new: Vec<f64> = reduced
+            .iter()
+            .map(|u_k| {
+                for ((term, &u), &den) in sample_terms.iter_mut().zip(u_k).zip(log_den.iter()) {
+                    *term = -u - den;
+                }
+                -log_sum_exp(&sample_terms)
+            })
+            .collect();
         // Normalise so f[0] = 0
-        let f0 = f_new[0];
+        let f0 = f_new.first().copied().unwrap_or(0.0);
         for fk in f_new.iter_mut() {
             *fk -= f0;
+        }
+        if f_new.iter().any(|fk| fk.is_nan()) {
+            return Vec::new();
         }
         // Check convergence
         let max_diff: f64 = f
@@ -995,6 +1073,9 @@ pub fn bootstrap_uncertainty(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {

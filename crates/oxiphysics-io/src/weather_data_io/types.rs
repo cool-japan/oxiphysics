@@ -3,7 +3,8 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
-use std::collections::HashMap;
+use super::grib2_decode::assemble_fields;
+use std::collections::{HashMap, VecDeque};
 
 /// A coordinate variable in a NetCDF-CF dataset.
 #[derive(Debug, Clone)]
@@ -862,6 +863,9 @@ impl WeatherStation {
     }
 }
 /// Data representation method inside a GRIB2 data section.
+///
+/// [`GribReader`] decodes `SimplePacking` (template 5.0) and `IeeeFloat`
+/// (template 5.4); the other methods are reported as errors by the reader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataRepresentation {
     /// Simple packing (template 5.0).
@@ -874,6 +878,8 @@ pub enum DataRepresentation {
     Png,
     /// Run-length packing for pre-defined bitmaps.
     RunLength,
+    /// Raw IEEE floating point values (template 5.4).
+    IeeeFloat,
 }
 /// CF-convention standard name for a coordinate or data variable.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -949,9 +955,10 @@ pub struct GribMessage {
     pub forecast_time: i64,
     /// Generating centre ID.
     pub centre_id: u16,
-    /// Decoded data values (row-major order).
+    /// Decoded data values, one per grid point in the scanning order of the
+    /// message. Points that a bit-map marks missing are `NaN`.
     pub data: Vec<f64>,
-    /// Optional bitmap: `true` = valid, `false` = missing.
+    /// Optional bitmap, one flag per grid point: `true` = valid, `false` = missing.
     pub bitmap: Option<Vec<bool>>,
 }
 impl GribMessage {
@@ -1021,34 +1028,39 @@ impl GribMessage {
 /// GRIB2 grid definition template.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridDefinition {
-    /// Regular latitude–longitude grid.
+    /// Regular latitude–longitude grid (template 3.0).
     LatLon {
-        /// Number of points along the latitude axis.
+        /// Number of points along a parallel, i.e. in the longitude
+        /// direction (GRIB2 `Ni`).
         ni: u32,
-        /// Number of points along the longitude axis.
+        /// Number of points along a meridian, i.e. in the latitude
+        /// direction (GRIB2 `Nj`).
         nj: u32,
-        /// First latitude in degrees (south is negative).
+        /// Latitude of the first grid point in degrees (south is negative).
         lat_first: f64,
-        /// Last latitude in degrees.
+        /// Latitude of the last grid point in degrees.
         lat_last: f64,
-        /// First longitude in degrees (west is negative).
+        /// Longitude of the first grid point in degrees, as stored in the
+        /// message (usually 0 to 360 eastwards).
         lon_first: f64,
-        /// Last longitude in degrees.
+        /// Longitude of the last grid point in degrees.
         lon_last: f64,
-        /// Latitude increment in degrees.
+        /// i-direction (longitude) increment in degrees (GRIB2 `Di`); `NaN`
+        /// when the message does not give it.
         di: f64,
-        /// Longitude increment in degrees.
+        /// j-direction (latitude) increment in degrees (GRIB2 `Dj`); `NaN`
+        /// when the message does not give it.
         dj: f64,
     },
-    /// Lambert conformal conic projection.
+    /// Lambert conformal conic projection (template 3.30).
     LambertConformal {
         /// Number of x-direction points.
         nx: u32,
         /// Number of y-direction points.
         ny: u32,
-        /// Reference latitude in degrees.
+        /// Latitude in degrees where `dx` and `dy` are specified (GRIB2 `LaD`).
         lat_ref: f64,
-        /// Reference longitude in degrees.
+        /// Longitude in degrees of the meridian parallel to the y axis (GRIB2 `LoV`).
         lon_ref: f64,
         /// First standard parallel in degrees.
         latin1: f64,
@@ -1059,7 +1071,7 @@ pub enum GridDefinition {
         /// Grid spacing in the y direction (metres).
         dy: f64,
     },
-    /// Polar stereographic projection.
+    /// Polar stereographic projection (template 3.20).
     PolarStereographic {
         /// Number of x-direction points.
         nx: u32,
@@ -1076,6 +1088,12 @@ pub enum GridDefinition {
     },
 }
 /// Reader that parses GRIB2 byte streams into messages.
+///
+/// A GRIB2 message with repeated sections 4 to 7 holds several fields;
+/// [`next_message`](GribReader::next_message) returns one [`GribMessage`] per
+/// field, in order. The stream is untrusted input: lengths and counts read
+/// from it are checked against the bytes that are really present before any
+/// allocation is sized from them.
 #[derive(Debug)]
 pub struct GribReader {
     /// Raw byte buffer.
@@ -1084,61 +1102,173 @@ pub struct GribReader {
     pub(super) pos: usize,
     /// Parsed sections for the current message.
     pub(super) sections: Vec<GribSection>,
+    /// Fields of the current message that have not been returned yet.
+    pub(super) pending: VecDeque<Result<GribMessage, String>>,
+    /// Largest grid, in points, that will be decoded.
+    pub(super) max_points: usize,
 }
+/// Length of the indicator section (section 0).
+const GRIB_INDICATOR_LEN: usize = 16;
+/// Length of the end section (`"7777"`).
+const GRIB_END_LEN: usize = 4;
+/// Shortest possible message: the indicator and the end section.
+const GRIB_MIN_MESSAGE_LEN: usize = GRIB_INDICATOR_LEN + GRIB_END_LEN;
 impl GribReader {
+    /// Default limit on the number of grid points of one field (2^27).
+    ///
+    /// A constant field needs no data bytes, so the size of the decoded
+    /// values cannot be derived from the stream; this limit keeps a
+    /// few-hundred-byte message from requesting terabytes.
+    pub const DEFAULT_MAX_POINTS: usize = 1 << 27;
     /// Create a reader from a byte slice.
     pub fn new(data: &[u8]) -> Self {
         Self {
             buf: data.to_vec(),
             pos: 0,
             sections: Vec::new(),
+            pending: VecDeque::new(),
+            max_points: Self::DEFAULT_MAX_POINTS,
         }
     }
-    /// Try to read the next GRIB2 message from the stream.
-    pub fn next_message(&mut self) -> Option<GribMessage> {
+    /// Set the largest grid, in points, that the reader will decode
+    /// (default [`DEFAULT_MAX_POINTS`](Self::DEFAULT_MAX_POINTS)). A field
+    /// whose grid is larger is reported as an error.
+    pub fn with_max_points(mut self, max_points: usize) -> Self {
+        self.max_points = max_points;
+        self
+    }
+    /// Read the next GRIB2 field from the stream.
+    ///
+    /// * `Ok(Some(message))`: a field was decoded. A message with several
+    ///   fields yields them one per call, in order.
+    /// * `Ok(None)`: the stream holds no further message.
+    /// * `Err(reason)`: a message was found but is corrupt, truncated or uses
+    ///   a feature that is not decoded (complex packing, JPEG 2000, ...). The
+    ///   reader has already moved past the problem, so calling again resumes
+    ///   with the next message: after a bad header it rescans from the byte
+    ///   after the `GRIB` magic, after a bad body it continues behind the
+    ///   message.
+    ///
+    /// Every call that does not return `Ok(None)` makes progress: it either
+    /// hands out the next field that was already decoded from the current
+    /// message (the position is then already behind that message, and only a
+    /// finite number of fields is queued) or it moves the position forward. A
+    /// loop that stops at `Ok(None)` therefore terminates whatever the input.
+    ///
+    /// Only edition 2 is supported. Grid definition templates 3.0 (regular
+    /// latitude/longitude), 3.20 (polar stereographic) and 3.30 (Lambert
+    /// conformal), product definition templates 4.0 to 4.15, data
+    /// representation templates 5.0 (simple packing) and 5.4 (IEEE floating
+    /// point), and the bit-map indicators 0 (explicit), 254 (reuse) and 255
+    /// (none) are decoded; anything else is reported as an `Err`.
+    pub fn next_message(&mut self) -> Result<Option<GribMessage>, String> {
+        if let Some(queued) = self.pending.pop_front() {
+            return queued.map(Some);
+        }
+        let Some(start) = self.find_magic() else {
+            // The end of the stream keeps the sections of the last message.
+            self.pos = self.buf.len();
+            return Ok(None);
+        };
         self.sections.clear();
-        let magic = b"GRIB";
-        while self.pos + 4 <= self.buf.len() {
-            if &self.buf[self.pos..self.pos + 4] == magic {
-                break;
-            }
-            self.pos += 1;
+        // A header problem resumes scanning after this magic.
+        self.pos = start + 4;
+        let (discipline, msg_end) = self.read_indicator(start)?;
+        // From here the whole message is skipped, whatever its content.
+        self.pos = msg_end;
+        self.read_sections(start, msg_end)?;
+        self.pending = assemble_fields(&self.sections, discipline, self.max_points).into();
+        match self.pending.pop_front() {
+            Some(first) => first.map(Some),
+            None => Ok(None),
         }
-        if self.pos + 16 > self.buf.len() {
-            return None;
-        }
-        let discipline = self.buf[self.pos + 6];
-        let edition = self.buf[self.pos + 7];
+    }
+    /// Offset of the next `GRIB` magic at or after the read position.
+    fn find_magic(&self) -> Option<usize> {
+        let tail = self.buf.get(self.pos..)?;
+        tail.windows(4)
+            .position(|window| window == b"GRIB")
+            .map(|offset| self.pos + offset)
+    }
+    /// Validate the indicator section at `start` and return the discipline
+    /// and the end offset of the message.
+    fn read_indicator(&self, start: usize) -> Result<(u8, usize), String> {
+        let header: [u8; GRIB_INDICATOR_LEN] = start
+            .checked_add(GRIB_INDICATOR_LEN)
+            .and_then(|end| self.buf.get(start..end))
+            .and_then(|bytes| <[u8; GRIB_INDICATOR_LEN]>::try_from(bytes).ok())
+            .ok_or_else(|| format!("GRIB2: truncated indicator section at offset {start}"))?;
+        let discipline = header[6];
+        let edition = header[7];
         if edition != 2 {
-            return None;
+            return Err(format!(
+                "GRIB: unsupported edition {edition} at offset {start} (only edition 2 is supported)"
+            ));
         }
-        let total_len = self.read_u64_at(self.pos + 8) as usize;
-        if self.pos + total_len > self.buf.len() {
-            return None;
+        let declared = u64::from_be_bytes([
+            header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+            header[15],
+        ]);
+        let remaining = self.buf.len() - start;
+        let truncated = || {
+            format!(
+                "GRIB2: message at offset {start} declares {declared} bytes but only {remaining} remain (truncated stream)"
+            )
+        };
+        let total_len = usize::try_from(declared).map_err(|_| truncated())?;
+        if total_len < GRIB_MIN_MESSAGE_LEN {
+            return Err(format!(
+                "GRIB2: message length {declared} at offset {start} is below the {GRIB_MIN_MESSAGE_LEN}-byte minimum"
+            ));
         }
+        let end = start
+            .checked_add(total_len)
+            .filter(|&end| end <= self.buf.len())
+            .ok_or_else(truncated)?;
+        Ok((discipline, end))
+    }
+    /// Split the message `start..msg_end` into its sections.
+    ///
+    /// The sections must tile the message exactly between the indicator and
+    /// the `"7777"` end section.
+    fn read_sections(&mut self, start: usize, msg_end: usize) -> Result<(), String> {
+        let body_end = msg_end - GRIB_END_LEN;
+        if self.buf.get(body_end..msg_end) != Some(b"7777".as_slice()) {
+            return Err(format!(
+                "GRIB2: message at offset {start} does not end with the '7777' end section"
+            ));
+        }
+        let indicator_end = start + GRIB_INDICATOR_LEN;
         self.sections.push(GribSection {
             section_type: GribSectionType::Indicator,
-            length: 16,
-            payload: self.buf[self.pos..self.pos + 16].to_vec(),
+            length: GRIB_INDICATOR_LEN as u32,
+            payload: self
+                .buf
+                .get(start..indicator_end)
+                .map(<[u8]>::to_vec)
+                .unwrap_or_default(),
         });
-        let msg_end = self.pos + total_len;
-        let mut cur = self.pos + 16;
-        while cur + 4 <= msg_end {
-            if &self.buf[cur..cur + 4] == b"7777" {
-                self.sections.push(GribSection {
-                    section_type: GribSectionType::End,
-                    length: 4,
-                    payload: b"7777".to_vec(),
-                });
-                let _ = cur + 4;
-                break;
-            }
-            let sec_len = self.read_u32_at(cur) as usize;
-            if sec_len < 5 || cur + sec_len > msg_end {
-                break;
-            }
-            let sec_num = self.buf[cur + 4];
-            let sec_type = match sec_num {
+        let mut cur = indicator_end;
+        while cur < body_end {
+            let header: [u8; 5] = cur
+                .checked_add(5)
+                .filter(|&end| end <= body_end)
+                .and_then(|end| self.buf.get(cur..end))
+                .and_then(|bytes| <[u8; 5]>::try_from(bytes).ok())
+                .ok_or_else(|| format!("GRIB2: truncated section header at offset {cur}"))?;
+            let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+            let number = header[4];
+            let section_end = usize::try_from(length)
+                .ok()
+                .filter(|&len| len >= 5)
+                .and_then(|len| cur.checked_add(len))
+                .filter(|&end| end <= body_end)
+                .ok_or_else(|| {
+                    format!(
+                        "GRIB2: section {number} at offset {cur} has invalid length {length} (the message body ends at offset {body_end})"
+                    )
+                })?;
+            let section_type = match number {
                 1 => GribSectionType::Identification,
                 2 => GribSectionType::LocalUse,
                 3 => GribSectionType::GridDefinitionSection,
@@ -1146,159 +1276,32 @@ impl GribReader {
                 5 => GribSectionType::DataRepresentationSection,
                 6 => GribSectionType::Bitmap,
                 7 => GribSectionType::Data,
-                _ => GribSectionType::LocalUse,
+                other => {
+                    return Err(format!(
+                        "GRIB2: unknown section number {other} at offset {cur}"
+                    ));
+                }
             };
             self.sections.push(GribSection {
-                section_type: sec_type,
-                length: sec_len as u32,
-                payload: self.buf[cur + 5..cur + sec_len].to_vec(),
+                section_type,
+                length,
+                payload: self
+                    .buf
+                    .get(cur + 5..section_end)
+                    .map(<[u8]>::to_vec)
+                    .unwrap_or_default(),
             });
-            cur += sec_len;
+            cur = section_end;
         }
-        self.pos = msg_end;
-        let msg = self.assemble_message(discipline);
-        Some(msg)
+        self.sections.push(GribSection {
+            section_type: GribSectionType::End,
+            length: GRIB_END_LEN as u32,
+            payload: b"7777".to_vec(),
+        });
+        Ok(())
     }
-    /// Assemble a message from parsed sections.
-    fn assemble_message(&self, discipline: u8) -> GribMessage {
-        let mut param_cat: u8 = 0;
-        let mut param_num: u8 = 0;
-        let mut centre: u16 = 0;
-        let mut ref_time: i64 = 0;
-        let mut forecast: i64 = 0;
-        let mut grid_def = GridDefinition::LatLon {
-            ni: 1,
-            nj: 1,
-            lat_first: 0.0,
-            lat_last: 0.0,
-            lon_first: 0.0,
-            lon_last: 0.0,
-            di: 1.0,
-            dj: 1.0,
-        };
-        let mut data_rep = DataRepresentation::SimplePacking;
-        let mut data_vals: Vec<f64> = Vec::new();
-        let mut bitmap_vals: Option<Vec<bool>> = None;
-        for sec in &self.sections {
-            match sec.section_type {
-                GribSectionType::Identification if sec.payload.len() >= 12 => {
-                    centre = u16::from_be_bytes([sec.payload[0], sec.payload[1]]);
-                    let year = u16::from_be_bytes([sec.payload[7], sec.payload[8]]) as i64;
-                    let month = sec.payload[9] as i64;
-                    let day = sec.payload[10] as i64;
-                    let hour = sec.payload[11] as i64;
-                    ref_time = ((year - 1970) * 365 * 86400)
-                        + ((month - 1) * 30 * 86400)
-                        + ((day - 1) * 86400)
-                        + (hour * 3600);
-                }
-                GribSectionType::GridDefinitionSection if sec.payload.len() >= 25 => {
-                    let template = u16::from_be_bytes([sec.payload[7], sec.payload[8]]);
-                    if template == 0 {
-                        let ni = self.read_payload_u32(&sec.payload, 9);
-                        let nj = self.read_payload_u32(&sec.payload, 13);
-                        grid_def = GridDefinition::LatLon {
-                            ni,
-                            nj,
-                            lat_first: 0.0,
-                            lat_last: 0.0,
-                            lon_first: 0.0,
-                            lon_last: 0.0,
-                            di: 1.0,
-                            dj: 1.0,
-                        };
-                    }
-                }
-                GribSectionType::ProductDefinition => {
-                    if sec.payload.len() >= 4 {
-                        param_cat = sec.payload[2];
-                        param_num = sec.payload[3];
-                    }
-                    if sec.payload.len() >= 19 {
-                        forecast = sec.payload[18] as i64 * 3600;
-                    }
-                }
-                GribSectionType::DataRepresentationSection if sec.payload.len() >= 4 => {
-                    let template = u16::from_be_bytes([sec.payload[2], sec.payload[3]]);
-                    data_rep = match template {
-                        0 => DataRepresentation::SimplePacking,
-                        2 => DataRepresentation::ComplexPacking,
-                        40 => DataRepresentation::Jpeg2000,
-                        41 => DataRepresentation::Png,
-                        _ => DataRepresentation::SimplePacking,
-                    };
-                }
-                GribSectionType::Bitmap if !sec.payload.is_empty() => {
-                    let indicator = sec.payload[0];
-                    if indicator == 0 && sec.payload.len() > 1 {
-                        let mut bm = Vec::new();
-                        for &byte in &sec.payload[1..] {
-                            for bit in (0..8).rev() {
-                                bm.push((byte >> bit) & 1 != 0);
-                            }
-                        }
-                        bitmap_vals = Some(bm);
-                    }
-                }
-                GribSectionType::Data => {
-                    let chunk_size = 4;
-                    let count = sec.payload.len() / chunk_size;
-                    data_vals.reserve(count);
-                    for i in 0..count {
-                        let off = i * chunk_size;
-                        if off + chunk_size <= sec.payload.len() {
-                            let bytes = [
-                                sec.payload[off],
-                                sec.payload[off + 1],
-                                sec.payload[off + 2],
-                                sec.payload[off + 3],
-                            ];
-                            data_vals.push(f32::from_be_bytes(bytes) as f64);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        GribMessage {
-            discipline,
-            parameter_category: param_cat,
-            parameter_number: param_num,
-            grid_definition: grid_def,
-            data_representation: data_rep,
-            reference_time: ref_time,
-            forecast_time: forecast,
-            centre_id: centre,
-            data: data_vals,
-            bitmap: bitmap_vals,
-        }
-    }
-    /// Read a big-endian u64 at an absolute position.
-    fn read_u64_at(&self, pos: usize) -> u64 {
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&self.buf[pos..pos + 8]);
-        u64::from_be_bytes(bytes)
-    }
-    /// Read a big-endian u32 at an absolute position.
-    fn read_u32_at(&self, pos: usize) -> u32 {
-        let mut bytes = [0u8; 4];
-        bytes.copy_from_slice(&self.buf[pos..pos + 4]);
-        u32::from_be_bytes(bytes)
-    }
-    /// Read a big-endian u32 from a payload slice at a relative offset.
-    fn read_payload_u32(&self, payload: &[u8], off: usize) -> u32 {
-        if off + 4 <= payload.len() {
-            u32::from_be_bytes([
-                payload[off],
-                payload[off + 1],
-                payload[off + 2],
-                payload[off + 3],
-            ])
-        } else {
-            0
-        }
-    }
-    /// Return the parsed sections from the most recent `next_message` call.
+    /// Return the parsed sections from the most recent message that was
+    /// split by [`next_message`](Self::next_message).
     pub fn sections(&self) -> &[GribSection] {
         &self.sections
     }

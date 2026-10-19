@@ -1,4 +1,5 @@
 use super::functions::*;
+use crate::error::{Error, Result};
 // Auto-generated module
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
@@ -393,7 +394,10 @@ impl Panel {
             0.5 * (self.p1[1] + self.p2[1]),
         ]
     }
-    /// Outward unit normal (perpendicular to panel, pointing outward).
+    /// Unit normal: the tangent rotated by -90 degrees.
+    ///
+    /// It points out of the body when the panels run counter-clockwise around
+    /// it, which is the ordering [`SourcePanelMethod`] expects.
     pub fn normal(&self) -> [f64; 2] {
         let dx = self.p2[0] - self.p1[0];
         let dy = self.p2[1] - self.p1[1];
@@ -407,21 +411,46 @@ impl Panel {
         let l = self.length().max(1e-15);
         [dx / l, dy / l]
     }
-    /// Source panel influence coefficient: normal velocity at point p due to this panel.
-    /// Uses 2-D logarithmic source kernel.
-    pub fn source_influence(&self, p: [f64; 2]) -> f64 {
-        let xc = self.center()[0];
-        let yc = self.center()[1];
-        let dx = p[0] - xc;
-        let dy = p[1] - yc;
-        let r2 = dx * dx + dy * dy;
-        if r2 < 1e-20 {
-            return 0.5;
-        }
-        let n = self.normal();
+    /// Velocity induced at `p` by this panel acting as a constant-strength
+    /// source sheet of unit strength per unit length (Katz & Plotkin,
+    /// *Low-Speed Aerodynamics*, constant-strength source panel).
+    ///
+    /// In panel-local coordinates, with `x` along the tangent from `p1` and `z`
+    /// along the normal, a sheet from `(0, 0)` to `(l, 0)` induces
+    ///
+    /// `u = ln(r1 / r2) / (2π)`, `w = (θ2 − θ1) / (2π)`,
+    ///
+    /// where `r1` and `r2` are the distances from `p` to the panel's start and
+    /// end point and `θ1`, `θ2` the angles of the vectors from those points to
+    /// `p`, measured from the panel line.  The result is rotated back into
+    /// global axes; multiply it with the source strength σ of the panel.
+    ///
+    /// The normal component jumps by σ across the sheet.  A point lying on the
+    /// panel gets the limit from the side the normal points to, `+½` per unit
+    /// strength.  The velocity is singular at the panel's end points; the
+    /// distances there are floored at `1e-12 l` to keep the result finite.  A
+    /// panel of zero length induces nothing.
+    pub fn source_velocity(&self, p: [f64; 2]) -> [f64; 2] {
         let l = self.length();
-        let r = r2.sqrt();
-        l / (2.0 * PI) * (n[0] * dx + n[1] * dy) / r2 * l.min(r)
+        if !(l.is_finite() && l > 0.0) {
+            return [0.0, 0.0];
+        }
+        let t = self.tangent();
+        let n = self.normal();
+        let rel1 = [p[0] - self.p1[0], p[1] - self.p1[1]];
+        let rel2 = [p[0] - self.p2[0], p[1] - self.p2[1]];
+        // Panel-local coordinates of the field point.
+        let x = rel1[0] * t[0] + rel1[1] * t[1];
+        let mut z = rel1[0] * n[0] + rel1[1] * n[1];
+        if z.abs() <= 1.0e-12 * l {
+            z = 0.0;
+        }
+        let floor = 1.0e-12 * l;
+        let r1 = rel1[0].hypot(rel1[1]).max(floor);
+        let r2 = rel2[0].hypot(rel2[1]).max(floor);
+        let u = (r1 / r2).ln() / (2.0 * PI);
+        let w = (z.atan2(x - l) - z.atan2(x)) / (2.0 * PI);
+        [u * t[0] + w * n[0], u * t[1] + w * n[1]]
     }
     /// Vortex panel influence (velocity potential induced at field point).
     pub fn vortex_influence(&self, p: [f64; 2]) -> f64 {
@@ -910,7 +939,77 @@ impl SlamForce {
         impulse / mass
     }
 }
+/// Solve the dense linear system `A x = b` by Gaussian elimination with
+/// partial pivoting.
+///
+/// Returns `None` when `A` is not square, does not match `b`, or is singular
+/// (a pivot not larger than `1e-12` times the largest entry of `A`).
+fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+    let n = b.len();
+    if n == 0 || a.len() != n || a.iter().any(|row| row.len() != n) {
+        return None;
+    }
+    let scale = a.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()));
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    for k in 0..n {
+        let mut pivot_row = k;
+        let mut pivot_abs = a[k][k].abs();
+        for (i, row) in a.iter().enumerate().skip(k + 1) {
+            if row[k].abs() > pivot_abs {
+                pivot_row = i;
+                pivot_abs = row[k].abs();
+            }
+        }
+        if pivot_abs.is_nan() || pivot_abs <= 1.0e-12 * scale {
+            return None;
+        }
+        a.swap(k, pivot_row);
+        b.swap(k, pivot_row);
+        let pivot_values = a[k].clone();
+        let pivot_rhs = b[k];
+        for (row, rhs) in a.iter_mut().zip(b.iter_mut()).skip(k + 1) {
+            let factor = row[k] / pivot_values[k];
+            if factor != 0.0 {
+                for (entry, pivot_entry) in row.iter_mut().zip(pivot_values.iter()).skip(k) {
+                    *entry -= factor * pivot_entry;
+                }
+                *rhs -= factor * pivot_rhs;
+            }
+        }
+    }
+    let mut x = vec![0.0_f64; n];
+    for i in (0..n).rev() {
+        let tail: f64 = a[i]
+            .iter()
+            .zip(x.iter())
+            .skip(i + 1)
+            .map(|(entry, xj)| entry * xj)
+            .sum();
+        x[i] = (b[i] - tail) / a[i][i];
+    }
+    Some(x)
+}
+/// Result of [`SourcePanelMethod::solve`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourcePanelSolution {
+    /// Source strength σ per unit length of every panel \[m/s\].
+    pub strengths: Vec<f64>,
+    /// Surface velocity along each panel's tangent, at its centre \[m/s\].
+    pub tangential_velocity: Vec<f64>,
+    /// Pressure coefficient `1 − (V_t / V∞)²` at each panel centre.
+    pub pressure_coefficient: Vec<f64>,
+    /// Net source strength `Σ σ_j l_j` \[m²/s\]; zero for a closed body.
+    pub net_source: f64,
+}
 /// Source panel method for 2-D potential flow around a body.
+///
+/// The body is a closed polygon of [`Panel`]s ordered counter-clockwise, so
+/// that every panel's normal points out of the body into the flow.  Each panel
+/// carries a constant source strength σ per unit length; the strengths follow
+/// from the no-penetration condition at the panel centres, see
+/// [`SourcePanelMethod::solve`].
 #[derive(Debug, Clone)]
 pub struct SourcePanelMethod {
     /// Panels making up the body.
@@ -941,26 +1040,62 @@ impl SourcePanelMethod {
         }
         Self::new(panels, u_inf, alpha)
     }
-    /// Assemble the influence coefficient matrix A (n×n).
-    pub fn influence_matrix(&self) -> Vec<Vec<f64>> {
+    /// Assemble the normal and the tangential influence matrices in one pass.
+    fn influence_matrices(&self) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
         let n = self.panels.len();
-        let mut a = vec![vec![0.0f64; n]; n];
-        for (i, a_row) in a.iter_mut().enumerate() {
-            let cp = self.panels[i].center();
-            let ni = self.panels[i].normal();
-            for (j, a_ij) in a_row.iter_mut().enumerate() {
+        let mut normal = vec![vec![0.0_f64; n]; n];
+        let mut tangential = vec![vec![0.0_f64; n]; n];
+        for (i, ((panel_i, normal_row), tangential_row)) in self
+            .panels
+            .iter()
+            .zip(normal.iter_mut())
+            .zip(tangential.iter_mut())
+            .enumerate()
+        {
+            let centre = panel_i.center();
+            let n_i = panel_i.normal();
+            let t_i = panel_i.tangent();
+            for (j, ((panel_j, a_ij), b_ij)) in self
+                .panels
+                .iter()
+                .zip(normal_row.iter_mut())
+                .zip(tangential_row.iter_mut())
+                .enumerate()
+            {
                 if i == j {
+                    // Just outside its own sheet a panel induces σ/2 along its
+                    // normal and, at its centre, nothing along its tangent.
                     *a_ij = 0.5;
                 } else {
-                    let inf = self.panels[j].source_influence(cp);
-                    *a_ij = inf * (ni[0] * 1.0 + ni[1] * 1.0).signum().abs();
-                    *a_ij = self.panels[j].source_influence(cp);
+                    let v = panel_j.source_velocity(centre);
+                    *a_ij = v[0] * n_i[0] + v[1] * n_i[1];
+                    *b_ij = v[0] * t_i[0] + v[1] * t_i[1];
                 }
             }
         }
-        a
+        (normal, tangential)
     }
-    /// Free-stream normal velocity at each panel.
+    /// Assemble the normal-velocity influence matrix A (n×n).
+    ///
+    /// `A[i][j]` is the velocity component normal to panel `i`, at its centre,
+    /// that panel `j` induces at unit source strength:
+    /// `A[i][j] = n_i · V_j(c_i)` with `V_j` from [`Panel::source_velocity`].
+    /// The diagonal is `½`, the normal velocity just outside a panel's own
+    /// source sheet.
+    pub fn influence_matrix(&self) -> Vec<Vec<f64>> {
+        self.influence_matrices().0
+    }
+    /// Assemble the tangential-velocity influence matrix B (n×n).
+    ///
+    /// `B[i][j] = t_i · V_j(c_i)` is the velocity along the tangent of panel
+    /// `i`, at its centre, that panel `j` induces at unit source strength.  A
+    /// panel induces no tangential velocity at its own centre, so the diagonal
+    /// is zero.
+    pub fn tangential_influence_matrix(&self) -> Vec<Vec<f64>> {
+        self.influence_matrices().1
+    }
+    /// Right-hand side of the no-penetration condition: minus the free-stream
+    /// velocity component normal to each panel.
     pub fn freestream_rhs(&self) -> Vec<f64> {
         let ca = self.alpha.cos();
         let sa = self.alpha.sin();
@@ -971,6 +1106,98 @@ impl SourcePanelMethod {
                 -(self.u_inf * ca * n[0] + self.u_inf * sa * n[1])
             })
             .collect()
+    }
+    /// Free-stream velocity component along the tangent of each panel.
+    fn freestream_tangential(&self) -> Vec<f64> {
+        let ca = self.alpha.cos();
+        let sa = self.alpha.sin();
+        self.panels
+            .iter()
+            .map(|p| {
+                let t = p.tangent();
+                self.u_inf * ca * t[0] + self.u_inf * sa * t[1]
+            })
+            .collect()
+    }
+    /// Solve for the source strengths and the resulting surface flow.
+    ///
+    /// The strengths follow from the Neumann condition `A σ = −V∞ · n` (no flow
+    /// through any panel).  The surface velocity along each tangent is then
+    /// `V_t,i = V∞ · t_i + Σ_j B_ij σ_j` and the pressure coefficient
+    /// `Cp = 1 − (V_t / V∞)²`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::General`] when there are no panels, a panel is degenerate (zero
+    /// length or a non-finite end point), or the influence matrix is singular,
+    /// for example because two panels coincide.
+    pub fn solve(&self) -> Result<SourcePanelSolution> {
+        if self.panels.is_empty() {
+            return Err(Error::general("source panel method has no panels"));
+        }
+        if let Some(index) = self.panels.iter().position(|p| {
+            let l = p.length();
+            !(l.is_finite() && l > 0.0)
+        }) {
+            return Err(Error::general(format!(
+                "source panel {index} has zero length or a non-finite end point"
+            )));
+        }
+        let (a, b) = self.influence_matrices();
+        let strengths = solve_dense(a, self.freestream_rhs()).ok_or_else(|| {
+            Error::general("source panel influence matrix is singular (coincident panels?)")
+        })?;
+        let tangential_velocity: Vec<f64> = self
+            .freestream_tangential()
+            .iter()
+            .zip(b.iter())
+            .map(|(free, row)| {
+                free + row
+                    .iter()
+                    .zip(strengths.iter())
+                    .map(|(b_ij, sigma)| b_ij * sigma)
+                    .sum::<f64>()
+            })
+            .collect();
+        let pressure_coefficient = tangential_velocity
+            .iter()
+            .map(|&v| self.cp_at_panel(v))
+            .collect();
+        let net_source = self
+            .panels
+            .iter()
+            .zip(strengths.iter())
+            .map(|(panel, sigma)| sigma * panel.length())
+            .sum();
+        Ok(SourcePanelSolution {
+            strengths,
+            tangential_velocity,
+            pressure_coefficient,
+            net_source,
+        })
+    }
+    /// Total flow velocity at `p`: the free stream plus the field of every
+    /// source panel with the given `strengths` (one per panel, as returned in
+    /// [`SourcePanelSolution::strengths`]).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::General`] when `strengths` does not hold one value per panel.
+    pub fn velocity_at(&self, strengths: &[f64], p: [f64; 2]) -> Result<[f64; 2]> {
+        if strengths.len() != self.panels.len() {
+            return Err(Error::general(format!(
+                "expected {} source strengths, got {}",
+                self.panels.len(),
+                strengths.len()
+            )));
+        }
+        let mut v = [self.u_inf * self.alpha.cos(), self.u_inf * self.alpha.sin()];
+        for (panel, sigma) in self.panels.iter().zip(strengths.iter()) {
+            let induced = panel.source_velocity(p);
+            v[0] += sigma * induced[0];
+            v[1] += sigma * induced[1];
+        }
+        Ok(v)
     }
     /// Pressure coefficient from velocity at panel center.
     /// Cp = 1 - (v/u_inf)².

@@ -9,11 +9,22 @@
 //! - **Triangle-triangle intersection detection** — Möller's separating axis
 //!   test and segment/plane clipping.
 //! - **Contour extraction** — intersection curves between two meshes.
-//! - **Surface splitting** — re-triangulation of intersected faces.
-//! - **Inside/outside classification** — generalised winding number.
-//! - **Co-planar triangle handling** — projection-based merging.
+//! - **Surface splitting** — every intersected face is re-triangulated along
+//!   the intersection curves with a constrained Delaunay triangulation, and
+//!   points on shared edges are propagated to both incident faces so the seam
+//!   stays conforming (no T-junctions).
+//! - **Inside/outside classification** — exact `orient3d` ray parity with
+//!   Simulation-of-Simplicity tie-breaking (plus the generalised winding number
+//!   for standalone queries).
+//! - **Co-planar triangle handling** — coplanar faces are split along each
+//!   other's edges and resolved by relative orientation.
 //! - **Mesh stitching** — combining split surfaces into a watertight result.
 //! - **Result cleanup** — degenerate triangle removal, vertex welding.
+
+mod arrangement;
+mod cdt;
+#[cfg(test)]
+mod split_tests;
 
 use oxiphysics_core::exact_predicates::{Orientation, orient3d};
 
@@ -723,22 +734,56 @@ pub fn split_triangle_by_plane(
 
 /// Weld vertices that are closer than `tolerance`.
 /// Returns a new mesh with merged vertices.
+///
+/// Each vertex is mapped to the earliest previously kept vertex closer than
+/// `tolerance`; candidates are found through a uniform hash grid with cell size
+/// `|tolerance|`, so the cost is linear in the vertex count for well-spread
+/// input.
 pub fn weld_vertices(mesh: &SimpleMesh, tolerance: f64) -> SimpleMesh {
+    use std::collections::HashMap;
+
     let tol_sq = tolerance * tolerance;
+    let cell = tolerance.abs();
+    let use_grid = cell.is_finite() && cell > 0.0;
+    let cell_of = |v: V3| -> [i64; 3] {
+        if use_grid {
+            v.map(|c| (c / cell).floor() as i64)
+        } else {
+            [0; 3]
+        }
+    };
+    let mut grid: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
     let mut new_verts: Vec<V3> = Vec::new();
     let mut remap: Vec<usize> = Vec::new();
 
     for v in &mesh.vertices {
-        let mut found = None;
-        for (k, nv) in new_verts.iter().enumerate() {
-            if dist_sq(*v, *nv) < tol_sq {
-                found = Some(k);
-                break;
+        let c = cell_of(*v);
+        let mut found: Option<usize> = None;
+        if tol_sq > 0.0 {
+            for dx in -1_i64..=1 {
+                for dy in -1_i64..=1 {
+                    for dz in -1_i64..=1 {
+                        let key = [
+                            c[0].saturating_add(dx),
+                            c[1].saturating_add(dy),
+                            c[2].saturating_add(dz),
+                        ];
+                        let Some(list) = grid.get(&key) else {
+                            continue;
+                        };
+                        for &k in list {
+                            if dist_sq(*v, new_verts[k]) < tol_sq && found.is_none_or(|f| k < f) {
+                                found = Some(k);
+                            }
+                        }
+                    }
+                }
             }
         }
         if let Some(k) = found {
             remap.push(k);
         } else {
+            grid.entry(c).or_default().push(new_verts.len());
             remap.push(new_verts.len());
             new_verts.push(*v);
         }
@@ -834,61 +879,39 @@ pub fn classify_triangles(mesh: &SimpleMesh, other: &SimpleMesh) -> Vec<bool> {
     result
 }
 
-/// Perform a mesh boolean operation.
+/// Perform a mesh boolean operation on two closed, consistently oriented
+/// triangle meshes.
 ///
-/// This classifies triangles by their centroid and selects/rejects based on the
-/// operation. Centroid sidedness is decided by the EXACT `orient3d`-based
-/// point-in-mesh classifier with Simulation-of-Simplicity tie-breaking (see
-/// [`exact_classify_triangles`]), so coincident-face configurations are resolved
-/// deterministically and produce watertight results instead of landing in an
-/// undefined float-winding band. For arbitrary mid-triangle intersections, a full
-/// re-triangulation along intersection curves (a BSP/CDT rebuild) is still needed.
+/// The surfaces are first intersected: every pair of overlapping triangles
+/// contributes its intersection segment (or, for coplanar pairs, each other's
+/// clipped edges), each cut triangle is re-triangulated with a constrained
+/// Delaunay triangulation that contains those segments as edges, and points on
+/// shared edges are propagated to both incident triangles. The resulting pieces
+/// never straddle the other surface, so each one is classified by its centroid:
+/// pieces lying in a face of the other mesh are resolved by relative
+/// orientation (shared interfaces), all others by the exact `orient3d`
+/// ray-parity test with Simulation-of-Simplicity tie-breaking (see
+/// [`exact_classify_point_vs_mesh`]). Pieces are selected per operation —
+/// `B`'s pieces inside `A` are reversed for a difference — and the seam is
+/// welded, so closed inputs in general position yield a closed (watertight)
+/// result (see *Precision* below).
+///
+/// # Precision
+///
+/// Intersection points are computed in floating point and snapped with a
+/// tolerance of about `1e-13` times the coordinate scale; exact coincidences
+/// (shared or overlapping coplanar faces, touching vertices) are resolved
+/// exactly. For inputs in general position the result is a closed, consistently
+/// oriented surface. Near-degenerate configurations, i.e. faces that are
+/// almost but not exactly coplanar (dihedral angles around `1e-9` rad) or
+/// vertices lying within a few snapping tolerances of the other surface, can
+/// leave a few non-manifold seam edges; the enclosed volume of the result is
+/// still correct in those cases.
+///
+/// Triangles with out-of-range or repeated indices, non-finite coordinates or
+/// zero area carry no surface and are ignored.
 pub fn mesh_boolean(mesh_a: &SimpleMesh, mesh_b: &SimpleMesh, op: MeshBooleanOp) -> SimpleMesh {
-    // Exact, coincident-face-aware classification of every triangle of each mesh
-    // against the other (see `classify_triangle_exact` / `TriClass`).
-    let class_a: Vec<TriClass> = (0..mesh_a.n_triangles())
-        .map(|i| classify_triangle_exact(mesh_a, i, mesh_b))
-        .collect();
-    let class_b: Vec<TriClass> = (0..mesh_b.n_triangles())
-        .map(|i| classify_triangle_exact(mesh_b, i, mesh_a))
-        .collect();
-
-    let mut result = SimpleMesh::new();
-
-    // For Difference, B's contribution (faces inside A) is added with flipped
-    // winding to bound the carved cavity; for Union/Intersection B keeps its own
-    // winding. Difference flips B; the other ops do not.
-    let flip_b = matches!(op, MeshBooleanOp::Difference);
-
-    collect_by_class(mesh_a, &class_a, op, true, false, &mut result);
-    collect_by_class(mesh_b, &class_b, op, false, flip_b, &mut result);
-
-    cleanup_mesh(&result)
-}
-
-/// Append the triangles of `mesh` (identified as side A when `is_a`) that
-/// [`keep_triangle`] selects for `op`, optionally flipping their winding.
-fn collect_by_class(
-    mesh: &SimpleMesh,
-    classes: &[TriClass],
-    op: MeshBooleanOp,
-    is_a: bool,
-    flip: bool,
-    result: &mut SimpleMesh,
-) {
-    let offset = result.vertices.len();
-    result.vertices.extend_from_slice(&mesh.vertices);
-    for (i, &class) in classes.iter().enumerate() {
-        if keep_triangle(op, is_a, class) {
-            let t = mesh.triangles[i];
-            let tri = if flip {
-                [t[1] + offset, t[0] + offset, t[2] + offset]
-            } else {
-                [t[0] + offset, t[1] + offset, t[2] + offset]
-            };
-            result.triangles.push(tri);
-        }
-    }
+    arrangement::boolean(mesh_a, mesh_b, op)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1108,20 +1131,16 @@ pub fn exact_classify_triangles(mesh: &SimpleMesh, other: &SimpleMesh) -> Vec<bo
     result
 }
 
-/// Exact sidedness classification of one triangle of `mesh` against `other`,
-/// distinguishing the strict inside/outside cases from the COINCIDENT-FACE
-/// (degenerate-band) cases that a pure ray-parity test classifies inconsistently.
-///
-/// This is the routing of the degenerate band: a triangle whose face lies exactly
-/// in a face of `other` is a shared interface, and `mesh_boolean` must resolve it
-/// by orientation rather than by the (ill-defined) ray parity of an on-surface
-/// centroid. The same-normal vs opposite-normal distinction drives the per-op keep
-/// rule so that coincident faces produce a closed manifold.
+/// Sidedness of a boolean piece relative to the other operand. Strict
+/// inside/outside comes from the exact ray-parity test; the coplanar classes
+/// mark a piece lying in a face of the other operand (a shared interface), which
+/// `mesh_boolean` resolves by orientation rather than by the ill-defined ray
+/// parity of an on-surface centroid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TriClass {
-    /// Centroid strictly inside `other`.
+    /// Piece strictly inside `other`.
     Inside,
-    /// Centroid strictly outside `other`.
+    /// Piece strictly outside `other`.
     Outside,
     /// Triangle is coincident with a face of `other` whose normal points the SAME
     /// way (overlapping co-oriented shells).
@@ -1129,60 +1148,6 @@ enum TriClass {
     /// Triangle is coincident with a face of `other` whose normal points the
     /// OPPOSITE way (the two solids meet face-to-face here).
     CoplanarOpposite,
-}
-
-/// Whether the centroid `c` lies exactly in the plane of triangle `(u0,u1,u2)`
-/// (all three plane-side `orient3d` tests degenerate) AND projects strictly inside
-/// that triangle — i.e. the query triangle is coincident with this face. The plane
-/// test is EXACT via `orient3d`; the in-triangle test uses the existing dominant-
-/// axis 2D barycentric test (`point_in_triangle_2d`).
-fn centroid_coincident_with(c: V3, u0: V3, u1: V3, u2: V3) -> bool {
-    // Exact coplanarity: c must lie on the plane through (u0,u1,u2).
-    if orient3d(u0, u1, u2, c) != Orientation::Degenerate {
-        return false;
-    }
-    // Project onto the dominant axis of the face normal and test containment.
-    let n = triangle_normal(u0, u1, u2);
-    if length(n) < GEO_EPS {
-        return false;
-    }
-    let abs_n = [n[0].abs(), n[1].abs(), n[2].abs()];
-    let (ax1, ax2) = if abs_n[0] >= abs_n[1] && abs_n[0] >= abs_n[2] {
-        (1, 2)
-    } else if abs_n[1] >= abs_n[2] {
-        (0, 2)
-    } else {
-        (0, 1)
-    };
-    let proj = |v: V3| -> [f64; 2] { [v[ax1], v[ax2]] };
-    point_in_triangle_2d(proj(c), proj(u0), proj(u1), proj(u2))
-}
-
-/// Classify triangle `ti` of `mesh` against `other`: first detect a coincident
-/// (shared) face exactly; otherwise fall back to the exact ray-parity inside test.
-fn classify_triangle_exact(mesh: &SimpleMesh, ti: usize, other: &SimpleMesh) -> TriClass {
-    let (a, b, c) = mesh.triangle_verts(ti);
-    let centroid = scale(add(add(a, b), c), 1.0 / 3.0);
-    let n_self = triangle_normal(a, b, c);
-
-    for u in &other.triangles {
-        let u0 = other.vertices[u[0]];
-        let u1 = other.vertices[u[1]];
-        let u2 = other.vertices[u[2]];
-        if centroid_coincident_with(centroid, u0, u1, u2) {
-            let n_other = triangle_normal(u0, u1, u2);
-            if dot(n_self, n_other) >= 0.0 {
-                return TriClass::CoplanarSame;
-            }
-            return TriClass::CoplanarOpposite;
-        }
-    }
-
-    if exact_classify_point_vs_mesh(other, centroid) {
-        TriClass::Inside
-    } else {
-        TriClass::Outside
-    }
 }
 
 /// Whether a triangle classified as `class` (of mesh side `is_a`: A vs B) should be
@@ -1765,16 +1730,19 @@ mod tests {
     fn test_exact_coincident_face_intersection_finite() {
         let a = SimpleMesh::unit_cube([0.0, 0.0, 0.0], 1.0);
         let b = SimpleMesh::unit_cube([2.0, 0.0, 0.0], 1.0);
-        // Two cubes meeting only at a face: the intersection is geometrically a
-        // flat zero-volume square. It is acceptable for the centroid pipeline to
-        // yield an empty / degenerate-and-removed result here — we only require
-        // no panic and finite output (no NaN).
+        // Two cubes meeting only at a face: the intersection is a flat
+        // zero-volume square, and the shared faces are opposite-oriented, so
+        // nothing of either surface bounds the (empty) intersection.
         let result = mesh_boolean(&a, &b, MeshBooleanOp::Intersection);
         assert!(
             all_vertices_finite(&result),
             "intersection vertices must be finite"
         );
-        // Empty is fine; if non-empty, still must be finite (checked above).
+        assert_eq!(
+            result.n_triangles(),
+            0,
+            "face-touching intersection is empty"
+        );
     }
 
     #[test]
@@ -1882,15 +1850,15 @@ mod tests {
             .signed_volume()
             .abs();
 
-        // The centroid pipeline selects WHOLE triangles without re-triangulating
-        // the intersection curve, so the union/intersection meshes approximate the
-        // true boolean volume by whole-triangle selection. We therefore assert the
-        // inclusion-exclusion identity with a RELATIVE tolerance scaled by total
-        // volume rather than a tight absolute 1e-6 (which whole-triangle selection
-        // cannot honestly reach for a mid-face overlap).
+        // Faces are split along the intersection curves, so the result volumes
+        // are exact: the overlap is the box [0,1] x [-0.7,1] x [-0.8,1].
+        assert!(
+            (vol_inter - 1.7 * 1.8).abs() < 1e-9,
+            "intersection volume {vol_inter}"
+        );
         let lhs = vol_union;
         let rhs = vol_a + vol_b - vol_inter;
-        let tol = 1.0e-2 * (vol_a + vol_b);
+        let tol = 1.0e-9;
         assert!(
             (lhs - rhs).abs() < tol,
             "volume identity: |{lhs} - {rhs}| = {} >= {tol}",

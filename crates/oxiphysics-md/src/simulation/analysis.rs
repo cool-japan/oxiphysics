@@ -6,7 +6,7 @@
 //! Contains EquilibrationDetector, RestartData, RunStatistics,
 //! MdSim analysis methods, and velocity initialization functions.
 
-use super::config::{Ensemble, KB_REDUCED, MdState};
+use super::config::{Ensemble, KB_REDUCED, MdState, atom_kinetic_energy, thermal_velocity_sigma};
 use super::core_sim::MdSim;
 use super::plain_sim::{ObservableRecord, compute_msd};
 
@@ -467,10 +467,12 @@ impl MdSim {
 // Velocity initialization utilities
 // ---------------------------------------------------------------------------
 
-/// Assign Maxwell-Boltzmann velocities to atoms at temperature `T` (K).
+/// Assign Maxwell-Boltzmann velocities (Å ps⁻¹) to atoms at temperature `T` (K).
 ///
 /// Draws velocities from a Gaussian distribution with
-/// σ_α = sqrt(k_B T / m) per degree of freedom.
+/// σ_α = sqrt(k_B T / m) per degree of freedom, evaluated in the MD unit system
+/// of the module (masses in amu, σ in Å ps⁻¹, see [`thermal_velocity_sigma`]):
+/// `σ_α = sqrt(100 · k_B T / m)` with `k_B` in kJ mol⁻¹ K⁻¹.
 ///
 /// Removes the centre-of-mass drift after assignment.
 /// Uses the Box-Muller transform for Gaussian sampling.
@@ -513,7 +515,7 @@ pub fn maxwell_boltzmann_velocities(
     };
 
     for i in 0..n {
-        let sigma = (KB_REDUCED * temperature / masses[i]).sqrt();
+        let sigma = thermal_velocity_sigma(temperature, masses[i]);
         for v in &mut velocities[i] {
             *v = sigma * next_gauss();
         }
@@ -554,7 +556,7 @@ pub fn rescale_to_temperature(velocities: &mut [[f64; 3]], masses: &[f64], targe
     let ke: f64 = velocities
         .iter()
         .zip(masses.iter())
-        .map(|(v, &m)| 0.5 * m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
+        .map(|(v, &m)| atom_kinetic_energy(v, m))
         .sum();
     let t_current = 2.0 * ke / (3.0 * n as f64 * KB_REDUCED);
     if t_current < 1e-10 {

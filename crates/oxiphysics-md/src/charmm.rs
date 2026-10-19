@@ -1531,8 +1531,9 @@ mod tests {
                 );
             }
         }
-        for d in 0..3 {
-            let net = forces[0][d] + forces[1][d] + forces[2][d];
+        let net_force: [f64; 3] =
+            std::array::from_fn(|d| forces[0][d] + forces[1][d] + forces[2][d]);
+        for (d, net) in net_force.iter().enumerate() {
             assert!(net.abs() < 1e-12, "net force component {d} = {net}");
         }
     }

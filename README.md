@@ -39,7 +39,7 @@ soundness contract), and strict Rustdoc enforcement.
 | `oxiphysics-wasm` | **Stable** | 922 | wasm-bindgen 0.2 bindings — 929 `#[wasm_bindgen]` across 27+ bridge files |
 | `oxiphysics` | top-level re-exports | — | Single-crate entry point for all modules |
 
-*`oxiphysics-python` is validated via its pytest suite (PyO3 extension-module; not counted in the cargo nextest total).*
+*`oxiphysics-python` is validated twice: by its Rust unit tests, which link libpython (PyO3 finds it via `PYO3_PYTHON`) and run under `cargo nextest` like every other crate, and by its pytest suite against the built extension module (`maturin develop`).*
 
 *A 2026 honesty audit (`[0.1.3]` development cycle — see [CHANGELOG](CHANGELOG.md)) found and fixed dozens of silent fabrications in several of the crates above: code that compiled and returned plausible-but-fake results with no error or stub marker, e.g. an eigensolver reporting `converged: true` on fake eigenvalues, a GPU constraint-solver path returning its unmodified input as "solved", and an all-zero boundary-element matrix. Each was replaced with a real implementation plus a regression test (full list in the changelog), but **Stable** in this table means "implemented and covered by passing tests," not independently validated for production use.*
 

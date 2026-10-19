@@ -1,11 +1,33 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-//! SIMD-optimized Projected Gauss-Seidel solver using Structure-of-Arrays (SoA) layout.
+//! Batch Projected Gauss-Seidel solver on a Structure-of-Arrays (SoA) layout.
 //!
-//! This module provides [`BatchPgsSolver`] which stores constraint data in SoA (Structure of
-//! Arrays) format so that the LLVM auto-vectorizer can emit SIMD instructions (SSE2/AVX2/NEON)
-//! for the inner iteration loops.
+//! [`BatchPgsSolver`] solves scalar constraint rows between rigid bodies with
+//! the projected Gauss-Seidel iteration.  Every row has a direction `n`, lever
+//! arms `r_a` / `r_b` from the centres of mass to the point where the row acts,
+//! and bounds on its accumulated impulse; the solver accounts for the linear
+//! *and* the angular response of both bodies.
+//!
+//! ## Conventions
+//!
+//! A positive impulse `λ` pushes body B along `+n` and body A along `-n`
+//! (applied at the lever arms), so the relative velocity of the two points
+//! along the row,
+//!
+//! ```text
+//! rv = n·(v_b − v_a) + (r_b × n)·ω_b − (r_a × n)·ω_a ,
+//! ```
+//!
+//! changes by `K·λ` with the inverse effective mass
+//!
+//! ```text
+//! K = m_a⁻¹ + m_b⁻¹ + (r_a × n)·I_a⁻¹(r_a × n) + (r_b × n)·I_b⁻¹(r_b × n) .
+//! ```
+//!
+//! For a contact, `n` points from A to B, so `rv < 0` means the bodies
+//! approach.  A row drives `rv + bias` to zero: `Δλ = −(rv + bias) / K`, and
+//! the accumulated impulse is projected onto `[lo, hi]` after every update.
 //!
 //! ## Data layout
 //!
@@ -21,9 +43,22 @@
 //! eff_mass: [em0, em1, em2, em3, ...]
 //! lambda:   [λ0,  λ1,  λ2,  λ3, ...]
 //! ```
-//! When the inner loop advances in steps of 4, LLVM merges the scalar loads into
-//! 256-bit AVX2 registers (or 128-bit SSE2/NEON) and processes 4 constraints per
-//! CPU cycle.
+//! The lever-arm terms `r × n` and `I⁻¹(r × n)` are precomputed per row when it
+//! is pushed, so the inner loop only needs dot products with the body
+//! velocities.
+//!
+//! ## Batched rows
+//!
+//! The rows are processed in groups of four.  A group whose rows touch pairwise
+//! disjoint sets of moving bodies is evaluated as a batch (all four relative
+//! velocities first, then the four impulse updates), which is exactly what four
+//! sequential updates would compute.  A group in which two rows share a moving
+//! body is processed row by row instead, so the iteration is always the plain
+//! Gauss-Seidel sweep over the rows in order and gives the same result as the
+//! scalar [`PgsSolver`](crate::PgsSolver).  Rows that share only static bodies
+//! (zero inverse mass and inertia) do not conflict.  The velocity gathers and
+//! scatters through the body index arrays stay scalar; only the per-row
+//! arithmetic of independent rows is laid out for vectorisation.
 //!
 //! ## Usage
 //!
@@ -31,66 +66,150 @@
 //! use oxiphysics_constraints::simd_pgs::{BatchPgsSolver, SoaConstraintRow, SoaConstraints};
 //!
 //! let mut soa = SoaConstraints::new();
-//! // Populate constraints from your scene …
-//! soa.push(SoaConstraintRow {
-//!     normal: [0.0, 1.0, 0.0],
-//!     r_a: [0.0, 0.1, 0.0],
-//!     r_b: [0.0, -0.1, 0.0],
-//!     inv_mass_a: 1.0,
-//!     inv_mass_b: 1.0,
-//!     eff_mass: 1.0,
-//!     bias: 0.01,
-//!     warm_lambda: 0.0,
-//!     lo: f64::NEG_INFINITY,
-//!     hi: f64::INFINITY,
-//! });
-//! soa.resize_bodies(1); // body index 0 needs one velocity slot
+//! // A unit mass (body 1) falls at 2 m/s onto a static body (body 0).
+//! soa.push(SoaConstraintRow::linear([0.0, 1.0, 0.0], 0, 1, 0.0, 1.0));
+//! soa.set_body_velocity(1, [0.0, -2.0, 0.0], [0.0; 3]);
 //!
 //! let stats = BatchPgsSolver::default().solve(&mut soa, 1.0 / 60.0);
-//! assert!(stats.iterations_used >= 1);
+//! assert!(stats.converged);
+//! // A contact impulse of 2 N·s stops the falling body.
+//! assert!((soa.lambda[0] - 2.0).abs() < 1e-12);
+//! assert!(soa.body_vy[1].abs() < 1e-12);
 //! ```
+
+/// Smallest inverse effective mass for which a row is solved; below it the
+/// row's effective mass is set to zero and the row leaves the bodies alone.
+const MIN_INVERSE_EFFECTIVE_MASS: f64 = 1e-15;
+
+/// Penetration depth (m) tolerated by [`SoaContactBuilder`] before position
+/// correction starts, unless changed with [`SoaContactBuilder::with_slop`].
+const DEFAULT_CONTACT_SLOP: f64 = 0.005;
+
+/// A 3x3 matrix in row-major order.
+type Mat3 = [[f64; 3]; 3];
+
+/// Cross product of two 3-vectors.
+#[inline]
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Dot product of two 3-vectors.
+#[inline]
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Matrix-vector product `m·v`.
+#[inline]
+fn mat_vec(m: &Mat3, v: [f64; 3]) -> [f64; 3] {
+    [dot(m[0], v), dot(m[1], v), dot(m[2], v)]
+}
+
+/// Project `x` onto `[lo, hi]`.  Unlike [`f64::clamp`] this never panics on
+/// inverted or NaN bounds.
+#[inline]
+fn project(x: f64, lo: f64, hi: f64) -> f64 {
+    x.max(lo).min(hi)
+}
 
 // ── SoaConstraints ──────────────────────────────────────────────────────────
 
 /// A single constraint row for insertion into [`SoaConstraints::push`].
+///
+/// The inverse effective mass of the row is computed by
+/// [`push`](SoaConstraints::push) from the inverse masses, the inverse
+/// inertia tensors and the lever arms, so it is always consistent with them.
 #[derive(Debug, Clone, Copy)]
 pub struct SoaConstraintRow {
-    /// Unit contact normal in world space `[nx, ny, nz]`.
+    /// Unit direction of the row in world space `[nx, ny, nz]` (for a contact:
+    /// the contact normal pointing from body A to body B).
     pub normal: [f64; 3],
-    /// Lever arm from body A COM to contact `[rax, ray, raz]`.
+    /// Lever arm from body A's centre of mass to the point where the row acts
+    /// (world space).
     pub r_a: [f64; 3],
-    /// Lever arm from body B COM to contact `[rbx, rby, rbz]`.
+    /// Lever arm from body B's centre of mass to the point where the row acts
+    /// (world space).
     pub r_b: [f64; 3],
+    /// Index of body A in the body velocity arrays of [`SoaConstraints`].
+    pub body_a: usize,
+    /// Index of body B in the body velocity arrays of [`SoaConstraints`].
+    pub body_b: usize,
     /// Inverse mass of body A (`0.0` for static bodies).
     pub inv_mass_a: f64,
     /// Inverse mass of body B.
     pub inv_mass_b: f64,
-    /// Precomputed effective mass (1/K).
-    pub eff_mass: f64,
-    /// Velocity bias for Baumgarte / restitution.
+    /// World-space inverse inertia tensor of body A (all zeros for a body that
+    /// cannot rotate), row-major.
+    pub inv_inertia_a: [[f64; 3]; 3],
+    /// World-space inverse inertia tensor of body B, row-major.
+    pub inv_inertia_b: [[f64; 3]; 3],
+    /// Velocity bias for Baumgarte / restitution: the row drives
+    /// `rv + bias` to zero.
     pub bias: f64,
-    /// Warm-start accumulated impulse (0.0 for cold start).
+    /// Warm-start accumulated impulse (`0.0` for cold start).  It is projected
+    /// onto `[lo, hi]` and applied to the bodies by
+    /// [`BatchPgsSolver::solve`] before the first iteration.
     pub warm_lambda: f64,
-    /// Lower clamp for impulse.
+    /// Lower clamp for the accumulated impulse.
     pub lo: f64,
-    /// Upper clamp for impulse.
+    /// Upper clamp for the accumulated impulse.
     pub hi: f64,
+}
+
+impl SoaConstraintRow {
+    /// A contact row that acts through the centres of mass of two bodies: zero
+    /// lever arms, no rotational response, no bias, cold start, and the
+    /// non-pulling bounds `[0, ∞)`.
+    ///
+    /// Use struct update syntax to change the remaining fields, for example
+    /// `SoaConstraintRow { bias: -0.1, ..SoaConstraintRow::linear(..) }`.
+    pub fn linear(
+        normal: [f64; 3],
+        body_a: usize,
+        body_b: usize,
+        inv_mass_a: f64,
+        inv_mass_b: f64,
+    ) -> Self {
+        Self {
+            normal,
+            r_a: [0.0; 3],
+            r_b: [0.0; 3],
+            body_a,
+            body_b,
+            inv_mass_a,
+            inv_mass_b,
+            inv_inertia_a: [[0.0; 3]; 3],
+            inv_inertia_b: [[0.0; 3]; 3],
+            bias: 0.0,
+            warm_lambda: 0.0,
+            lo: 0.0,
+            hi: f64::INFINITY,
+        }
+    }
 }
 
 /// Structure-of-Arrays storage for one frame of PGS constraint data.
 ///
-/// All arrays are parallel: index `i` refers to constraint `i` across all fields.
+/// All per-row arrays are parallel: index `i` refers to constraint `i` across
+/// all fields; fill them with [`push`](SoaConstraints::push) so that the
+/// derived arrays stay consistent.  The per-body arrays are indexed by the body
+/// indices of the rows and grow automatically when a row is pushed.
 #[derive(Debug, Clone, Default)]
 pub struct SoaConstraints {
-    // Constraint normals (unit vectors) in world space
-    /// Normal X components.
+    // Constraint directions (unit vectors) in world space
+    /// Direction X components.
     pub nx: Vec<f64>,
-    /// Normal Y components.
+    /// Direction Y components.
     pub ny: Vec<f64>,
-    /// Normal Z components.
+    /// Direction Z components.
     pub nz: Vec<f64>,
 
-    // Lever-arm vectors from body centre-of-mass to contact point
+    // Lever-arm vectors from body centre-of-mass to the point the row acts at
     /// r_a X (body A).
     pub rax: Vec<f64>,
     /// r_a Y (body A).
@@ -104,18 +223,46 @@ pub struct SoaConstraints {
     /// r_b Z (body B).
     pub rbz: Vec<f64>,
 
+    // Angular Jacobian of each row: r × n
+    /// (r_a × n) X: how a rotation of body A changes the relative velocity.
+    pub rxn_ax: Vec<f64>,
+    /// (r_a × n) Y.
+    pub rxn_ay: Vec<f64>,
+    /// (r_a × n) Z.
+    pub rxn_az: Vec<f64>,
+    /// (r_b × n) X: how a rotation of body B changes the relative velocity.
+    pub rxn_bx: Vec<f64>,
+    /// (r_b × n) Y.
+    pub rxn_by: Vec<f64>,
+    /// (r_b × n) Z.
+    pub rxn_bz: Vec<f64>,
+
+    // Angular response of each row: I⁻¹ (r × n)
+    /// (I_a⁻¹ (r_a × n)) X: angular velocity change of body A per unit impulse.
+    pub irxn_ax: Vec<f64>,
+    /// (I_a⁻¹ (r_a × n)) Y.
+    pub irxn_ay: Vec<f64>,
+    /// (I_a⁻¹ (r_a × n)) Z.
+    pub irxn_az: Vec<f64>,
+    /// (I_b⁻¹ (r_b × n)) X: angular velocity change of body B per unit impulse.
+    pub irxn_bx: Vec<f64>,
+    /// (I_b⁻¹ (r_b × n)) Y.
+    pub irxn_by: Vec<f64>,
+    /// (I_b⁻¹ (r_b × n)) Z.
+    pub irxn_bz: Vec<f64>,
+
     // Body inverse masses
     /// Inverse mass of body A.
     pub inv_mass_a: Vec<f64>,
     /// Inverse mass of body B.
     pub inv_mass_b: Vec<f64>,
 
-    // Precomputed effective mass: `1 / K`
-    /// Effective mass (precomputed).
+    // Effective mass: `1 / K`
+    /// Effective mass (computed by `push` from masses, inertias and lever arms).
     pub eff_mass: Vec<f64>,
 
     // Velocity bias (Baumgarte stabilization + restitution)
-    /// Velocity bias for position correction.
+    /// Velocity bias for position correction and restitution.
     pub bias: Vec<f64>,
 
     // Accumulated impulse (warm-start / output)
@@ -128,25 +275,31 @@ pub struct SoaConstraints {
     /// Upper impulse bound (e.g. `INFINITY`).
     pub lambda_hi: Vec<f64>,
 
-    // Per-constraint relative velocity (scratch, recomputed each iter)
-    /// Relative velocity along normal (scratch buffer).
+    // Per-constraint relative velocity (recorded by the solver)
+    /// Relative velocity along the row, as measured when the solver last
+    /// visited the row (before the row's impulse update was applied).
     pub rel_vel: Vec<f64>,
 
-    // Body linear velocities (interleaved: body_idx → velocity)
-    // Stored separately so multiple constraints sharing a body can be updated
-    // without re-fetching from a HashMap.  Index matches `body_a_idx` /
-    // `body_b_idx`.
-    /// Index into velocity arrays for body A.
+    // Body indices of every row
+    /// Index into the body arrays for body A.
     pub body_a_idx: Vec<usize>,
-    /// Index into velocity arrays for body B.
+    /// Index into the body arrays for body B.
     pub body_b_idx: Vec<usize>,
 
+    // Body velocities, one entry per body in the scene.  Multiple rows that
+    // share a body update the same entry.
     /// Linear velocity X for each body in the scene (one per body).
     pub body_vx: Vec<f64>,
     /// Linear velocity Y.
     pub body_vy: Vec<f64>,
     /// Linear velocity Z.
     pub body_vz: Vec<f64>,
+    /// Angular velocity X for each body in the scene (one per body).
+    pub body_wx: Vec<f64>,
+    /// Angular velocity Y.
+    pub body_wy: Vec<f64>,
+    /// Angular velocity Z.
+    pub body_wz: Vec<f64>,
 }
 
 impl SoaConstraints {
@@ -165,20 +318,46 @@ impl SoaConstraints {
         self.nx.is_empty()
     }
 
+    /// Return the number of bodies the velocity arrays cover.
+    pub fn body_count(&self) -> usize {
+        self.body_vx.len()
+    }
+
     /// Append one constraint row from a [`SoaConstraintRow`].
+    ///
+    /// Precomputes the angular terms `r × n` and `I⁻¹ (r × n)` of both bodies
+    /// and the effective mass of the row, projects the warm-start impulse onto
+    /// the row's bounds, and grows the body arrays so that both body indices
+    /// are valid.
     pub fn push(&mut self, row: SoaConstraintRow) {
         let SoaConstraintRow {
             normal,
             r_a,
             r_b,
+            body_a,
+            body_b,
             inv_mass_a,
             inv_mass_b,
-            eff_mass,
+            inv_inertia_a,
+            inv_inertia_b,
             bias,
             warm_lambda,
             lo,
             hi,
         } = row;
+
+        let rxn_a = cross(r_a, normal);
+        let rxn_b = cross(r_b, normal);
+        let irxn_a = mat_vec(&inv_inertia_a, rxn_a);
+        let irxn_b = mat_vec(&inv_inertia_b, rxn_b);
+        let inverse_effective_mass =
+            inv_mass_a + inv_mass_b + dot(rxn_a, irxn_a) + dot(rxn_b, irxn_b);
+        let eff_mass = if inverse_effective_mass > MIN_INVERSE_EFFECTIVE_MASS {
+            1.0 / inverse_effective_mass
+        } else {
+            0.0
+        };
+
         self.nx.push(normal[0]);
         self.ny.push(normal[1]);
         self.nz.push(normal[2]);
@@ -188,20 +367,35 @@ impl SoaConstraints {
         self.rbx.push(r_b[0]);
         self.rby.push(r_b[1]);
         self.rbz.push(r_b[2]);
+        self.rxn_ax.push(rxn_a[0]);
+        self.rxn_ay.push(rxn_a[1]);
+        self.rxn_az.push(rxn_a[2]);
+        self.rxn_bx.push(rxn_b[0]);
+        self.rxn_by.push(rxn_b[1]);
+        self.rxn_bz.push(rxn_b[2]);
+        self.irxn_ax.push(irxn_a[0]);
+        self.irxn_ay.push(irxn_a[1]);
+        self.irxn_az.push(irxn_a[2]);
+        self.irxn_bx.push(irxn_b[0]);
+        self.irxn_by.push(irxn_b[1]);
+        self.irxn_bz.push(irxn_b[2]);
         self.inv_mass_a.push(inv_mass_a);
         self.inv_mass_b.push(inv_mass_b);
         self.eff_mass.push(eff_mass);
         self.bias.push(bias);
-        self.lambda.push(warm_lambda);
+        self.lambda.push(project(warm_lambda, lo, hi));
         self.lambda_lo.push(lo);
         self.lambda_hi.push(hi);
         self.rel_vel.push(0.0);
-        // Body indices / velocities are managed by the caller.
-        self.body_a_idx.push(0);
-        self.body_b_idx.push(0);
+        self.body_a_idx.push(body_a);
+        self.body_b_idx.push(body_b);
+        self.ensure_bodies(body_a.max(body_b).saturating_add(1));
     }
 
     /// Clear all constraints (retains allocations).
+    ///
+    /// The body velocities are kept; use [`resize_bodies`](Self::resize_bodies)
+    /// to reset them.
     pub fn clear(&mut self) {
         self.nx.clear();
         self.ny.clear();
@@ -212,6 +406,18 @@ impl SoaConstraints {
         self.rbx.clear();
         self.rby.clear();
         self.rbz.clear();
+        self.rxn_ax.clear();
+        self.rxn_ay.clear();
+        self.rxn_az.clear();
+        self.rxn_bx.clear();
+        self.rxn_by.clear();
+        self.rxn_bz.clear();
+        self.irxn_ax.clear();
+        self.irxn_ay.clear();
+        self.irxn_az.clear();
+        self.irxn_bx.clear();
+        self.irxn_by.clear();
+        self.irxn_bz.clear();
         self.inv_mass_a.clear();
         self.inv_mass_b.clear();
         self.eff_mass.clear();
@@ -224,11 +430,150 @@ impl SoaConstraints {
         self.body_b_idx.clear();
     }
 
-    /// Resize the body velocity arrays to `n` bodies (zero-initialised).
+    /// Resize the body velocity arrays to `n` bodies; new entries are
+    /// zero-initialised and existing ones are kept.
     pub fn resize_bodies(&mut self, n: usize) {
         self.body_vx.resize(n, 0.0);
         self.body_vy.resize(n, 0.0);
         self.body_vz.resize(n, 0.0);
+        self.body_wx.resize(n, 0.0);
+        self.body_wy.resize(n, 0.0);
+        self.body_wz.resize(n, 0.0);
+    }
+
+    /// Make sure the body arrays cover at least `count` bodies.
+    fn ensure_bodies(&mut self, count: usize) {
+        if self.body_vx.len() < count {
+            self.resize_bodies(count);
+        }
+    }
+
+    /// Grow the body arrays so that they cover every body index the rows refer
+    /// to (they can fall short after [`resize_bodies`](Self::resize_bodies)
+    /// shrank them or the index arrays were edited by hand).
+    fn cover_row_bodies(&mut self) {
+        let required = self
+            .body_a_idx
+            .iter()
+            .chain(self.body_b_idx.iter())
+            .copied()
+            .max()
+            .map_or(0, |highest| highest.saturating_add(1));
+        self.ensure_bodies(required);
+    }
+
+    /// Whether all per-row arrays have the same length.
+    ///
+    /// [`push`](Self::push) keeps them consistent; arrays that were edited by
+    /// hand may not be, and [`BatchPgsSolver::solve`] refuses to solve such a
+    /// set.
+    pub fn is_consistent(&self) -> bool {
+        let rows = self.nx.len();
+        [
+            self.ny.len(),
+            self.nz.len(),
+            self.rax.len(),
+            self.ray_.len(),
+            self.raz.len(),
+            self.rbx.len(),
+            self.rby.len(),
+            self.rbz.len(),
+            self.rxn_ax.len(),
+            self.rxn_ay.len(),
+            self.rxn_az.len(),
+            self.rxn_bx.len(),
+            self.rxn_by.len(),
+            self.rxn_bz.len(),
+            self.irxn_ax.len(),
+            self.irxn_ay.len(),
+            self.irxn_az.len(),
+            self.irxn_bx.len(),
+            self.irxn_by.len(),
+            self.irxn_bz.len(),
+            self.inv_mass_a.len(),
+            self.inv_mass_b.len(),
+            self.eff_mass.len(),
+            self.bias.len(),
+            self.lambda.len(),
+            self.lambda_lo.len(),
+            self.lambda_hi.len(),
+            self.rel_vel.len(),
+            self.body_a_idx.len(),
+            self.body_b_idx.len(),
+        ]
+        .iter()
+        .all(|&len| len == rows)
+            && self.body_vx.len() == self.body_vy.len()
+            && self.body_vx.len() == self.body_vz.len()
+            && self.body_vx.len() == self.body_wx.len()
+            && self.body_vx.len() == self.body_wy.len()
+            && self.body_vx.len() == self.body_wz.len()
+    }
+
+    /// Set the linear and angular velocity of `body`, growing the body arrays
+    /// if the index is beyond them.
+    pub fn set_body_velocity(&mut self, body: usize, linear: [f64; 3], angular: [f64; 3]) {
+        self.ensure_bodies(body.saturating_add(1));
+        self.body_vx[body] = linear[0];
+        self.body_vy[body] = linear[1];
+        self.body_vz[body] = linear[2];
+        self.body_wx[body] = angular[0];
+        self.body_wy[body] = angular[1];
+        self.body_wz[body] = angular[2];
+    }
+
+    /// Linear and angular velocity of `body`, or `None` if the index is beyond
+    /// the body arrays.
+    pub fn body_velocity(&self, body: usize) -> Option<([f64; 3], [f64; 3])> {
+        if body >= self.body_count() {
+            return None;
+        }
+        Some((
+            [self.body_vx[body], self.body_vy[body], self.body_vz[body]],
+            [self.body_wx[body], self.body_wy[body], self.body_wz[body]],
+        ))
+    }
+
+    /// Whether row `i` changes the velocity of body A.
+    #[inline]
+    fn moves_body_a(&self, i: usize) -> bool {
+        self.inv_mass_a[i] != 0.0
+            || self.irxn_ax[i] != 0.0
+            || self.irxn_ay[i] != 0.0
+            || self.irxn_az[i] != 0.0
+    }
+
+    /// Whether row `i` changes the velocity of body B.
+    #[inline]
+    fn moves_body_b(&self, i: usize) -> bool {
+        self.inv_mass_b[i] != 0.0
+            || self.irxn_bx[i] != 0.0
+            || self.irxn_by[i] != 0.0
+            || self.irxn_bz[i] != 0.0
+    }
+
+    /// Whether the four rows starting at `base` can be evaluated as a batch:
+    /// no body that one of them moves is read or moved by another one.
+    fn lanes_are_independent(&self, base: usize) -> bool {
+        for first in base..base + 4 {
+            for second in first + 1..base + 4 {
+                if self.rows_conflict(first, second) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Whether rows `r` and `s` are coupled through a body that either of them
+    /// moves.
+    fn rows_conflict(&self, r: usize, s: usize) -> bool {
+        let touches =
+            |row: usize, body: usize| self.body_a_idx[row] == body || self.body_b_idx[row] == body;
+        (self.moves_body_a(r) && touches(s, self.body_a_idx[r]))
+            || (self.moves_body_b(r) && touches(s, self.body_b_idx[r]))
+            || (self.moves_body_a(s) && touches(r, self.body_a_idx[s]))
+            || (self.moves_body_b(s) && touches(r, self.body_b_idx[s]))
     }
 }
 
@@ -247,12 +592,15 @@ pub struct BatchSolverStats {
 
 // ── BatchPgsSolver ───────────────────────────────────────────────────────────
 
-/// SIMD-friendly batch PGS solver that operates on [`SoaConstraints`].
+/// Batch PGS solver that operates on [`SoaConstraints`].
 ///
-/// The inner loop is written so that LLVM can auto-vectorize it with SSE2/AVX2/NEON:
-/// * The data is laid out contiguously in SoA format.
-/// * The loop step is 4 (matches a 256-bit AVX2 `f64x4` register).
-/// * Operations are simple FMA-shaped arithmetic with no early-exits.
+/// Every iteration is one Gauss-Seidel sweep over the rows in order: a row
+/// measures the relative velocity of its two bodies at the lever arms (linear
+/// and angular part), updates its accumulated impulse
+/// `λ ← project(λ − ω · (rv + bias) / K)` and applies the change to the
+/// linear and angular velocities of both bodies.  Groups of four rows that do
+/// not share a moving body are evaluated as a batch, which gives exactly the
+/// same result (see the [module documentation](self)).
 ///
 /// Friction constraints are typically solved in a second pass after the normal
 /// (non-penetration) pass; configure separate [`SoaConstraints`] for each.
@@ -288,9 +636,28 @@ impl BatchPgsSolver {
 
     /// Run the PGS velocity iteration on `constraints`.
     ///
-    /// Returns solver statistics. The updated `lambda` values in `constraints`
-    /// can be used for warm-starting the next frame.
+    /// The accumulated impulses in [`SoaConstraints::lambda`] are the warm
+    /// start of this solve: before the first iteration every `lambda[i]` is
+    /// applied to the velocities of the two bodies of row `i` (`+λ` along the
+    /// row on body B, `-λ` on body A, linear and angular part), so the body
+    /// velocities passed in must be the velocities *without* those impulses.
+    /// The iteration then changes `lambda` and the velocities consistently, and
+    /// the final `lambda` can be used for warm-starting the next frame.
+    ///
+    /// The body arrays are grown to cover every body index of the rows.  A set
+    /// whose per-row arrays differ in length (see
+    /// [`SoaConstraints::is_consistent`]) is not solved: nothing is touched and
+    /// the returned statistics say that no iteration ran and nothing converged.
+    ///
+    /// Returns solver statistics.
     pub fn solve(&self, c: &mut SoaConstraints, _dt: f64) -> BatchSolverStats {
+        if !c.is_consistent() {
+            return BatchSolverStats {
+                iterations_used: 0,
+                residual: f64::MAX,
+                converged: false,
+            };
+        }
         let n = c.len();
         if n == 0 {
             return BatchSolverStats {
@@ -300,11 +667,17 @@ impl BatchPgsSolver {
             };
         }
 
+        c.cover_row_bodies();
+        Self::warm_start(c);
+        let independent: Vec<bool> = (0..n / 4)
+            .map(|chunk| c.lanes_are_independent(chunk * 4))
+            .collect();
+
         let mut residual = f64::MAX;
         let mut iters = 0usize;
 
         for _iter in 0..self.max_iterations {
-            residual = self.velocity_iteration(c);
+            residual = self.velocity_iteration(c, &independent);
             iters += 1;
             if residual < self.tolerance {
                 break;
@@ -318,194 +691,285 @@ impl BatchPgsSolver {
         }
     }
 
+    /// Apply the accumulated impulse of every row to the body velocities.
+    fn warm_start(c: &mut SoaConstraints) {
+        for i in 0..c.len() {
+            let accumulated = c.lambda[i];
+            if accumulated != 0.0 {
+                c.apply_row_impulse(i, accumulated);
+            }
+        }
+    }
+
     /// One velocity-level PGS iteration over all constraints.
     ///
-    /// The inner loop is written in a scalar style that the auto-vectorizer
-    /// handles efficiently due to the SoA data layout.
-    #[inline(always)]
-    fn velocity_iteration(&self, c: &mut SoaConstraints) -> f64 {
+    /// `independent[k]` tells whether the four rows `4k..4k+4` can be
+    /// evaluated as a batch.
+    fn velocity_iteration(&self, c: &mut SoaConstraints, independent: &[bool]) -> f64 {
         let n = c.len();
-        let omega = self.omega;
+        let chunks = n / 4;
         let mut total_delta = 0.0f64;
 
-        // ── Batched loop (step 4 for SIMD lanes) ────────────────────────────
-        // The compiler unrolls this into a vectorized 4-wide lane when
-        // optimizing with -C opt-level=3 (release mode).
-        let chunks = n / 4;
+        // ── Groups of four rows ──────────────────────────────────────────────
         for chunk in 0..chunks {
             let base = chunk * 4;
-
-            // Load 4 normals
-            let nx0 = c.nx[base];
-            let nx1 = c.nx[base + 1];
-            let nx2 = c.nx[base + 2];
-            let nx3 = c.nx[base + 3];
-            let ny0 = c.ny[base];
-            let ny1 = c.ny[base + 1];
-            let ny2 = c.ny[base + 2];
-            let ny3 = c.ny[base + 3];
-            let nz0 = c.nz[base];
-            let nz1 = c.nz[base + 1];
-            let nz2 = c.nz[base + 2];
-            let nz3 = c.nz[base + 3];
-
-            // Load bias and effective mass
-            let bias0 = c.bias[base];
-            let bias1 = c.bias[base + 1];
-            let bias2 = c.bias[base + 2];
-            let bias3 = c.bias[base + 3];
-            let em0 = c.eff_mass[base];
-            let em1 = c.eff_mass[base + 1];
-            let em2 = c.eff_mass[base + 2];
-            let em3 = c.eff_mass[base + 3];
-
-            // Relative velocity (using body velocity arrays)
-            let rv0 = self.compute_rel_vel(c, base);
-            let rv1 = self.compute_rel_vel(c, base + 1);
-            let rv2 = self.compute_rel_vel(c, base + 2);
-            let rv3 = self.compute_rel_vel(c, base + 3);
-
-            // Suppress unused normals warning - they contribute to rel_vel via dot
-            let _ = (nx0, ny0, nz0, nx1, ny1, nz1, nx2, ny2, nz2, nx3, ny3, nz3);
-
-            // delta_lambda = -eff_mass * (rv + bias)
-            let dl0 = -em0 * (rv0 + bias0) * omega;
-            let dl1 = -em1 * (rv1 + bias1) * omega;
-            let dl2 = -em2 * (rv2 + bias2) * omega;
-            let dl3 = -em3 * (rv3 + bias3) * omega;
-
-            // Clamp accumulated impulse
-            let old0 = c.lambda[base];
-            let old1 = c.lambda[base + 1];
-            let old2 = c.lambda[base + 2];
-            let old3 = c.lambda[base + 3];
-
-            let new0 = (old0 + dl0).clamp(c.lambda_lo[base], c.lambda_hi[base]);
-            let new1 = (old1 + dl1).clamp(c.lambda_lo[base + 1], c.lambda_hi[base + 1]);
-            let new2 = (old2 + dl2).clamp(c.lambda_lo[base + 2], c.lambda_hi[base + 2]);
-            let new3 = (old3 + dl3).clamp(c.lambda_lo[base + 3], c.lambda_hi[base + 3]);
-
-            let actual0 = new0 - old0;
-            let actual1 = new1 - old1;
-            let actual2 = new2 - old2;
-            let actual3 = new3 - old3;
-
-            c.lambda[base] = new0;
-            c.lambda[base + 1] = new1;
-            c.lambda[base + 2] = new2;
-            c.lambda[base + 3] = new3;
-
-            // Apply impulses to body velocities
-            self.apply_impulse(c, base, actual0);
-            self.apply_impulse(c, base + 1, actual1);
-            self.apply_impulse(c, base + 2, actual2);
-            self.apply_impulse(c, base + 3, actual3);
-
-            total_delta += actual0.abs() + actual1.abs() + actual2.abs() + actual3.abs();
+            if independent.get(chunk).copied().unwrap_or(false) {
+                for delta in self.solve_lanes(c, base) {
+                    total_delta += delta.abs();
+                }
+            } else {
+                for i in base..base + 4 {
+                    total_delta += self.solve_row(c, i);
+                }
+            }
         }
 
         // ── Scalar tail for remaining constraints ────────────────────────────
         for i in (chunks * 4)..n {
-            let rv = self.compute_rel_vel(c, i);
-            let dl = -c.eff_mass[i] * (rv + c.bias[i]) * omega;
-            let old = c.lambda[i];
-            let new_lam = (old + dl).clamp(c.lambda_lo[i], c.lambda_hi[i]);
-            let actual = new_lam - old;
-            c.lambda[i] = new_lam;
-            self.apply_impulse(c, i, actual);
-            total_delta += actual.abs();
+            total_delta += self.solve_row(c, i);
         }
 
         total_delta
     }
 
-    /// Compute the relative velocity along the constraint normal for constraint `i`.
-    #[inline(always)]
-    fn compute_rel_vel(&self, c: &SoaConstraints, i: usize) -> f64 {
-        let ai = c.body_a_idx[i];
-        let bi = c.body_b_idx[i];
-        let va = [c.body_vx[ai], c.body_vy[ai], c.body_vz[ai]];
-        let vb = [c.body_vx[bi], c.body_vy[bi], c.body_vz[bi]];
-        // rv = n · (vb - va)
-        let n = [c.nx[i], c.ny[i], c.nz[i]];
-        n[0] * (vb[0] - va[0]) + n[1] * (vb[1] - va[1]) + n[2] * (vb[2] - va[2])
+    /// Evaluate four rows that share no moving body as a batch: all four
+    /// relative velocities first, then the four impulse updates.
+    ///
+    /// Returns the applied impulse change of every row.
+    #[inline]
+    fn solve_lanes(&self, c: &mut SoaConstraints, base: usize) -> [f64; 4] {
+        let rv: [f64; 4] = std::array::from_fn(|lane| c.relative_velocity(base + lane));
+        let mut applied = [0.0f64; 4];
+        for (lane, (slot, rel_vel)) in applied.iter_mut().zip(rv).enumerate() {
+            *slot = self.update_lambda(c, base + lane, rel_vel);
+        }
+        for (lane, delta) in applied.into_iter().enumerate() {
+            c.apply_row_impulse(base + lane, delta);
+        }
+        applied
     }
 
-    /// Apply impulse `lambda_delta` for constraint `i` to the associated body velocities.
-    #[inline(always)]
-    fn apply_impulse(&self, c: &mut SoaConstraints, i: usize, delta_lambda: f64) {
-        let ai = c.body_a_idx[i];
-        let bi = c.body_b_idx[i];
-        let nx = c.nx[i];
-        let ny = c.ny[i];
-        let nz = c.nz[i];
-        let ima = c.inv_mass_a[i];
-        let imb = c.inv_mass_b[i];
-        // vb += inv_mass_b * lambda_delta * n
-        c.body_vx[bi] += imb * delta_lambda * nx;
-        c.body_vy[bi] += imb * delta_lambda * ny;
-        c.body_vz[bi] += imb * delta_lambda * nz;
-        // va -= inv_mass_a * lambda_delta * n
-        c.body_vx[ai] -= ima * delta_lambda * nx;
-        c.body_vy[ai] -= ima * delta_lambda * ny;
-        c.body_vz[ai] -= ima * delta_lambda * nz;
+    /// Solve one row on its own; returns the size of its impulse change.
+    #[inline]
+    fn solve_row(&self, c: &mut SoaConstraints, i: usize) -> f64 {
+        let rel_vel = c.relative_velocity(i);
+        let applied = self.update_lambda(c, i, rel_vel);
+        c.apply_row_impulse(i, applied);
+        applied.abs()
+    }
+
+    /// Update the accumulated impulse of row `i` for the measured relative
+    /// velocity and return the change that was applied after clamping.
+    #[inline]
+    fn update_lambda(&self, c: &mut SoaConstraints, i: usize, rel_vel: f64) -> f64 {
+        // delta_lambda = -eff_mass * (rv + bias) * omega
+        let old = c.lambda[i];
+        let delta = -c.eff_mass[i] * (rel_vel + c.bias[i]) * self.omega;
+        let new = project(old + delta, c.lambda_lo[i], c.lambda_hi[i]);
+        c.lambda[i] = new;
+        c.rel_vel[i] = rel_vel;
+        new - old
+    }
+}
+
+impl SoaConstraints {
+    /// Relative velocity of the two bodies of row `i` along the row, including
+    /// the rotation of both bodies about their lever arms:
+    /// `n·(v_b − v_a) + (r_b × n)·ω_b − (r_a × n)·ω_a`.
+    #[inline]
+    fn relative_velocity(&self, i: usize) -> f64 {
+        let a = self.body_a_idx[i];
+        let b = self.body_b_idx[i];
+        let linear = self.nx[i] * (self.body_vx[b] - self.body_vx[a])
+            + self.ny[i] * (self.body_vy[b] - self.body_vy[a])
+            + self.nz[i] * (self.body_vz[b] - self.body_vz[a]);
+        let angular_b = self.rxn_bx[i] * self.body_wx[b]
+            + self.rxn_by[i] * self.body_wy[b]
+            + self.rxn_bz[i] * self.body_wz[b];
+        let angular_a = self.rxn_ax[i] * self.body_wx[a]
+            + self.rxn_ay[i] * self.body_wy[a]
+            + self.rxn_az[i] * self.body_wz[a];
+        linear + angular_b - angular_a
+    }
+
+    /// Apply the impulse change `delta_lambda` of row `i` to the linear and
+    /// angular velocities of its two bodies: `+Δλ` on body B, `-Δλ` on body A.
+    #[inline]
+    fn apply_row_impulse(&mut self, i: usize, delta_lambda: f64) {
+        let a = self.body_a_idx[i];
+        let b = self.body_b_idx[i];
+        let nx = self.nx[i];
+        let ny = self.ny[i];
+        let nz = self.nz[i];
+        let ima = self.inv_mass_a[i];
+        let imb = self.inv_mass_b[i];
+        // vb += inv_mass_b * delta_lambda * n ; wb += delta_lambda * I_b^-1 (r_b × n)
+        self.body_vx[b] += imb * delta_lambda * nx;
+        self.body_vy[b] += imb * delta_lambda * ny;
+        self.body_vz[b] += imb * delta_lambda * nz;
+        self.body_wx[b] += delta_lambda * self.irxn_bx[i];
+        self.body_wy[b] += delta_lambda * self.irxn_by[i];
+        self.body_wz[b] += delta_lambda * self.irxn_bz[i];
+        // va -= inv_mass_a * delta_lambda * n ; wa -= delta_lambda * I_a^-1 (r_a × n)
+        self.body_vx[a] -= ima * delta_lambda * nx;
+        self.body_vy[a] -= ima * delta_lambda * ny;
+        self.body_vz[a] -= ima * delta_lambda * nz;
+        self.body_wx[a] -= delta_lambda * self.irxn_ax[i];
+        self.body_wy[a] -= delta_lambda * self.irxn_ay[i];
+        self.body_wz[a] -= delta_lambda * self.irxn_az[i];
     }
 }
 
 // ── Convenience builder ──────────────────────────────────────────────────────
 
-/// Builder that converts a flat array of contact normals and masses into
-/// [`SoaConstraints`] ready for [`BatchPgsSolver`].
-#[derive(Debug, Default)]
-pub struct SoaContactBuilder {
-    constraints: SoaConstraints,
+/// One contact of a rigid-body scene, in the form
+/// [`SoaContactBuilder::add_contact`] consumes.
+#[derive(Debug, Clone, Copy)]
+pub struct SoaContact {
+    /// Index of body A (the body the normal points away from).
+    pub body_a: usize,
+    /// Index of body B (the body the normal points towards).
+    pub body_b: usize,
+    /// World-space contact normal (A→B direction).
+    pub normal: [f64; 3],
+    /// Signed penetration depth (positive = overlapping).
+    pub penetration: f64,
+    /// Lever arm from body A's centre of mass to the contact point.
+    pub r_a: [f64; 3],
+    /// Lever arm from body B's centre of mass to the contact point.
+    pub r_b: [f64; 3],
+    /// Inverse mass of body A (`0.0` for static bodies).
+    pub inv_mass_a: f64,
+    /// Inverse mass of body B.
+    pub inv_mass_b: f64,
+    /// World-space inverse inertia tensor of body A (zeros for a static body).
+    pub inv_inertia_a: [[f64; 3]; 3],
+    /// World-space inverse inertia tensor of body B.
+    pub inv_inertia_b: [[f64; 3]; 3],
+    /// Coefficient of restitution ∈ \[0,1\].
+    pub restitution: f64,
+    /// Relative velocity of the contact points along the normal before the
+    /// solve, `n·(v_b + ω_b × r_b − v_a − ω_a × r_a)`; negative when the bodies
+    /// approach.  Only an approaching contact bounces.
+    pub approach_vel: f64,
+    /// Impulse accumulated for this contact in the previous frame (`0.0` for a
+    /// cold start).
+    pub warm_lambda: f64,
 }
 
-impl SoaContactBuilder {
-    /// Create a new empty builder.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Add a contact constraint.
-    ///
-    /// * `normal`     — world-space contact normal (A→B direction)
-    /// * `penetration` — signed penetration depth (positive = overlapping)
-    /// * `inv_mass_a` / `inv_mass_b` — inverse masses (0 for static)
-    /// * `restitution` — coefficient of restitution ∈ \[0,1\]
-    /// * `dt`          — simulation time step
-    /// * `baumgarte`   — stabilization factor (typical 0.2)
-    pub fn add_contact(
-        &mut self,
+impl SoaContact {
+    /// A contact through the centres of mass of two bodies without rotational
+    /// response, with no restitution and a cold start.  Use struct update
+    /// syntax to set the remaining fields.
+    pub fn centered(
+        body_a: usize,
+        body_b: usize,
         normal: [f64; 3],
         penetration: f64,
         inv_mass_a: f64,
         inv_mass_b: f64,
-        restitution: f64,
-        dt: f64,
-        baumgarte: f64,
-    ) {
-        let eff_mass = {
-            let k = inv_mass_a + inv_mass_b;
-            if k.abs() < 1e-15 { 0.0 } else { 1.0 / k }
-        };
-        // Baumgarte bias for positional correction
-        let bias = if penetration > 0.0 {
-            -(baumgarte / dt) * penetration
-        } else {
-            0.0
-        };
-        // Warm-start lambda = 0 (cold start)
-        let warm_lambda = restitution * penetration.max(0.0) * eff_mass;
-        self.constraints.push(SoaConstraintRow {
+    ) -> Self {
+        Self {
+            body_a,
+            body_b,
             normal,
+            penetration,
             r_a: [0.0; 3],
             r_b: [0.0; 3],
             inv_mass_a,
             inv_mass_b,
-            eff_mass,
-            bias,
-            warm_lambda,
+            inv_inertia_a: [[0.0; 3]; 3],
+            inv_inertia_b: [[0.0; 3]; 3],
+            restitution: 0.0,
+            approach_vel: 0.0,
+            warm_lambda: 0.0,
+        }
+    }
+}
+
+/// Builder that converts contacts into [`SoaConstraints`] ready for
+/// [`BatchPgsSolver`].
+///
+/// Each contact becomes one non-pulling row (`λ ≥ 0`) whose bias combines the
+/// Baumgarte position correction with restitution:
+///
+/// ```text
+/// bias = −(β/dt)·max(penetration − slop, 0) + e·min(approach_vel, 0)
+/// ```
+///
+/// The row drives `rv + bias` to zero, so a penetrating contact is pushed apart
+/// at `(β/dt)·(penetration − slop)` and an approaching contact leaves with
+/// `e·|approach_vel|` on top of that.
+#[derive(Debug)]
+pub struct SoaContactBuilder {
+    constraints: SoaConstraints,
+    slop: f64,
+    restitution_threshold: f64,
+}
+
+impl Default for SoaContactBuilder {
+    fn default() -> Self {
+        Self {
+            constraints: SoaConstraints::new(),
+            slop: DEFAULT_CONTACT_SLOP,
+            restitution_threshold: 0.0,
+        }
+    }
+}
+
+impl SoaContactBuilder {
+    /// Create a new empty builder (slop 5 mm, restitution at every approach
+    /// speed).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the penetration depth (m) that is tolerated before the Baumgarte
+    /// position correction starts.
+    pub fn with_slop(mut self, slop: f64) -> Self {
+        self.slop = slop.max(0.0);
+        self
+    }
+
+    /// Set the approach speed (m/s) below which restitution is ignored, which
+    /// keeps resting contacts from jittering.
+    pub fn with_restitution_threshold(mut self, threshold: f64) -> Self {
+        self.restitution_threshold = threshold.max(0.0);
+        self
+    }
+
+    /// Add a contact constraint.
+    ///
+    /// * `contact`   — bodies, normal (A→B), lever arms, masses, restitution
+    ///   and the approach velocity (see [`SoaContact`])
+    /// * `dt`        — simulation time step
+    /// * `baumgarte` — stabilization factor (typical 0.2)
+    ///
+    /// The row starts from the contact's `warm_lambda` (zero for a cold start);
+    /// restitution enters through the bias only, never through the warm start.
+    pub fn add_contact(&mut self, contact: SoaContact, dt: f64, baumgarte: f64) {
+        let position_bias = if dt > 0.0 {
+            -(baumgarte / dt) * (contact.penetration - self.slop).max(0.0)
+        } else {
+            0.0
+        };
+        let restitution_bias = if contact.approach_vel < -self.restitution_threshold {
+            contact.restitution * contact.approach_vel.min(0.0)
+        } else {
+            0.0
+        };
+        self.constraints.push(SoaConstraintRow {
+            normal: contact.normal,
+            r_a: contact.r_a,
+            r_b: contact.r_b,
+            body_a: contact.body_a,
+            body_b: contact.body_b,
+            inv_mass_a: contact.inv_mass_a,
+            inv_mass_b: contact.inv_mass_b,
+            inv_inertia_a: contact.inv_inertia_a,
+            inv_inertia_b: contact.inv_inertia_b,
+            bias: position_bias + restitution_bias,
+            warm_lambda: contact.warm_lambda,
             lo: 0.0, // contact: no pulling
             hi: f64::INFINITY,
         });
@@ -520,111 +984,4 @@ impl SoaContactBuilder {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn empty_constraints_converge_immediately() {
-        let mut soa = SoaConstraints::new();
-        let stats = BatchPgsSolver::default().solve(&mut soa, 1.0 / 60.0);
-        assert!(stats.converged);
-        assert_eq!(stats.iterations_used, 0);
-        assert_eq!(stats.residual, 0.0);
-    }
-
-    #[test]
-    fn single_contact_impulse_nonnegative() {
-        let mut builder = SoaContactBuilder::new();
-        builder.add_contact([0.0, 1.0, 0.0], 0.05, 1.0, 1.0, 0.0, 1.0 / 60.0, 0.2);
-        let mut soa = builder.build();
-        soa.resize_bodies(2);
-        soa.body_a_idx[0] = 0;
-        soa.body_b_idx[0] = 1;
-        // Give body A a downward velocity so it violates the constraint
-        soa.body_vy[0] = -1.0;
-
-        let stats = BatchPgsSolver::default().solve(&mut soa, 1.0 / 60.0);
-        // Lambda must be non-negative for a contact constraint
-        assert!(soa.lambda[0] >= 0.0);
-        assert!(stats.iterations_used >= 1);
-    }
-
-    #[test]
-    fn batch_and_scalar_same_result() {
-        // Build exactly 5 constraints so we exercise both the batch (4) and tail (1) paths.
-        let mut soa1 = SoaConstraints::new();
-        let mut soa2 = SoaConstraints::new();
-        for _ in 0..5 {
-            for soa in [&mut soa1, &mut soa2] {
-                soa.nx.push(0.0);
-                soa.ny.push(1.0);
-                soa.nz.push(0.0);
-                soa.rax.push(0.0);
-                soa.ray_.push(0.0);
-                soa.raz.push(0.0);
-                soa.rbx.push(0.0);
-                soa.rby.push(0.0);
-                soa.rbz.push(0.0);
-                soa.inv_mass_a.push(1.0);
-                soa.inv_mass_b.push(1.0);
-                soa.eff_mass.push(0.5);
-                soa.bias.push(0.0);
-                soa.lambda.push(0.0);
-                soa.lambda_lo.push(0.0);
-                soa.lambda_hi.push(f64::INFINITY);
-                soa.rel_vel.push(0.0);
-                soa.body_a_idx.push(0);
-                soa.body_b_idx.push(1);
-            }
-        }
-        soa1.resize_bodies(2);
-        soa2.resize_bodies(2);
-        soa1.body_vy[0] = -1.0;
-        soa2.body_vy[0] = -1.0;
-
-        let solver = BatchPgsSolver::default();
-        let s1 = solver.solve(&mut soa1, 1.0 / 60.0);
-        let s2 = solver.solve(&mut soa2, 1.0 / 60.0);
-        assert_eq!(s1.iterations_used, s2.iterations_used);
-    }
-
-    #[test]
-    fn sor_omega_above_one_speeds_convergence() {
-        // Higher omega should reduce residual in fewer iterations
-        let make_soa = || {
-            let mut soa = SoaConstraints::new();
-            for _ in 0..8 {
-                soa.nx.push(0.0);
-                soa.ny.push(1.0);
-                soa.nz.push(0.0);
-                soa.rax.push(0.0);
-                soa.ray_.push(0.0);
-                soa.raz.push(0.0);
-                soa.rbx.push(0.0);
-                soa.rby.push(0.0);
-                soa.rbz.push(0.0);
-                soa.inv_mass_a.push(1.0);
-                soa.inv_mass_b.push(1.0);
-                soa.eff_mass.push(0.5);
-                soa.bias.push(0.0);
-                soa.lambda.push(0.0);
-                soa.lambda_lo.push(0.0);
-                soa.lambda_hi.push(f64::INFINITY);
-                soa.rel_vel.push(0.0);
-                soa.body_a_idx.push(0);
-                soa.body_b_idx.push(1);
-            }
-            soa.resize_bodies(2);
-            soa.body_vy[0] = -2.0;
-            soa
-        };
-        let mut soa_std = make_soa();
-        let mut soa_sor = make_soa();
-        let std_solver = BatchPgsSolver::new(3, 1e-12, 1.0);
-        let sor_solver = BatchPgsSolver::new(3, 1e-12, 1.3);
-        let stats_std = std_solver.solve(&mut soa_std, 1.0 / 60.0);
-        let stats_sor = sor_solver.solve(&mut soa_sor, 1.0 / 60.0);
-        // SOR should achieve lower or equal residual
-        assert!(stats_sor.residual <= stats_std.residual + 1e-10);
-    }
-}
+mod tests;

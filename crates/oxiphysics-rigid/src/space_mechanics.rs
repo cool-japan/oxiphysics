@@ -12,7 +12,8 @@
 //! - Gravity gradient stabilisation torque
 //! - Atmospheric drag (exponential atmosphere model)
 //! - J2 oblateness perturbation on orbital elements
-//! - Lambert's problem solver (universal variable formulation)
+//! - Lambert's problem solver (Izzo 2015; elliptic, parabolic and hyperbolic
+//!   zero-revolution transfers, see the [`lambert`] module)
 //! - Rendezvous and docking guidance (Clohessy-Wiltshire equations)
 //!
 //! All vectors are plain `[f64; 3]` — no nalgebra dependency.
@@ -734,135 +735,9 @@ pub fn j2_secular_rates(elements: &OrbitalElements, mu: f64, j2: f64, r_eq: f64)
 
 // ── Lambert's problem ─────────────────────────────────────────────────────────
 
-/// Result of Lambert's problem.
-#[derive(Debug, Clone)]
-pub struct LambertSolution {
-    /// Departure velocity vector (m/s) at `r1`.
-    pub v1: [f64; 3],
-    /// Arrival velocity vector (m/s) at `r2`.
-    pub v2: [f64; 3],
-    /// Transfer semi-major axis (m).
-    pub semi_major_axis: f64,
-    /// Number of solver iterations used.
-    pub iterations: usize,
-}
+pub mod lambert;
 
-/// Solve Lambert's problem using the universal variable formulation.
-///
-/// Find the orbit connecting positions `r1` and `r2` in transfer time `tof`.
-///
-/// # Arguments
-/// * `r1` – Departure position (m) in ECI.
-/// * `r2` – Arrival position (m) in ECI.
-/// * `tof` – Time of flight (s).
-/// * `mu` – Gravitational parameter (m³/s²).
-/// * `prograde` – True for prograde transfer, false for retrograde.
-///
-/// Returns `None` if the solver fails to converge within 100 iterations.
-pub fn lambert_solver(
-    r1: [f64; 3],
-    r2: [f64; 3],
-    tof: f64,
-    mu: f64,
-    prograde: bool,
-) -> Option<LambertSolution> {
-    let r1_mag = vec3_norm(r1);
-    let r2_mag = vec3_norm(r2);
-
-    // Cross product to determine transfer direction
-    let cross = vec3_cross(r1, r2);
-    let cos_dnu = vec3_dot(r1, r2) / (r1_mag * r2_mag);
-    let dnu = cos_dnu.clamp(-1.0, 1.0).acos();
-
-    let transfer_angle = if prograde {
-        if cross[2] >= 0.0 { dnu } else { 2.0 * PI - dnu }
-    } else {
-        if cross[2] < 0.0 { dnu } else { 2.0 * PI - dnu }
-    };
-
-    let a_min_coef = 1.0 - transfer_angle.cos();
-    if a_min_coef.abs() < 1e-10 {
-        return None;
-    }
-
-    let c =
-        (r1_mag * r1_mag + r2_mag * r2_mag - 2.0 * r1_mag * r2_mag * transfer_angle.cos()).sqrt();
-    let s = (r1_mag + r2_mag + c) / 2.0;
-    let lambda2 = 1.0 - c / s;
-    let lambda = lambda2.sqrt() * if transfer_angle < PI { 1.0 } else { -1.0 };
-
-    let t_n = tof * (2.0 * mu / s.powi(3)).sqrt();
-
-    // Halley's method on the Izzo formulation
-    let mut x = 0.0_f64;
-    let mut iters = 0;
-    for _iter in 0..100 {
-        iters = _iter + 1;
-        let (battin, lagrange, _) = stumpff_cf(x, lambda, t_n);
-        let dx = battin;
-        if dx.abs() < 1e-10 {
-            break;
-        }
-        x -= (battin - t_n) / lagrange.max(1e-15);
-        x = x.clamp(-0.9999, 0.9999);
-    }
-
-    let gamma = (mu * s / 2.0).sqrt();
-    let rho = (r1_mag - r2_mag) / c;
-    let sigma = (1.0 - rho * rho).sqrt();
-
-    let y = (1.0 - lambda2 + lambda2 * x * x).sqrt();
-    let vr1 = gamma * ((lambda * y - x) - rho * (lambda * y + x)) / r1_mag;
-    let vr2 = -gamma * ((lambda * y - x) + rho * (lambda * y + x)) / r2_mag;
-    let vt1 = gamma * sigma * (y + lambda * x) / r1_mag;
-    let vt2 = gamma * sigma * (y + lambda * x) / r2_mag;
-
-    let r1_hat = vec3_normalize(r1);
-    let r2_hat = vec3_normalize(r2);
-    let h_hat = vec3_normalize(vec3_cross(r1, r2));
-    let t1_hat = vec3_normalize(vec3_cross(h_hat, r1_hat));
-    let t2_hat = vec3_normalize(vec3_cross(h_hat, r2_hat));
-
-    let v1 = vec3_add(vec3_scale(r1_hat, vr1), vec3_scale(t1_hat, vt1));
-    let v2 = vec3_add(vec3_scale(r2_hat, vr2), vec3_scale(t2_hat, vt2));
-
-    // SMA from vis-viva
-    let v1_sq = vec3_dot(v1, v1);
-    let energy = v1_sq / 2.0 - mu / r1_mag;
-    let sma = if energy.abs() < 1e-15 {
-        f64::INFINITY
-    } else {
-        -mu / (2.0 * energy)
-    };
-
-    Some(LambertSolution {
-        v1,
-        v2,
-        semi_major_axis: sma,
-        iterations: iters,
-    })
-}
-
-/// Stumpff-based continuation function for Lambert solver.
-///
-/// Returns `(T(x), T'(x), T''(x))` evaluated at universal variable `x`.
-fn stumpff_cf(x: f64, lambda: f64, _t_n: f64) -> (f64, f64, f64) {
-    // Simplified Izzo function
-    let e = x * x;
-    let (c2, c3) = if e < 1e-6 {
-        (0.5, 1.0 / 6.0)
-    } else if e > 0.0 {
-        let sq = e.sqrt();
-        ((1.0 - sq.cos()) / e, (sq - sq.sin()) / (e * sq))
-    } else {
-        let sq = (-e).sqrt();
-        ((1.0 - sq.cosh()) / e, (sq.sinh() - sq) / ((-e) * sq))
-    };
-    let t = c3 + lambda * (lambda * c2 - x) / (1.0 - e * c2).max(1e-15);
-    let dt = (3.0 * t * x - lambda * (1.0 + lambda * x * c2)) / (1.0 - e * c2).max(1e-15) / 2.0;
-    let ddt = (3.0 * t + 5.0 * x * dt + lambda * lambda * c2) / (1.0 - e * c2).max(1e-15) / 2.0;
-    (t, dt, ddt)
-}
+pub use lambert::{LambertSolution, lambert_solver};
 
 // ── Clohessy-Wiltshire (rendezvous) ──────────────────────────────────────────
 
@@ -1424,19 +1299,21 @@ mod tests {
         );
     }
 
-    // 30. Lambert solver returns a valid transfer
+    // 30. Lambert solver returns a transfer that actually reaches the target
     #[test]
     fn test_lambert_basic() {
         let r1 = [R_EARTH + 400e3, 0.0, 0.0];
         let r2 = [0.0, R_EARTH + 400e3, 0.0];
         let tof = 2000.0; // seconds
-        let sol = lambert_solver(r1, r2, tof, MU_EARTH, true);
-        assert!(sol.is_some(), "Lambert solver should return a result");
-        let s = sol.unwrap();
-        assert!(
-            vec3_norm(s.v1) > 1000.0,
-            "Departure speed should be realistic"
-        );
+        let s = lambert_solver(r1, r2, tof, MU_EARTH, true).expect("regular transfer");
+        let mut state = OrbitState::new(r1, s.v1);
+        let steps = 8000;
+        for _ in 0..steps {
+            state.rk4_step(tof / f64::from(steps), MU_EARTH, 0.0, R_EARTH, 0.0, 0.0);
+        }
+        let miss = vec3_norm(vec3_sub(state.pos, r2));
+        assert!(miss < 1.0, "arrival misses the target by {miss} m");
+        assert!(vec3_norm(vec3_sub(state.vel, s.v2)) < 1e-3);
     }
 
     // 31. Mean anomaly and eccentric anomaly round-trip

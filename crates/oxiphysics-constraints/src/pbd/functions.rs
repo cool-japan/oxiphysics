@@ -514,12 +514,10 @@ mod tests_xpbd_raw {
         let rest_angle = std::f64::consts::PI;
         let c = XpbdBendingConstraint::new(0, 1, 2, rest_angle, 0.0);
         let mut lambda = 0.0_f64;
-        let initial_lambda = lambda;
+        let before = positions;
         c.project(&mut positions, &masses, &mut lambda, 0.01);
-        assert!(
-            (lambda - initial_lambda).abs() < 0.1,
-            "lambda changed unexpectedly: {lambda}"
-        );
+        assert_eq!(lambda, 0.0, "a satisfied constraint accumulates no lambda");
+        assert_eq!(positions, before, "a satisfied constraint moves nothing");
     }
     #[test]
     fn test_xpbd_lambda_update() {

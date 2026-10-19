@@ -598,7 +598,7 @@ mod extended_barostat_tests {
         let mut mc = McBarostatRng::with_seed(1.0, 0.01, 42);
         let v0 = 1000.0;
         for _ in 0..200 {
-            mc.try_volume_move(v0, 0.0, 100, 300.0, 1.0);
+            mc.try_volume_move(v0, |_| 0.0, 100, 300.0, 1.0);
         }
         assert_eq!(mc.n_attempted, 200);
         assert!(mc.n_accepted > 0, "some moves should be accepted");
@@ -609,7 +609,7 @@ mod extended_barostat_tests {
     fn test_mc_rng_reset_statistics() {
         let mut mc = McBarostatRng::with_seed(1.0, 0.01, 99);
         for _ in 0..50 {
-            mc.try_volume_move(100.0, 0.0, 10, 300.0, 1.0);
+            mc.try_volume_move(100.0, |_| 0.0, 10, 300.0, 1.0);
         }
         mc.reset_statistics();
         assert_eq!(mc.n_attempted, 0);
@@ -618,7 +618,7 @@ mod extended_barostat_tests {
     #[test]
     fn test_mc_rng_negative_delta_energy_accepted() {
         let mut mc = McBarostatRng::with_seed(1.0, 0.001, 111);
-        let result = mc.try_volume_move(1000.0, -1e10, 10, 300.0, 1.0);
+        let result = mc.try_volume_move(1000.0, |_| -1e10, 10, 300.0, 1.0);
         assert!(result.is_some(), "hugely favourable move must be accepted");
     }
     #[test]
@@ -626,7 +626,10 @@ mod extended_barostat_tests {
         let mut mc = McBarostatRng::with_seed(1.0, 0.001, 222);
         let mut n_accepted = 0u32;
         for _ in 0..20 {
-            if mc.try_volume_move(1000.0, 1e30, 10, 300.0, 1.0).is_some() {
+            if mc
+                .try_volume_move(1000.0, |_| 1e30, 10, 300.0, 1.0)
+                .is_some()
+            {
                 n_accepted += 1;
             }
         }

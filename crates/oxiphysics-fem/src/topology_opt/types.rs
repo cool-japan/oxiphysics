@@ -5,6 +5,7 @@
 use super::functions::{
     augmented_lagrangian_volume_penalty, heaviside_derivative, heaviside_projection,
 };
+use crate::topology_filter::SparseFilter;
 
 /// Configuration for a topology optimization run.
 #[derive(Debug, Clone)]
@@ -92,26 +93,7 @@ impl ProjectionFilter {
             .map(|&r| heaviside_derivative(r, self.beta, self.eta))
             .collect();
         let dc_times_dh: Vec<f64> = (0..n).map(|i| dc_drho_phys[i] * dh[i]).collect();
-        let mut filtered = vec![0.0f64; n];
-        for (i, filt_i) in filtered.iter_mut().enumerate() {
-            let ei = &grid.elements[i];
-            let mut num = 0.0f64;
-            let mut den = 0.0f64;
-            for (j, ej) in grid.elements.iter().enumerate() {
-                let dist = ((ei.x0 - ej.x0).powi(2) + (ei.y0 - ej.y0).powi(2)).sqrt();
-                if dist < self.radius {
-                    let w = self.radius - dist;
-                    num += w * dc_times_dh[j];
-                    den += w;
-                }
-            }
-            *filt_i = if den > 1e-30 {
-                num / den
-            } else {
-                dc_times_dh[i]
-            };
-        }
-        filtered
+        grid.hat_filter(self.radius).average(&dc_times_dh)
     }
 }
 /// Stores the last `n_history` sensitivity vectors and provides their average.
@@ -299,53 +281,30 @@ impl TopologyGrid {
             .sum::<f64>()
             .abs()
     }
+    /// Element centroids `(x0, y0)` in element order.
+    pub fn centroids(&self) -> Vec<(f64, f64)> {
+        self.elements.iter().map(|e| (e.x0, e.y0)).collect()
+    }
+    /// Sparse hat-kernel neighbourhood filter of radius `radius` for this grid.
+    ///
+    /// Built from a uniform cell list in `O(n · k)` ([`SparseFilter`]); build it
+    /// once per grid and reuse it when the same radius is applied repeatedly.
+    pub fn hat_filter(&self, radius: f64) -> SparseFilter {
+        SparseFilter::hat(&self.centroids(), radius)
+    }
     /// Density-weighted sensitivity filter of radius `radius` (hat function).
     pub fn filter_sensitivities(&self, radius: f64) -> Vec<f64> {
-        let n = self.elements.len();
-        let mut filtered = vec![0.0_f64; n];
-        for (i, filt_i) in filtered.iter_mut().enumerate() {
-            let ei = &self.elements[i];
-            let mut num = 0.0_f64;
-            let mut den = 0.0_f64;
-            for j in 0..n {
-                let ej = &self.elements[j];
-                let dist = ((ei.x0 - ej.x0).powi(2) + (ei.y0 - ej.y0).powi(2)).sqrt();
-                if dist < radius {
-                    let w = radius - dist;
-                    num += w * ej.rho * ej.sensitivity;
-                    den += w * ej.rho;
-                }
-            }
-            *filt_i = if den.abs() > 1e-30 {
-                num / den
-            } else {
-                ei.sensitivity
-            };
-        }
-        filtered
+        let rho: Vec<f64> = self.elements.iter().map(|e| e.rho).collect();
+        let sens: Vec<f64> = self.elements.iter().map(|e| e.sensitivity).collect();
+        self.hat_filter(radius)
+            .density_weighted_average(&sens, &rho)
     }
     /// Density filter (Bruns & Tortorelli): ρ_filtered = Σ w_j ρ_j / Σ w_j.
     ///
     /// Unlike the sensitivity filter, this directly filters the density field.
     pub fn filter_densities(&self, radius: f64) -> Vec<f64> {
-        let n = self.elements.len();
-        let mut filtered = vec![0.0_f64; n];
-        for (i, filt_i) in filtered.iter_mut().enumerate() {
-            let ei = &self.elements[i];
-            let mut num = 0.0_f64;
-            let mut den = 0.0_f64;
-            for j in 0..n {
-                let ej = &self.elements[j];
-                let dist = ((ei.x0 - ej.x0).powi(2) + (ei.y0 - ej.y0).powi(2)).sqrt();
-                if dist < radius {
-                    let w = radius - dist;
-                    num += w * ej.rho;
-                    den += w;
-                }
-            }
-            *filt_i = if den.abs() > 1e-30 { num / den } else { ei.rho };
-        }
-        filtered
+        let rho: Vec<f64> = self.elements.iter().map(|e| e.rho).collect();
+        self.hat_filter(radius).average(&rho)
     }
     /// OC density update with bisection to enforce the volume constraint.
     pub fn update_densities_oc(&mut self, sensitivities: &[f64], params: &SimpParams) {

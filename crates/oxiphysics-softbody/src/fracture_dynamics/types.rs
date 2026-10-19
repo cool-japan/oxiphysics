@@ -3,6 +3,12 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+
+/// Out-of-plane thickness (m) of the 2-D bond lattice. It converts the energy
+/// stored at a crack tip (J) into an energy release rate (J/m²): the new crack
+/// area is the advance of one bond times this thickness. A unit thickness is
+/// consistent with the nodal mass `rho dx^2` of [`FractureMesh::new_grid`].
+const CRACK_THICKNESS: f64 = 1.0;
 /// Dynamic fracture toughness model (Freund's model).
 ///
 /// The dynamic fracture toughness decreases with crack velocity:
@@ -237,33 +243,66 @@ impl FractureMesh {
             }
         }
     }
+    /// Mode-I stress intensity factor (Pa·√m) of the crack tip at `tip_node`,
+    /// from the elastic energy stored in the intact bonds attached to it.
+    ///
+    /// ```text
+    /// G   = sum_b 1/2 k_b (l_b - l0_b)^2 / (r_avg * t)   over intact tensile bonds b
+    /// K_I = sqrt(E G)                                    (plane stress)
+    /// ```
+    ///
+    /// `r_avg` is the mean rest length of the intact bonds at the tip (the crack
+    /// advance of one bond) and `t` = [`CRACK_THICKNESS`] the out-of-plane
+    /// thickness, so `r_avg * t` is the new crack area. Only stretched bonds count:
+    /// compressed bonds cannot open the crack. The estimate is zero for a tip
+    /// without intact bonds and vanishes, up to the rounding of the bond lengths,
+    /// for an unloaded lattice or a lattice in compression.
+    ///
+    /// Unlike the net force on the tip node, which vanishes for a body in static
+    /// equilibrium however large the load, the stored energy measures the
+    /// loading of the tip, and `G >= G_c = K_Ic^2 / E` is exactly `K_I >= K_Ic`.
+    fn tip_stress_intensity(&self, tip_node: usize, positions: &[[f64; 3]]) -> f64 {
+        let mut tensile_energy = 0.0;
+        let mut rest_length_sum = 0.0;
+        let mut intact_bonds = 0_usize;
+        for bond in &self.bonds {
+            if bond.broken || (bond.node_a != tip_node && bond.node_b != tip_node) {
+                continue;
+            }
+            intact_bonds += 1;
+            rest_length_sum += bond.rest_length;
+            let length = vec_length(vec_sub(positions[bond.node_b], positions[bond.node_a]));
+            let extension = length - bond.rest_length;
+            if extension > 0.0 {
+                tensile_energy += 0.5 * bond.stiffness * extension * extension;
+            }
+        }
+        if intact_bonds == 0 {
+            return 0.0;
+        }
+        let new_crack_area = rest_length_sum / intact_bonds as f64 * CRACK_THICKNESS;
+        if new_crack_area <= 1e-30 {
+            return 0.0;
+        }
+        let energy_release_rate = tensile_energy / new_crack_area;
+        (self.material.youngs_modulus.max(0.0) * energy_release_rate).sqrt()
+    }
     /// Propagate each crack tip by breaking nearby bonds whose stress
     /// intensity exceeds K_Ic.
     ///
-    /// The stress intensity factor K_I is estimated from the local elastic
-    /// energy density of bonds connected to the crack-tip node.
+    /// The stress intensity factor K_I of every tip is estimated from the
+    /// elastic energy stored in the stretched bonds attached to the tip node
+    /// (energy release rate `G`, `K_I = sqrt(E G)`); it is stored in
+    /// [`CrackTip::stress_intensity`] in Pa·√m. A tip with `K_I > K_Ic` breaks
+    /// the intact bond best aligned with its direction and moves onto the far
+    /// node of that bond.
     pub fn propagate_crack(&mut self, dt: f64) {
         let k_ic = self.material.fracture_toughness;
-        let forces = self.compute_bond_forces();
         let positions: Vec<[f64; 3]> = self.nodes.iter().map(|n| n.pos).collect();
         let n_tips = self.crack_tips.len();
         for t in 0..n_tips {
             let tip_node = self.crack_tips[t].node_idx;
-            let f_tip = forces[tip_node];
-            let f_mag = vec_length(f_tip);
-            let connected_rest_lengths: Vec<f64> = self
-                .bonds
-                .iter()
-                .filter(|b| !b.broken && (b.node_a == tip_node || b.node_b == tip_node))
-                .map(|b| b.rest_length)
-                .collect();
-            if connected_rest_lengths.is_empty() {
-                self.crack_tips[t].stress_intensity = 0.0;
-                continue;
-            }
-            let r_avg: f64 =
-                connected_rest_lengths.iter().sum::<f64>() / connected_rest_lengths.len() as f64;
-            let k_i = f_mag / (std::f64::consts::PI * r_avg).sqrt();
+            let k_i = self.tip_stress_intensity(tip_node, &positions);
             self.crack_tips[t].stress_intensity = k_i;
             if k_i <= k_ic {
                 continue;

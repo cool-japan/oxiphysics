@@ -959,6 +959,88 @@ struct WarmStart<'a> {
     enabled: bool,
 }
 
+/// Outcome of one batch of velocity sweeps, see [`run_velocity_sweeps`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SweepOutcome {
+    /// Number of sweeps that were run.
+    pub(crate) iterations: usize,
+    /// Summed update size of the last sweep, `f64::MAX` when no sweep was run.
+    pub(crate) residual: f64,
+    /// Whether the residual dropped to the tolerance before the iteration
+    /// budget was used up.
+    pub(crate) converged: bool,
+}
+
+/// `prepare` every active constraint (the first phase of every solve).
+pub(crate) fn prepare_active(
+    constraints: &mut [Box<dyn Constraint>],
+    bodies: &RigidBodySet,
+    dt: f64,
+) {
+    for c in constraints.iter_mut() {
+        if c.is_active() {
+            c.prepare(bodies, dt);
+        }
+    }
+}
+
+/// Sweep the active constraints until the summed velocity update drops to
+/// `tolerance` or `max_iterations` sweeps have been run.
+///
+/// `omega` selects successive over-relaxation (`None` is plain Gauss-Seidel).
+/// This is the velocity phase shared by [`PgsSolver`], [`SorPgsSolver`] and the
+/// sub-steps of the TGS solver, so all of them report convergence the same way.
+pub(crate) fn run_velocity_sweeps(
+    constraints: &mut [Box<dyn Constraint>],
+    bodies: &mut RigidBodySet,
+    dt: f64,
+    max_iterations: usize,
+    tolerance: f64,
+    omega: Option<f64>,
+) -> SweepOutcome {
+    let handles = collect_handles(constraints);
+    let mut scratch = Vec::new();
+    let mut outcome = SweepOutcome {
+        iterations: 0,
+        residual: f64::MAX,
+        converged: false,
+    };
+    for iteration in 0..max_iterations {
+        outcome.residual = velocity_sweep(constraints, &handles, bodies, dt, omega, &mut scratch);
+        outcome.iterations = iteration + 1;
+        if outcome.residual <= tolerance {
+            outcome.converged = true;
+            break;
+        }
+    }
+    outcome
+}
+
+/// `post_solve` every active constraint (once, after the velocity sweeps).
+pub(crate) fn post_solve_active(constraints: &mut [Box<dyn Constraint>]) {
+    for c in constraints.iter_mut() {
+        if c.is_active() {
+            c.post_solve();
+        }
+    }
+}
+
+/// Run `passes` position-correction passes over the active constraints.
+pub(crate) fn run_position_passes(
+    constraints: &mut [Box<dyn Constraint>],
+    bodies: &mut RigidBodySet,
+    dt: f64,
+    passes: usize,
+) {
+    for _ in 0..passes {
+        for c in constraints.iter_mut() {
+            if c.is_active() {
+                c.solve_position(bodies, dt);
+            }
+        }
+    }
+}
+
 /// Prepare, iterate and finish one PGS solve.
 ///
 /// 1. `prepare` every active constraint,
@@ -974,57 +1056,31 @@ fn solve_with_settings(
     settings: &SolveSettings,
     mut warm: Option<WarmStart<'_>>,
 ) -> SolverStats {
-    for c in constraints.iter_mut() {
-        if c.is_active() {
-            c.prepare(bodies, dt);
-        }
-    }
+    prepare_active(constraints, bodies, dt);
     if let Some(warm) = warm.as_mut() {
         seed_warm_start(constraints, bodies, dt, warm);
     }
 
-    let handles = collect_handles(constraints);
-    let mut scratch = Vec::new();
-    let mut residual = f64::MAX;
-    let mut iterations_used = 0usize;
-    let mut converged = false;
-    for iteration in 0..settings.max_iterations {
-        residual = velocity_sweep(
-            constraints,
-            &handles,
-            bodies,
-            dt,
-            settings.omega,
-            &mut scratch,
-        );
-        iterations_used = iteration + 1;
-        if residual <= settings.tolerance {
-            converged = true;
-            break;
-        }
-    }
+    let sweeps = run_velocity_sweeps(
+        constraints,
+        bodies,
+        dt,
+        settings.max_iterations,
+        settings.tolerance,
+        settings.omega,
+    );
 
-    for c in constraints.iter_mut() {
-        if c.is_active() {
-            c.post_solve();
-        }
-    }
-    for _ in 0..settings.position_iterations {
-        for c in constraints.iter_mut() {
-            if c.is_active() {
-                c.solve_position(bodies, dt);
-            }
-        }
-    }
+    post_solve_active(constraints);
+    run_position_passes(constraints, bodies, dt, settings.position_iterations);
 
     if let Some(warm) = warm.as_mut() {
         store_warm_start(constraints, dt, warm);
     }
 
     SolverStats {
-        iterations_used,
-        residual,
-        converged,
+        iterations_used: sweeps.iterations,
+        residual: sweeps.residual,
+        converged: sweeps.converged,
     }
 }
 

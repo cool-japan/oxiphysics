@@ -248,6 +248,56 @@ mod tests {
         assert!(energy_folded > 1e-3, "folded hinge energy {energy_folded}");
     }
 
+    /// Symmetric kite whose wings are lifted by `fold / 2` each about the shared
+    /// edge, so that the angle between the two face planes deviates from flat by
+    /// `fold` (radians).  The wings turn rigidly about the edge and keep the shape
+    /// of their triangles.
+    fn folded_kite(fold: Real) -> Vec<SoftParticle> {
+        let (sin_half, cos_half) = (0.5 * fold).sin_cos();
+        vec![
+            particle(0.0, 0.0, 0.0),
+            particle(1.0, 0.0, 0.0),
+            particle(0.5, cos_half, sin_half),
+            particle(0.5, -cos_half, sin_half),
+        ]
+    }
+
+    #[test]
+    fn thirty_degree_fold_has_the_closed_form_bending_energy() {
+        // For the symmetric kite K = [1, 1, -1, -1] and 3 / (A0 + A1) = 3 (see
+        // `hinge_weights_of_symmetric_kite`).  Folding turns the wing triangles
+        // rigidly, so K stays valid and K . p = p0 + p1 - p2 - p3 =
+        // (0, 0, -2 sin(fold / 2)): the quadratic form is exactly
+        // 3 * 4 sin^2(fold / 2) = 12 sin^2(fold / 2).
+        let rest = kite();
+        let stiffness = 2.5;
+        let v1 = IsometricBendingConstraint::from_particles([0, 1, 2, 3], &rest, stiffness, 0.0);
+        let v2 = IsometricBendingConstraintV2::from_particles([0, 1, 2, 3], &rest, stiffness, 0.0);
+        for fold_degrees in [30.0_f64, 15.0, 60.0] {
+            let fold = fold_degrees.to_radians();
+            let quadratic_form = 12.0 * (0.5 * fold).sin().powi(2);
+            let folded = folded_kite(fold);
+            let value = v1.constraint_value(&folded);
+            assert!(
+                (value - stiffness * quadratic_form).abs() < 1e-12,
+                "{fold_degrees} deg: C = {value}, expected {}",
+                stiffness * quadratic_form
+            );
+            let energy = v2.bending_energy(&folded);
+            assert!(
+                (energy - 0.5 * stiffness * quadratic_form).abs() < 1e-12,
+                "{fold_degrees} deg: E = {energy}, expected {}",
+                0.5 * stiffness * quadratic_form
+            );
+        }
+        // Folding the other way round costs the same, a flat hinge nothing.
+        let down = v2.bending_energy(&folded_kite(-30.0_f64.to_radians()));
+        let up = v2.bending_energy(&folded_kite(30.0_f64.to_radians()));
+        assert!(up > 1e-3 && (up - down).abs() < 1e-12);
+        assert!(v1.constraint_value(&folded_kite(0.0)).abs() < 1e-12);
+        assert!(v2.bending_energy(&folded_kite(0.0)).abs() < 1e-12);
+    }
+
     #[test]
     fn v2_projection_step_does_not_depend_on_the_stiffness_scale() {
         // C = stiffness * c: the Newton step on C is independent of the scale.

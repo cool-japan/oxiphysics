@@ -157,7 +157,7 @@ impl AnnotatedError {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// GPU operation error (used by `LbmGpuSolver`, `BvhGpuTraverser`, etc.).
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum GpuError {
     /// GPU backend initialisation failed.
     #[error("GPU backend init failed: {0}")]

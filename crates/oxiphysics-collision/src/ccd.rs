@@ -8,11 +8,27 @@ use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Real, Vec3};
 use oxiphysics_geometry::Shape;
 
-/// Maximum iterations for conservative advancement.
-const MAX_CCD_ITERATIONS: usize = 32;
+mod gjk_distance;
+#[cfg(test)]
+mod regression_tests;
 
-/// Tolerance for CCD convergence.
+pub use gjk_distance::gjk_distance_approx;
+
+/// Maximum iterations for conservative advancement.
+const MAX_CCD_ITERATIONS: usize = 64;
+
+/// Tolerance for CCD convergence: shapes closer than this are in contact.
 const CCD_TOLERANCE: Real = 1e-6;
+
+/// Shortest separation vector that still defines a contact direction.
+const MIN_AXIS_LENGTH: Real = 1e-12;
+
+/// Bisection stops once the bracket around the contact is shorter than this
+/// fraction of the timestep.
+const BISECTION_TIME_TOLERANCE: Real = 1e-9;
+
+/// Safety cap on the number of bisection steps.
+const MAX_BISECTION_ITERATIONS: usize = 64;
 
 /// Result of a time-of-impact query.
 #[derive(Debug, Clone)]
@@ -30,8 +46,43 @@ pub struct ToiResult {
 /// Compute time of impact between two moving convex shapes using
 /// conservative advancement.
 ///
-/// The shapes move linearly from `transform_a/b_start` to `transform_a/b_end`
-/// over the timestep. Returns `None` if no impact occurs during the timestep.
+/// Over the timestep the body of each shape moves from its `*_start` to its
+/// `*_end` transform: the position is interpolated linearly and the
+/// orientation by spherical linear interpolation, so a body turns about its own
+/// origin at a constant angular speed. The result is the first time `toi` in
+/// `[0, 1]` (a fraction of the timestep) at which the shapes touch, together
+/// with the contact normal (pointing from `A` to `B`) and the closest points of
+/// the shapes at that time. It is `None` when the shapes do not touch during
+/// the timestep, and when they already overlap at its start, which is not an
+/// impact.
+///
+/// # Method
+///
+/// At time `t` the GJK distance `d` and the closest points `a`, `b` of the
+/// shapes give the unit axis `n = (b - a) / d`. Every point of the shape of
+/// body `A` is carried along by the displacement `dp_a` of the body origin and
+/// turns about that origin through the angle `theta_a` over the step, which
+/// moves it by at most `theta_a * r_a` (`r_a` is the largest distance of a
+/// point of the shape from the body origin). No pair of points can therefore
+/// approach along `n` faster than
+///
+/// ```text
+/// mu = n . (dp_a - dp_b) + theta_a * r_a + theta_b * r_b
+/// ```
+///
+/// per unit of `t`, and the shapes stay apart for at least `d / mu` more of the
+/// step (conservative advancement, Mirtich 1996). Time is advanced by that
+/// amount until the gap closes. If `mu <= 0` the shapes can never come closer
+/// along `n`, so there is no impact. Because the bound contains the rotation
+/// that is actually performed during the step, a body that only turns in
+/// place is handled like a moving one.
+///
+/// Should the advancement end in an overlap (round-off right at the contact)
+/// the contact time is bracketed between the last separated time and that time
+/// and refined by bisection. If the iteration budget runs out before the gap
+/// closes, the shapes are compared at the end of the step: when they overlap
+/// there the first contact is bisected out of the remaining part of the step,
+/// otherwise no impact is reported.
 pub fn time_of_impact(
     shape_a: &dyn Shape,
     transform_a_start: &Transform,
@@ -40,97 +91,251 @@ pub fn time_of_impact(
     transform_b_start: &Transform,
     transform_b_end: &Transform,
 ) -> Option<ToiResult> {
-    // Linear velocity of each body over the timestep
-    let vel_a = transform_a_end.position - transform_a_start.position;
-    let vel_b = transform_b_end.position - transform_b_start.position;
-    let relative_vel = vel_a - vel_b;
-    let rel_speed = relative_vel.norm();
+    let pair = SweptPair {
+        shape_a,
+        a_start: transform_a_start,
+        a_end: transform_a_end,
+        shape_b,
+        b_start: transform_b_start,
+        b_end: transform_b_end,
+    };
+    time_of_impact_with_budget(&pair, MAX_CCD_ITERATIONS)
+}
 
-    if rel_speed < CCD_TOLERANCE {
-        // Objects are essentially stationary relative to each other
+/// The two moving shapes of a time-of-impact query: each body moves from its
+/// start to its end transform over the step `t` in `[0, 1]`.
+struct SweptPair<'a> {
+    shape_a: &'a dyn Shape,
+    a_start: &'a Transform,
+    a_end: &'a Transform,
+    shape_b: &'a dyn Shape,
+    b_start: &'a Transform,
+    b_end: &'a Transform,
+}
+
+impl SweptPair<'_> {
+    /// Transforms of the two bodies at `t`.
+    fn poses_at(&self, t: Real) -> (Transform, Transform) {
+        (
+            interpolate_transform(self.a_start, self.a_end, t),
+            interpolate_transform(self.b_start, self.b_end, t),
+        )
+    }
+
+    /// GJK query of the shapes at `t`.
+    fn query_at(&self, t: Real) -> GjkResult {
+        let (pose_a, pose_b) = self.poses_at(t);
+        Gjk::query(self.shape_a, &pose_a, self.shape_b, &pose_b)
+    }
+
+    /// Time-of-impact record for the shapes at `t`, when their closest points
+    /// are `point_a` and `point_b`.
+    ///
+    /// The normal is the direction from `point_a` to `point_b`. If the points
+    /// coincide it falls back to `axis` (the direction of the closest points
+    /// before the contact), then to the relative motion of the bodies and
+    /// finally to the direction between the body origins.
+    fn contact_at(
+        &self,
+        bound: &ApproachBound,
+        t: Real,
+        point_a: Vec3,
+        point_b: Vec3,
+        axis: Option<Vec3>,
+    ) -> ToiResult {
+        let normal = (point_b - point_a)
+            .try_normalize(MIN_AXIS_LENGTH)
+            .or(axis)
+            .or_else(|| bound.relative_displacement.try_normalize(MIN_AXIS_LENGTH))
+            .unwrap_or_else(|| {
+                let (pose_a, pose_b) = self.poses_at(t);
+                (pose_b.position - pose_a.position)
+                    .try_normalize(MIN_AXIS_LENGTH)
+                    .unwrap_or_else(Vec3::y)
+            });
+        ToiResult {
+            toi: t,
+            normal,
+            witness_a: point_a,
+            witness_b: point_b,
+        }
+    }
+
+    /// First contact within `[t_low, t_high]`, where the shapes are apart at
+    /// `t_low` and overlap at `t_high`; `axis` is the direction of the closest
+    /// points at `t_low`.
+    ///
+    /// The bracket is halved until a separated sample is within
+    /// [`CCD_TOLERANCE`] of touching or the bracket is shorter than
+    /// [`BISECTION_TIME_TOLERANCE`]; the contact is then reported at the last
+    /// separated time, so it is never later than the true contact.
+    fn refine_contact(
+        &self,
+        bound: &ApproachBound,
+        mut t_low: Real,
+        mut t_high: Real,
+        axis: Option<Vec3>,
+    ) -> ToiResult {
+        // Closest points at the separated end of the bracket.
+        let mut low = match self.query_at(t_low) {
+            GjkResult::Separated {
+                point_a, point_b, ..
+            } => Some((point_a, point_b)),
+            GjkResult::Intersecting(_) => None,
+        };
+
+        for _ in 0..MAX_BISECTION_ITERATIONS {
+            if t_high - t_low < BISECTION_TIME_TOLERANCE {
+                break;
+            }
+            let t_mid = 0.5 * (t_low + t_high);
+            match self.query_at(t_mid) {
+                GjkResult::Intersecting(_) => t_high = t_mid,
+                GjkResult::Separated {
+                    distance,
+                    point_a,
+                    point_b,
+                } => {
+                    if distance < CCD_TOLERANCE {
+                        return self.contact_at(bound, t_mid, point_a, point_b, axis);
+                    }
+                    t_low = t_mid;
+                    low = Some((point_a, point_b));
+                }
+            }
+        }
+
+        match low {
+            Some((point_a, point_b)) => self.contact_at(bound, t_low, point_a, point_b, axis),
+            None => {
+                // Only reachable if the query at `t_low` were not reproducible;
+                // report the contact at `t_low` between the body origins.
+                let (pose_a, pose_b) = self.poses_at(t_low);
+                self.contact_at(bound, t_low, pose_a.position, pose_b.position, axis)
+            }
+        }
+    }
+}
+
+/// Bound on how fast two shapes that move over a step can approach each other.
+struct ApproachBound {
+    /// Displacement of the origin of body `A` relative to that of body `B` over
+    /// the step.
+    relative_displacement: Vec3,
+    /// How far the rotations of the two bodies can move a point of one shape
+    /// toward a point of the other over the step: `theta_a * r_a + theta_b *
+    /// r_b`.
+    angular_reach: Real,
+}
+
+impl ApproachBound {
+    fn new(pair: &SweptPair<'_>) -> Self {
+        let displacement_a = pair.a_end.position - pair.a_start.position;
+        let displacement_b = pair.b_end.position - pair.b_start.position;
+        let angle_a = pair.a_start.rotation.angle_to(&pair.a_end.rotation);
+        let angle_b = pair.b_start.rotation.angle_to(&pair.b_end.rotation);
+        Self {
+            relative_displacement: displacement_a - displacement_b,
+            angular_reach: angle_a * rotation_radius(pair.shape_a)
+                + angle_b * rotation_radius(pair.shape_b),
+        }
+    }
+
+    /// Upper bound of the speed (distance per unit of `t`) at which any two
+    /// points of the shapes approach each other, whatever the direction.
+    fn max_speed(&self) -> Real {
+        self.relative_displacement.norm() + self.angular_reach
+    }
+
+    /// Upper bound of the speed at which the gap shrinks along the unit vector
+    /// `axis` that points from shape `A` to shape `B`.
+    fn closing_speed(&self, axis: &Vec3) -> Real {
+        axis.dot(&self.relative_displacement) + self.angular_reach
+    }
+}
+
+/// Largest distance of any point of `shape` from its body origin, which is the
+/// centre of the rotation of the body.
+///
+/// The local bounding box need not be centred on the origin, so the farthest
+/// corner is used rather than the half-extents.
+fn rotation_radius(shape: &dyn Shape) -> Real {
+    let aabb = shape.bounding_box();
+    Vec3::new(
+        aabb.min.x.abs().max(aabb.max.x.abs()),
+        aabb.min.y.abs().max(aabb.max.y.abs()),
+        aabb.min.z.abs().max(aabb.max.z.abs()),
+    )
+    .norm()
+}
+
+/// [`time_of_impact`] with an explicit budget of conservative-advancement steps.
+fn time_of_impact_with_budget(pair: &SweptPair<'_>, max_iterations: usize) -> Option<ToiResult> {
+    let bound = ApproachBound::new(pair);
+    if bound.max_speed() < CCD_TOLERANCE {
+        // The shapes are essentially at rest relative to each other.
         return None;
     }
 
     let mut t = 0.0;
+    // Last time at which the shapes were found apart, with the direction of
+    // their closest points then.
+    let mut clear: Option<(Real, Option<Vec3>)> = None;
 
-    for _ in 0..MAX_CCD_ITERATIONS {
-        // Interpolate transforms at current t
-        let ta = interpolate_transform(transform_a_start, transform_a_end, t);
-        let tb = interpolate_transform(transform_b_start, transform_b_end, t);
-
-        // Query GJK for distance/intersection
-        let result = Gjk::query(shape_a, &ta, shape_b, &tb);
-
-        match result {
+    for _ in 0..max_iterations {
+        match pair.query_at(t) {
             GjkResult::Intersecting(_) => {
-                // Shapes are already overlapping at this t
-                if t < CCD_TOLERANCE {
-                    // Already overlapping at start — not a CCD event
-                    return None;
-                }
-                // Use a bisection refinement
-                return bisect_toi(
-                    shape_a,
-                    transform_a_start,
-                    transform_a_end,
-                    shape_b,
-                    transform_b_start,
-                    transform_b_end,
-                    (t - 0.1).max(0.0),
-                    t,
-                );
+                // Overlap at the start of the step is not an impact (`clear` is
+                // still empty); later it is the end of a bracket around the
+                // contact.
+                let (t_clear, axis) = clear?;
+                return Some(pair.refine_contact(&bound, t_clear, t, axis));
             }
             GjkResult::Separated {
                 distance,
                 point_a,
                 point_b,
-                ..
             } => {
+                let axis = (point_b - point_a).try_normalize(MIN_AXIS_LENGTH);
                 if distance < CCD_TOLERANCE {
-                    let normal = if distance > 1e-12 {
-                        (point_b - point_a).normalize()
-                    } else {
-                        relative_vel.normalize()
-                    };
-                    return Some(ToiResult {
-                        toi: t,
-                        normal,
-                        witness_a: point_a,
-                        witness_b: point_b,
-                    });
+                    let previous_axis = clear.and_then(|(_, previous)| previous);
+                    return Some(pair.contact_at(&bound, t, point_a, point_b, previous_axis));
                 }
 
-                // Conservative advancement: advance t by distance / relative_speed
-                // Bounded support radius for convex shapes
-                let upper_bound = compute_upper_bound(shape_a, shape_b);
-                let denominator = rel_speed + upper_bound;
-                if denominator < CCD_TOLERANCE {
+                // Conservative advancement: the gap cannot close before
+                // `distance / closing_speed` has passed. Stop half a tolerance
+                // short of the contact so that the next query still sees
+                // separated shapes and real closest points.
+                let closing_speed = match axis {
+                    Some(axis) => bound.closing_speed(&axis),
+                    None => bound.max_speed(),
+                };
+                if closing_speed.is_nan() || closing_speed <= 0.0 {
+                    // The shapes never come closer: no impact in this step.
                     return None;
                 }
-
-                let dt = distance / denominator;
-                t += dt;
-
+                clear = Some((t, axis));
+                t += (distance - 0.5 * CCD_TOLERANCE) / closing_speed;
                 if t > 1.0 {
-                    return None; // No impact this timestep
+                    return None;
                 }
             }
         }
     }
 
-    None
-}
-
-/// Compute upper bound on the angular contribution to relative motion.
-fn compute_upper_bound(shape_a: &dyn Shape, shape_b: &dyn Shape) -> Real {
-    // Use bounding sphere radii as conservative upper bound
-    let aabb_a = shape_a.bounding_box();
-    let aabb_b = shape_b.bounding_box();
-    let radius_a = aabb_a.half_extents().norm();
-    let radius_b = aabb_b.half_extents().norm();
-    // Angular velocity contribution (conservative estimate)
-    // Assuming worst-case angular speed of pi rad/timestep
-    (radius_a + radius_b) * std::f64::consts::PI * 0.1
+    // The budget ran out with the gap still open. Contact before `t` is ruled
+    // out, but nothing is known about the rest of the step: if the shapes overlap
+    // at its end, bisect for the first contact, otherwise report no impact.
+    let (t_clear, axis) = clear?;
+    match pair.query_at(1.0) {
+        GjkResult::Intersecting(_) => Some(pair.refine_contact(&bound, t_clear, 1.0, axis)),
+        GjkResult::Separated {
+            distance,
+            point_a,
+            point_b,
+        } if distance < CCD_TOLERANCE => Some(pair.contact_at(&bound, 1.0, point_a, point_b, axis)),
+        GjkResult::Separated { .. } => None,
+    }
 }
 
 /// Linearly interpolate between two transforms.
@@ -138,80 +343,6 @@ fn interpolate_transform(start: &Transform, end: &Transform, t: Real) -> Transfo
     let position = start.position * (1.0 - t) + end.position * t;
     let rotation = start.rotation.slerp(&end.rotation, t);
     Transform::new(position, rotation)
-}
-
-/// Bisection refinement to find precise TOI between t_low and t_high.
-fn bisect_toi(
-    shape_a: &dyn Shape,
-    ta_start: &Transform,
-    ta_end: &Transform,
-    shape_b: &dyn Shape,
-    tb_start: &Transform,
-    tb_end: &Transform,
-    mut t_low: Real,
-    mut t_high: Real,
-) -> Option<ToiResult> {
-    for _ in 0..16 {
-        let t_mid = (t_low + t_high) * 0.5;
-        let ta = interpolate_transform(ta_start, ta_end, t_mid);
-        let tb = interpolate_transform(tb_start, tb_end, t_mid);
-
-        let result = Gjk::query(shape_a, &ta, shape_b, &tb);
-        match result {
-            GjkResult::Intersecting(_) => {
-                t_high = t_mid;
-            }
-            GjkResult::Separated {
-                distance,
-                point_a,
-                point_b,
-                ..
-            } => {
-                if distance < CCD_TOLERANCE {
-                    let normal = if distance > 1e-12 {
-                        (point_b - point_a).normalize()
-                    } else {
-                        // Points coincide; derive normal from relative motion direction.
-                        let rel = (ta_end.position - ta_start.position)
-                            - (tb_end.position - tb_start.position);
-                        if rel.norm() > 1e-10 {
-                            rel.normalize()
-                        } else {
-                            Vec3::new(0.0, 1.0, 0.0)
-                        }
-                    };
-                    return Some(ToiResult {
-                        toi: t_mid,
-                        normal,
-                        witness_a: point_a,
-                        witness_b: point_b,
-                    });
-                }
-                t_low = t_mid;
-            }
-        }
-
-        if (t_high - t_low) < CCD_TOLERANCE {
-            break;
-        }
-    }
-
-    // Return best estimate
-    let t = (t_low + t_high) * 0.5;
-    let ta = interpolate_transform(ta_start, ta_end, t);
-    let tb = interpolate_transform(tb_start, tb_end, t);
-    let vel = ta_end.position - ta_start.position - (tb_end.position - tb_start.position);
-    let normal = if vel.norm() > 1e-10 {
-        vel.normalize()
-    } else {
-        Vec3::new(0.0, 1.0, 0.0)
-    };
-    Some(ToiResult {
-        toi: t,
-        normal,
-        witness_a: ta.position,
-        witness_b: tb.position,
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -387,189 +518,6 @@ pub fn sphere_plane_toi(
 /// Maximum relative speed between two bodies: `|vel_a - vel_b|`.
 pub fn relative_velocity_bound(vel_a: [f64; 3], vel_b: [f64; 3]) -> f64 {
     len3(sub3(vel_a, vel_b))
-}
-
-// ---------------------------------------------------------------------------
-// gjk_distance_approx
-// ---------------------------------------------------------------------------
-
-/// Simplified GJK for distance estimation (Minkowski difference support iteration).
-///
-/// Returns an approximate lower-bound distance between the two convex shapes
-/// defined by their support functions.  Not a full EPA; accuracy sufficient
-/// for conservative advancement.
-pub fn gjk_distance_approx(
-    support_a: impl Fn([f64; 3]) -> [f64; 3],
-    support_b: impl Fn([f64; 3]) -> [f64; 3],
-) -> f64 {
-    // Combined support in Minkowski difference
-    let support = |d: [f64; 3]| -> [f64; 3] { sub3(support_a(d), support_b(neg3(d))) };
-
-    const MAX_ITERS: usize = 32;
-    const EPS: f64 = 1e-7;
-
-    // Simplex vertices (at most 4)
-    let mut simplex: Vec<[f64; 3]> = Vec::with_capacity(4);
-
-    let mut dir = [1.0_f64, 0.0, 0.0];
-    let first = support(dir);
-    simplex.push(first);
-    dir = neg3(first);
-
-    for _ in 0..MAX_ITERS {
-        let l = len3(dir);
-        if l < EPS {
-            // origin is in/on simplex
-            return 0.0;
-        }
-        let dir_n = scale3(dir, 1.0 / l);
-        let new_pt = support(dir_n);
-
-        // If new point did not advance past origin along dir, origin is beyond
-        let proj = dot3(new_pt, dir_n);
-        if proj < -EPS {
-            // No intersection; distance approximated by |dir|
-            return l;
-        }
-
-        simplex.push(new_pt);
-
-        // Reduce simplex and update direction
-        let (new_dir, done, dist) = nearest_simplex(&mut simplex);
-        if done {
-            return dist;
-        }
-        dir = new_dir;
-    }
-
-    len3(dir)
-}
-
-/// Reduce simplex to the feature closest to origin; return new search direction,
-/// whether we are done (origin inside or distance converged), and current distance.
-fn nearest_simplex(simplex: &mut Vec<[f64; 3]>) -> ([f64; 3], bool, f64) {
-    match simplex.len() {
-        1 => {
-            let a = simplex[0];
-            (neg3(a), false, len3(a))
-        }
-        2 => nearest_simplex_line(simplex),
-        3 => nearest_simplex_triangle(simplex),
-        4 => nearest_simplex_tetrahedron(simplex),
-        _ => ([1.0, 0.0, 0.0], true, 0.0),
-    }
-}
-
-fn nearest_simplex_line(simplex: &mut Vec<[f64; 3]>) -> ([f64; 3], bool, f64) {
-    let b = simplex[0];
-    let a = simplex[1]; // most recently added
-    let ab = sub3(b, a);
-    let ao = neg3(a);
-    let t = dot3(ab, ao);
-    if t <= 0.0 {
-        // Closest to A
-        *simplex = vec![a];
-        (ao, false, len3(ao))
-    } else {
-        let denom = dot3(ab, ab);
-        if denom < 1e-300 {
-            *simplex = vec![a];
-            return (ao, false, len3(ao));
-        }
-        let tc = t / denom;
-        if tc >= 1.0 {
-            // Closest to B
-            *simplex = vec![b];
-            let bo = neg3(b);
-            (bo, false, len3(bo))
-        } else {
-            // Closest to segment
-            let closest = add3(a, scale3(ab, tc));
-            let dir = neg3(closest);
-            let dist = len3(closest);
-            (dir, dist < 1e-10, dist)
-        }
-    }
-}
-
-fn nearest_simplex_triangle(simplex: &mut Vec<[f64; 3]>) -> ([f64; 3], bool, f64) {
-    let c = simplex[0];
-    let b = simplex[1];
-    let a = simplex[2]; // newest
-    let ab = sub3(b, a);
-    let ac = sub3(c, a);
-    let ao = neg3(a);
-
-    let abc = cross3(ab, ac);
-    // Determine region
-    // If origin is on the positive side of edge AB (outward)
-    let ab_perp = cross3(ab, abc);
-    if dot3(ab_perp, ao) > 0.0 {
-        if dot3(ab, ao) > 0.0 {
-            *simplex = vec![b, a];
-            return nearest_simplex_line(simplex);
-        }
-        let ac_perp = cross3(abc, ac);
-        if dot3(ac_perp, ao) > 0.0 {
-            *simplex = vec![c, a];
-            return nearest_simplex_line(simplex);
-        }
-        *simplex = vec![a];
-        return (ao, false, len3(ao));
-    }
-    let ac_perp = cross3(abc, ac);
-    if dot3(ac_perp, ao) > 0.0 {
-        *simplex = vec![c, a];
-        return nearest_simplex_line(simplex);
-    }
-    // Origin is above or below triangle
-    let d = dot3(abc, ao);
-    if d.abs() < 1e-10 {
-        return ([0.0, 0.0, 0.0], true, 0.0);
-    }
-    if d > 0.0 {
-        // already ordered
-        (abc, false, d / len3(abc))
-    } else {
-        // flip
-        *simplex = vec![b, c, a];
-        (neg3(abc), false, (-d) / len3(abc))
-    }
-}
-
-fn nearest_simplex_tetrahedron(simplex: &mut Vec<[f64; 3]>) -> ([f64; 3], bool, f64) {
-    let d = simplex[0];
-    let c = simplex[1];
-    let b = simplex[2];
-    let a = simplex[3]; // newest
-
-    let ab = sub3(b, a);
-    let ac = sub3(c, a);
-    let ad = sub3(d, a);
-    let ao = neg3(a);
-
-    let abc = cross3(ab, ac);
-    let acd = cross3(ac, ad);
-    let adb = cross3(ad, ab);
-
-    let above_abc = dot3(abc, ao) > 0.0;
-    let above_acd = dot3(acd, ao) > 0.0;
-    let above_adb = dot3(adb, ao) > 0.0;
-
-    if !above_abc && !above_acd && !above_adb {
-        // origin is inside tetrahedron
-        return ([0.0, 0.0, 0.0], true, 0.0);
-    }
-    if above_abc {
-        *simplex = vec![c, b, a];
-        return nearest_simplex_triangle(simplex);
-    }
-    if above_acd {
-        *simplex = vec![d, c, a];
-        return nearest_simplex_triangle(simplex);
-    }
-    *simplex = vec![b, d, a];
-    nearest_simplex_triangle(simplex)
 }
 
 // ---------------------------------------------------------------------------

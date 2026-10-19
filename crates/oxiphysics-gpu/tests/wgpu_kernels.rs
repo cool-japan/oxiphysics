@@ -555,6 +555,7 @@ fn sph_density(@builtin(global_invocation_id) gid: vec3<u32>) {
     /// Skip-not-fail on headless CI.
     #[test]
     fn test_sph_gpu_dam_break_parity() {
+        use oxiphysics_gpu::compute_preference::ComputePreference;
         use oxiphysics_gpu::sph_gpu::{SphConfig, SphSimulation};
 
         if WgpuBackendReal::try_new().is_err() {
@@ -581,6 +582,7 @@ fn sph_density(@builtin(global_invocation_id) gid: vec3<u32>) {
             domain_min: [0.0, 0.0, -0.5],
             domain_max: [2.0, 2.0, 0.5],
             boundary_restitution: 0.2,
+            compute: ComputePreference::Auto,
         };
 
         let seed_positions = |sim: &mut SphSimulation| {

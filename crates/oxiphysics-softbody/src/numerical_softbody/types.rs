@@ -85,8 +85,13 @@ impl ProjectiveConstraint {
     /// **Local step**: project positions and return the auxiliary variable `p`.
     ///
     /// For a spring constraint, `p` is the closest pair of points at rest
-    /// distance.  For an anchor, `p` is the target position.
-    pub fn local_step(&self, positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    /// distance, returned as `[p_i, p_j]` (symmetric about the midpoint of the
+    /// current end points).  For an anchor, slot 0 holds the target position
+    /// and slot 1 is unused (zero).
+    ///
+    /// The result is a fixed-size array so that the per-iteration local step
+    /// of [`ProjectiveDynamicsSolver::step`] performs no heap allocation.
+    pub fn local_step(&self, positions: &[[f64; 3]]) -> [[f64; 3]; 2] {
         match &self.kind {
             ProjectiveConstraintKind::Spring {
                 i, j, rest_length, ..
@@ -96,14 +101,14 @@ impl ProjectiveConstraint {
                 let diff = v3_sub(pi, pj);
                 let len = v3_norm(diff);
                 if len < 1e-15 {
-                    return vec![pi, pj];
+                    return [pi, pj];
                 }
                 let dir = v3_scale(diff, 1.0 / len);
                 let half = v3_scale(dir, 0.5 * rest_length);
                 let mid = v3_scale(v3_add(pi, pj), 0.5);
-                vec![v3_add(mid, half), v3_sub(mid, half)]
+                [v3_add(mid, half), v3_sub(mid, half)]
             }
-            ProjectiveConstraintKind::Anchor { i: _, target, .. } => vec![*target],
+            ProjectiveConstraintKind::Anchor { i: _, target, .. } => [*target, [0.0; 3]],
         }
     }
 }
@@ -336,17 +341,28 @@ pub struct PcgResult {
 /// Solves the implicit system:
 ///
 /// ```text
-/// M (v_{n+1} - v_n) / dt = f(x_{n+1})
+/// M (v_{n+1} - v_n) / dt = f(x_{n+1}, v_{n+1})
 /// x_{n+1} = x_n + dt * v_{n+1}
 /// ```
 ///
-/// Linearised via Newton-Raphson at each time step.
+/// by Newton's method on the equivalent incremental potential (the same
+/// formulation as [`NewtonRaphsonSolver`]).  Every Newton iteration assembles
+/// the sparse Hessian `M / dt^2 + K` (see [`assemble_spring_hessian`]) and
+/// solves the linear system with the [`PcgSolver`] stored in
+/// [`pcg`](BackwardEulerIntegrator::pcg), followed by an Armijo backtracking
+/// line search.
+///
+/// The forces are gravity (`m * g`), the per-particle
+/// [`ImplicitParticle::external_force`], the spring elastic forces and the
+/// spring dampers.  A damper acts on the end-of-step relative velocity with
+/// the spring direction frozen at the start of the step, which keeps the
+/// damping linear in the unknowns and unconditionally stable.
 pub struct BackwardEulerIntegrator {
     /// Maximum Newton-Raphson iterations per step.
     pub max_newton_iter: usize,
-    /// Newton convergence tolerance.
+    /// Newton convergence tolerance on the force-residual (gradient) norm.
     pub newton_tol: f64,
-    /// PCG solver for the linear system.
+    /// PCG solver for the linear system of every Newton iteration.
     pub pcg: PcgSolver,
 }
 impl BackwardEulerIntegrator {
@@ -363,7 +379,12 @@ impl BackwardEulerIntegrator {
     }
     /// Perform one backward Euler step for a spring-mass system.
     ///
-    /// Returns the number of Newton iterations performed.
+    /// Positions and velocities of all non-static particles are updated;
+    /// static particles (zero mass) never move.  Returns the number of Newton
+    /// iterations performed (0 when the explicit predictor `x + dt v` already
+    /// satisfies the equations).  If `dt` is not positive and finite, or a
+    /// spring references a particle that does not exist, nothing is modified
+    /// and 0 is returned.
     pub fn step(
         &self,
         particles: &mut [ImplicitParticle],
@@ -371,112 +392,82 @@ impl BackwardEulerIntegrator {
         gravity: [f64; 3],
         dt: f64,
     ) -> usize {
-        let n = particles.len();
-        let dof = 3 * n;
         let x_prev: Vec<[f64; 3]> = particles.iter().map(|p| p.position).collect();
-        let v_prev: Vec<[f64; 3]> = particles.iter().map(|p| p.velocity).collect();
-        let mut x_star: Vec<[f64; 3]> = x_prev
+        let masses: Vec<f64> = particles.iter().map(|p| p.mass).collect();
+        let predictor: Vec<[f64; 3]> = particles
             .iter()
-            .zip(v_prev.iter())
-            .map(|(x, v)| v3_add(*x, v3_scale(*v, dt)))
-            .collect();
-        for i in 0..n {
-            particles[i].position = x_star[i];
-        }
-        let mut iter_count = 0;
-        for _iter in 0..self.max_newton_iter {
-            iter_count += 1;
-            let mut residual = vec![0.0f64; dof];
-            for i in 0..n {
-                if particles[i].is_static() {
-                    continue;
-                }
-                let m = particles[i].mass;
-                let v_new = v3_scale(v3_sub(particles[i].position, x_prev[i]), 1.0 / dt);
-                let inertia_force = v3_scale(v3_sub(v_new, v_prev[i]), m / dt);
-                let fg = v3_scale(gravity, m);
-                let mut fs = [0.0f64; 3];
-                for s in springs {
-                    if s.i == i {
-                        let f = s.force_on_i(particles);
-                        fs = v3_add(fs, f);
-                    } else if s.j == i {
-                        let f = s.force_on_i(particles);
-                        fs = v3_sub(fs, f);
-                    }
-                }
-                let net = v3_add(fg, fs);
-                let g = v3_sub(inertia_force, net);
-                residual[3 * i] = g[0];
-                residual[3 * i + 1] = g[1];
-                residual[3 * i + 2] = g[2];
-            }
-            let res_norm = vec_norm(&residual);
-            if res_norm < self.newton_tol {
-                break;
-            }
-            let mut diag = vec![0.0f64; dof];
-            for i in 0..n {
-                if particles[i].is_static() {
-                    diag[3 * i] = 1.0;
-                    diag[3 * i + 1] = 1.0;
-                    diag[3 * i + 2] = 1.0;
+            .map(|p| {
+                if p.is_static() {
+                    p.position
                 } else {
-                    let m = particles[i].mass;
-                    diag[3 * i] = m / (dt * dt);
-                    diag[3 * i + 1] = m / (dt * dt);
-                    diag[3 * i + 2] = m / (dt * dt);
+                    v3_add(p.position, v3_scale(p.velocity, dt))
                 }
-            }
-            for s in springs {
-                let k = s.stiffness;
-                for idx in [s.i, s.j] {
-                    if !particles[idx].is_static() {
-                        diag[3 * idx] += k;
-                        diag[3 * idx + 1] += k;
-                        diag[3 * idx + 2] += k;
-                    }
+            })
+            .collect();
+        let external: Vec<[f64; 3]> = particles
+            .iter()
+            .map(|p| {
+                if p.is_static() {
+                    [0.0; 3]
+                } else {
+                    v3_add(v3_scale(gravity, p.mass), p.external_force)
                 }
+            })
+            .collect();
+        let Some(problem) = ImplicitStepProblem::new(
+            masses,
+            springs,
+            predictor.clone(),
+            external,
+            x_prev.clone(),
+            dt,
+            Some(x_prev.clone()),
+        ) else {
+            return 0;
+        };
+        let mut x = predictor;
+        let iterations = newton_pcg_minimise(
+            &problem,
+            &mut x,
+            self.max_newton_iter,
+            self.newton_tol,
+            &self.pcg,
+            &LineSearch::default(),
+        );
+        for (i, p) in particles.iter_mut().enumerate() {
+            if p.is_static() {
+                continue;
             }
-            let neg_res: Vec<f64> = residual.iter().map(|r| -r).collect();
-            let delta_x: Vec<f64> = neg_res
-                .iter()
-                .zip(diag.iter())
-                .map(|(r, d)| r / d.max(1e-15))
-                .collect();
-            for i in 0..n {
-                if particles[i].is_static() {
-                    continue;
-                }
-                x_star[i] = v3_add(
-                    x_star[i],
-                    [delta_x[3 * i], delta_x[3 * i + 1], delta_x[3 * i + 2]],
-                );
-                particles[i].position = x_star[i];
-            }
+            p.velocity = v3_scale(v3_sub(x[i], x_prev[i]), 1.0 / dt);
+            p.position = x[i];
         }
-        for i in 0..n {
-            if !particles[i].is_static() {
-                particles[i].velocity =
-                    v3_scale(v3_sub(particles[i].position, x_prev[i]), 1.0 / dt);
-            }
-        }
-        iter_count
+        iterations
     }
 }
 /// Newton-Raphson solver for implicit soft body systems.
 ///
 /// Solves the nonlinear optimality condition arising from backward Euler
-/// discretisation of the elastic potential energy.  Uses the PCG solver
-/// internally for the linear sub-problem.
+/// discretisation of the elastic potential energy, i.e. minimises
+///
+/// ```text
+/// E(x) = sum_springs 1/2 k (|x_i - x_j| - L0)^2
+///      + sum_i m_i / (2 dt^2) |x_i - y_i|^2  -  sum_i f_i . x_i
+/// ```
+///
+/// Every iteration assembles the sparse Hessian (`M / dt^2` plus the
+/// positive semi-definite spring stiffness, see [`assemble_spring_hessian`]),
+/// solves `H dx = -grad` with a [`PcgSolver`] configured by
+/// [`pcg_params`](NewtonRaphsonSolver::pcg_params) and applies the Armijo
+/// backtracking [`line_search`](NewtonRaphsonSolver::line_search) along `dx`.
 pub struct NewtonRaphsonSolver {
     /// Maximum outer Newton iterations.
     pub max_iter: usize,
     /// Convergence tolerance on the gradient norm.
     pub tolerance: f64,
-    /// PCG parameters.
+    /// Parameters of the PCG solver used for the linear sub-problem of every
+    /// Newton iteration.
     pub pcg_params: PcgParams,
-    /// Line search.
+    /// Armijo backtracking line search applied along the Newton direction.
     pub line_search: LineSearch,
 }
 impl NewtonRaphsonSolver {
@@ -491,8 +482,23 @@ impl NewtonRaphsonSolver {
     }
     /// Perform Newton-Raphson minimisation on a spring-mass system.
     ///
-    /// Minimises `E(x) = sum springs + 0.5/dt^2 * ||M(x - y)||^2`
-    /// where `y` is the inertia target.
+    /// Minimises
+    ///
+    /// ```text
+    /// E(x) = sum springs + 0.5/dt^2 * ||M^{1/2} (x - y)||^2 - sum_i f_i . x_i
+    /// ```
+    ///
+    /// where `y` is the inertia target and `f_i` the
+    /// [`ImplicitParticle::external_force`] of particle `i`.  The inertia
+    /// target must therefore *not* already contain the effect of the external
+    /// forces.
+    ///
+    /// Positions of non-static particles are updated in place; static
+    /// particles never move.  Returns the number of Newton iterations
+    /// performed (0 if the gradient norm is already below the tolerance).  If
+    /// `dt` is not positive and finite, `inertia_target` does not have one
+    /// entry per particle, or a spring references a particle that does not
+    /// exist, nothing is modified and 0 is returned.
     pub fn minimise(
         &self,
         particles: &mut [ImplicitParticle],
@@ -500,133 +506,44 @@ impl NewtonRaphsonSolver {
         inertia_target: &[[f64; 3]],
         dt: f64,
     ) -> usize {
-        let n = particles.len();
-        let mut iter_count = 0;
-        for _iter in 0..self.max_iter {
-            iter_count += 1;
-            let mut grad = vec![0.0f64; 3 * n];
-            for i in 0..n {
-                if particles[i].is_static() {
-                    continue;
+        let mut x: Vec<[f64; 3]> = particles.iter().map(|p| p.position).collect();
+        let masses: Vec<f64> = particles.iter().map(|p| p.mass).collect();
+        let external: Vec<[f64; 3]> = particles
+            .iter()
+            .map(|p| {
+                if p.is_static() {
+                    [0.0; 3]
+                } else {
+                    p.external_force
                 }
-                let m = particles[i].mass;
-                let diff = v3_sub(particles[i].position, inertia_target[i]);
-                grad[3 * i] += m / (dt * dt) * diff[0];
-                grad[3 * i + 1] += m / (dt * dt) * diff[1];
-                grad[3 * i + 2] += m / (dt * dt) * diff[2];
-            }
-            for s in springs {
-                if particles[s.i].is_static() && particles[s.j].is_static() {
-                    continue;
-                }
-                let pi = particles[s.i].position;
-                let pj = particles[s.j].position;
-                let diff = v3_sub(pi, pj);
-                let len = v3_norm(diff);
-                if len < 1e-15 {
-                    continue;
-                }
-                let dir = v3_scale(diff, 1.0 / len);
-                let stretch = len - s.rest_length;
-                let fg = v3_scale(dir, s.stiffness * stretch);
-                if !particles[s.i].is_static() {
-                    grad[3 * s.i] += fg[0];
-                    grad[3 * s.i + 1] += fg[1];
-                    grad[3 * s.i + 2] += fg[2];
-                }
-                if !particles[s.j].is_static() {
-                    grad[3 * s.j] -= fg[0];
-                    grad[3 * s.j + 1] -= fg[1];
-                    grad[3 * s.j + 2] -= fg[2];
-                }
-            }
-            let grad_norm = vec_norm(&grad);
-            if grad_norm < self.tolerance {
-                break;
-            }
-            let mut diag = vec![1.0f64; 3 * n];
-            for i in 0..n {
-                if particles[i].is_static() {
-                    continue;
-                }
-                let base = particles[i].mass / (dt * dt);
-                diag[3 * i] = base;
-                diag[3 * i + 1] = base;
-                diag[3 * i + 2] = base;
-            }
-            for s in springs {
-                let k = s.stiffness;
-                for idx in [s.i, s.j] {
-                    if !particles[idx].is_static() {
-                        diag[3 * idx] += k;
-                        diag[3 * idx + 1] += k;
-                        diag[3 * idx + 2] += k;
-                    }
-                }
-            }
-            let direction: Vec<f64> = grad
-                .iter()
-                .zip(diag.iter())
-                .map(|(g, d)| -g / d.max(1e-15))
-                .collect();
-            let current_energy = self.total_energy(particles, springs, inertia_target, dt);
-            let derphi0 = vec_dot(&grad, &direction);
-            let c1 = self.line_search.c1;
-            let rho = self.line_search.rho;
-            let mut alpha = 1.0_f64;
-            for _ in 0..self.line_search.max_iter {
-                let mut test_particles = particles.to_owned();
-                for i in 0..n {
-                    if test_particles[i].is_static() {
-                        continue;
-                    }
-                    let dp = [
-                        direction[3 * i] * alpha,
-                        direction[3 * i + 1] * alpha,
-                        direction[3 * i + 2] * alpha,
-                    ];
-                    test_particles[i].position = v3_add(test_particles[i].position, dp);
-                }
-                let f_new = self.total_energy(&test_particles, springs, inertia_target, dt);
-                if f_new <= current_energy + c1 * alpha * derphi0 {
-                    break;
-                }
-                alpha *= rho;
-            }
-            for i in 0..n {
-                if particles[i].is_static() {
-                    continue;
-                }
-                let dp = [
-                    direction[3 * i] * alpha,
-                    direction[3 * i + 1] * alpha,
-                    direction[3 * i + 2] * alpha,
-                ];
-                particles[i].position = v3_add(particles[i].position, dp);
+            })
+            .collect();
+        let Some(problem) = ImplicitStepProblem::new(
+            masses,
+            springs,
+            inertia_target.to_vec(),
+            external,
+            x.clone(),
+            dt,
+            None,
+        ) else {
+            return 0;
+        };
+        let pcg = PcgSolver::new(self.pcg_params);
+        let iterations = newton_pcg_minimise(
+            &problem,
+            &mut x,
+            self.max_iter,
+            self.tolerance,
+            &pcg,
+            &self.line_search,
+        );
+        for (p, new_position) in particles.iter_mut().zip(x) {
+            if !p.is_static() {
+                p.position = new_position;
             }
         }
-        iter_count
-    }
-    /// Compute the total implicit energy for a particle system.
-    fn total_energy(
-        &self,
-        particles: &[ImplicitParticle],
-        springs: &[ImplicitSpring],
-        inertia_target: &[[f64; 3]],
-        dt: f64,
-    ) -> f64 {
-        let mut e = 0.0;
-        for (i, p) in particles.iter().enumerate() {
-            if p.is_static() {
-                continue;
-            }
-            let diff = v3_sub(p.position, inertia_target[i]);
-            e += 0.5 * p.mass / (dt * dt) * v3_dot(diff, diff);
-        }
-        for s in springs {
-            e += s.potential_energy(particles);
-        }
-        e
+        iterations
     }
 }
 /// Type of projective constraint supported.
@@ -862,6 +779,15 @@ impl PcgSolver {
         } else {
             self.params.tolerance
         };
+        let initial_residual = vec_norm(&r);
+        if initial_residual < tol {
+            return PcgResult {
+                x,
+                residual_norm: initial_residual,
+                iterations: 0,
+                converged: true,
+            };
+        }
         for iter in 0..self.params.max_iter {
             let ap = a.matvec(&p);
             let pap = vec_dot(&p, &ap);
@@ -959,19 +885,64 @@ impl ProjectiveDynamicsSolver {
             })
             .collect()
     }
+    /// Diagonal of the global-step system matrix, `M / dt^2 + sum_c w_c S_c^T S_c`.
+    ///
+    /// Every constraint projects each of its end points onto a separate
+    /// target, so the global matrix is diagonal and independent of the current
+    /// positions: it is assembled here in a single `O(n + C)` pass, adding the
+    /// weight of each constraint to the entries of the particles it touches.
+    /// A spring whose two end points coincide (`i == j`) contributes once.
+    fn global_diagonal(&self) -> Vec<f64> {
+        let dt = self.dt;
+        let mut diag: Vec<f64> = (0..self.n_particles)
+            .map(|i| self.masses[i] / (dt * dt))
+            .collect();
+        for c in &self.constraints {
+            match &c.kind {
+                ProjectiveConstraintKind::Spring {
+                    i: ci,
+                    j: cj,
+                    weight,
+                    ..
+                } => {
+                    let w_dt2 = weight / (dt * dt);
+                    diag[*ci] += w_dt2;
+                    if *cj != *ci {
+                        diag[*cj] += w_dt2;
+                    }
+                }
+                ProjectiveConstraintKind::Anchor { i: ci, weight, .. } => {
+                    diag[*ci] += weight / (dt * dt);
+                }
+            }
+        }
+        diag
+    }
     /// One step of Projective Dynamics.
     ///
     /// Alternates between local (constraint projection) and global
     /// (system solve) steps for `n_iterations` rounds.
+    ///
+    /// The constant system diagonal is assembled once per call (not once per
+    /// iteration) and the right-hand-side buffer is reused across iterations,
+    /// so one iteration costs `O(n + C)` with no heap allocation.  The diagonal
+    /// is deliberately not cached on the solver: `masses` and `constraints`
+    /// are public fields, so a cache could silently go stale.
     pub fn step(&self, positions: &mut [[f64; 3]], velocities: &mut [[f64; 3]], gravity: [f64; 3]) {
         let n = self.n_particles;
         let dt = self.dt;
         let y = self.inertia_target(positions, velocities, gravity);
         let mut q = y.clone();
+        let inv_diag: Vec<Option<f64>> = self
+            .global_diagonal()
+            .iter()
+            .map(|&d| (d > 1e-15).then_some(1.0 / d))
+            .collect();
+        let mut rhs: Vec<[f64; 3]> = vec![[0.0; 3]; n];
         for _iter in 0..self.n_iterations {
-            let mut rhs: Vec<[f64; 3]> = (0..n)
-                .map(|i| v3_scale(y[i], self.masses[i] / (dt * dt)))
-                .collect();
+            for (i, r) in rhs.iter_mut().enumerate() {
+                *r = v3_scale(y[i], self.masses[i] / (dt * dt));
+            }
             for c in &self.constraints {
                 let proj = c.local_step(&q);
                 match &c.kind {
@@ -987,28 +958,8 @@ impl ProjectiveDynamicsSolver {
                 }
             }
             for i in 0..n {
-                let mut diag = self.masses[i] / (dt * dt);
-                for c in &self.constraints {
-                    match &c.kind {
-                        ProjectiveConstraintKind::Spring {
-                            i: ci,
-                            j: cj,
-                            weight,
-                            ..
-                        } => {
-                            if *ci == i || *cj == i {
-                                diag += weight / (dt * dt);
-                            }
-                        }
-                        ProjectiveConstraintKind::Anchor { i: ci, weight, .. } => {
-                            if *ci == i {
-                                diag += weight / (dt * dt);
-                            }
-                        }
-                    }
-                }
-                if diag > 1e-15 {
-                    q[i] = v3_scale(rhs[i], 1.0 / diag);
+                if let Some(inv) = inv_diag[i] {
+                    q[i] = v3_scale(rhs[i], inv);
                 }
             }
         }
@@ -1067,6 +1018,7 @@ impl IpcBarrierParams {
     }
 }
 /// Parameters for the Preconditioned Conjugate Gradient solver.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PcgParams {
     /// Maximum number of iterations.
     pub max_iter: usize,

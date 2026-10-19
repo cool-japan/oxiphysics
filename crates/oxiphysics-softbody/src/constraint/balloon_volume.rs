@@ -43,10 +43,10 @@ fn exceeds(value: Real, floor: Real) -> bool {
 /// [`BalloonVolumeConstraint::enclosed_volume`] on the rest shape, which is
 /// negative for an inward-wound mesh and then still inflates correctly.
 ///
-/// This replaces the per-triangle
-/// [`BalloonPressureConstraint`](super::types::BalloonPressureConstraint), which
-/// compared the volume of a single triangle with the volume of the whole
-/// balloon.
+/// The pressure state of a balloon belongs to the whole surface, so there is one
+/// constraint (and one Lagrange multiplier) per balloon, not one per triangle:
+/// a per-triangle constraint would compare the volume term of a single triangle,
+/// which depends on the origin, with the volume of the entire balloon.
 #[derive(Debug, Clone)]
 pub struct BalloonVolumeConstraint {
     /// Surface triangles (indices into the particle array).
@@ -480,6 +480,62 @@ mod tests {
                 p.norm()
             );
         }
+    }
+
+    #[test]
+    fn squeezed_icosphere_recovers_its_volume_within_one_percent_in_twenty_iterations() {
+        let (points, faces) = icosphere(2);
+        let rest = particles_from(&points, Vec3::zeros());
+        let rest_volume = BalloonVolumeConstraint::new(faces.clone(), 1.0, 1.0, 0.0)
+            .enclosed_volume(&rest)
+            .expect("valid mesh");
+
+        // Squeeze the balloon along z: an affine map scales every enclosed
+        // volume by its determinant, here 0.9.
+        let centre = Vec3::new(-3.0, 2.0, 5.0);
+        let mut particles = particles_from(&points, Vec3::zeros());
+        for p in &mut particles {
+            p.position.z *= 0.9;
+            p.position += centre;
+        }
+        let mut constraint = BalloonVolumeConstraint::new(faces, rest_volume, 1.0, 0.0);
+        let squeezed = constraint.enclosed_volume(&particles).expect("valid mesh");
+        assert!(
+            (squeezed / rest_volume - 0.9).abs() < 1e-12,
+            "the squeeze must remove 10 % of the volume, V / V0 = {}",
+            squeezed / rest_volume
+        );
+        let before_z_extent = particles
+            .iter()
+            .map(|p| (p.position.z - centre.z).abs())
+            .fold(0.0_f64, f64::max);
+
+        run(&mut constraint, &mut particles, 20);
+
+        let recovered = constraint.enclosed_volume(&particles).expect("valid mesh");
+        assert!(
+            (recovered / rest_volume - 1.0).abs() < 0.01,
+            "V / V0 = {} after 20 iterations, expected 1 within 1 %",
+            recovered / rest_volume
+        );
+        // The pressure pushes the squeezed poles outward again.
+        let after_z_extent = particles
+            .iter()
+            .map(|p| (p.position.z - centre.z).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            after_z_extent > before_z_extent,
+            "the squeezed pole must move outward: {before_z_extent} -> {after_z_extent}"
+        );
+        let mean = particles
+            .iter()
+            .fold(Vec3::zeros(), |acc, p| acc + p.position)
+            / particles.len() as f64;
+        assert!(
+            (mean - centre).norm() < 1e-9,
+            "the restoring pressure must not move the centroid, moved by {}",
+            (mean - centre).norm()
+        );
     }
 
     #[test]

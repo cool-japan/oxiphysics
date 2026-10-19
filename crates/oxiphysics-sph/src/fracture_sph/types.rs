@@ -302,7 +302,13 @@ pub struct SphFractureParticle {
     pub position: [f64; 3],
     /// Velocity \[vx, vy, vz\] in m/s.
     pub velocity: [f64; 3],
-    /// Total Cauchy stress tensor σ_ij (3×3, symmetric).
+    /// Cauchy stress tensor σ_ij of the *undamaged* solid (3×3, symmetric,
+    /// tension positive).
+    ///
+    /// This is the stress that drives the damage evolution. The damaged solid
+    /// carries the nominal stress `(1 − D) σ`
+    /// ([`effective_stress`](Self::effective_stress)), which is the stress that
+    /// enters the momentum equation of [`SphFractureSimulation`].
     pub stress: Mat3,
     /// Deviatoric stress tensor S_ij = σ_ij - (1/3)tr(σ) δ_ij.
     pub deviatoric_stress: Mat3,
@@ -360,7 +366,8 @@ impl SphFractureParticle {
             on_crack_surface: false,
         }
     }
-    /// Return effective stress = (1 - D) * stress (damage-reduced).
+    /// Return the damage-reduced (nominal) stress `(1 − D) σ` that the damaged
+    /// solid carries and exerts on its neighbours.
     pub fn effective_stress(&self) -> Mat3 {
         mat3_scale(&self.stress, 1.0 - self.damage.clamp(0.0, 1.0))
     }
@@ -559,8 +566,14 @@ impl FragmentTracking {
 }
 /// Full SPH fracture simulation loop.
 ///
-/// Orchestrates: SPH stress update → continuum damage update →
-/// crack propagation → fragment tracking.
+/// Orchestrates: SPH stress update → momentum and continuity integration →
+/// continuum damage update → crack propagation → fragment tracking.
+///
+/// The stored particle `stress` is the stress of the *undamaged* solid (the
+/// effective stress that drives damage); the damaged solid carries the nominal
+/// stress `(1 − D) σ` ([`SphFractureParticle::effective_stress`]), and that is
+/// what enters the momentum equation. Damage therefore reduces the stiffness
+/// exactly once.
 #[derive(Debug, Clone)]
 pub struct SphFractureSimulation {
     /// Particle array.
@@ -581,6 +594,10 @@ pub struct SphFractureSimulation {
     pub step_count: u64,
     /// Smoothing length used by SPH kernels (m).
     pub smooth_h: f64,
+    /// Linear coefficient α of the Monaghan artificial viscosity (dimensionless).
+    pub art_visc_alpha: f64,
+    /// Quadratic coefficient β of the Monaghan artificial viscosity (dimensionless).
+    pub art_visc_beta: f64,
 }
 impl SphFractureSimulation {
     /// Create a new SPH fracture simulation.
@@ -591,6 +608,11 @@ impl SphFractureSimulation {
     /// * `fracture_energy` — fracture energy parameters
     /// * `dt`              — timestep (s)
     /// * `smooth_h`        — SPH smoothing length (m)
+    ///
+    /// The artificial viscosity starts with the usual shock-capturing values
+    /// `α = 1`, `β = 2`; set [`art_visc_alpha`](Self::art_visc_alpha) and
+    /// [`art_visc_beta`](Self::art_visc_beta) to zero for a purely elastic
+    /// computation. The time step must resolve the P-wave: `dt ≲ 0.3 h / c_P`.
     pub fn new(
         particles: Vec<SphFractureParticle>,
         damage_model: ContinuumDamageModel,
@@ -610,18 +632,35 @@ impl SphFractureSimulation {
             dt,
             step_count: 0,
             smooth_h,
+            art_visc_alpha: 1.0,
+            art_visc_beta: 2.0,
         }
     }
-    /// Step 1: update stress tensors using Hooke's law approximation.
-    ///
-    /// This simplified elastic constitutive update uses the current velocity
-    /// gradient to compute the strain rate and update the Cauchy stress.
-    pub fn update_stress(&mut self) {
-        let n = self.particles.len();
+    /// Lamé parameters `(λ, μ)` of the intact material.
+    fn lame_parameters(&self) -> (f64, f64) {
         let e = self.damage_model.youngs_modulus;
         let nu = self.damage_model.poisson_ratio;
         let lame_lambda = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu)).max(1e-10);
         let lame_mu = e / (2.0 * (1.0 + nu).max(1e-10));
+        (lame_lambda, lame_mu)
+    }
+    /// Step 1: update the stress tensors with the Jaumann hypoelastic law of an
+    /// isotropic elastic solid,
+    ///
+    /// ```text
+    /// σ̇ = λ tr(ε̇) I + 2μ ε̇ + Ω σ − σ Ω,     L_ab = ∂v_a/∂x_b,
+    /// ε̇ = ½ (L + Lᵀ),   Ω = ½ (L − Lᵀ),
+    /// ```
+    ///
+    /// where `L` is the SPH velocity gradient of the particle. The co-rotation
+    /// `Ω σ − σ Ω` makes the stress of a rigidly rotating body rotate with it
+    /// (`σ = R σ₀ Rᵀ ⇒ σ̇ = Ω σ − σ Ω`). The stress stored in the particles is the
+    /// stress of the undamaged solid; damage is applied once, to the stress that
+    /// enters the momentum equation (see
+    /// [`update_momentum_and_density`](Self::update_momentum_and_density)).
+    pub fn update_stress(&mut self) {
+        let n = self.particles.len();
+        let (lame_lambda, lame_mu) = self.lame_parameters();
         let dt = self.dt;
         let h = self.smooth_h;
         for i in 0..n {
@@ -657,17 +696,136 @@ impl SphFractureSimulation {
                 }
             }
             let tr_eps = eps_dot[0][0] + eps_dot[1][1] + eps_dot[2][2];
-            let d = self.particles[i].damage;
-            let eff = 1.0 - d.clamp(0.0, 1.0);
+            let mut spin = [[0.0f64; 3]; 3];
+            for (alpha, spin_row) in spin.iter_mut().enumerate() {
+                for (beta, spin_val) in spin_row.iter_mut().enumerate() {
+                    *spin_val = 0.5 * (strain_rate[alpha][beta] - strain_rate[beta][alpha]);
+                }
+            }
+            let stress = self.particles[i].stress;
+            let rotation = mat3_sub(&mat3_mul(&spin, &stress), &mat3_mul(&stress, &spin));
             for (alpha, stress_row) in self.particles[i].stress.iter_mut().enumerate() {
                 for (beta, stress_val) in stress_row.iter_mut().enumerate() {
                     let delta = if alpha == beta { 1.0 } else { 0.0 };
-                    *stress_val += eff
-                        * (lame_lambda * tr_eps * delta + 2.0 * lame_mu * eps_dot[alpha][beta])
+                    *stress_val += (lame_lambda * tr_eps * delta
+                        + 2.0 * lame_mu * eps_dot[alpha][beta]
+                        + rotation[alpha][beta])
                         * dt;
                 }
             }
             self.particles[i].update_deviatoric();
+        }
+    }
+    /// Step 1b: integrate the momentum and continuity equations of the SPH
+    /// solid with a symplectic-Euler update,
+    ///
+    /// ```text
+    /// dvᵢ/dt = Σⱼ mⱼ [ (1 − Dᵢ) σᵢ/ρᵢ² + (1 − Dⱼ) σⱼ/ρⱼ² − Πᵢⱼ I ] · ∇ᵢWᵢⱼ
+    /// dρᵢ/dt = Σⱼ mⱼ (vᵢ − vⱼ) · ∇ᵢWᵢⱼ
+    /// ```
+    ///
+    /// followed by `v += (dv/dt) Δt` and `ρ += (dρ/dt) Δt`; the caller moves the
+    /// particles with the new velocities. `σ` is the stored stress (tension
+    /// positive), damaged by `(1 − D)` through
+    /// [`SphFractureParticle::effective_stress`] (isotropic stiffness loss, no
+    /// crack closure), and `∇ᵢWᵢⱼ = dW/dr (xᵢ − xⱼ)/r` is the Wendland C2 kernel
+    /// gradient with the simulation smoothing length.
+    ///
+    /// `Πᵢⱼ` is the Monaghan (1992) artificial viscosity: zero for separating
+    /// pairs and, for approaching pairs (`vᵢⱼ·rᵢⱼ < 0`),
+    ///
+    /// ```text
+    /// Πᵢⱼ = (−α c̄ᵢⱼ μᵢⱼ + β μᵢⱼ²) / ρ̄ᵢⱼ,   μᵢⱼ = h vᵢⱼ·rᵢⱼ / (|rᵢⱼ|² + 0.01 h²)
+    /// ```
+    ///
+    /// with the P-wave speed `c = √((λ + 2μ)/ρ)` of the intact material. All pair
+    /// terms are antisymmetric, so the total momentum `Σ mᵢ vᵢ` is conserved.
+    /// The neighbour search is a direct `O(N²)` pair loop, like the rest of this
+    /// simulation.
+    pub fn update_momentum_and_density(&mut self) {
+        let n = self.particles.len();
+        let h = self.smooth_h;
+        let dt = self.dt;
+        let support_sq = 4.0 * h * h;
+        let eta_sq = 0.01 * h * h;
+        let (lame_lambda, lame_mu) = self.lame_parameters();
+        let p_wave_modulus = lame_lambda + 2.0 * lame_mu;
+        let (alpha, beta) = (self.art_visc_alpha, self.art_visc_beta);
+
+        let positions: Vec<[f64; 3]> = self.particles.iter().map(|p| p.position).collect();
+        let velocities: Vec<[f64; 3]> = self.particles.iter().map(|p| p.velocity).collect();
+        let masses: Vec<f64> = self.particles.iter().map(|p| p.mass).collect();
+        let densities: Vec<f64> = self
+            .particles
+            .iter()
+            .map(|p| p.density.max(1e-30))
+            .collect();
+        let sound_speeds: Vec<f64> = densities
+            .iter()
+            .map(|&rho| (p_wave_modulus / rho).sqrt())
+            .collect();
+        let stress_over_rho_sq: Vec<Mat3> = self
+            .particles
+            .iter()
+            .zip(densities.iter())
+            .map(|(p, &rho)| mat3_scale(&p.effective_stress(), 1.0 / (rho * rho)))
+            .collect();
+
+        let mut accel = vec![[0.0f64; 3]; n];
+        let mut density_rate = vec![0.0f64; n];
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let r_vec = [
+                    positions[i][0] - positions[j][0],
+                    positions[i][1] - positions[j][1],
+                    positions[i][2] - positions[j][2],
+                ];
+                let r_sq = dot3(r_vec, r_vec);
+                if r_sq >= support_sq || r_sq < 1e-60 {
+                    continue;
+                }
+                let r = r_sq.sqrt();
+                let dw_dr = wendland_c2_3d_grad(r, h);
+                let grad_w = [
+                    dw_dr * r_vec[0] / r,
+                    dw_dr * r_vec[1] / r,
+                    dw_dr * r_vec[2] / r,
+                ];
+                let v_ij = [
+                    velocities[i][0] - velocities[j][0],
+                    velocities[i][1] - velocities[j][1],
+                    velocities[i][2] - velocities[j][2],
+                ];
+                let stress_sum = mat3_add(&stress_over_rho_sq[i], &stress_over_rho_sq[j]);
+                let mut pair_accel = mat3_vec(&stress_sum, grad_w);
+                let approach = dot3(v_ij, r_vec);
+                if approach < 0.0 {
+                    let mu_ij = h * approach / (r_sq + eta_sq);
+                    let c_bar = 0.5 * (sound_speeds[i] + sound_speeds[j]);
+                    let rho_bar = 0.5 * (densities[i] + densities[j]);
+                    let pi_ij = (-alpha * c_bar * mu_ij + beta * mu_ij * mu_ij) / rho_bar;
+                    for (a, g) in pair_accel.iter_mut().zip(grad_w.iter()) {
+                        *a -= pi_ij * g;
+                    }
+                }
+                for (d, &pair) in pair_accel.iter().enumerate() {
+                    accel[i][d] += masses[j] * pair;
+                    accel[j][d] -= masses[i] * pair;
+                }
+                let rate = dot3(v_ij, grad_w);
+                density_rate[i] += masses[j] * rate;
+                density_rate[j] += masses[i] * rate;
+            }
+        }
+        for (p, (a, rate)) in self
+            .particles
+            .iter_mut()
+            .zip(accel.iter().zip(density_rate.iter()))
+        {
+            for (v, a_d) in p.velocity.iter_mut().zip(a.iter()) {
+                *v += a_d * dt;
+            }
+            p.density += rate * dt;
         }
     }
     /// Step 2: update damage for all particles.
@@ -710,9 +868,15 @@ impl SphFractureSimulation {
             }
         }
     }
-    /// Full timestep: stress → damage → cracks → time advance.
+    /// Full timestep: stress → momentum and density → damage → cracks →
+    /// position update → time advance.
+    ///
+    /// The particles are moved with the velocities of the end of the step
+    /// (symplectic Euler), so stresses act on the motion and the density
+    /// follows the continuity equation.
     pub fn step(&mut self) {
         self.update_stress();
+        self.update_momentum_and_density();
         self.update_damage();
         self.propagate_cracks();
         let dt = self.dt;

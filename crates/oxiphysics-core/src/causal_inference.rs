@@ -15,7 +15,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use nalgebra::{Matrix2, Vector2};
+use nalgebra::{DMatrix, DVector, Matrix2, SVD, Vector2};
 
 use crate::error::PhysicsError;
 
@@ -955,6 +955,19 @@ fn sigmoid(x: f64) -> f64 {
 // InstrumentalVariables
 // ---------------------------------------------------------------------------
 
+/// Relative singular-value cut-off below which the first-stage design matrix
+/// `[1, Z]` (columns scaled to unit length) counts as rank deficient.
+const FIRST_STAGE_RANK_TOLERANCE: f64 = 1e-12;
+
+/// Smallest first-stage `R²` for which the instruments count as relevant.
+///
+/// Below it the explained variance of the treatment is rounding noise, the
+/// 2SLS denominator `Cov(d̂, d)` vanishes and the effect is not identified.
+const MIN_FIRST_STAGE_R_SQUARED: f64 = 1e-12;
+
+/// First-stage rss ratio `RSS_u / RSS_r` below which the fit counts as exact.
+const EXACT_FIT_RSS_RATIO: f64 = 1e-24;
+
 /// Instrumental variables (IV) estimation and Two-Stage Least Squares (2SLS).
 ///
 /// Used when treatment is endogenous (correlated with the error term).
@@ -962,16 +975,39 @@ fn sigmoid(x: f64) -> f64 {
 /// 1. Is correlated with the treatment `D`.
 /// 2. Affects the outcome `Y` only through `D` (exclusion restriction).
 /// 3. Is independent of unobserved confounders.
+///
+/// The model is `Y = α + β D + ε` with a single endogenous treatment `D` and
+/// `k = n_instruments ≥ 1` instruments.
 #[derive(Debug, Clone)]
 pub struct InstrumentalVariables {
-    /// Number of endogenous variables.
+    /// Number of endogenous variables (only a single treatment is supported).
     pub n_endogenous: usize,
     /// Number of instruments.
     pub n_instruments: usize,
-    /// First-stage coefficients (instrument → treatment).
+    /// First-stage coefficients `[intercept, π₁, …, π_k]` of the regression of
+    /// the treatment on a constant and the instruments (length `k + 1`).
     pub first_stage: Vec<f64>,
     /// Second-stage coefficient (treatment → outcome).
     pub second_stage: f64,
+}
+
+/// First-stage regression of the treatment on `[1, Z]`.
+struct FirstStageFit {
+    /// Coefficients `[intercept, π₁, …, π_k]`.
+    coefficients: Vec<f64>,
+    /// Fitted treatment `d̂ = W π`.
+    fitted: Vec<f64>,
+    /// Residual sum of squares of the full model, `RSS_u`.
+    rss_unrestricted: f64,
+    /// Residual sum of squares of the intercept-only model, `RSS_r = Σ(d − d̄)²`.
+    rss_restricted: f64,
+}
+
+fn invalid_iv_input(field: &str, reason: String) -> PhysicsError {
+    PhysicsError::InvalidInput {
+        field: field.to_string(),
+        reason,
+    }
 }
 
 impl InstrumentalVariables {
@@ -985,134 +1021,277 @@ impl InstrumentalVariables {
         }
     }
 
+    /// Validate the data and run the first-stage OLS of `d` on `[1, Z]`.
+    ///
+    /// The design matrix columns are scaled to unit length before the singular
+    /// value decomposition so that the rank test does not depend on the units of
+    /// the instruments.
+    fn first_stage_fit(&self, d: &[f64], z: &[Vec<f64>]) -> Result<FirstStageFit, PhysicsError> {
+        let n = d.len();
+        let k = self.n_instruments;
+        if self.n_endogenous != 1 {
+            return Err(invalid_iv_input(
+                "n_endogenous",
+                format!(
+                    "{} endogenous variables requested, but only a single treatment is supported",
+                    self.n_endogenous
+                ),
+            ));
+        }
+        if k == 0 {
+            return Err(invalid_iv_input(
+                "n_instruments",
+                "at least one instrument is required".to_string(),
+            ));
+        }
+        if z.len() != n {
+            return Err(invalid_iv_input(
+                "z",
+                format!("{} instrument rows for {n} observations", z.len()),
+            ));
+        }
+        if let Some((row, values)) = z.iter().enumerate().find(|(_, values)| values.len() != k) {
+            return Err(invalid_iv_input(
+                "z",
+                format!(
+                    "row {row} has {} entries, expected n_instruments = {k}",
+                    values.len()
+                ),
+            ));
+        }
+        if n < k + 2 {
+            return Err(invalid_iv_input(
+                "d",
+                format!(
+                    "{n} observations are too few for {k} instruments (need at least {})",
+                    k + 2
+                ),
+            ));
+        }
+        if d.iter().any(|v| !v.is_finite()) {
+            return Err(invalid_iv_input(
+                "d",
+                "contains a non-finite value".to_string(),
+            ));
+        }
+        if z.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(invalid_iv_input(
+                "z",
+                "contains a non-finite value".to_string(),
+            ));
+        }
+
+        // Design matrix W = [1, Z] with unit-length columns.
+        let columns = k + 1;
+        let mut design = DMatrix::<f64>::zeros(n, columns);
+        for (i, row) in z.iter().enumerate() {
+            design[(i, 0)] = 1.0;
+            for (j, &value) in row.iter().enumerate() {
+                design[(i, j + 1)] = value;
+            }
+        }
+        let column_norms: Vec<f64> = (0..columns).map(|j| design.column(j).norm()).collect();
+        if column_norms.iter().any(|norm| !norm.is_finite()) {
+            return Err(invalid_iv_input(
+                "z",
+                "values are too large in magnitude to be squared".to_string(),
+            ));
+        }
+        if let Some(j) = column_norms.iter().position(|&norm| norm == 0.0) {
+            return Err(invalid_iv_input(
+                "z",
+                format!("instrument {} is identically zero", j.saturating_sub(1)),
+            ));
+        }
+        for (j, &norm) in column_norms.iter().enumerate() {
+            design.column_mut(j).unscale_mut(norm);
+        }
+        let svd = SVD::try_new_unordered(design, true, true, f64::EPSILON, 1000 * columns)
+            .ok_or_else(|| PhysicsError::NumericalDivergence {
+                message: "singular value decomposition of the first-stage design did not converge"
+                    .to_string(),
+            })?;
+        let largest = svd.singular_values.iter().cloned().fold(0.0_f64, f64::max);
+        let smallest = svd
+            .singular_values
+            .iter()
+            .cloned()
+            .fold(f64::INFINITY, f64::min);
+        let full_rank = smallest > FIRST_STAGE_RANK_TOLERANCE * largest;
+        if !full_rank {
+            return Err(invalid_iv_input(
+                "z",
+                "the instruments are collinear with each other or with the constant, so the \
+                 first stage is not identified"
+                    .to_string(),
+            ));
+        }
+        let rhs = DVector::from_column_slice(d);
+        let scaled_coefficients =
+            svd.solve(&rhs, 0.0)
+                .map_err(|message| PhysicsError::NumericalDivergence {
+                    message: format!("first-stage least squares failed: {message}"),
+                })?;
+        let coefficients: Vec<f64> = scaled_coefficients
+            .iter()
+            .zip(&column_norms)
+            .map(|(c, norm)| c / norm)
+            .collect();
+        if coefficients.iter().any(|c| !c.is_finite()) {
+            return Err(PhysicsError::NumericalDivergence {
+                message: "first-stage coefficients are not finite".to_string(),
+            });
+        }
+
+        let fitted: Vec<f64> = z
+            .iter()
+            .map(|row| {
+                coefficients[0]
+                    + row
+                        .iter()
+                        .zip(&coefficients[1..])
+                        .map(|(value, pi)| value * pi)
+                        .sum::<f64>()
+            })
+            .collect();
+        let mean_d = d.iter().sum::<f64>() / n as f64;
+        let rss_unrestricted: f64 = d
+            .iter()
+            .zip(&fitted)
+            .map(|(di, fi)| (di - fi).powi(2))
+            .sum();
+        let rss_restricted: f64 = d.iter().map(|di| (di - mean_d).powi(2)).sum();
+        Ok(FirstStageFit {
+            coefficients,
+            fitted,
+            rss_unrestricted,
+            rss_restricted,
+        })
+    }
+
     /// Fit the 2SLS estimator.
     ///
-    /// Stage 1: regress treatment `d` on instruments `z`.
-    /// Stage 2: regress outcome `y` on predicted treatment `d_hat`.
+    /// Stage 1: ordinary least squares of the treatment `d` on a constant and
+    /// *all* `k` instruments, `d = π₀ + π₁ z₁ + … + π_k z_k + v`, giving the
+    /// fitted treatment `d̂`; the `k + 1` coefficients are stored in
+    /// [`first_stage`](Self::first_stage).
+    /// Stage 2: the effect of the treatment is
+    /// `β = Σ(d̂ − mean(d̂))(y − ȳ) / Σ(d̂ − mean(d̂))(d − d̄)`,
+    /// stored in [`second_stage`](Self::second_stage).  With one instrument this
+    /// is the Wald estimator `Cov(y, z) / Cov(d, z)`.
     ///
     /// # Arguments
     /// * `y` — outcome variable
     /// * `d` — endogenous treatment variable
     /// * `z` — instruments matrix, shape `[n_obs][n_instruments]`
-    pub fn fit_2sls(&mut self, y: &[f64], d: &[f64], z: &[Vec<f64>]) {
-        let n = y.len();
-        assert_eq!(d.len(), n);
-        assert_eq!(z.len(), n);
-
-        // Stage 1: OLS of D on Z (including intercept)
-        // Simple single-instrument case for clarity
-        let n_inst = self.n_instruments;
-        let mut d_hat = vec![0.0_f64; n];
-
-        if n_inst == 1 {
-            // Simple IV: β_1 = Cov(Y,Z) / Cov(D,Z)
-            let z_vec: Vec<f64> = z.iter().map(|row| row[0]).collect();
-            let mean_z = z_vec.iter().sum::<f64>() / n as f64;
-            let mean_d = d.iter().sum::<f64>() / n as f64;
-            let mean_y = y.iter().sum::<f64>() / n as f64;
-
-            let cov_dz: f64 = d
-                .iter()
-                .zip(z_vec.iter())
-                .map(|(di, zi)| (di - mean_d) * (zi - mean_z))
-                .sum::<f64>()
-                / n as f64;
-            let cov_yz: f64 = y
-                .iter()
-                .zip(z_vec.iter())
-                .map(|(yi, zi)| (yi - mean_y) * (zi - mean_z))
-                .sum::<f64>()
-                / n as f64;
-            let var_z: f64 = z_vec.iter().map(|zi| (zi - mean_z).powi(2)).sum::<f64>() / n as f64;
-
-            // First stage: d = α0 + α1*z
-            let alpha1 = if var_z.abs() > 1e-12 {
-                cov_dz / var_z
-            } else {
-                0.0
-            };
-            let alpha0 = mean_d - alpha1 * mean_z;
-            self.first_stage[0] = alpha0;
-            self.first_stage[1] = alpha1;
-
-            // IV estimate
-            self.second_stage = if cov_dz.abs() > 1e-12 {
-                cov_yz / cov_dz
-            } else {
-                0.0
-            };
-
-            for i in 0..n {
-                d_hat[i] = alpha0 + alpha1 * z_vec[i];
-            }
-        } else {
-            // Multi-instrument: use OLS for first stage
-            // Simplified: use first instrument only
-            let z0: Vec<f64> = z.iter().map(|row| row[0]).collect();
-            let mean_z0 = z0.iter().sum::<f64>() / n as f64;
-            let mean_d = d.iter().sum::<f64>() / n as f64;
-
-            let cov = z0
-                .iter()
-                .zip(d.iter())
-                .map(|(zi, di)| (zi - mean_z0) * (di - mean_d))
-                .sum::<f64>()
-                / n as f64;
-            let var_z0 = z0.iter().map(|zi| (zi - mean_z0).powi(2)).sum::<f64>() / n as f64;
-
-            let alpha1 = if var_z0 > 1e-12 { cov / var_z0 } else { 0.0 };
-            let alpha0 = mean_d - alpha1 * mean_z0;
-            self.first_stage[0] = alpha0;
-            self.first_stage[1] = alpha1;
-
-            for i in 0..n {
-                d_hat[i] = alpha0 + alpha1 * z0[i];
-            }
-
-            // Stage 2: OLS of Y on D_hat
-            let mean_dhat = d_hat.iter().sum::<f64>() / n as f64;
-            let mean_y = y.iter().sum::<f64>() / n as f64;
-            let cov_ydhat: f64 = y
-                .iter()
-                .zip(d_hat.iter())
-                .map(|(yi, di)| (yi - mean_y) * (di - mean_dhat))
-                .sum::<f64>()
-                / n as f64;
-            let var_dhat: f64 =
-                d_hat.iter().map(|di| (di - mean_dhat).powi(2)).sum::<f64>() / n as f64;
-            self.second_stage = if var_dhat > 1e-12 {
-                cov_ydhat / var_dhat
-            } else {
-                0.0
-            };
+    ///
+    /// # Errors
+    ///
+    /// [`PhysicsError::InvalidInput`] if `n_endogenous != 1`, there is no
+    /// instrument, the slice lengths or the row lengths of `z` disagree, fewer
+    /// than `n_instruments + 2` observations are given, any value is non-finite,
+    /// the treatment is constant, an instrument is identically zero, the
+    /// instruments are collinear (a constant instrument is collinear with the
+    /// intercept), or the instruments explain none of the variation of the
+    /// treatment (the effect is then not identified).
+    /// [`PhysicsError::NumericalDivergence`] if the least-squares solve fails.
+    /// On error the estimator is left unchanged.
+    pub fn fit_2sls(&mut self, y: &[f64], d: &[f64], z: &[Vec<f64>]) -> Result<(), PhysicsError> {
+        if y.len() != d.len() {
+            return Err(invalid_iv_input(
+                "y",
+                format!("{} outcomes for {} treatment values", y.len(), d.len()),
+            ));
         }
+        if y.iter().any(|v| !v.is_finite()) {
+            return Err(invalid_iv_input(
+                "y",
+                "contains a non-finite value".to_string(),
+            ));
+        }
+        let stage = self.first_stage_fit(d, z)?;
+        let n = d.len() as f64;
+        if stage.rss_restricted <= 0.0 {
+            return Err(invalid_iv_input(
+                "d",
+                "the treatment is constant, so its effect is not identified".to_string(),
+            ));
+        }
+        let mean_hat = stage.fitted.iter().sum::<f64>() / n;
+        let mean_d = d.iter().sum::<f64>() / n;
+        let mean_y = y.iter().sum::<f64>() / n;
+        let cov_hat_y: f64 = stage
+            .fitted
+            .iter()
+            .zip(y)
+            .map(|(hat, yi)| (hat - mean_hat) * (yi - mean_y))
+            .sum();
+        let cov_hat_d: f64 = stage
+            .fitted
+            .iter()
+            .zip(d)
+            .map(|(hat, di)| (hat - mean_hat) * (di - mean_d))
+            .sum();
+        // Cov(d̂, d) = R² Σ(d − d̄)²: the instruments must move the treatment.
+        let relevant = cov_hat_d > MIN_FIRST_STAGE_R_SQUARED * stage.rss_restricted;
+        if !relevant {
+            return Err(invalid_iv_input(
+                "z",
+                "the instruments explain none of the variation of the treatment, so the effect \
+                 is not identified"
+                    .to_string(),
+            ));
+        }
+        self.second_stage = cov_hat_y / cov_hat_d;
+        self.first_stage = stage.coefficients;
+        Ok(())
     }
 
     /// Compute the first-stage F-statistic (instrument relevance test).
     ///
-    /// Large F (> 10) indicates strong instruments.
-    pub fn first_stage_f_stat(&self, y: &[f64], d: &[f64], z: &[Vec<f64>]) -> f64 {
-        let n = y.len();
-        let z0: Vec<f64> = z.iter().map(|row| row[0]).collect();
-        let _mean_z0 = z0.iter().sum::<f64>() / n as f64;
-        let mean_d = d.iter().sum::<f64>() / n as f64;
-
-        let d_hat: Vec<f64> = z0
-            .iter()
-            .map(|zi| self.first_stage[0] + self.first_stage[1] * zi)
-            .collect();
-
-        let ss_res: f64 = d
-            .iter()
-            .zip(d_hat.iter())
-            .map(|(di, dh)| (di - dh).powi(2))
-            .sum();
-        let ss_tot: f64 = d.iter().map(|di| (di - mean_d).powi(2)).sum();
-
-        let r2 = 1.0 - ss_res / ss_tot.max(1e-12);
-        let k = 1.0_f64; // number of instruments
-        let n_f = n as f64;
-        (r2 / k) / ((1.0 - r2) / (n_f - k - 1.0)).max(1e-12)
+    /// This is the joint F-test that all `k = n_instruments` instrument
+    /// coefficients of the regression of `d` on `[1, Z]` vanish,
+    /// `F = ((RSS_r − RSS_u) / k) / (RSS_u / (n − k − 1))`, where `RSS_r` is the
+    /// residual sum of squares of the intercept-only model and `RSS_u` that of
+    /// the full model.  It is computed from the data passed in, not from stored
+    /// coefficients.  Large F (> 10) indicates strong instruments; an exact
+    /// first-stage fit gives `f64::INFINITY`.
+    ///
+    /// `y` plays no role in the first stage; it is only checked to have as many
+    /// entries as `d`, the sample passed to [`fit_2sls`](Self::fit_2sls).
+    ///
+    /// # Errors
+    ///
+    /// The [`PhysicsError::InvalidInput`] and [`PhysicsError::NumericalDivergence`]
+    /// cases of [`fit_2sls`](Self::fit_2sls) that concern the first stage, and a
+    /// constant treatment.
+    pub fn first_stage_f_stat(
+        &self,
+        y: &[f64],
+        d: &[f64],
+        z: &[Vec<f64>],
+    ) -> Result<f64, PhysicsError> {
+        if y.len() != d.len() {
+            return Err(invalid_iv_input(
+                "y",
+                format!("{} outcomes for {} treatment values", y.len(), d.len()),
+            ));
+        }
+        let stage = self.first_stage_fit(d, z)?;
+        if stage.rss_restricted <= 0.0 {
+            return Err(invalid_iv_input(
+                "d",
+                "the treatment is constant, so the first-stage F-statistic is undefined"
+                    .to_string(),
+            ));
+        }
+        if stage.rss_unrestricted <= EXACT_FIT_RSS_RATIO * stage.rss_restricted {
+            return Ok(f64::INFINITY);
+        }
+        let k = self.n_instruments as f64;
+        let degrees_of_freedom = (d.len() - self.n_instruments - 1) as f64;
+        let explained = (stage.rss_restricted - stage.rss_unrestricted).max(0.0);
+        Ok((explained / k) / (stage.rss_unrestricted / degrees_of_freedom))
     }
 
     /// Predict the causal effect for a new treatment value.

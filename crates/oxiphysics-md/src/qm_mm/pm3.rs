@@ -21,73 +21,33 @@
 //! Stewart, J. J. P. (1989). *J. Comput. Chem.* **10**, 209–220.
 
 use super::QmRegion;
-use crate::quantum_chemistry::BasisFunction;
+use super::embedding::{
+    ANG_TO_BOHR, HARTREE_TO_KCAL, begin_run, external_potential, finite_difference_forces,
+    forces_from_potential_derivatives,
+};
+use super::error::QmError;
+use super::sp_overlap::{OrbType, build_overlap};
+use crate::quantum_chemistry::{BasisFunction, CartesianAxis};
 use oxiphysics_core::numerical_methods::generalized_symmetric_eigen_n;
 
 // Type aliases to reduce type complexity in function signatures.
 type BuildBasisResult =
-    Result<(Vec<BasisFunction>, Vec<OrbType>, Vec<usize>, Vec<Pm3Params>), Pm3Error>;
-type ScfLoopResult = Result<(Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>), Pm3Error>;
+    Result<(Vec<BasisFunction>, Vec<OrbType>, Vec<usize>, Vec<Pm3Params>), QmError>;
+type ScfLoopResult = Result<(Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>), QmError>;
 
 // ---------------------------------------------------------------------------
 // Physical constants
 // ---------------------------------------------------------------------------
 
-/// Ångström → Bohr (1 Å = 1/0.529177 Bohr).
-const ANG_TO_BOHR: f64 = 1.889_726_125_5;
 /// 1 Hartree in eV.
 const HARTREE_TO_EV: f64 = 27.211_386_02;
-/// 1 Hartree in kcal/mol.
-const HARTREE_TO_KCAL: f64 = 627.509_474;
-
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
-/// Errors that can occur during a PM3 calculation.
-#[derive(Debug)]
-pub enum Pm3Error {
-    /// One or more atoms have an atomic number with no PM3 parameters.
-    UnsupportedElement(u32),
-    /// Open-shell (multiplicity ≠ 1) systems are not supported by this implementation.
-    OpenShellNotSupported,
-    /// The generalised symmetric eigensolver returned `None` (overlap not positive definite).
-    EigensolverFailed,
-    /// SCF did not converge within the maximum number of iterations.
-    ScfNotConverged,
-    /// The QM region contains no atoms.
-    EmptyRegion,
-}
-
-impl std::fmt::Display for Pm3Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnsupportedElement(z) => {
-                write!(f, "PM3: no parameters for element Z={z}")
-            }
-            Self::OpenShellNotSupported => {
-                write!(
-                    f,
-                    "PM3: open-shell systems (multiplicity ≠ 1) are not supported"
-                )
-            }
-            Self::EigensolverFailed => {
-                write!(
-                    f,
-                    "PM3: generalised eigensolver failed (overlap matrix not positive definite?)"
-                )
-            }
-            Self::ScfNotConverged => {
-                write!(f, "PM3: SCF did not converge")
-            }
-            Self::EmptyRegion => {
-                write!(f, "PM3: QM region contains no atoms")
-            }
-        }
-    }
-}
-
-impl std::error::Error for Pm3Error {}
+/// Finite-difference step for nuclear forces (Å).
+const FD_STEP_ANG: f64 = 0.001;
+/// Finite-difference step in the external potential φ_A (Hartree/e) used for the
+/// forces on external charges.
+const FD_STEP_PHI: f64 = 1e-3;
+/// Maximum number of SCF iterations.
+const MAX_SCF_ITER: usize = 500;
 
 // ---------------------------------------------------------------------------
 // PM3 parameters (Stewart 1989)
@@ -96,6 +56,7 @@ impl std::error::Error for Pm3Error {}
 /// PM3 parameters for a single element.
 ///
 /// All energetic parameters are stored in eV; Slater exponents in Bohr⁻¹.
+#[derive(Clone, Copy)]
 struct Pm3Params {
     /// Core orbital energy for s (eV).
     uss: f64,
@@ -226,51 +187,35 @@ fn pm3_params(z: u32) -> Option<Pm3Params> {
 // Basis construction
 // ---------------------------------------------------------------------------
 
-/// Orbital angular momentum type for a single basis function slot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OrbType {
-    /// s-type orbital.
-    S,
-    /// px-type orbital.
-    Px,
-    /// py-type orbital.
-    Py,
-    /// pz-type orbital.
-    Pz,
-}
-
-impl OrbType {
-    /// Return the β resonance integral (in eV) from the atom's PM3 parameters.
-    fn beta(self, p: &Pm3Params) -> f64 {
-        match self {
-            OrbType::S => p.beta_s,
-            OrbType::Px | OrbType::Py | OrbType::Pz => p.beta_p,
-        }
-    }
-
-    /// Return the on-site orbital energy (U_ss or U_pp) in Hartree.
-    fn u_energy(self, p: &Pm3Params) -> f64 {
-        match self {
-            OrbType::S => p.uss / HARTREE_TO_EV,
-            OrbType::Px | OrbType::Py | OrbType::Pz => p.upp / HARTREE_TO_EV,
-        }
+/// β resonance integral (eV) of an orbital of type `ot` on an atom with parameters `p`.
+fn orbital_beta(ot: OrbType, p: &Pm3Params) -> f64 {
+    match ot {
+        OrbType::S => p.beta_s,
+        OrbType::Px | OrbType::Py | OrbType::Pz => p.beta_p,
     }
 }
 
-/// Internal: build the STO-3G basis for the QM region.
+/// On-site orbital energy (U_ss or U_pp) in Hartree.
+fn orbital_u(ot: OrbType, p: &Pm3Params) -> f64 {
+    match ot {
+        OrbType::S => p.uss / HARTREE_TO_EV,
+        OrbType::Px | OrbType::Py | OrbType::Pz => p.upp / HARTREE_TO_EV,
+    }
+}
+
+/// Internal: build the STO-3G basis for the QM atoms.
 ///
 /// Returns `(basis_functions, orb_types, atom_of_basis, params_per_basis)`.
 /// `atom_of_basis[μ]` is the atom index to which basis function μ belongs.
-fn build_basis(region: &QmRegion) -> BuildBasisResult {
+fn build_basis(atomic_numbers: &[u32], positions: &[[f64; 3]]) -> BuildBasisResult {
     let mut basis: Vec<BasisFunction> = Vec::new();
     let mut orb_types: Vec<OrbType> = Vec::new();
     let mut atom_of_basis: Vec<usize> = Vec::new();
     let mut params_per_basis: Vec<Pm3Params> = Vec::new();
 
-    for (iatom, &z) in region.atomic_numbers.iter().enumerate() {
-        let p = pm3_params(z).ok_or(Pm3Error::UnsupportedElement(z))?;
+    for (iatom, (&z, pos_ang)) in atomic_numbers.iter().zip(positions.iter()).enumerate() {
+        let p = pm3_params(z).ok_or(QmError::UnsupportedElement(z))?;
         // Convert Å position to Bohr for BasisFunction
-        let pos_ang = region.positions[iatom];
         let center_bohr = [
             pos_ang[0] * ANG_TO_BOHR,
             pos_ang[1] * ANG_TO_BOHR,
@@ -278,214 +223,23 @@ fn build_basis(region: &QmRegion) -> BuildBasisResult {
         ];
 
         // s orbital — always present
-        // Re-fetch params for owned storage (pm3_params does not implement Clone).
-        let p_owned = pm3_params(z).ok_or(Pm3Error::UnsupportedElement(z))?;
         basis.push(BasisFunction::sto3g_s(center_bohr, p.zeta_s));
         orb_types.push(OrbType::S);
         atom_of_basis.push(iatom);
-        params_per_basis.push(p_owned);
+        params_per_basis.push(p);
 
         // p orbitals — only for heavy atoms
         if p.zeta_p > 0.0 {
-            for ot in &[OrbType::Px, OrbType::Py, OrbType::Pz] {
-                let pp = pm3_params(z).ok_or(Pm3Error::UnsupportedElement(z))?;
-                basis.push(BasisFunction::sto3g_p(center_bohr, p.zeta_p));
-                orb_types.push(*ot);
+            for (ot, axis) in OrbType::P_SHELL.into_iter().zip(CartesianAxis::ALL) {
+                basis.push(BasisFunction::sto3g_p(center_bohr, p.zeta_p, axis));
+                orb_types.push(ot);
                 atom_of_basis.push(iatom);
-                params_per_basis.push(pp);
+                params_per_basis.push(p);
             }
         }
     }
 
     Ok((basis, orb_types, atom_of_basis, params_per_basis))
-}
-
-// ---------------------------------------------------------------------------
-// Overlap matrix — normalized STO-3G contractions
-// ---------------------------------------------------------------------------
-
-/// Primitive Gaussian normalization constant for an s-type orbital.
-///
-/// N(α) = (2α/π)^(3/4)
-#[inline]
-fn norm_s(alpha: f64) -> f64 {
-    use std::f64::consts::PI;
-    (2.0 * alpha / PI).powf(0.75)
-}
-
-/// Primitive Gaussian normalization constant for a p-type orbital.
-///
-/// N(α) = (128 α^5 / π^3)^(1/4)
-/// Equivalently: (2α/π)^(3/4) * (4α)^(1/2) / π^(1/4) · (π/4α)^(1/4)
-/// Standard form: N_p(α) = (2α/π)^(3/4) * (4α)^(1/2) * π^(-1/4)
-#[inline]
-fn norm_p(alpha: f64) -> f64 {
-    use std::f64::consts::PI;
-    // N_p = (128 α^5 / π^3)^(1/4)
-    (128.0 * alpha.powi(5) / PI.powi(3)).powf(0.25)
-}
-
-/// Contracted Gaussian primitive overlap for a specific (l_i, l_j, axis) combination.
-///
-/// `axis` is 0=x, 1=y, 2=z for the p-orbital direction; ignored for s-s.
-/// `diff` is the vector from center_j to center_i (Bohr).
-/// Returns the contracted GTO overlap for the specified pair.
-fn contracted_overlap_ij(
-    alphas_i: &[f64],
-    coeffs_i: &[f64],
-    ot_i: OrbType,
-    alphas_j: &[f64],
-    coeffs_j: &[f64],
-    ot_j: OrbType,
-    diff: [f64; 3],
-    r2: f64,
-) -> f64 {
-    use std::f64::consts::PI;
-    let mut s = 0.0_f64;
-
-    for (&ai, &ci) in alphas_i.iter().zip(coeffs_i.iter()) {
-        let ni = if ot_i == OrbType::S {
-            norm_s(ai)
-        } else {
-            norm_p(ai)
-        };
-        for (&aj, &cj) in alphas_j.iter().zip(coeffs_j.iter()) {
-            let nj = if ot_j == OrbType::S {
-                norm_s(aj)
-            } else {
-                norm_p(aj)
-            };
-            let gamma = ai + aj;
-            let k_ss = (PI / gamma).powf(1.5) * (-(ai * aj / gamma) * r2).exp();
-            let pref = ci * ni * cj * nj;
-
-            let val = match (ot_i, ot_j) {
-                (OrbType::S, OrbType::S) => {
-                    // s-s: Gaussian product formula
-                    k_ss
-                }
-                (OrbType::S, op) | (op, OrbType::S) => {
-                    // s-p or p-s: <s_A | p_k^B> = K_AB * (P_k - X_B_k) * (π/γ)^(3/2)
-                    // P_k - X_B_k = α_A * (X_A_k - X_B_k) / γ  for (s on A, p on B)
-                    // For (p on A, s on B): <p_k^A | s_B> = K_AB * (P_k - X_A_k) = α_B*(X_B_k-X_A_k)/γ
-                    let axis = match op {
-                        OrbType::Px => 0_usize,
-                        OrbType::Py => 1,
-                        OrbType::Pz => 2,
-                        OrbType::S => unreachable!(),
-                    };
-                    // diff = center_i - center_j
-                    let (alpha_s, sign) = if ot_i == OrbType::S {
-                        // s on i, p on j: P_k - X_j_k = α_i * diff[axis] / γ
-                        (ai, 1.0_f64)
-                    } else {
-                        // p on i, s on j: P_k - X_i_k = α_j * (-diff[axis]) / γ
-                        (aj, -1.0_f64)
-                    };
-                    let proj = alpha_s * diff[axis] * sign / gamma;
-                    k_ss * proj
-                }
-                (ot_a, ot_b) => {
-                    // p-p: three cases — same axis or different axis
-                    let axis_a = match ot_a {
-                        OrbType::Px => 0,
-                        OrbType::Py => 1,
-                        OrbType::Pz => 2,
-                        OrbType::S => unreachable!(),
-                    };
-                    let axis_b = match ot_b {
-                        OrbType::Px => 0,
-                        OrbType::Py => 1,
-                        OrbType::Pz => 2,
-                        OrbType::S => unreachable!(),
-                    };
-
-                    if axis_a == axis_b {
-                        // Same axis: <pk_A | pk_B> = K * ((Pk-XA)*(Pk-XB) + 1/(2γ)) * (π/γ)^1.5
-                        // Pk - XA = α_B*(XB_k - XA_k)/γ = -α_B*diff_k/γ
-                        // Pk - XB = α_A*(XA_k - XB_k)/γ = α_A*diff_k/γ
-                        let d_k = diff[axis_a];
-                        let cross = (-aj * d_k / gamma) * (ai * d_k / gamma);
-                        k_ss * (cross + 1.0 / (2.0 * gamma))
-                    } else {
-                        // Different axes: <pk_A | pl_B> = K * (Pk-XA)*(Pl-XB) * (π/γ)^1.5
-                        // Pk - XA_k = -α_B*diff_k/γ
-                        // Pl - XB_l = α_A*diff_l/γ
-                        let d_k = diff[axis_a];
-                        let d_l = diff[axis_b];
-                        let cross = (-aj * d_k / gamma) * (ai * d_l / gamma);
-                        k_ss * cross
-                    }
-                }
-            };
-            s += pref * val;
-        }
-    }
-    s
-}
-
-/// Build the N×N normalized overlap matrix S.
-///
-/// Uses full angular-momentum-aware overlap formulas (s-s, s-p, p-s, p-p)
-/// with explicit px/py/pz distinction from `orb_types`.
-/// Off-diagonal same-atom p-p (e.g. px-py on same atom): exactly 0 by symmetry.
-/// Diagonal elements are renormalized to 1 to account for STO-3G contraction conventions.
-fn build_overlap(basis: &[BasisFunction], orb_types: &[OrbType]) -> Vec<Vec<f64>> {
-    let n = basis.len();
-    let mut s = vec![vec![0.0_f64; n]; n];
-
-    // Compute raw overlaps
-    for i in 0..n {
-        let ot_i = orb_types[i];
-        s[i][i] = contracted_overlap_ij(
-            &basis[i].exponents,
-            &basis[i].coefficients,
-            ot_i,
-            &basis[i].exponents,
-            &basis[i].coefficients,
-            ot_i,
-            [0.0; 3],
-            0.0,
-        );
-
-        for j in (i + 1)..n {
-            let ot_j = orb_types[j];
-            let diff = [
-                basis[i].center[0] - basis[j].center[0],
-                basis[i].center[1] - basis[j].center[1],
-                basis[i].center[2] - basis[j].center[2],
-            ];
-            let r2 = diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2];
-            let sij = contracted_overlap_ij(
-                &basis[i].exponents,
-                &basis[i].coefficients,
-                ot_i,
-                &basis[j].exponents,
-                &basis[j].coefficients,
-                ot_j,
-                diff,
-                r2,
-            );
-            s[i][j] = sij;
-            s[j][i] = sij;
-        }
-    }
-
-    // Renormalize: S'_ij = S_ij / sqrt(S_ii * S_jj) so that S'_ii = 1.
-    // This handles the STO-3G contraction normalization convention.
-    let norms: Vec<f64> = (0..n)
-        .map(|i| {
-            let v = s[i][i];
-            if v > 0.0 { v.sqrt() } else { 1.0 }
-        })
-        .collect();
-    for i in 0..n {
-        for j in 0..n {
-            s[i][j] /= norms[i] * norms[j];
-        }
-    }
-
-    s
 }
 
 // ---------------------------------------------------------------------------
@@ -505,30 +259,19 @@ fn klopman_ohno(r_bohr: f64, g_ss_a_hartree: f64, g_ss_b_hartree: f64) -> f64 {
 }
 
 /// Build the atom-atom γ matrix (Hartree).
-fn build_gamma(region: &QmRegion, params: &[Option<Pm3Params>]) -> Vec<Vec<f64>> {
-    let n = region.n_atoms();
+fn build_gamma(positions: &[[f64; 3]], params: &[Pm3Params]) -> Vec<Vec<f64>> {
+    let n = params.len().min(positions.len());
     let mut gamma = vec![vec![0.0_f64; n]; n];
     for a in 0..n {
-        let ga = params[a]
-            .as_ref()
-            .map_or(14.4 / HARTREE_TO_EV, |p| p.g_ss / HARTREE_TO_EV);
-        for b in a..n {
-            let gb = params[b]
-                .as_ref()
-                .map_or(14.4 / HARTREE_TO_EV, |p| p.g_ss / HARTREE_TO_EV);
-            let r_bohr = if a == b {
-                0.0
-            } else {
-                let dx = region.positions[a][0] - region.positions[b][0];
-                let dy = region.positions[a][1] - region.positions[b][1];
-                let dz = region.positions[a][2] - region.positions[b][2];
-                ((dx * dx + dy * dy + dz * dz).sqrt()) * ANG_TO_BOHR
-            };
-            let g = if a == b {
-                ga
-            } else {
-                klopman_ohno(r_bohr, ga, gb)
-            };
+        let ga = params[a].g_ss / HARTREE_TO_EV;
+        gamma[a][a] = ga;
+        for b in (a + 1)..n {
+            let gb = params[b].g_ss / HARTREE_TO_EV;
+            let dx = positions[a][0] - positions[b][0];
+            let dy = positions[a][1] - positions[b][1];
+            let dz = positions[a][2] - positions[b][2];
+            let r_bohr = (dx * dx + dy * dy + dz * dz).sqrt() * ANG_TO_BOHR;
+            let g = klopman_ohno(r_bohr, ga, gb);
             gamma[a][b] = g;
             gamma[b][a] = g;
         }
@@ -544,25 +287,27 @@ fn build_gamma(region: &QmRegion, params: &[Option<Pm3Params>]) -> Vec<Vec<f64>>
 ///
 /// Diagonal:   H_μμ = U_μμ + Σ_{B≠A} (-Z_B * γ(R_AB))
 /// Off-diag:   H_μν = 0.5 * (β_μ + β_ν) * S_μν   (two-centre, same-centre = 0)
+///
+/// Electrostatic embedding adds the external potential energy of an electron,
+/// −φ_A at nucleus A, in the Mulliken form −½ S_μν (φ_A + φ_B).  This keeps the
+/// generalised eigenproblem gauge invariant (a uniform φ shifts every orbital
+/// energy by −φ and leaves the density unchanged) and reduces to −φ_A on the
+/// diagonal.
 fn build_h_core(
-    region: &QmRegion,
-    basis: &[BasisFunction],
     orb_types: &[OrbType],
     atom_of_basis: &[usize],
     params_per_basis: &[Pm3Params],
+    atom_params: &[Pm3Params],
     overlap: &[Vec<f64>],
     gamma: &[Vec<f64>],
+    phi: &[f64],
 ) -> Vec<Vec<f64>> {
-    let n = basis.len();
-    let n_atoms = region.n_atoms();
+    let n = orb_types.len();
+    let n_atoms = atom_params.len();
     let mut h = vec![vec![0.0_f64; n]; n];
 
-    // Precompute core charges Z_A = n_val
-    let core_charge: Vec<f64> = region
-        .atomic_numbers
-        .iter()
-        .filter_map(|&z| pm3_params(z).map(|p| p.n_val as f64))
-        .collect();
+    // Core charges Z_A = n_val
+    let core_charge: Vec<f64> = atom_params.iter().map(|p| p.n_val as f64).collect();
 
     for mu in 0..n {
         let a = atom_of_basis[mu];
@@ -578,10 +323,10 @@ fn build_h_core(
                 // Same atom
                 if mu == nu {
                     // Diagonal: U_μμ + Σ_{C≠A} (-Z_C * γ_AC)
-                    let u_val = ot_mu.u_energy(p_mu);
+                    let u_val = orbital_u(ot_mu, p_mu);
                     let mut v_sum = 0.0;
                     for c in 0..n_atoms {
-                        if c != a && c < core_charge.len() {
+                        if c != a {
                             v_sum -= core_charge[c] * gamma[a][c];
                         }
                     }
@@ -590,10 +335,12 @@ fn build_h_core(
                 // Off-diagonal same atom: 0 in NDDO (orthogonal AOs on same centre)
             } else {
                 // Two-centre
-                let beta_mu = ot_mu.beta(p_mu) / HARTREE_TO_EV;
-                let beta_nu = ot_nu.beta(p_nu) / HARTREE_TO_EV;
+                let beta_mu = orbital_beta(ot_mu, p_mu) / HARTREE_TO_EV;
+                let beta_nu = orbital_beta(ot_nu, p_nu) / HARTREE_TO_EV;
                 h[mu][nu] = 0.5 * (beta_mu + beta_nu) * overlap[mu][nu];
             }
+            // Electrostatic embedding in the external point charges.
+            h[mu][nu] -= 0.5 * overlap[mu][nu] * (phi[a] + phi[b]);
         }
     }
     h
@@ -707,7 +454,7 @@ fn scf_loop(
 
     // Initial guess: diagonalise core Hamiltonian
     let (_evals0, evecs0) =
-        generalized_symmetric_eigen_n(h_core, overlap).ok_or(Pm3Error::EigensolverFailed)?;
+        generalized_symmetric_eigen_n(h_core, overlap).ok_or(QmError::EigensolverFailed)?;
 
     let mut density = if n_occ > 0 {
         build_density(&evecs0, n_occ, nbasis)
@@ -735,7 +482,7 @@ fn scf_loop(
 
         // Solve FC = SCε
         let (new_evals, new_evecs) =
-            generalized_symmetric_eigen_n(&fock, overlap).ok_or(Pm3Error::EigensolverFailed)?;
+            generalized_symmetric_eigen_n(&fock, overlap).ok_or(QmError::EigensolverFailed)?;
 
         // New density from current Fock eigenvectors
         let p_new = if n_occ > 0 {
@@ -791,7 +538,7 @@ fn scf_loop(
         }
     }
 
-    Err(Pm3Error::ScfNotConverged)
+    Err(QmError::ScfNotConverged)
 }
 
 // ---------------------------------------------------------------------------
@@ -804,33 +551,20 @@ fn scf_loop(
 ///
 /// where f(R_AB) = 1 + exp(-α_A R) + exp(-α_B R)
 ///               + Σ_k [a_k^A exp(-b_k^A (R-c_k^A)²) + a_k^B exp(-b_k^B (R-c_k^B)²)]
-fn core_core_repulsion(region: &QmRegion) -> f64 {
-    let n = region.n_atoms();
-    let params: Vec<Option<Pm3Params>> = region
-        .atomic_numbers
-        .iter()
-        .map(|&z| pm3_params(z))
-        .collect();
-
+fn core_core_repulsion(positions: &[[f64; 3]], params: &[Pm3Params]) -> f64 {
+    let n = params.len().min(positions.len());
     let mut e_cc = 0.0_f64;
 
     for a in 0..n {
-        let pa = match &params[a] {
-            Some(p) => p,
-            None => continue,
-        };
+        let pa = &params[a];
         let za = pa.n_val as f64;
 
-        for (b, pb_opt) in params.iter().enumerate().skip(a + 1) {
-            let pb = match pb_opt {
-                Some(p) => p,
-                None => continue,
-            };
+        for (b, pb) in params.iter().enumerate().take(n).skip(a + 1) {
             let zb = pb.n_val as f64;
 
-            let dx = region.positions[a][0] - region.positions[b][0];
-            let dy = region.positions[a][1] - region.positions[b][1];
-            let dz = region.positions[a][2] - region.positions[b][2];
+            let dx = positions[a][0] - positions[b][0];
+            let dy = positions[a][1] - positions[b][1];
+            let dz = positions[a][2] - positions[b][2];
             let r_ang = (dx * dx + dy * dy + dz * dz).sqrt();
             if r_ang < 1e-10 {
                 continue;
@@ -861,159 +595,204 @@ fn core_core_repulsion(region: &QmRegion) -> f64 {
 // Single-point PM3 energy (Hartree)
 // ---------------------------------------------------------------------------
 
-/// Compute the PM3 total electronic energy for the given positions.
-///
-/// Returns energy in Hartree on success.
-fn single_point_energy(region: &QmRegion) -> Result<f64, Pm3Error> {
-    if region.n_atoms() == 0 {
-        return Err(Pm3Error::EmptyRegion);
-    }
+/// Result of a single PM3 SCF calculation.
+struct Pm3Point {
+    /// Total energy including the embedding interaction (Hartree).
+    energy: f64,
+    /// Electrostatic interaction with the external charges, Σ_A (Z_A − pop_A) φ_A (Hartree).
+    embedding: f64,
+    /// Mulliken net atomic charges Z_A − pop_A (e).
+    net_charges: Vec<f64>,
+}
 
-    // Check all elements are supported
-    for &z in &region.atomic_numbers {
-        pm3_params(z).ok_or(Pm3Error::UnsupportedElement(z))?;
+/// Compute the PM3 total energy for the given geometry and external potential
+/// φ_A (Hartree/e) at each nucleus.
+fn single_point(
+    atomic_numbers: &[u32],
+    positions: &[[f64; 3]],
+    charge: i32,
+    multiplicity: u32,
+    phi: &[f64],
+) -> Result<Pm3Point, QmError> {
+    if atomic_numbers.is_empty() {
+        return Err(QmError::EmptyRegion);
     }
-
-    // Total valence electrons
-    let n_val_total: usize = region
-        .atomic_numbers
+    if positions.len() != atomic_numbers.len() || phi.len() != atomic_numbers.len() {
+        return Err(QmError::DimensionMismatch {
+            what: "PM3 positions / external potential vs atomic numbers",
+            expected: atomic_numbers.len(),
+            found: positions.len().min(phi.len()),
+        });
+    }
+    let atom_params: Vec<Pm3Params> = atomic_numbers
         .iter()
-        .filter_map(|&z| pm3_params(z).map(|p| p.n_val))
-        .sum();
-
-    let n_electrons = (n_val_total as i64 - region.charge as i64) as usize;
-    if !n_electrons.is_multiple_of(2) || region.multiplicity != 1 {
-        return Err(Pm3Error::OpenShellNotSupported);
+        .map(|&z| pm3_params(z).ok_or(QmError::UnsupportedElement(z)))
+        .collect::<Result<_, _>>()?;
+    if multiplicity != 1 {
+        return Err(QmError::OpenShellNotSupported);
     }
-    let n_occ = n_electrons / 2;
 
-    let (basis, orb_types, atom_of_basis, params_per_basis) = build_basis(region)?;
+    let (basis, orb_types, atom_of_basis, params_per_basis) =
+        build_basis(atomic_numbers, positions)?;
+    let nbasis = basis.len();
 
-    // Precompute per-atom params for γ
-    let atom_params: Vec<Option<Pm3Params>> = region
-        .atomic_numbers
-        .iter()
-        .map(|&z| pm3_params(z))
-        .collect();
+    // Electron count (signed, so that an excessive positive charge cannot wrap).
+    let n_val_total: i64 = atom_params.iter().map(|p| p.n_val as i64).sum();
+    let n_electrons = n_val_total - i64::from(charge);
+    if n_electrons < 0 || n_electrons > 2 * nbasis as i64 {
+        return Err(QmError::InvalidElectronCount {
+            electrons: n_electrons,
+            n_basis: nbasis,
+        });
+    }
+    if n_electrons % 2 != 0 {
+        return Err(QmError::OpenShellNotSupported);
+    }
+    let n_occ = (n_electrons / 2) as usize;
 
     let overlap = build_overlap(&basis, &orb_types);
-    let gamma = build_gamma(region, &atom_params);
+    let gamma = build_gamma(positions, &atom_params);
     let h_core = build_h_core(
-        region,
-        &basis,
         &orb_types,
         &atom_of_basis,
         &params_per_basis,
+        &atom_params,
         &overlap,
         &gamma,
+        phi,
     );
 
-    let (density, _evals, _evecs) =
-        scf_loop(&h_core, &overlap, n_occ, &atom_of_basis, &gamma, 500)?;
+    let (density, _evals, _evecs) = scf_loop(
+        &h_core,
+        &overlap,
+        n_occ,
+        &atom_of_basis,
+        &gamma,
+        MAX_SCF_ITER,
+    )?;
 
     // Electronic energy
-    let nbasis = basis.len();
     let g = build_g_matrix(&density, &overlap, &atom_of_basis, &gamma);
-    let mut fock = vec![vec![0.0_f64; nbasis]; nbasis];
-    for mu in 0..nbasis {
-        for nu in 0..nbasis {
-            fock[mu][nu] = h_core[mu][nu] + g[mu][nu];
-        }
-    }
-
     let mut e_elec = 0.0_f64;
     for mu in 0..nbasis {
         for nu in 0..nbasis {
-            e_elec += density[mu][nu] * (h_core[mu][nu] + fock[mu][nu]);
+            let fock = h_core[mu][nu] + g[mu][nu];
+            e_elec += density[mu][nu] * (h_core[mu][nu] + fock);
         }
     }
     e_elec *= 0.5;
 
-    let e_cc = core_core_repulsion(region);
-    Ok(e_elec + e_cc)
-}
-
-// ---------------------------------------------------------------------------
-// Numerical gradient
-// ---------------------------------------------------------------------------
-
-/// Compute forces on all atoms via central-difference finite differentiation.
-///
-/// F_ix = -(E(+δ) - E(-δ)) / (2δ)  for δ = 0.001 Å
-///
-/// This requires 6·N SCF calls, which is acceptable for small QM regions.
-fn numerical_gradient(region: &QmRegion) -> Vec<[f64; 3]> {
-    let n = region.n_atoms();
-    let delta = 0.001_f64; // Å
-    let mut forces = vec![[0.0_f64; 3]; n];
-
-    for (i, f_i) in forces.iter_mut().enumerate() {
-        for (k, f_ik) in f_i.iter_mut().enumerate() {
-            // Forward displacement
-            let mut reg_plus = clone_region(region);
-            reg_plus.positions[i][k] += delta;
-
-            // Backward displacement
-            let mut reg_minus = clone_region(region);
-            reg_minus.positions[i][k] -= delta;
-
-            let e_plus = single_point_energy(&reg_plus).unwrap_or(0.0);
-            let e_minus = single_point_energy(&reg_minus).unwrap_or(0.0);
-
-            // Force = -dE/dx, in Hartree/Å → convert to kcal/mol/Å
-            let grad_hartree_per_ang = (e_plus - e_minus) / (2.0 * delta);
-            *f_ik = -grad_hartree_per_ang * HARTREE_TO_KCAL;
+    // Mulliken populations and net charges.
+    let mut pop = vec![0.0_f64; atom_params.len()];
+    for mu in 0..nbasis {
+        let a = atom_of_basis[mu];
+        for nu in 0..nbasis {
+            pop[a] += density[mu][nu] * overlap[nu][mu];
         }
     }
-    forces
+    let net_charges: Vec<f64> = atom_params
+        .iter()
+        .zip(pop.iter())
+        .map(|(p, &q)| p.n_val as f64 - q)
+        .collect();
+
+    // Core–external-charge interaction Σ_A Z_A φ_A (the electron part −Σ pop_A φ_A
+    // is already contained in e_elec through H_core).
+    let e_core_ext: f64 = atom_params
+        .iter()
+        .zip(phi.iter())
+        .map(|(p, &f)| p.n_val as f64 * f)
+        .sum();
+    let embedding: f64 = net_charges.iter().zip(phi.iter()).map(|(q, f)| q * f).sum();
+
+    let e_cc = core_core_repulsion(positions, &atom_params);
+    Ok(Pm3Point {
+        energy: e_elec + e_cc + e_core_ext,
+        embedding,
+        net_charges,
+    })
 }
 
-/// Minimal clone of a `QmRegion` for finite-difference displacements.
-fn clone_region(region: &QmRegion) -> QmRegion {
-    let mut r = QmRegion::new(
-        region.atom_indices.clone(),
-        region.method,
+/// Total PM3 energy (Hartree) at `positions` in the field of `external_charges`.
+fn energy_at(region: &QmRegion, positions: &[[f64; 3]]) -> Result<f64, QmError> {
+    let phi = external_potential(positions, &region.external_charges)?;
+    single_point(
+        &region.atomic_numbers,
+        positions,
         region.charge,
         region.multiplicity,
-    );
-    r.positions = region.positions.clone();
-    r.atomic_numbers = region.atomic_numbers.clone();
-    r
+        &phi,
+    )
+    .map(|p| p.energy)
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Internal PM3 calculation returning `Err` on any failure.
-fn try_run_pm3(region: &mut QmRegion) -> Result<(), Pm3Error> {
-    if region.n_atoms() == 0 {
-        return Err(Pm3Error::EmptyRegion);
-    }
+/// Run a PM3 semi-empirical SCF calculation, storing energy and embedding
+/// energy (kcal/mol), forces on the QM atoms and on the external charges
+/// (kcal/mol/Å) and Mulliken charges into `region`.
+///
+/// Nuclear forces are central finite differences (±0.001 Å) of the total energy
+/// in the field of the external charges.  Forces on the external charges use
+/// the chain rule through the nuclear potentials, F_J = −Σ_A (∂E/∂φ_A) ∂φ_A/∂R_J,
+/// with ∂E/∂φ_A from central differences in φ_A.
+///
+/// # Errors
+/// Any failure (empty region, unsupported element, open shell, invalid electron
+/// count, invalid external charge, eigensolver failure or SCF non-convergence,
+/// including at a displaced geometry) is returned; the outputs of `region` are
+/// then left cleared.
+pub fn run_pm3(region: &mut QmRegion) -> Result<(), QmError> {
+    let phi = begin_run(region)?;
+    let point = single_point(
+        &region.atomic_numbers,
+        &region.positions,
+        region.charge,
+        region.multiplicity,
+        &phi,
+    )?;
 
-    // Check element support and multiplicity first
-    for &z in &region.atomic_numbers {
-        pm3_params(z).ok_or(Pm3Error::UnsupportedElement(z))?;
-    }
-    if region.multiplicity != 1 {
-        return Err(Pm3Error::OpenShellNotSupported);
-    }
+    let forces =
+        finite_difference_forces(&region.positions, FD_STEP_ANG, |pos| energy_at(region, pos))?;
 
-    let e_hartree = single_point_energy(region)?;
-    region.energy = e_hartree * HARTREE_TO_KCAL;
+    let external_forces = if region.external_charges.is_empty() {
+        Vec::new()
+    } else {
+        let mut de_dphi = vec![0.0_f64; phi.len()];
+        let mut phi_shift = phi.clone();
+        for (a, slot) in de_dphi.iter_mut().enumerate() {
+            phi_shift[a] = phi[a] + FD_STEP_PHI;
+            let e_plus = single_point(
+                &region.atomic_numbers,
+                &region.positions,
+                region.charge,
+                region.multiplicity,
+                &phi_shift,
+            )?
+            .energy;
+            phi_shift[a] = phi[a] - FD_STEP_PHI;
+            let e_minus = single_point(
+                &region.atomic_numbers,
+                &region.positions,
+                region.charge,
+                region.multiplicity,
+                &phi_shift,
+            )?
+            .energy;
+            phi_shift[a] = phi[a];
+            *slot = (e_plus - e_minus) / (2.0 * FD_STEP_PHI);
+        }
+        forces_from_potential_derivatives(&region.positions, &region.external_charges, &de_dphi)
+    };
 
-    region.forces = numerical_gradient(region);
+    region.energy = (point.energy - point.embedding) * HARTREE_TO_KCAL;
+    region.embedding_energy = point.embedding * HARTREE_TO_KCAL;
+    region.forces = forces;
+    region.partial_charges = point.net_charges;
+    region.external_charge_forces = external_forces;
     Ok(())
-}
-
-/// Run a PM3 semi-empirical SCF calculation, storing energy (kcal/mol) and
-/// forces (kcal/mol/Å) into `region`.  Silently falls back to zero if the
-/// element is unsupported or SCF fails.
-pub fn run_pm3(region: &mut QmRegion) {
-    if let Err(_e) = try_run_pm3(region) {
-        // Energy/forces stay at their default (0.0) — caller can detect this via
-        // checking region.energy == 0.0 or via ScfStatus from a higher-level wrapper.
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,18 +804,30 @@ mod tests {
     use super::*;
     use crate::qm_mm::QmMethod;
 
+    fn water(method: QmMethod) -> QmRegion {
+        let mut region = QmRegion::new(vec![0, 1, 2], method, 0, 1);
+        region.atomic_numbers = vec![8, 1, 1];
+        region.set_positions(vec![
+            [0.0, 0.0, 0.0],
+            [0.0, 0.757, 0.586],
+            [0.0, -0.757, 0.586],
+        ]);
+        region
+    }
+
     #[test]
     fn h2_pm3_energy_negative() {
         // H-H bond at 0.74 Å (experimental)
         let mut region = QmRegion::new(vec![0, 1], QmMethod::Pm3, 0, 1);
         region.atomic_numbers = vec![1, 1];
         region.set_positions(vec![[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]]);
-        run_pm3(&mut region);
+        run_pm3(&mut region).expect("PM3 H2");
         assert!(
             region.energy < 0.0,
             "H2 PM3 energy should be negative: {}",
             region.energy
         );
+        assert_eq!(region.embedding_energy, 0.0);
     }
 
     #[test]
@@ -1044,36 +835,168 @@ mod tests {
         let mut region = QmRegion::new(vec![0, 1], QmMethod::Pm3, 0, 1);
         region.atomic_numbers = vec![1, 1];
         region.set_positions(vec![[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]]);
-        run_pm3(&mut region);
+        run_pm3(&mut region).expect("PM3 H2");
         let fx: f64 = region.forces.iter().map(|f| f[0]).sum();
         let fy: f64 = region.forces.iter().map(|f| f[1]).sum();
         let fz: f64 = region.forces.iter().map(|f| f[2]).sum();
-        assert!(fx.abs() < 1.0, "force x sum not zero: {fx}");
-        assert!(fy.abs() < 0.1, "force y sum not zero: {fy}");
-        assert!(fz.abs() < 0.1, "force z sum not zero: {fz}");
+        assert!(fx.abs() < 1e-3, "force x sum not zero: {fx}");
+        assert!(fy.abs() < 1e-6, "force y sum not zero: {fy}");
+        assert!(fz.abs() < 1e-6, "force z sum not zero: {fz}");
+        // The bond force is along x and antisymmetric.
+        assert!(region.forces[0][0].abs() > 1e-3);
     }
 
     #[test]
     fn h2o_pm3_converges() {
-        // Water molecule: O at origin, two H at ~0.96 Å, ~104.5° angle
-        let mut region = QmRegion::new(vec![0, 1, 2], QmMethod::Pm3, 0, 1);
-        region.atomic_numbers = vec![8, 1, 1];
-        region.set_positions(vec![
-            [0.0, 0.0, 0.0],
-            [0.0, 0.757, 0.586],
-            [0.0, -0.757, 0.586],
-        ]);
-        run_pm3(&mut region);
+        let mut region = water(QmMethod::Pm3);
+        run_pm3(&mut region).expect("PM3 water");
         assert!(region.energy.is_finite(), "water PM3 energy must be finite");
         assert!(region.energy < 0.0, "water PM3 energy should be negative");
+        let q = &region.partial_charges;
+        assert!(q.iter().all(|c| c.abs() < 1.0), "charges {q:?}");
+        assert!((q[1] - q[2]).abs() < 1e-6, "symmetric H charges: {q:?}");
+        assert!(q.iter().sum::<f64>().abs() < 1e-8, "neutral: {q:?}");
+        // C2v symmetry: no dipole component perpendicular to the symmetry axis.
+        let mu = region.dipole_moment();
+        assert!(mu[0].abs() < 1e-8 && mu[1].abs() < 1e-6, "dipole {mu:?}");
     }
 
     #[test]
-    fn unsupported_element_does_not_panic() {
-        // Ne (Z=10) is not supported; run_pm3 should not panic, just leave energy=0
+    fn unsupported_element_returns_error() {
         let mut region = QmRegion::new(vec![0], QmMethod::Pm3, 0, 1);
-        region.atomic_numbers = vec![10];
+        region.atomic_numbers = vec![92];
         region.set_positions(vec![[0.0, 0.0, 0.0]]);
-        run_pm3(&mut region); // must not panic
+        assert_eq!(run_pm3(&mut region), Err(QmError::UnsupportedElement(92)));
+    }
+
+    #[test]
+    fn failed_run_clears_stale_outputs() {
+        let mut region = QmRegion::new(vec![0, 1], QmMethod::Pm3, 0, 1);
+        region.atomic_numbers = vec![1, 1];
+        region.set_positions(vec![[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]]);
+        run_pm3(&mut region).expect("PM3 H2");
+        assert!(region.energy != 0.0);
+        // Now an unsupported element: the previous results must not survive.
+        region.atomic_numbers = vec![1, 10];
+        assert_eq!(run_pm3(&mut region), Err(QmError::UnsupportedElement(10)));
+        assert_eq!(region.energy, 0.0);
+        assert!(region.forces.iter().all(|f| *f == [0.0; 3]));
+        assert!(region.partial_charges.iter().all(|&q| q == 0.0));
+    }
+
+    #[test]
+    fn excessive_charge_is_an_error_not_a_panic() {
+        for charge in [4, -4, 3] {
+            let mut region = QmRegion::new(vec![0, 1], QmMethod::Pm3, charge, 1);
+            region.atomic_numbers = vec![1, 1];
+            region.set_positions(vec![[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]]);
+            let result = run_pm3(&mut region);
+            match charge {
+                3 => assert_eq!(
+                    result,
+                    Err(QmError::InvalidElectronCount {
+                        electrons: -1,
+                        n_basis: 2
+                    })
+                ),
+                4 => assert_eq!(
+                    result,
+                    Err(QmError::InvalidElectronCount {
+                        electrons: -2,
+                        n_basis: 2
+                    })
+                ),
+                _ => assert_eq!(
+                    result,
+                    Err(QmError::InvalidElectronCount {
+                        electrons: 6,
+                        n_basis: 2
+                    })
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn zero_external_charge_reproduces_vacuum() {
+        let mut vac = water(QmMethod::Pm3);
+        run_pm3(&mut vac).expect("vacuum");
+        let mut emb = water(QmMethod::Pm3);
+        emb.external_charges = vec![([0.3, 0.2, -3.0], 0.0)];
+        run_pm3(&mut emb).expect("embedded");
+        assert!((vac.energy - emb.energy).abs() < 1e-9);
+        assert_eq!(emb.embedding_energy, 0.0);
+        assert_eq!(emb.external_charge_forces, vec![[0.0; 3]]);
+    }
+
+    #[test]
+    fn h2o_dipole_grows_in_external_charge_field() {
+        let mut vac = water(QmMethod::Pm3);
+        run_pm3(&mut vac).expect("vacuum");
+        let mu_vac = vac.dipole_moment()[2];
+
+        // A positive charge below the oxygen creates a field along +z, which
+        // pulls electron density towards −z and increases μ_z; the opposite
+        // charge decreases it (positive polarisability along the field).
+        let mut along = water(QmMethod::Pm3);
+        along.external_charges = vec![([0.0, 0.0, -3.5], 1.0)];
+        run_pm3(&mut along).expect("field along dipole");
+        let mu_along = along.dipole_moment()[2];
+
+        let mut against = water(QmMethod::Pm3);
+        against.external_charges = vec![([0.0, 0.0, -3.5], -1.0)];
+        run_pm3(&mut against).expect("field against dipole");
+        let mu_against = against.dipole_moment()[2];
+
+        assert!(
+            mu_along > mu_vac + 0.01,
+            "dipole must grow along the field: {mu_vac} -> {mu_along}"
+        );
+        assert!(
+            mu_against < mu_vac - 0.01,
+            "dipole must shrink against the field: {mu_vac} -> {mu_against}"
+        );
+        // Near-linear response: the two induced dipoles are nearly opposite.
+        let induced_along = mu_along - mu_vac;
+        let induced_against = mu_against - mu_vac;
+        assert!(
+            (induced_along + induced_against).abs() < 0.3 * induced_along.abs(),
+            "induced dipoles {induced_along} / {induced_against}"
+        );
+    }
+
+    #[test]
+    fn external_charge_force_matches_finite_difference() {
+        let q_pos = [0.4, 0.3, -3.0];
+        let mut region = water(QmMethod::Pm3);
+        region.external_charges = vec![(q_pos, 0.8)];
+        run_pm3(&mut region).expect("embedded water");
+        let f = region.external_charge_forces[0];
+
+        let h = 1e-3;
+        for k in 0..3 {
+            let mut plus = water(QmMethod::Pm3);
+            let mut p = q_pos;
+            p[k] += h;
+            plus.external_charges = vec![(p, 0.8)];
+            run_pm3(&mut plus).expect("plus");
+            let mut minus = water(QmMethod::Pm3);
+            let mut m = q_pos;
+            m[k] -= h;
+            minus.external_charges = vec![(m, 0.8)];
+            run_pm3(&mut minus).expect("minus");
+            let fd = -(plus.total_energy_in_field() - minus.total_energy_in_field()) / (2.0 * h);
+            assert!(
+                (fd - f[k]).abs() < 2e-3 + 1e-2 * fd.abs(),
+                "component {k}: analytic {} vs FD {fd}",
+                f[k]
+            );
+        }
+
+        // Newton's third law: the total force on QM atoms and charges vanishes.
+        for k in 0..3 {
+            let total: f64 = region.forces.iter().map(|g| g[k]).sum::<f64>() + f[k];
+            assert!(total.abs() < 5e-3, "net force component {k}: {total}");
+        }
     }
 }

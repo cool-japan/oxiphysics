@@ -19,9 +19,118 @@ fn norm(v: &[f64]) -> f64 {
     dot(v, v).sqrt()
 }
 
-/// Dense matrix–vector product (row-major).
-fn mat_vec(a: &[Vec<f64>], x: &[f64]) -> Vec<f64> {
-    a.iter().map(|row| dot(row, x)).collect()
+/// Dense matrix–vector product y = A x for a flat row-major `n_rows × n_cols` matrix.
+fn mat_vec(a: &[f64], n_rows: usize, n_cols: usize, x: &[f64]) -> Vec<f64> {
+    (0..n_rows)
+        .map(|i| dot(&a[i * n_cols..(i + 1) * n_cols], x))
+        .collect()
+}
+
+/// Dense row-major `n_rows × n_cols` copy of a (possibly ragged or short) row list.
+///
+/// Missing rows and entries are zero; entries outside the requested shape are ignored.
+fn dense_block(rows: &[Vec<f64>], n_rows: usize, n_cols: usize) -> Vec<f64> {
+    let mut out = vec![0.0; n_rows * n_cols];
+    for (i, row) in rows.iter().take(n_rows).enumerate() {
+        for (j, &v) in row.iter().take(n_cols).enumerate() {
+            out[i * n_cols + j] = v;
+        }
+    }
+    out
+}
+
+/// Copy of `v` zero-padded or truncated to length `n`.
+fn padded(v: &[f64], n: usize) -> Vec<f64> {
+    let mut out = vec![0.0; n];
+    let m = v.len().min(n);
+    out[..m].copy_from_slice(&v[..m]);
+    out
+}
+
+/// LU factorisation with scaled partial pivoting of a dense row-major `n × n` matrix.
+struct DenseLu {
+    n: usize,
+    /// Unit lower factor below the diagonal, upper factor on and above it.
+    lu: Vec<f64>,
+    /// Row `i` of the factorised matrix is row `perm[i]` of the original one.
+    perm: Vec<usize>,
+}
+
+impl DenseLu {
+    /// Factorise `a`.  Returns `None` if `a` has non-finite entries, a zero row or
+    /// is (numerically) singular, i.e. a row-scaled pivot drops below `n·ε`.
+    fn factor(mut lu: Vec<f64>, n: usize) -> Option<Self> {
+        if lu.len() != n * n || lu.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        let mut row_scale = vec![0.0; n];
+        for (i, scale) in row_scale.iter_mut().enumerate() {
+            let big = lu[i * n..(i + 1) * n]
+                .iter()
+                .fold(0.0_f64, |m, v| m.max(v.abs()));
+            if big == 0.0 {
+                return None;
+            }
+            *scale = 1.0 / big;
+        }
+        let mut perm: Vec<usize> = (0..n).collect();
+        let singular_threshold = n as f64 * f64::EPSILON;
+        for k in 0..n {
+            let mut pivot_row = k;
+            let mut pivot_size = 0.0;
+            for (i, &scale) in row_scale.iter().enumerate().skip(k) {
+                let size = scale * lu[i * n + k].abs();
+                if size > pivot_size {
+                    pivot_size = size;
+                    pivot_row = i;
+                }
+            }
+            if pivot_size <= singular_threshold {
+                return None;
+            }
+            if pivot_row != k {
+                for j in 0..n {
+                    lu.swap(k * n + j, pivot_row * n + j);
+                }
+                row_scale.swap(k, pivot_row);
+                perm.swap(k, pivot_row);
+            }
+            let pivot = lu[k * n + k];
+            for i in (k + 1)..n {
+                let factor = lu[i * n + k] / pivot;
+                lu[i * n + k] = factor;
+                if factor != 0.0 {
+                    for j in (k + 1)..n {
+                        let upper = lu[k * n + j];
+                        lu[i * n + j] -= factor * upper;
+                    }
+                }
+            }
+        }
+        Some(Self { n, lu, perm })
+    }
+
+    /// Solve `A x = b` with the stored factors (`b` is zero-padded / truncated to `n`).
+    fn solve(&self, b: &[f64]) -> Vec<f64> {
+        let n = self.n;
+        let b = padded(b, n);
+        let mut x: Vec<f64> = self.perm.iter().map(|&p| b[p]).collect();
+        for i in 0..n {
+            let row = &self.lu[i * n..i * n + i];
+            let sum: f64 = row.iter().zip(x.iter()).map(|(l, xj)| l * xj).sum();
+            x[i] -= sum;
+        }
+        for i in (0..n).rev() {
+            let row = &self.lu[i * n + i + 1..(i + 1) * n];
+            let sum: f64 = row
+                .iter()
+                .zip(x[i + 1..].iter())
+                .map(|(u, xj)| u * xj)
+                .sum();
+            x[i] = (x[i] - sum) / self.lu[i * n + i];
+        }
+        x
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -622,9 +731,18 @@ impl AitkenRelaxation {
 
 /// Coupled physics solver supporting staggered and monolithic schemes.
 ///
-/// Manages the coupling between a displacement field and a scalar field
-/// (temperature, pressure, or concentration), applying the chosen
-/// solution scheme with optional Aitken relaxation.
+/// Manages the coupling between a displacement field `u` and a scalar field `s`
+/// (temperature, pressure, or concentration) governed by the block system
+///
+/// ```text
+/// K_u u + C_us s = f_u
+/// C_su u + K_s s = f_s
+/// ```
+///
+/// and applies the chosen solution scheme (with Aitken relaxation of the scalar
+/// field for the iterative staggered scheme).  All three schemes solve this same
+/// system; the reported residuals are the true block residuals of the returned
+/// fields, so `converged` reflects the actual accuracy of the solution.
 #[derive(Debug, Clone)]
 pub struct CoupledSolver {
     /// Number of displacement degrees of freedom.
@@ -637,6 +755,79 @@ pub struct CoupledSolver {
     pub criteria: ConvergenceCriteria,
     /// Aitken relaxation.
     pub relaxation: AitkenRelaxation,
+}
+
+/// The assembled dense block system `[K_u C_us; C_su K_s] [u; s] = [f_u; f_s]`.
+struct BlockSystem {
+    n_u: usize,
+    n_s: usize,
+    k_u: Vec<f64>,
+    k_s: Vec<f64>,
+    c_us: Vec<f64>,
+    c_su: Vec<f64>,
+    f_u: Vec<f64>,
+    f_s: Vec<f64>,
+}
+
+/// `‖r‖` relative to `scale`, with a non-finite result mapped to infinity.
+fn relative_residual(r: &[f64], scale: f64) -> f64 {
+    let r_norm = norm(r);
+    let value = if scale > 0.0 { r_norm / scale } else { r_norm };
+    if value.is_finite() {
+        value
+    } else {
+        f64::INFINITY
+    }
+}
+
+impl BlockSystem {
+    /// Relative residuals `(res_u, res_s)` of the fields `(u, s)`.
+    ///
+    /// `r_u = f_u − K_u u − C_us s` and `r_s = f_s − C_su u − K_s s` are measured
+    /// relative to the magnitude of the terms of their own equation,
+    /// `‖f‖ + ‖K x‖ + ‖C x_other‖`, so that a block whose load vanishes (for
+    /// example a purely thermally driven displacement field) is still judged
+    /// meaningfully.
+    fn residuals(&self, u: &[f64], s: &[f64]) -> (f64, f64) {
+        let ku_u = mat_vec(&self.k_u, self.n_u, self.n_u, u);
+        let cus_s = mat_vec(&self.c_us, self.n_u, self.n_s, s);
+        let r_u: Vec<f64> = (0..self.n_u)
+            .map(|i| self.f_u[i] - ku_u[i] - cus_s[i])
+            .collect();
+        let scale_u = norm(&self.f_u) + norm(&ku_u) + norm(&cus_s);
+
+        let csu_u = mat_vec(&self.c_su, self.n_s, self.n_u, u);
+        let ks_s = mat_vec(&self.k_s, self.n_s, self.n_s, s);
+        let r_s: Vec<f64> = (0..self.n_s)
+            .map(|i| self.f_s[i] - csu_u[i] - ks_s[i])
+            .collect();
+        let scale_s = norm(&self.f_s) + norm(&csu_u) + norm(&ks_s);
+
+        (
+            relative_residual(&r_u, scale_u),
+            relative_residual(&r_s, scale_s),
+        )
+    }
+
+    /// `f_u − C_us s`.
+    fn displacement_rhs(&self, s: &[f64]) -> Vec<f64> {
+        let cus_s = mat_vec(&self.c_us, self.n_u, self.n_s, s);
+        self.f_u
+            .iter()
+            .zip(cus_s.iter())
+            .map(|(f, c)| f - c)
+            .collect()
+    }
+
+    /// `f_s − C_su u`.
+    fn scalar_rhs(&self, u: &[f64]) -> Vec<f64> {
+        let csu_u = mat_vec(&self.c_su, self.n_s, self.n_u, u);
+        self.f_s
+            .iter()
+            .zip(csu_u.iter())
+            .map(|(f, c)| f - c)
+            .collect()
+    }
 }
 
 impl CoupledSolver {
@@ -659,10 +850,18 @@ impl CoupledSolver {
     /// Solve the coupled system.
     ///
     /// Accepts a right-hand side for displacements `f_u` and a right-hand
-    /// side for the scalar field `f_s`.  The coupling matrices C_us and
-    /// C_su are provided as dense row-major matrices.
+    /// side for the scalar field `f_s`.  The stiffness-like blocks `k_u`
+    /// (`n_disp_dof × n_disp_dof`), `k_s` (`n_scalar_dof × n_scalar_dof`) and the
+    /// coupling blocks `c_us` (`n_disp_dof × n_scalar_dof`), `c_su`
+    /// (`n_scalar_dof × n_disp_dof`) are dense row-major matrices; missing rows,
+    /// entries or load components are taken as zero.  The system solved is
+    /// `K_u u + C_us s = f_u`, `C_su u + K_s s = f_s`.
     ///
-    /// Returns a `CoupledResult` with the converged solution.
+    /// Returns a [`CoupledResult`] holding the fields, the true relative block
+    /// residuals `res_disp`, `res_scalar` and `converged`, which is set only if
+    /// both residuals are below the tolerances of [`ConvergenceCriteria`].  A
+    /// singular system yields `converged == false` with infinite residuals
+    /// (see [`CoupledSolver::try_solve`] for a typed error instead).
     pub fn solve(
         &mut self,
         k_u: &[Vec<f64>],
@@ -672,208 +871,158 @@ impl CoupledSolver {
         f_u: &[f64],
         f_s: &[f64],
     ) -> CoupledResult {
-        let mut u = vec![0.0f64; self.n_disp_dof];
-        let mut s = vec![0.0f64; self.n_scalar_dof];
-        let mut n_iter = 0;
-        let mut res_u = f64::MAX;
-        let mut res_s = f64::MAX;
-        let mut converged = false;
-
-        match self.scheme {
-            SolverScheme::Monolithic => {
-                // Build the coupled block system and solve once
-                let (u_sol, s_sol) = self.monolithic_solve(k_u, k_s, c_us, c_su, f_u, f_s);
-                u = u_sol;
-                s = s_sol;
-                res_u = 0.0;
-                res_s = 0.0;
-                n_iter = 1;
-                converged = true;
-            }
-            SolverScheme::Staggered => {
-                // One-pass staggered: first displacement, then scalar
-                s = self.solve_scalar_field(k_s, f_s);
-                let f_u_corrected = self.coupling_rhs(c_us, &s, f_u);
-                u = self.solve_disp_field(k_u, &f_u_corrected);
-                n_iter = 1;
-                converged = true;
-                res_u = 0.0;
-                res_s = 0.0;
-            }
-            SolverScheme::IterativeStaggered => {
-                self.relaxation.reset(1.0);
-                for iter in 0..self.criteria.max_iter {
-                    let u_prev = u.clone();
-                    let s_prev = s.clone();
-
-                    // Sub-step 1: solve scalar field with fixed u
-                    let f_s_c = self.coupling_rhs(c_su, &u, f_s);
-                    let s_new = self.solve_scalar_field(k_s, &f_s_c);
-
-                    // Sub-step 2: solve displacement with updated s
-                    let f_u_c = self.coupling_rhs(c_us, &s_new, f_u);
-                    let u_new = self.solve_disp_field(k_u, &f_u_c);
-
-                    // Compute residuals
-                    let du: Vec<f64> = u_new
-                        .iter()
-                        .zip(u_prev.iter())
-                        .map(|(a, b)| a - b)
-                        .collect();
-                    let ds: Vec<f64> = s_new
-                        .iter()
-                        .zip(s_prev.iter())
-                        .map(|(a, b)| a - b)
-                        .collect();
-                    res_u = norm(&du) / (norm(&u_new).max(1.0e-30));
-                    res_s = norm(&ds) / (norm(&s_new).max(1.0e-30));
-
-                    // Aitken relaxation on scalar residual
-                    let omega = self.relaxation.update(&ds);
-                    s = s_new
-                        .iter()
-                        .zip(s_prev.iter())
-                        .map(|(sn, sp)| sp + omega * (sn - sp))
-                        .collect();
-                    u = u_new;
-
-                    n_iter = iter + 1;
-                    if res_u < self.criteria.tol_disp && res_s < self.criteria.tol_scalar {
-                        converged = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        CoupledResult {
-            displacement: u,
-            scalar_field: s,
-            n_iter,
-            res_disp: res_u,
-            res_scalar: res_s,
-            converged,
+        match self.try_solve(k_u, k_s, c_us, c_su, f_u, f_s) {
+            Ok(result) => result,
+            Err(_) => CoupledResult {
+                displacement: vec![0.0; self.n_disp_dof],
+                scalar_field: vec![0.0; self.n_scalar_dof],
+                n_iter: 0,
+                res_disp: f64::INFINITY,
+                res_scalar: f64::INFINITY,
+                converged: false,
+            },
         }
     }
 
-    /// Solve a linear system K x = f using conjugate gradient (no preconditioner).
-    fn cg_solve(k: &[Vec<f64>], f: &[f64]) -> Vec<f64> {
-        let n = f.len();
-        if n == 0 {
-            return vec![];
-        }
-        let mut x = vec![0.0; n];
-        let mut r = f.to_vec();
-        let mut p = r.clone();
-        let mut rs = dot(&r, &r);
-        for _ in 0..n * 10 {
-            let kp = mat_vec(k, &p);
-            let alpha = rs / dot(&p, &kp).max(1e-300);
-            for ((x_i, r_i), (&p_i, &kp_i)) in
-                x.iter_mut().zip(r.iter_mut()).zip(p.iter().zip(kp.iter()))
-            {
-                *x_i += alpha * p_i;
-                *r_i -= alpha * kp_i;
-            }
-            let rs_new = dot(&r, &r);
-            if rs_new.sqrt() < 1e-12 * norm(f).max(1e-30) {
-                break;
-            }
-            let beta = rs_new / rs.max(1e-300);
-            for (p_i, &r_i) in p.iter_mut().zip(r.iter()) {
-                *p_i = r_i + beta * (*p_i);
-            }
-            rs = rs_new;
-        }
-        x
-    }
-
-    /// Solve displacement sub-system K_u u = f_u.
-    fn solve_disp_field(&self, k_u: &[Vec<f64>], f_u: &[f64]) -> Vec<f64> {
-        Self::cg_solve(k_u, f_u)
-    }
-
-    /// Solve scalar sub-system K_s s = f_s.
-    fn solve_scalar_field(&self, k_s: &[Vec<f64>], f_s: &[f64]) -> Vec<f64> {
-        Self::cg_solve(k_s, f_s)
-    }
-
-    /// Compute coupling RHS: f_coupled = f + C x_other.
-    fn coupling_rhs(&self, c: &[Vec<f64>], x_other: &[f64], f: &[f64]) -> Vec<f64> {
-        if c.is_empty() || c[0].is_empty() {
-            return f.to_vec();
-        }
-        let cx = mat_vec(c, x_other);
-        let nf = f.len();
-        (0..nf)
-            .map(|i| f[i] + if i < cx.len() { cx[i] } else { 0.0 })
-            .collect()
-    }
-
-    /// Monolithic block solve.
+    /// Fallible variant of [`CoupledSolver::solve`].
     ///
-    /// Builds the 2×2 block system \[K_u, C_us; C_su, K_s\] \[u; s\] = \[f_u; f_s\]
-    /// and solves via block-Gauss elimination.
-    fn monolithic_solve(
-        &self,
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::SingularSystem`] if the matrix that has to be
+    /// inverted by the chosen scheme (the full block matrix for
+    /// [`SolverScheme::Monolithic`], `K_u` and `K_s` for the staggered schemes)
+    /// is singular or contains non-finite entries.
+    pub fn try_solve(
+        &mut self,
         k_u: &[Vec<f64>],
         k_s: &[Vec<f64>],
         c_us: &[Vec<f64>],
         c_su: &[Vec<f64>],
         f_u: &[f64],
         f_s: &[f64],
-    ) -> (Vec<f64>, Vec<f64>) {
-        let nu = self.n_disp_dof;
-        let ns = self.n_scalar_dof;
-        let ntot = nu + ns;
-        // Build full block matrix
-        let mut a = vec![vec![0.0; ntot]; ntot];
-        for i in 0..nu {
-            for j in 0..nu {
-                if i < k_u.len() && j < k_u[i].len() {
-                    a[i][j] = k_u[i][j];
-                }
-            }
+    ) -> crate::Result<CoupledResult> {
+        let (n_u, n_s) = (self.n_disp_dof, self.n_scalar_dof);
+        let system = BlockSystem {
+            n_u,
+            n_s,
+            k_u: dense_block(k_u, n_u, n_u),
+            k_s: dense_block(k_s, n_s, n_s),
+            c_us: dense_block(c_us, n_u, n_s),
+            c_su: dense_block(c_su, n_s, n_u),
+            f_u: padded(f_u, n_u),
+            f_s: padded(f_s, n_s),
+        };
+        match self.scheme {
+            SolverScheme::Monolithic => self.solve_monolithic(&system),
+            SolverScheme::Staggered => self.solve_staggered_one_pass(&system),
+            SolverScheme::IterativeStaggered => self.solve_iterative_staggered(&system),
         }
-        for i in 0..nu {
-            for j in 0..ns {
-                if i < c_us.len() && j < c_us[i].len() {
-                    a[i][nu + j] = c_us[i][j];
-                }
-            }
-        }
-        for i in 0..ns {
-            for j in 0..nu {
-                if i < c_su.len() && j < c_su[i].len() {
-                    a[nu + i][j] = c_su[i][j];
-                }
-            }
-        }
-        for i in 0..ns {
-            for j in 0..ns {
-                if i < k_s.len() && j < k_s[i].len() {
-                    a[nu + i][nu + j] = k_s[i][j];
-                }
-            }
-        }
-        let mut rhs = vec![0.0; ntot];
-        for (rhs_i, &f_u_i) in rhs[..nu]
-            .iter_mut()
-            .zip(f_u.iter().chain(std::iter::repeat(&0.0)))
-        {
-            *rhs_i = f_u_i;
-        }
-        for (rhs_i, &f_s_i) in rhs[nu..]
-            .iter_mut()
-            .zip(f_s.iter().chain(std::iter::repeat(&0.0)))
-        {
-            *rhs_i = f_s_i;
-        }
+    }
 
-        let x = Self::cg_solve(&a, &rhs);
-        let u: Vec<f64> = x[..nu].to_vec();
-        let s: Vec<f64> = x[nu..].to_vec();
-        (u, s)
+    /// Build the result of a scheme from its fields, measuring the true residuals.
+    fn finish(
+        &self,
+        system: &BlockSystem,
+        u: Vec<f64>,
+        s: Vec<f64>,
+        n_iter: usize,
+    ) -> CoupledResult {
+        let (res_disp, res_scalar) = system.residuals(&u, &s);
+        let converged = res_disp < self.criteria.tol_disp && res_scalar < self.criteria.tol_scalar;
+        CoupledResult {
+            displacement: u,
+            scalar_field: s,
+            n_iter,
+            res_disp,
+            res_scalar,
+            converged,
+        }
+    }
+
+    /// Monolithic scheme: factorise the full block matrix once and solve directly.
+    ///
+    /// Gaussian elimination with scaled partial pivoting is used because the block
+    /// matrix is generally nonsymmetric (`C_us ≠ C_suᵀ`).
+    fn solve_monolithic(&self, system: &BlockSystem) -> crate::Result<CoupledResult> {
+        let (n_u, n_s) = (system.n_u, system.n_s);
+        let n_tot = n_u + n_s;
+        let mut a = vec![0.0; n_tot * n_tot];
+        for i in 0..n_u {
+            for j in 0..n_u {
+                a[i * n_tot + j] = system.k_u[i * n_u + j];
+            }
+            for j in 0..n_s {
+                a[i * n_tot + n_u + j] = system.c_us[i * n_s + j];
+            }
+        }
+        for i in 0..n_s {
+            for j in 0..n_u {
+                a[(n_u + i) * n_tot + j] = system.c_su[i * n_u + j];
+            }
+            for j in 0..n_s {
+                a[(n_u + i) * n_tot + n_u + j] = system.k_s[i * n_s + j];
+            }
+        }
+        let lu = DenseLu::factor(a, n_tot).ok_or(crate::Error::SingularSystem)?;
+        let rhs: Vec<f64> = system
+            .f_u
+            .iter()
+            .chain(system.f_s.iter())
+            .copied()
+            .collect();
+        let x = lu.solve(&rhs);
+        Ok(self.finish(system, x[..n_u].to_vec(), x[n_u..].to_vec(), 1))
+    }
+
+    /// One-pass staggered scheme: the scalar field is solved first with the
+    /// displacement still at zero (the `C_su u` feedback is neglected), then the
+    /// displacement is solved with the resulting scalar field.
+    ///
+    /// The pass is exact only for one-way coupling (`C_su = 0`); otherwise the
+    /// reported residual of the scalar equation exposes the neglected feedback and
+    /// `converged` is `false`.
+    fn solve_staggered_one_pass(&self, system: &BlockSystem) -> crate::Result<CoupledResult> {
+        let lu_u =
+            DenseLu::factor(system.k_u.clone(), system.n_u).ok_or(crate::Error::SingularSystem)?;
+        let lu_s =
+            DenseLu::factor(system.k_s.clone(), system.n_s).ok_or(crate::Error::SingularSystem)?;
+        let s = lu_s.solve(&system.f_s);
+        let u = lu_u.solve(&system.displacement_rhs(&s));
+        Ok(self.finish(system, u, s, 1))
+    }
+
+    /// Iteratively staggered (block Gauss–Seidel) scheme with Aitken relaxation
+    /// of the scalar field.
+    ///
+    /// Each sweep solves the scalar equation with the displacement of the previous
+    /// sweep, relaxes the scalar update with the Aitken factor ω, and then solves
+    /// the displacement equation with the relaxed scalar field.  The iteration stops
+    /// when the true block residuals fall below the tolerances or `max_iter` sweeps
+    /// have been made.
+    fn solve_iterative_staggered(&mut self, system: &BlockSystem) -> crate::Result<CoupledResult> {
+        let lu_u =
+            DenseLu::factor(system.k_u.clone(), system.n_u).ok_or(crate::Error::SingularSystem)?;
+        let lu_s =
+            DenseLu::factor(system.k_s.clone(), system.n_s).ok_or(crate::Error::SingularSystem)?;
+        self.relaxation.reset(1.0);
+        let mut u = vec![0.0; system.n_u];
+        let mut s = vec![0.0; system.n_s];
+        let mut n_iter = 0;
+        for iter in 0..self.criteria.max_iter {
+            let s_new = lu_s.solve(&system.scalar_rhs(&u));
+            let ds: Vec<f64> = s_new.iter().zip(s.iter()).map(|(n, o)| n - o).collect();
+            let omega = self.relaxation.update(&ds);
+            for (s_i, d_i) in s.iter_mut().zip(ds.iter()) {
+                *s_i += omega * d_i;
+            }
+            u = lu_u.solve(&system.displacement_rhs(&s));
+            n_iter = iter + 1;
+            let (res_disp, res_scalar) = system.residuals(&u, &s);
+            if res_disp < self.criteria.tol_disp && res_scalar < self.criteria.tol_scalar {
+                break;
+            }
+        }
+        Ok(self.finish(system, u, s, n_iter))
     }
 }
 
@@ -1342,4 +1491,419 @@ mod tests {
         // Should be compressive (negative normal stress)
         assert!(sigma[0] < 0.0);
     }
+}
+
+#[cfg(test)]
+mod tests_coupled_solver {
+    use super::*;
+
+    /// Deterministic pseudo-random numbers in [0, 1).
+    fn lcg(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+
+    fn scaled_identity(n: usize, value: f64) -> Vec<Vec<f64>> {
+        (0..n)
+            .map(|i| (0..n).map(|j| if i == j { value } else { 0.0 }).collect())
+            .collect()
+    }
+
+    fn constant_block(rows: usize, cols: usize, value: f64) -> Vec<Vec<f64>> {
+        vec![vec![value; cols]; rows]
+    }
+
+    /// Diagonally dominant random matrix (nonsymmetric).
+    fn random_dominant(n: usize, state: &mut u64) -> Vec<Vec<f64>> {
+        (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| {
+                        if i == j {
+                            8.0 + 2.0 * lcg(state)
+                        } else {
+                            2.0 * lcg(state) - 1.0
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn random_block(rows: usize, cols: usize, amplitude: f64, state: &mut u64) -> Vec<Vec<f64>> {
+        (0..rows)
+            .map(|_| {
+                (0..cols)
+                    .map(|_| amplitude * (2.0 * lcg(state) - 1.0))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn random_vector(n: usize, state: &mut u64) -> Vec<f64> {
+        (0..n).map(|_| 2.0 * lcg(state) - 1.0).collect()
+    }
+
+    fn row_dot(row: &[f64], x: &[f64]) -> f64 {
+        row.iter().zip(x).map(|(a, b)| a * b).sum()
+    }
+
+    /// A complete coupled problem K_u u + C_us s = f_u, C_su u + K_s s = f_s.
+    struct Problem {
+        k_u: Vec<Vec<f64>>,
+        k_s: Vec<Vec<f64>>,
+        c_us: Vec<Vec<f64>>,
+        c_su: Vec<Vec<f64>>,
+        f_u: Vec<f64>,
+        f_s: Vec<f64>,
+    }
+
+    impl Problem {
+        /// Random diagonally dominant problem with `n_u` + `n_s` unknowns.
+        fn random(n_u: usize, n_s: usize, coupling: f64, one_way: bool, seed: u64) -> Self {
+            let mut state = seed;
+            let k_u = random_dominant(n_u, &mut state);
+            let k_s = random_dominant(n_s, &mut state);
+            let c_us = random_block(n_u, n_s, coupling, &mut state);
+            let c_su = if one_way {
+                constant_block(n_s, n_u, 0.0)
+            } else {
+                random_block(n_s, n_u, coupling, &mut state)
+            };
+            let f_u = random_vector(n_u, &mut state);
+            let f_s = random_vector(n_s, &mut state);
+            Self {
+                k_u,
+                k_s,
+                c_us,
+                c_su,
+                f_u,
+                f_s,
+            }
+        }
+
+        fn sizes(&self) -> (usize, usize) {
+            (self.f_u.len(), self.f_s.len())
+        }
+
+        fn solver(&self, scheme: SolverScheme, criteria: ConvergenceCriteria) -> CoupledSolver {
+            let (n_u, n_s) = self.sizes();
+            CoupledSolver::new(n_u, n_s, scheme, criteria)
+        }
+
+        fn solve(&self, scheme: SolverScheme, criteria: ConvergenceCriteria) -> CoupledResult {
+            self.solver(scheme, criteria).solve(
+                &self.k_u, &self.k_s, &self.c_us, &self.c_su, &self.f_u, &self.f_s,
+            )
+        }
+
+        fn try_solve(
+            &self,
+            scheme: SolverScheme,
+            criteria: ConvergenceCriteria,
+        ) -> crate::Result<CoupledResult> {
+            self.solver(scheme, criteria).try_solve(
+                &self.k_u, &self.k_s, &self.c_us, &self.c_su, &self.f_u, &self.f_s,
+            )
+        }
+
+        /// Full block matrix [[K_u, C_us], [C_su, K_s]].
+        fn full_matrix(&self) -> Vec<Vec<f64>> {
+            let mut rows: Vec<Vec<f64>> = Vec::new();
+            for (ku_row, cus_row) in self.k_u.iter().zip(self.c_us.iter()) {
+                rows.push(ku_row.iter().chain(cus_row.iter()).copied().collect());
+            }
+            for (csu_row, ks_row) in self.c_su.iter().zip(self.k_s.iter()) {
+                rows.push(csu_row.iter().chain(ks_row.iter()).copied().collect());
+            }
+            rows
+        }
+
+        /// Solution of the full system by plain Gaussian elimination (independent of `DenseLu`).
+        fn direct_solution(&self) -> Vec<f64> {
+            let mut a = self.full_matrix();
+            let mut b: Vec<f64> = self.f_u.iter().chain(self.f_s.iter()).copied().collect();
+            let n = b.len();
+            for k in 0..n {
+                let mut p = k;
+                for (i, row) in a.iter().enumerate().skip(k + 1) {
+                    if row[k].abs() > a[p][k].abs() {
+                        p = i;
+                    }
+                }
+                a.swap(k, p);
+                b.swap(k, p);
+                let pivot_row = a[k].clone();
+                let pivot_rhs = b[k];
+                for (row, rhs) in a.iter_mut().zip(b.iter_mut()).skip(k + 1) {
+                    let f = row[k] / pivot_row[k];
+                    for (entry, pivot_entry) in row.iter_mut().zip(pivot_row.iter()).skip(k) {
+                        *entry -= f * pivot_entry;
+                    }
+                    *rhs -= f * pivot_rhs;
+                }
+            }
+            let mut x = vec![0.0; n];
+            for i in (0..n).rev() {
+                let tail: f64 = a[i][i + 1..]
+                    .iter()
+                    .zip(x[i + 1..].iter())
+                    .map(|(aij, xj)| aij * xj)
+                    .sum();
+                x[i] = (b[i] - tail) / a[i][i];
+            }
+            x
+        }
+
+        /// Independent absolute block residual norms for the fields `(u, s)`.
+        fn residual_norms(&self, u: &[f64], s: &[f64]) -> (f64, f64) {
+            let ru: f64 = (0..self.f_u.len())
+                .map(|i| self.f_u[i] - row_dot(&self.k_u[i], u) - row_dot(&self.c_us[i], s))
+                .map(|v| v * v)
+                .sum();
+            let rs: f64 = (0..self.f_s.len())
+                .map(|i| self.f_s[i] - row_dot(&self.c_su[i], u) - row_dot(&self.k_s[i], s))
+                .map(|v| v * v)
+                .sum();
+            (ru.sqrt(), rs.sqrt())
+        }
+    }
+
+    fn all_schemes() -> [SolverScheme; 3] {
+        [
+            SolverScheme::Monolithic,
+            SolverScheme::Staggered,
+            SolverScheme::IterativeStaggered,
+        ]
+    }
+
+    fn uniform_problem(n: usize, k: f64, c_us: f64, c_su: f64, f_u: f64, f_s: f64) -> Problem {
+        Problem {
+            k_u: scaled_identity(n, k),
+            k_s: scaled_identity(n, k),
+            c_us: scaled_identity(n, c_us),
+            c_su: scaled_identity(n, c_su),
+            f_u: vec![f_u; n],
+            f_s: vec![f_s; n],
+        }
+    }
+
+    #[test]
+    fn test_coupled_sign_convention_is_k_u_plus_c_s_equals_f() {
+        // K_u = K_s = 2, C_us = 0.5, one-way coupling: s = 1/2, u = (1 - 0.5 * s) / 2 = 0.375.
+        let problem = uniform_problem(1, 2.0, 0.5, 0.0, 1.0, 1.0);
+        let r = problem.solve(SolverScheme::Monolithic, ConvergenceCriteria::default());
+        assert!(r.converged);
+        assert!((r.scalar_field[0] - 0.5).abs() < 1e-14);
+        assert!((r.displacement[0] - 0.375).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_coupled_schemes_agree_for_symmetric_coupling() {
+        // Regression: K = 2 I, C = 0.5 I, f = 1 gave 0.4 (monolithic) vs 0.667 (iterative).
+        let n = 3;
+        let problem = uniform_problem(n, 2.0, 0.5, 0.5, 1.0, 1.0);
+        let criteria = ConvergenceCriteria::new(1e-12, 1e-12, 200);
+        let r_mono = problem.solve(SolverScheme::Monolithic, criteria.clone());
+        let r_iter = problem.solve(SolverScheme::IterativeStaggered, criteria);
+        assert!(r_mono.converged && r_iter.converged);
+        for &v in r_mono.displacement.iter().chain(r_mono.scalar_field.iter()) {
+            assert!((v - 0.4).abs() < 1e-12, "monolithic value {v}");
+        }
+        for &v in r_iter.displacement.iter().chain(r_iter.scalar_field.iter()) {
+            assert!((v - 0.4).abs() < 1e-9, "iterative value {v}");
+        }
+    }
+
+    #[test]
+    fn test_one_pass_staggered_with_feedback_is_not_reported_converged() {
+        let problem = uniform_problem(2, 2.0, 0.5, 0.5, 1.0, 1.0);
+        let r = problem.solve(SolverScheme::Staggered, ConvergenceCriteria::default());
+        // s = 0.5, u = 0.375: the scalar equation is violated by C_su u (the neglected feedback).
+        assert!((r.scalar_field[0] - 0.5).abs() < 1e-14);
+        assert!((r.displacement[0] - 0.375).abs() < 1e-14);
+        assert!(
+            !r.converged,
+            "feedback was neglected: must not be converged"
+        );
+        assert_eq!(r.n_iter, 1);
+        assert!(r.res_scalar > 0.05, "res_scalar = {}", r.res_scalar);
+        assert!(r.res_disp < 1e-14, "displacement equation is satisfied");
+    }
+
+    #[test]
+    fn test_one_pass_staggered_is_exact_for_one_way_coupling() {
+        let problem = Problem::random(4, 3, 0.5, true, 7);
+        let r = problem.solve(SolverScheme::Staggered, ConvergenceCriteria::default());
+        assert!(r.converged, "residuals ({}, {})", r.res_disp, r.res_scalar);
+        let reference = problem.direct_solution();
+        for (i, &u) in r.displacement.iter().enumerate() {
+            assert!((u - reference[i]).abs() < 1e-10);
+        }
+        for (i, &s) in r.scalar_field.iter().enumerate() {
+            assert!((s - reference[4 + i]).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_nonsymmetric_system_all_schemes_match_direct_solve() {
+        let problem = Problem::random(4, 3, 0.6, false, 0xdead_beef);
+        // The full block matrix really is nonsymmetric.
+        let a = problem.full_matrix();
+        let asym = (0..a.len())
+            .flat_map(|i| (0..a.len()).map(move |j| (i, j)))
+            .map(|(i, j)| (a[i][j] - a[j][i]).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            asym > 0.1,
+            "test matrix must be nonsymmetric, asymmetry {asym}"
+        );
+        let reference = problem.direct_solution();
+        let criteria = ConvergenceCriteria::new(1e-13, 1e-13, 200);
+        for scheme in [SolverScheme::Monolithic, SolverScheme::IterativeStaggered] {
+            let r = problem.solve(scheme, criteria.clone());
+            assert!(
+                r.converged,
+                "{scheme:?}: residuals ({:e}, {:e}) after {} iterations",
+                r.res_disp, r.res_scalar, r.n_iter
+            );
+            for (i, &u) in r.displacement.iter().enumerate() {
+                assert!(
+                    (u - reference[i]).abs() < 1e-8,
+                    "{scheme:?}: u[{i}] = {u} vs direct {}",
+                    reference[i]
+                );
+            }
+            for (i, &s) in r.scalar_field.iter().enumerate() {
+                assert!(
+                    (s - reference[4 + i]).abs() < 1e-8,
+                    "{scheme:?}: s[{i}] = {s} vs direct {}",
+                    reference[4 + i]
+                );
+            }
+            let (ru, rs) = problem.residual_norms(&r.displacement, &r.scalar_field);
+            assert!(
+                ru < 1e-10 && rs < 1e-10,
+                "independent residuals ({ru:e}, {rs:e})"
+            );
+        }
+        // The iterative scheme needs real sweeps (more than one) for genuinely coupled blocks.
+        let r = problem.solve(SolverScheme::IterativeStaggered, criteria);
+        assert!(r.n_iter > 1, "n_iter = {}", r.n_iter);
+    }
+
+    #[test]
+    fn test_reported_residuals_are_the_true_block_residuals() {
+        // A one-pass solve of a strongly coupled system leaves a real residual; res_* must reflect it.
+        let problem = Problem::random(3, 2, 1.5, false, 99);
+        let r = problem.solve(SolverScheme::Staggered, ConvergenceCriteria::default());
+        let (ru, rs) = problem.residual_norms(&r.displacement, &r.scalar_field);
+        assert!(rs > 1e-3, "independent scalar residual {rs}");
+        assert!(ru < 1e-12, "displacement equation is solved exactly: {ru}");
+        assert!(
+            r.res_scalar > 1e-4,
+            "reported res_scalar = {}",
+            r.res_scalar
+        );
+        assert!(r.res_disp < 1e-12, "reported res_disp = {}", r.res_disp);
+        assert!(!r.converged);
+    }
+
+    #[test]
+    fn test_thermally_driven_displacement_with_zero_mechanical_load() {
+        // f_u = 0: the displacement is driven only by the coupling term; residuals must stay finite
+        // and all schemes must agree.
+        let n = 2;
+        let problem = Problem {
+            k_u: scaled_identity(n, 4.0),
+            k_s: scaled_identity(n, 2.0),
+            c_us: constant_block(n, n, 0.5),
+            c_su: constant_block(n, n, 0.0),
+            f_u: vec![0.0; n],
+            f_s: vec![1.0; n],
+        };
+        for scheme in all_schemes() {
+            let r = problem.solve(scheme, ConvergenceCriteria::default());
+            assert!(r.converged, "{scheme:?}");
+            // s = 1/2 each; K_u u = -C_us s = -0.5 (0.5 + 0.5) = -0.5  ->  u = -0.125.
+            for &u in &r.displacement {
+                assert!((u + 0.125).abs() < 1e-10, "{scheme:?}: u = {u}");
+            }
+            assert!(r.res_disp.is_finite() && r.res_scalar.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_singular_system_is_reported_not_solved() {
+        let n = 2;
+        let problem = Problem {
+            k_u: constant_block(n, n, 0.0),
+            k_s: scaled_identity(n, 1.0),
+            c_us: constant_block(n, n, 0.0),
+            c_su: constant_block(n, n, 0.0),
+            f_u: vec![1.0; n],
+            f_s: vec![1.0; n],
+        };
+        for scheme in all_schemes() {
+            let r = problem.solve(scheme, ConvergenceCriteria::default());
+            assert!(!r.converged, "{scheme:?}: singular K_u cannot converge");
+            assert!(r.res_disp.is_infinite() && r.res_scalar.is_infinite());
+            assert_eq!(r.displacement.len(), n);
+            assert_eq!(r.scalar_field.len(), n);
+            let err = problem
+                .try_solve(scheme, ConvergenceCriteria::default())
+                .unwrap_err();
+            assert!(
+                matches!(err, crate::Error::SingularSystem),
+                "{scheme:?}: {err}"
+            );
+        }
+        // The block matrix [[1, 1], [1, 1]] is singular although K_u and K_s are regular.
+        let coupled = uniform_problem(1, 1.0, 1.0, 1.0, 1.0, 1.0);
+        assert!(
+            coupled
+                .try_solve(SolverScheme::Monolithic, ConvergenceCriteria::default())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_iterative_staggered_reports_exhausted_iterations() {
+        // Strong feedback needs many sweeps; two are not enough for a 1e-14 tolerance.
+        let problem = uniform_problem(2, 2.0, 1.5, 1.5, 1.0, 1.0);
+        let r = problem.solve(
+            SolverScheme::IterativeStaggered,
+            ConvergenceCriteria::new(1e-14, 1e-14, 2),
+        );
+        assert_eq!(r.n_iter, 2);
+        assert!(!r.converged);
+        assert!(r.res_disp.is_finite() && r.res_scalar.is_finite());
+    }
+
+    #[test]
+    fn test_dense_lu_pivoting_scaling_and_singularity() {
+        // Needs a row exchange.
+        let lu = DenseLu::factor(vec![0.0, 1.0, 1.0, 0.0], 2).unwrap();
+        let x = lu.solve(&[3.0, 5.0]);
+        assert!((x[0] - 5.0).abs() < 1e-14 && (x[1] - 3.0).abs() < 1e-14);
+        // Badly scaled but regular.
+        let lu = DenseLu::factor(vec![1.0e9, 0.0, 0.0, 1.0e-9], 2).unwrap();
+        let x = lu.solve(&[2.0e9, 3.0e-9]);
+        assert!((x[0] - 2.0).abs() < 1e-12 && (x[1] - 3.0).abs() < 1e-12);
+        // Rank deficient / zero row / non-finite.
+        assert!(DenseLu::factor(vec![1.0, 2.0, 2.0, 4.0], 2).is_none());
+        assert!(DenseLu::factor(vec![1.0, 2.0, 0.0, 0.0], 2).is_none());
+        assert!(DenseLu::factor(vec![f64::NAN, 0.0, 0.0, 1.0], 2).is_none());
+        // Empty system is trivially solvable.
+        assert!(
+            DenseLu::factor(Vec::new(), 0)
+                .unwrap()
+                .solve(&[])
+                .is_empty()
+        );
+    }
+
+    mod agreement;
 }

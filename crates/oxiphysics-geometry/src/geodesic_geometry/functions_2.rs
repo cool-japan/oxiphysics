@@ -304,10 +304,24 @@ mod tests {
         );
     }
     #[test]
+    fn test_fmm_survives_a_degenerate_face_without_a_third_corner() {
+        // The face [1, 2, 2] repeats a corner, so the edge 1-2 has no third vertex
+        // on it.  The marching used to panic there; the edge still relaxes vertex 2
+        // and the regular triangle [0, 1, 2] gives the Eikonal update.
+        let mesh = GeodesicMesh::new(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![[0, 1, 2], [1, 2, 2]],
+        );
+        let dist = fast_marching_geodesic(&mesh, &[0]);
+        assert_eq!(dist[0], 0.0);
+        assert!((dist[1] - 1.0).abs() < 1e-12, "{}", dist[1]);
+        assert!((dist[2] - 1.0).abs() < 1e-12, "{}", dist[2]);
+    }
+    #[test]
     fn test_heat_method_source_zero() {
         let mesh = build_grid_mesh(5, 5, 1.0);
         let params = HeatMethodParams::default();
-        let dist = heat_method_geodesic(&mesh, &[0], &params);
+        let dist = heat_method_geodesic(&mesh, &[0], &params).expect("valid mesh");
         let min_d = dist.iter().copied().fold(f64::INFINITY, f64::min);
         assert!(
             (dist[0] - min_d).abs() < 1e-6,
@@ -316,9 +330,10 @@ mod tests {
     }
     #[test]
     fn test_heat_method_monotone_on_line() {
-        let mesh = build_grid_mesh(5, 1, 1.0);
+        // A strip two vertices wide: a single row of vertices has no triangles.
+        let mesh = build_grid_mesh(5, 2, 1.0);
         let params = HeatMethodParams::default();
-        let dist = heat_method_geodesic(&mesh, &[0], &params);
+        let dist = heat_method_geodesic(&mesh, &[0], &params).expect("valid mesh");
         for i in 1..5 {
             assert!(
                 dist[i] >= dist[i - 1] - 1e-6,

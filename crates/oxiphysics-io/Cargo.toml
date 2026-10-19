@@ -20,6 +20,8 @@ oxixml-xml = { workspace = true }
 # `float_roundtrip` makes the JSON reader parse every f64 correctly rounded, so
 # restart files round-trip bit-exactly.
 serde_json = { workspace = true, features = ["float_roundtrip"] }
+# Derive support for the scene and checkpoint JSON documents (simulation_io).
+serde = { workspace = true }
 
 [dev-dependencies]
 oxiarc-zstd = { workspace = true }

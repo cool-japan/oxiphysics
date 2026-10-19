@@ -2,6 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use crate::simulation::sph_sim_neighbors::SphSimNeighbors;
 use crate::simulation::types_sim::*;
 use oxiphysics_core::math::Vec3;
 
@@ -57,6 +58,11 @@ impl SphPhase {
 /// Maintains its own particle data (positions, velocities, densities, pressures,
 /// forces, masses) and runs a simple density → pressure → forces → integrate
 /// pipeline each step.
+///
+/// All pair sums (density, pressure, viscosity, surface tension) run over
+/// neighbour lists for the cubic-spline support `2h` that are found with a
+/// spatial hash and cached, see [`SphSim::refresh_neighbors`]; a step costs
+/// `O(N k)` for `k` neighbours per particle.
 #[derive(Debug, Clone)]
 pub struct SphSim {
     /// Simulation configuration.
@@ -75,6 +81,8 @@ pub struct SphSim {
     pub masses: Vec<f64>,
     /// Simulation state (time, step counter).
     pub state: SphSimState,
+    /// Cached neighbour lists, see [`SphSim::refresh_neighbors`].
+    neighbors: SphSimNeighbors,
 }
 impl SphSim {
     /// Create a new simulator with `n_particles` particles uniformly distributed
@@ -114,6 +122,7 @@ impl SphSim {
             forces: vec![[0.0; 3]; n],
             masses: masses_vec,
             state: SphSimState::new(),
+            neighbors: SphSimNeighbors::empty(),
         }
     }
     /// Number of particles.
@@ -125,6 +134,9 @@ impl SphSim {
         self.positions.is_empty()
     }
     /// Run one full step: density → pressure → forces → integrate.
+    ///
+    /// The neighbour lists are built once at the start of the step and shared
+    /// by the density, pressure and viscosity sums.
     pub fn step(&mut self) {
         self.compute_density_sum();
         self.compute_pressures_tait();
@@ -135,22 +147,40 @@ impl SphSim {
         self.integrate_euler();
         self.state.advance(self.config.dt);
     }
-    /// Compute SPH density via kernel summation (cubic spline approximation).
+    /// Bring the cached neighbour lists up to date and return them.
+    ///
+    /// The lists hold, for every particle, the indices `j ≠ i` with
+    /// `|xᵢ − xⱼ| ≤ 2h` (the cubic-spline support, `h = config.kernel_radius`),
+    /// found with a spatial hash in `O(N)` expected time.  They are rebuilt only
+    /// when the positions or the kernel radius differ from those the cached
+    /// lists were built for, so one [`step`](Self::step) builds them once and
+    /// shares them between all pair sums, while changes made through the public
+    /// fields (for example [`apply_floor_reflection`](Self::apply_floor_reflection))
+    /// are always picked up.  The pair sums call this themselves; it is public
+    /// for callers that want to inspect the lists.
+    pub fn refresh_neighbors(&mut self) -> &SphSimNeighbors {
+        if !self
+            .neighbors
+            .is_current(&self.positions, self.config.kernel_radius)
+        {
+            self.neighbors = SphSimNeighbors::build(&self.positions, self.config.kernel_radius);
+        }
+        &self.neighbors
+    }
+    /// Compute SPH density via kernel summation (cubic spline kernel).
+    ///
+    /// `ρᵢ = mᵢ W(0, h) + Σ_{j ∈ N(i)} mⱼ W(|xᵢ − xⱼ|, h)` over the neighbours
+    /// `|xᵢ − xⱼ| ≤ 2h` of [`refresh_neighbors`](Self::refresh_neighbors), so the
+    /// cost is `O(N k)`.
     pub fn compute_density_sum(&mut self) {
+        self.refresh_neighbors();
         let n = self.len();
         let h = self.config.kernel_radius;
-        let h2 = h * h;
+        let self_weight = Self::cubic_w(0.0, h);
         for i in 0..n {
-            let mut rho = self.masses[i] * Self::cubic_w(0.0, h);
-            for j in 0..n {
-                if j == i {
-                    continue;
-                }
-                let d2 = Self::dist2(&self.positions[i], &self.positions[j]);
-                if d2 > 4.0 * h2 {
-                    continue;
-                }
-                let r = d2.sqrt();
+            let mut rho = self.masses[i] * self_weight;
+            for &j in self.neighbors.neighbors_of(i) {
+                let r = Self::dist2(&self.positions[i], &self.positions[j]).sqrt();
                 rho += self.masses[j] * Self::cubic_w(r, h);
             }
             self.densities[i] = rho;
@@ -167,19 +197,24 @@ impl SphSim {
         }
     }
     /// Compute symmetric SPH pressure forces.
+    ///
+    /// Every neighbour pair `i < j` inside the support `2h` is visited once.  The
+    /// force on `i` is `Fᵢ = −mᵢ mⱼ (Pᵢ/ρᵢ² + Pⱼ/ρⱼ²) W'(r) r̂ᵢⱼ` with
+    /// `r̂ᵢⱼ = (xᵢ − xⱼ)/r`, and `j` receives the reaction `Fⱼ = −Fᵢ`, so the
+    /// total pressure force vanishes for any particle masses.  The cost is
+    /// `O(N k)`.
     pub fn compute_pressure_forces(&mut self) {
+        self.refresh_neighbors();
         let n = self.len();
         let h = self.config.kernel_radius;
-        let h2 = h * h;
         for i in 0..n {
             let rhoi = self.densities[i].max(1e-14);
             let pi = self.pressures[i];
-            for j in (i + 1)..n {
-                let d2 = Self::dist2(&self.positions[i], &self.positions[j]);
-                if d2 > 4.0 * h2 {
+            for &j in self.neighbors.neighbors_of(i) {
+                if j <= i {
                     continue;
                 }
-                let r = d2.sqrt();
+                let r = Self::dist2(&self.positions[i], &self.positions[j]).sqrt();
                 if r < 1e-14 {
                     continue;
                 }
@@ -191,22 +226,31 @@ impl SphSim {
                     let rhat_k = (self.positions[i][k] - self.positions[j][k]) / r;
                     let fk = factor * rhat_k;
                     self.forces[i][k] += fk * self.masses[i];
-                    self.forces[j][k] -= fk * self.masses[j];
+                    self.forces[j][k] -= fk * self.masses[i];
                 }
             }
         }
     }
     /// Compute artificial viscosity forces (Monaghan style).
+    ///
+    /// Every approaching neighbour pair `i < j` (`(vᵢ − vⱼ)·(xᵢ − xⱼ) < 0`) inside
+    /// the support `2h` is visited once; `j` receives the reaction `Fⱼ = −Fᵢ`, so
+    /// the total viscous force vanishes for any particle masses.  The cost is
+    /// `O(N k)`.
     pub fn compute_viscosity_forces(&mut self) {
+        self.refresh_neighbors();
         let n = self.len();
         let h = self.config.kernel_radius;
         let h2 = h * h;
         let mu = self.config.viscosity;
         for i in 0..n {
             let rhoi = self.densities[i].max(1e-14);
-            for j in (i + 1)..n {
+            for &j in self.neighbors.neighbors_of(i) {
+                if j <= i {
+                    continue;
+                }
                 let d2 = Self::dist2(&self.positions[i], &self.positions[j]);
-                if d2 > 4.0 * h2 || d2 < 1e-28 {
+                if d2 < 1e-28 {
                     continue;
                 }
                 let r = d2.sqrt();
@@ -227,7 +271,7 @@ impl SphSim {
                     let rhat_k = (self.positions[i][k] - self.positions[j][k]) / r;
                     let fk = -self.masses[j] * pi_visc * grad * rhat_k;
                     self.forces[i][k] += fk * self.masses[i];
-                    self.forces[j][k] -= fk * self.masses[j];
+                    self.forces[j][k] -= fk * self.masses[i];
                 }
             }
         }
@@ -267,7 +311,8 @@ impl SphSim {
             .map(|(v, &m)| 0.5 * m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
             .sum()
     }
-    /// Simplified cubic spline kernel W(r, h).
+    /// Cubic spline (M4) kernel `W(r, h)` with 3-D normalisation `1/(π h³)` and
+    /// compact support `r ≤ 2h`.
     pub(crate) fn cubic_w(r: f64, h: f64) -> f64 {
         let q = r / h;
         if q > 2.0 {
@@ -280,7 +325,8 @@ impl SphSim {
             sigma * 0.25 * (2.0 - q).powi(3)
         }
     }
-    /// Gradient magnitude of the cubic spline kernel dW/dr.
+    /// Radial derivative `dW/dr ≤ 0` of the cubic spline kernel (zero for `r ≥ 2h`
+    /// and at `r = 0`), so that `∇ᵢW = dW/dr · (xᵢ − xⱼ)/r`.
     pub(crate) fn cubic_grad_w(r: f64, h: f64) -> f64 {
         let q = r / h;
         if !(1e-14..=2.0).contains(&q) {
@@ -308,23 +354,23 @@ impl SphSim {
     /// where `kappa` is the interface curvature and `n_i` the unit outward
     /// normal, both estimated from the colour-function gradient (here we use
     /// density as a proxy).
+    ///
+    /// Both the colour-gradient and the curvature sum run over the cached
+    /// neighbour lists, so the cost is `O(N k)`.
     pub fn compute_surface_tension_forces(&mut self) {
         let n = self.len();
         let h = self.config.kernel_radius;
-        let h2 = h * h;
         let sigma = self.config.surface_tension_coeff;
         if sigma.abs() < 1e-30 {
             return;
         }
+        self.refresh_neighbors();
         let mut grad_c = vec![[0.0_f64; 3]; n];
         for (i, gc_i) in grad_c.iter_mut().enumerate().take(n) {
             let rhoi = self.densities[i].max(1e-14);
-            for j in 0..n {
-                if j == i {
-                    continue;
-                }
+            for &j in self.neighbors.neighbors_of(i) {
                 let d2 = Self::dist2(&self.positions[i], &self.positions[j]);
-                if d2 > 4.0 * h2 || d2 < 1e-28 {
+                if d2 < 1e-28 {
                     continue;
                 }
                 let r = d2.sqrt();
@@ -353,12 +399,10 @@ impl SphSim {
             ];
             let rhoi = self.densities[i].max(1e-14);
             let mut kappa = 0.0_f64;
-            for (j, gc_j) in grad_c.iter().enumerate().take(n) {
-                if j == i {
-                    continue;
-                }
+            for &j in self.neighbors.neighbors_of(i) {
+                let gc_j = grad_c[j];
                 let d2 = Self::dist2(&self.positions[i], &self.positions[j]);
-                if d2 > 4.0 * h2 || d2 < 1e-28 {
+                if d2 < 1e-28 {
                     continue;
                 }
                 let r = d2.sqrt();

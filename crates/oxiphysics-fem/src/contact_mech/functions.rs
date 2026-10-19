@@ -5,6 +5,7 @@
 use std::f64::consts::PI;
 
 use super::types::{AdhesionModel, NodeToSegmentContact};
+use crate::contact_mechanics::jkr_contact_radius;
 
 /// Complementary error function erfc(x) via rational approximation (Abramowitz & Stegun 7.1.26).
 pub(super) fn erfc(x: f64) -> f64 {
@@ -211,6 +212,125 @@ mod tests {
         assert!(energy > 0.0);
     }
     #[test]
+    fn test_mindlin_tangential_stiffness_matches_johnson_for_identical_steel() {
+        // Johnson: k_t = 4 G a / (2 - nu) for two identical bodies.
+        let mc = MindlinContact {
+            hertz: hertz_equal(),
+            friction: 0.5,
+        };
+        let normal = 100.0;
+        let a = mc.hertz.contact_radius(normal);
+        let g = steel().shear_modulus();
+        let nu = steel().poisson_ratio;
+        let expected = 4.0 * g * a / (2.0 - nu);
+        let k_t = mc.tangential_stiffness(normal);
+        assert!(
+            (k_t - expected).abs() / expected < 1e-12,
+            "k_t = {k_t}, expected 4Ga/(2-nu) = {expected}"
+        );
+    }
+    #[test]
+    fn test_mindlin_initial_compliance_slope_is_inverse_stiffness() {
+        let mc = MindlinContact {
+            hertz: hertz_equal(),
+            friction: 0.5,
+        };
+        let normal = 100.0;
+        let limit = mc.friction * normal;
+        let dq = 1.0e-6 * limit;
+        let delta = mc.tangential_compliance(dq, normal).unwrap();
+        let slope_stiffness = dq / delta;
+        let k_t = mc.tangential_stiffness(normal);
+        assert!(
+            (slope_stiffness - k_t).abs() / k_t < 1e-5,
+            "finite-difference slope {slope_stiffness} vs k_t {k_t}"
+        );
+    }
+    #[test]
+    fn test_mindlin_saturation_displacement_and_force_roundtrip() {
+        let mc = MindlinContact {
+            hertz: hertz_equal(),
+            friction: 0.5,
+        };
+        let normal = 200.0;
+        let limit = mc.friction * normal;
+        let a = mc.hertz.contact_radius(normal);
+        let g_star = 1.0 / ((2.0 - 0.3) / steel().shear_modulus() * 2.0);
+        let delta_s = 3.0 * limit / (16.0 * g_star * a);
+        let delta = mc
+            .tangential_compliance(limit * (1.0 - 1.0e-12), normal)
+            .unwrap();
+        assert!(
+            (delta - delta_s).abs() / delta_s < 1e-6,
+            "delta = {delta}, expected 3 mu F/(16 G* a) = {delta_s}"
+        );
+        for q in [0.1, 0.5, 0.9] {
+            let force = q * limit;
+            let d = mc.tangential_compliance(force, normal).unwrap();
+            let back = mc.partial_slip_force_disp(d, normal);
+            assert!(
+                (back - force).abs() / force < 1e-10,
+                "q = {q}: force {force} came back as {back}"
+            );
+        }
+        assert!((mc.partial_slip_force_disp(10.0 * delta_s, normal) - limit).abs() < 1e-9);
+    }
+    #[test]
+    fn test_mindlin_fretting_energy_is_cubic_for_small_amplitude() {
+        // W -> 2 Q*^3 / (9 mu F k_t) as Q* -> 0.
+        let mc = MindlinContact {
+            hertz: hertz_equal(),
+            friction: 0.5,
+        };
+        let normal = 100.0;
+        let limit = mc.friction * normal;
+        let k_t = mc.tangential_stiffness(normal);
+        for q in [1.0e-6, 1.0e-4, 1.0e-3] {
+            let amplitude = q * limit;
+            let w = mc.fretting_energy_per_cycle(amplitude, normal);
+            let asymptote = 2.0 * amplitude.powi(3) / (9.0 * limit * k_t);
+            assert!(
+                (w - asymptote).abs() / asymptote < 2.0 * q + 1.0e-9,
+                "q = {q}: W = {w:e}, asymptote = {asymptote:e}"
+            );
+        }
+        // Gross-slip cap: 6/5 (mu F)^2 / k_t.
+        let w_cap = mc.fretting_energy_per_cycle(5.0 * limit, normal);
+        assert!((w_cap - 1.2 * limit * limit / k_t).abs() / w_cap < 1e-12);
+    }
+    #[test]
+    fn test_mindlin_fretting_energy_matches_masing_hysteresis_loop() {
+        let mc = MindlinContact {
+            hertz: hertz_equal(),
+            friction: 0.5,
+        };
+        let normal = 100.0;
+        let limit = mc.friction * normal;
+        let q_star = 0.6;
+        let amp = q_star * limit;
+        let d_star = mc.tangential_compliance(amp, normal).unwrap();
+        let n = 4000_usize;
+        let h = amp / n as f64;
+        let mut simpson = 0.0;
+        for i in 0..=n {
+            let weight = if i == 0 || i == n {
+                1.0
+            } else if i % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            };
+            simpson += weight * mc.tangential_compliance(i as f64 * h, normal).unwrap();
+        }
+        simpson *= h / 3.0;
+        let loop_area = 4.0 * amp * d_star - 8.0 * simpson;
+        let w = mc.fretting_energy_per_cycle(amp, normal);
+        assert!(
+            (w - loop_area).abs() / loop_area < 1e-6,
+            "closed form {w:e} vs hysteresis loop {loop_area:e}"
+        );
+    }
+    #[test]
     fn test_rolling_resistance() {
         let h = hertz_equal();
         let rc = RollingContact::new(h, 0.01, 0.01);
@@ -363,16 +483,7 @@ pub fn contact_radius_vs_load(
                 let f_pos = f.max(0.0);
                 (3.0 * f_pos * r_star / (4.0 * e_star)).cbrt()
             }
-            AdhesionModel::Jkr => {
-                let term1 = 3.0 * PI * work_of_adhesion * r_star;
-                let under_sqrt = 6.0 * PI * work_of_adhesion * r_star * f + term1 * term1;
-                if under_sqrt < 0.0 {
-                    0.0
-                } else {
-                    let a3 = (r_star / e_star) * (f + term1 + under_sqrt.sqrt());
-                    if a3 <= 0.0 { 0.0 } else { a3.cbrt() }
-                }
-            }
+            AdhesionModel::Jkr => jkr_contact_radius(f, r_star, e_star, work_of_adhesion),
             AdhesionModel::Dmt => {
                 let f_eff = f + 2.0 * PI * work_of_adhesion * r_star;
                 if f_eff <= 0.0 {
@@ -485,6 +596,108 @@ mod tests_adhesion {
         };
         let e = jkr.stored_elastic_energy(50.0);
         assert!(e.is_finite(), "JKR elastic energy must be finite: {e}");
+    }
+    #[test]
+    fn test_jkr_reduces_to_hertz_without_adhesion() {
+        let jkr = JkrContact {
+            hertz: hertz_sphere_flat(),
+            work_of_adhesion: 0.0,
+        };
+        for f in [0.5, 10.0, 100.0, 5000.0] {
+            let a_jkr = jkr.contact_radius(f);
+            let a_hertz = jkr.hertz.contact_radius(f);
+            assert!(
+                (a_jkr - a_hertz).abs() / a_hertz < 1e-12,
+                "F = {f}: JKR {a_jkr} vs Hertz {a_hertz}"
+            );
+        }
+    }
+    #[test]
+    fn test_jkr_zero_load_radius_cubed() {
+        // a0^3 = 9 pi W R^2 / (2 E*)
+        let w = 0.1;
+        let jkr = JkrContact {
+            hertz: hertz_sphere_flat(),
+            work_of_adhesion: w,
+        };
+        let r_star = jkr.hertz.effective_radius();
+        let e_star = ElasticSolid::reduced_modulus(&jkr.hertz.solid_a, &jkr.hertz.solid_b);
+        let a0 = jkr.contact_radius(0.0);
+        let expected = 9.0 * PI * w * r_star * r_star / (2.0 * e_star);
+        assert!(
+            (a0.powi(3) - expected).abs() / expected < 1e-12,
+            "a0^3 = {:e}, expected {expected:e}",
+            a0.powi(3)
+        );
+    }
+    #[test]
+    fn test_jkr_radius_satisfies_load_equation_and_pull_off() {
+        let w = 0.1;
+        let jkr = JkrContact {
+            hertz: hertz_sphere_flat(),
+            work_of_adhesion: w,
+        };
+        let r_star = jkr.hertz.effective_radius();
+        let e_star = ElasticSolid::reduced_modulus(&jkr.hertz.solid_a, &jkr.hertz.solid_b);
+        let pull_off = jkr.pull_off_force().abs();
+        for force in [-0.9, 0.0, 1.0, 50.0].map(|f| f * pull_off) {
+            let a = jkr.contact_radius(force);
+            let load = 4.0 * e_star * a.powi(3) / (3.0 * r_star)
+                - (8.0 * PI * w * e_star * a.powi(3)).sqrt();
+            let scale = pull_off.max(force.abs());
+            assert!(
+                (load - force).abs() / scale < 1e-9,
+                "F = {force:e}: JKR load equation gives {load:e}"
+            );
+        }
+        // No solution (separated surfaces) below the pull-off force.
+        assert_eq!(jkr.contact_radius(1.5 * jkr.pull_off_force()), 0.0);
+        assert_eq!(jkr.stored_elastic_energy(1.5 * jkr.pull_off_force()), 0.0);
+    }
+    #[test]
+    fn test_jkr_stored_energy_zero_load_closed_form() {
+        // U_E(F = 0) = 4 E* a0^5 / (45 R^2) and the Hertz limit (2/5) F delta for W = 0.
+        let w = 0.05;
+        let jkr = JkrContact {
+            hertz: hertz_sphere_flat(),
+            work_of_adhesion: w,
+        };
+        let r_star = jkr.hertz.effective_radius();
+        let e_star = ElasticSolid::reduced_modulus(&jkr.hertz.solid_a, &jkr.hertz.solid_b);
+        let a0 = jkr.contact_radius(0.0);
+        let expected = 4.0 * e_star * a0.powi(5) / (45.0 * r_star * r_star);
+        let u = jkr.stored_elastic_energy(0.0);
+        assert!(
+            (u - expected).abs() / expected < 1e-10,
+            "U_E(0) = {u:e}, expected {expected:e}"
+        );
+        let hertz_only = JkrContact {
+            hertz: hertz_sphere_flat(),
+            work_of_adhesion: 0.0,
+        };
+        let f = 80.0;
+        let u_hertz = hertz_only.stored_elastic_energy(f);
+        let expected_hertz = hertz_only.hertz.stored_energy(f);
+        assert!((u_hertz - expected_hertz).abs() / expected_hertz < 1e-12);
+    }
+    #[test]
+    fn test_contact_radius_vs_load_jkr_matches_jkr_contact() {
+        let w = 0.1;
+        let jkr = JkrContact {
+            hertz: hertz_sphere_flat(),
+            work_of_adhesion: w,
+        };
+        let r_star = jkr.hertz.effective_radius();
+        let e_star = ElasticSolid::reduced_modulus(&jkr.hertz.solid_a, &jkr.hertz.solid_b);
+        let curve = contact_radius_vs_load(r_star, e_star, w, AdhesionModel::Jkr, 7, 0.0, 600.0);
+        assert_eq!(curve.len(), 7);
+        for (f, a) in curve {
+            let expected = jkr.contact_radius(f);
+            assert!(
+                (a - expected).abs() <= 1e-12 * expected.max(1e-30),
+                "F = {f}: curve {a} vs JkrContact {expected}"
+            );
+        }
     }
     #[test]
     fn test_dmt_pull_off_force_negative() {

@@ -4,10 +4,9 @@
 
 use super::boundary::{apply_lagrange_bc, apply_nitsche_bc, apply_penalty_bc};
 use super::types::{
-    BcEnforcementMethod, ConvergencePoint, ConvergenceRate, ConvergenceStudySummary,
-    CouplingInterface, CouplingMethod, CouplingNode, EfgMaterial, EfgResult, ErrorIndicator,
-    EssentialBc, KernelType, MeshfreeNode, MlsShape, RbfInterpolant, RbfType, RkpmShape,
-    StressState, SupportDomain, TriCell,
+    BcEnforcementMethod, ConvergencePoint, ConvergenceRate, ConvergenceStudySummary, EfgMaterial,
+    EfgResult, ErrorIndicator, EssentialBc, KernelType, MeshfreeNode, MlsShape, RbfInterpolant,
+    RbfType, RkpmShape, StressState, SupportDomain, TriCell,
 };
 
 /// 2-D point alias.
@@ -879,41 +878,6 @@ pub fn node_density_map(
         }
     }
     density
-}
-/// Set up bridging domain coupling between a meshfree domain and FEM mesh.
-///
-/// Identifies nodes in the overlap region and assigns blending weights.
-pub fn setup_bridging_domain(
-    meshfree_domain: &SupportDomain,
-    fem_nodes: &[Point2],
-    overlap_x_min: f64,
-    overlap_x_max: f64,
-) -> CouplingInterface {
-    let mut interface = CouplingInterface::new(CouplingMethod::BridgingDomain, 1e6);
-    let width = (overlap_x_max - overlap_x_min).max(1e-15);
-    for (i, node) in meshfree_domain.nodes.iter().enumerate() {
-        if (overlap_x_min..=overlap_x_max).contains(&node.pos[0]) {
-            let w = (node.pos[0] - overlap_x_min) / width;
-            interface.add_node(CouplingNode {
-                pos: node.pos,
-                meshfree_idx: Some(i),
-                fem_idx: None,
-                blend_weight: w,
-            });
-        }
-    }
-    for (j, &pos) in fem_nodes.iter().enumerate() {
-        if (overlap_x_min..=overlap_x_max).contains(&pos[0]) {
-            let w = (pos[0] - overlap_x_min) / width;
-            interface.add_node(CouplingNode {
-                pos,
-                meshfree_idx: None,
-                fem_idx: Some(j),
-                blend_weight: 1.0 - w,
-            });
-        }
-    }
-    interface
 }
 /// Solve a dense linear system K u = f with the assembled EFG matrices.
 pub fn solve_dense(stiffness: &[f64], force: &[f64], ndof: usize) -> Option<Vec<f64>> {

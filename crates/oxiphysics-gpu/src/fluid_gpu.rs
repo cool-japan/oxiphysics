@@ -413,15 +413,24 @@ pub struct LBMBoundaryKernelSpec {
 }
 
 /// Variants of supported LBM boundary conditions.
+///
+/// [`LBMGpuKernels::dispatch_boundary`] reflects the populations of
+/// `solid_cells` for every variant.  The boundary spec carries no wall
+/// velocity, inlet velocity or outlet density, so the variants other than
+/// [`BounceBack`](Self::BounceBack) currently select the same stationary
+/// no-slip wall.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LBMBoundaryKind {
     /// Full bounce-back (no-slip wall).
     BounceBack,
-    /// Moving-wall bounce-back.
+    /// Moving-wall bounce-back; without a wall velocity in the spec it acts
+    /// as [`BounceBack`](Self::BounceBack).
     MovingWall,
-    /// Zou-He velocity inlet.
+    /// Zou-He velocity inlet; without an inlet velocity in the spec it acts as
+    /// [`BounceBack`](Self::BounceBack).
     ZouHeInlet,
-    /// Zou-He pressure outlet.
+    /// Zou-He pressure outlet; without an outlet density in the spec it acts
+    /// as [`BounceBack`](Self::BounceBack).
     ZouHeOutlet,
 }
 

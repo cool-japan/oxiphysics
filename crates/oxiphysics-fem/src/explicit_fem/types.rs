@@ -3,6 +3,8 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use super::kingery_bulmash::BlastWave;
+use std::collections::HashMap;
 /// Failure criterion for element erosion.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FailureCriterion {
@@ -35,19 +37,85 @@ pub enum HourglassType {
     /// Combined stiffness + viscous.
     Combined,
 }
+/// Tolerance on the unclamped segment parameter `t` within which a slave node
+/// still counts as projecting onto a master segment.  It only absorbs rounding
+/// at the end node shared by two adjacent segments.
+const SEGMENT_END_TOLERANCE: f64 = 1e-9;
+/// Position of a slave node relative to a finite master segment.
+struct NodeSegmentGeometry {
+    /// Unclamped projection parameter along `a -> b` (0 at `a`, 1 at `b`).
+    t_raw: f64,
+    /// Projection parameter clamped to `[0, 1]`.
+    t: f64,
+    /// Vector from the closest point on the segment to the slave node.
+    diff: [f64; 3],
+}
+impl NodeSegmentGeometry {
+    fn new(slave: [f64; 3], a: [f64; 3], b: [f64; 3]) -> Self {
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+        let t_raw = if len2 > 1e-30 {
+            ((slave[0] - a[0]) * ab[0] + (slave[1] - a[1]) * ab[1] + (slave[2] - a[2]) * ab[2])
+                / len2
+        } else {
+            0.5
+        };
+        let t = t_raw.clamp(0.0, 1.0);
+        let closest = [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]];
+        let diff = [
+            slave[0] - closest[0],
+            slave[1] - closest[1],
+            slave[2] - closest[2],
+        ];
+        Self { t_raw, t, diff }
+    }
+    /// Euclidean distance from the slave node to the closest point of the segment.
+    fn distance(&self) -> f64 {
+        (self.diff[0] * self.diff[0] + self.diff[1] * self.diff[1] + self.diff[2] * self.diff[2])
+            .sqrt()
+    }
+    /// `true` if the slave node projects onto the segment (not beyond an end).
+    fn projects_onto_segment(&self) -> bool {
+        self.t_raw >= -SEGMENT_END_TOLERANCE && self.t_raw <= 1.0 + SEGMENT_END_TOLERANCE
+    }
+    /// Component of the closest-point-to-slave vector along the unit `normal`.
+    fn normal_gap(&self, normal: [f64; 3]) -> f64 {
+        self.diff[0] * normal[0] + self.diff[1] * normal[1] + self.diff[2] * normal[2]
+    }
+}
+/// Normalise a master normal; non-finite or (near-)zero vectors are rejected.
+fn unit_master_normal(normal: [f64; 3]) -> Result<[f64; 3], crate::Error> {
+    let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+    if !len.is_finite() || len < 1e-30 {
+        return Err(crate::Error::InvalidInput(
+            "master normal must be a finite, non-zero vector".to_string(),
+        ));
+    }
+    Ok([normal[0] / len, normal[1] / len, normal[2] / len])
+}
 /// Contact detection and force computation for FEM.
+///
+/// Slave nodes are checked against master segments.  The orientation of a
+/// master segment is given by its outward normal, so the gap is signed:
+/// positive while the slave node is separated from the master surface and
+/// negative while it penetrates it.  Contact forces push the slave node along
+/// `+normal` and the master nodes along `-normal`.
 pub struct ContactDetectionFem {
     /// Enforcement method.
     pub enforcement: ContactEnforcement,
-    /// Penalty stiffness (N/m³).
+    /// Penalty stiffness `k_pen` (N/m): the contact force is `-k_pen * gap`.
     pub penalty_stiffness: f64,
-    /// Augmentation parameter for augmented Lagrangian.
+    /// Augmentation (penalty) parameter `ε` (N/m) of the augmented Lagrangian
+    /// and of the multiplier update `λ ← max(0, λ − ε·gap)`.
     pub augmentation: f64,
     /// Coulomb friction coefficient.
     pub friction_coeff: f64,
     /// Active contact pairs.
     pub pairs: Vec<ContactPair>,
-    /// Search radius for contact detection.
+    /// Capture distance (m) of the contact search.  A slave node is paired with
+    /// a master segment when it projects onto the segment and lies closer to it
+    /// than this radius, so penetrations deeper than the radius are treated as
+    /// tunnelling and are not captured.
     pub search_radius: f64,
 }
 impl ContactDetectionFem {
@@ -91,48 +159,38 @@ impl ContactDetectionFem {
         let gap = diff[0] * normal[0] + diff[1] * normal[1];
         (gap, t_clamp, normal)
     }
-    /// Compute the gap between a slave node and a master segment in 3D.
+    /// Compute the signed gap between a slave node and a master segment in 3D.
+    ///
+    /// A segment in 3D has no side of its own, so the side is given by
+    /// `master_normal`, the outward normal of the master surface (it is
+    /// normalised here and should be perpendicular to the segment).
     ///
     /// Returns `(gap, t, normal)` where:
-    /// - `gap > 0` means separation (no contact)
-    /// - `gap < 0` means penetration
-    /// - `t` is the parameter of the closest point on the segment
-    /// - `normal` points from closest point toward the slave node
+    /// - `gap = (slave - closest_point) · normal` is positive while the slave
+    ///   node is on the outer side of the master surface (separation), negative
+    ///   on the inner side (penetration) and zero on the surface,
+    /// - `t` is the parameter of the closest point on the segment (0 at
+    ///   `master_a`, 1 at `master_b`),
+    /// - `normal` is the unit outward master normal, the direction in which a
+    ///   contact force pushes the slave node.
+    ///
+    /// The gap is measured along the normal, so it describes a node that
+    /// projects onto the segment; [`ContactDetectionFem::detect_node_to_segment`]
+    /// disregards nodes that project beyond either end.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::InvalidInput`] if `master_normal` is not finite or has
+    /// zero length.
     pub fn node_to_segment_gap_3d(
         slave: [f64; 3],
         master_a: [f64; 3],
         master_b: [f64; 3],
-    ) -> (f64, f64, [f64; 3]) {
-        let ab = [
-            master_b[0] - master_a[0],
-            master_b[1] - master_a[1],
-            master_b[2] - master_a[2],
-        ];
-        let len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
-        let t = if len2 > 1e-30 {
-            let as_ = [
-                slave[0] - master_a[0],
-                slave[1] - master_a[1],
-                slave[2] - master_a[2],
-            ];
-            (as_[0] * ab[0] + as_[1] * ab[1] + as_[2] * ab[2]) / len2
-        } else {
-            0.5
-        };
-        let t_clamp = t.clamp(0.0, 1.0);
-        let proj = [
-            master_a[0] + t_clamp * ab[0],
-            master_a[1] + t_clamp * ab[1],
-            master_a[2] + t_clamp * ab[2],
-        ];
-        let diff = [slave[0] - proj[0], slave[1] - proj[1], slave[2] - proj[2]];
-        let dist = (diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]).sqrt();
-        let normal = if dist > 1e-30 {
-            [diff[0] / dist, diff[1] / dist, diff[2] / dist]
-        } else {
-            [0.0, 1.0, 0.0]
-        };
-        (dist, t_clamp, normal)
+        master_normal: [f64; 3],
+    ) -> Result<(f64, f64, [f64; 3]), crate::Error> {
+        let normal = unit_master_normal(master_normal)?;
+        let geometry = NodeSegmentGeometry::new(slave, master_a, master_b);
+        Ok((geometry.normal_gap(normal), geometry.t, normal))
     }
     /// Compute the penalty contact force for a given gap.
     pub fn penalty_force(&self, gap: f64) -> f64 {
@@ -143,57 +201,117 @@ impl ContactDetectionFem {
         }
     }
     /// Compute the augmented Lagrangian contact force.
+    ///
+    /// `lambda` is the compressive-positive multiplier (`λ ≥ 0` is a pushing
+    /// force) and `gap` the signed gap (negative = penetration).  The force is
+    /// `max(0, λ − ε·gap)` with `ε =` [`ContactDetectionFem::augmentation`], so
+    /// penetration adds the penalty term to the multiplier.
     pub fn augmented_lagrangian_force(&self, gap: f64, lambda: f64) -> f64 {
-        let trial = lambda + self.augmentation * gap;
-        if trial < 0.0 { -trial } else { 0.0 }
+        (lambda - self.augmentation * gap).max(0.0)
     }
     /// Detect contacts using a node-to-segment search.
     ///
     /// `node_positions` — flat array of node positions (3 per node)
     /// `segments` — list of segment node pairs
+    /// `master_normals` — outward unit normal of each segment (one per
+    ///   segment); they define the sign of the gap
     /// `slave_nodes` — indices of slave nodes to check
+    ///
+    /// A pair is recorded when the slave node projects onto the segment (not
+    /// beyond either end) and lies closer to it than
+    /// [`ContactDetectionFem::search_radius`]; a slave node is never paired
+    /// with a segment it belongs to.  Each recorded pair stores the signed
+    /// gap, the normal and the projection parameter `t`.  The multiplier `λ` of
+    /// a pair that was already present is carried over, so the multiplier
+    /// iteration survives repeated detection.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::InvalidInput`] if `master_normals` and `segments`
+    /// differ in length, a normal is not finite or has zero length, or a node
+    /// index lies outside `node_positions`.  The current pairs are left
+    /// untouched in that case.
     pub fn detect_node_to_segment(
         &mut self,
         node_positions: &[f64],
         segments: &[[usize; 2]],
+        master_normals: &[[f64; 3]],
         slave_nodes: &[usize],
-    ) {
+    ) -> Result<(), crate::Error> {
+        if master_normals.len() != segments.len() {
+            return Err(crate::Error::InvalidInput(format!(
+                "expected one master normal per segment, got {} normals for {} segments",
+                master_normals.len(),
+                segments.len()
+            )));
+        }
+        let n_nodes = node_positions.len() / 3;
+        let position = |node: usize| -> Result<[f64; 3], crate::Error> {
+            if node >= n_nodes {
+                return Err(crate::Error::InvalidInput(format!(
+                    "node index {node} is out of range for {n_nodes} nodes"
+                )));
+            }
+            Ok([
+                node_positions[node * 3],
+                node_positions[node * 3 + 1],
+                node_positions[node * 3 + 2],
+            ])
+        };
+        let mut masters = Vec::with_capacity(segments.len());
+        for (&segment, &normal) in segments.iter().zip(master_normals) {
+            masters.push((
+                segment,
+                position(segment[0])?,
+                position(segment[1])?,
+                unit_master_normal(normal)?,
+            ));
+        }
+        let mut slaves = Vec::with_capacity(slave_nodes.len());
+        for &node in slave_nodes {
+            slaves.push((node, position(node)?));
+        }
+        let previous_lambda: HashMap<(usize, [usize; 2]), f64> = self
+            .pairs
+            .iter()
+            .map(|pair| ((pair.slave_node, pair.master_segment), pair.lambda))
+            .collect();
         self.pairs.clear();
-        for &sn in slave_nodes {
-            let sp = [
-                node_positions[sn * 3],
-                node_positions[sn * 3 + 1],
-                node_positions[sn * 3 + 2],
-            ];
-            for &seg in segments {
-                let ma = [
-                    node_positions[seg[0] * 3],
-                    node_positions[seg[0] * 3 + 1],
-                    node_positions[seg[0] * 3 + 2],
-                ];
-                let mb = [
-                    node_positions[seg[1] * 3],
-                    node_positions[seg[1] * 3 + 1],
-                    node_positions[seg[1] * 3 + 2],
-                ];
-                let (gap, _t, normal) = Self::node_to_segment_gap_3d(sp, ma, mb);
-                if gap < self.search_radius {
-                    let mut pair = ContactPair::new(sn, seg);
-                    pair.gap = gap;
-                    pair.normal = normal;
-                    self.pairs.push(pair);
+        for &(slave_node, slave_position) in &slaves {
+            for &(segment, master_a, master_b, normal) in &masters {
+                if segment.contains(&slave_node) {
+                    continue;
                 }
+                let geometry = NodeSegmentGeometry::new(slave_position, master_a, master_b);
+                let within_radius = geometry.distance() < self.search_radius;
+                if !(geometry.projects_onto_segment() && within_radius) {
+                    continue;
+                }
+                let mut pair = ContactPair::new(slave_node, segment);
+                pair.gap = geometry.normal_gap(normal);
+                pair.normal = normal;
+                pair.t = geometry.t;
+                pair.lambda = previous_lambda
+                    .get(&(slave_node, segment))
+                    .copied()
+                    .unwrap_or(0.0);
+                self.pairs.push(pair);
             }
         }
+        Ok(())
     }
     /// Assemble contact forces into the global force vector.
+    ///
+    /// The contact force `f` acts on the slave node along `+normal`; the
+    /// reaction `-f · normal` is shared between the two master nodes as
+    /// `(1 − t)` and `t`, so the assembled forces sum to zero.
     pub fn assemble_contact_forces(&self, force: &mut [f64]) {
         for pair in &self.pairs {
             let f = match self.enforcement {
                 ContactEnforcement::Penalty => self.penalty_force(pair.gap),
                 ContactEnforcement::Lagrange => {
-                    if pair.gap < 0.0 {
-                        pair.lambda
+                    if pair.gap < 0.0 || pair.lambda > 0.0 {
+                        pair.lambda.max(0.0)
                     } else {
                         0.0
                     }
@@ -206,21 +324,28 @@ impl ContactDetectionFem {
             for dir in 0..3 {
                 force[sn * 3 + dir] += f * pair.normal[dir];
             }
-            for (k, mn) in pair.master_segment.iter().enumerate() {
-                let _ = k;
+            let t = if pair.t.is_finite() {
+                pair.t.clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            for (mn, weight) in pair.master_segment.iter().zip([1.0 - t, t]) {
                 for dir in 0..3 {
-                    force[mn * 3 + dir] -= 0.5 * f * pair.normal[dir];
+                    force[mn * 3 + dir] -= weight * f * pair.normal[dir];
                 }
             }
         }
     }
-    /// Update Lagrange multipliers for augmented Lagrangian iteration.
+    /// Update the contact multipliers (Uzawa step of the augmented Lagrangian
+    /// iteration): `λ ← max(0, λ − ε·gap)` for every pair.
+    ///
+    /// `λ` is compressive-positive, so penetration (`gap < 0`) raises it and
+    /// separation relaxes it towards zero.  Iterating the update together with
+    /// the equilibrium solve drives the penetration to zero while `λ`
+    /// converges to the contact force.
     pub fn update_lagrange_multipliers(&mut self) {
         for pair in &mut self.pairs {
-            if pair.gap < 0.0 {
-                pair.lambda += self.augmentation * pair.gap;
-                pair.lambda = pair.lambda.max(0.0);
-            }
+            pair.lambda = (pair.lambda - self.augmentation * pair.gap).max(0.0);
         }
     }
 }
@@ -393,7 +518,12 @@ pub enum BlastModel {
     UserDefined,
     /// Friedlander waveform: `p(t) = p0 * (1 - t/td) * exp(-b*t/td)`.
     Friedlander,
-    /// ConWep empirical model (Baker–Westine–Dodge).
+    /// ConWep model: Kingery–Bulmash parameters of a hemispherical TNT surface
+    /// burst (Swisdak's polynomial fits) from [`BlastParameters::standoff`] and
+    /// [`BlastParameters::charge_mass`] — peak overpressure, arrival time and
+    /// duration — with a Friedlander pulse whose decay coefficient reproduces
+    /// the tabulated impulse.  `peak_pressure`, `duration` and `decay_coeff` are
+    /// not used.  See [`crate::explicit_fem::kingery_bulmash`].
     ConWep,
     /// Simplified triangular pulse.
     Triangular,
@@ -571,11 +701,14 @@ pub enum WaveType {
 /// Contact enforcement method.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ContactEnforcement {
-    /// Penalty method: `f = k_pen * gap` when gap < 0.
+    /// Penalty method: `f = -k_pen * gap` when gap < 0.
     Penalty,
-    /// Lagrange multiplier method: exact enforcement.
+    /// Lagrange multiplier method: the contact force is the multiplier
+    /// `λ ≥ 0` of the pair, found by iterating
+    /// [`ContactDetectionFem::update_lagrange_multipliers`].
     Lagrange,
-    /// Augmented Lagrangian: combines accuracy and robustness.
+    /// Augmented Lagrangian: `f = max(0, λ - ε * gap)`, combining the accuracy
+    /// of multipliers with the robustness of a penalty term.
     AugmentedLagrangian,
 }
 /// Explicit FEM solver using the central difference time integration scheme.
@@ -769,7 +902,8 @@ impl ExplicitFemSolver {
 /// Blast loading FEM solver.
 ///
 /// Applies time-varying pressure loads to surface nodes based on blast
-/// wave models including Friedlander waveform and simplified ConWep.
+/// wave models including the Friedlander waveform, a triangular pulse, a
+/// tabulated history and the ConWep (Kingery–Bulmash) surface-burst model.
 pub struct BlastLoadingFem {
     /// Blast model type.
     pub model: BlastModel,
@@ -822,21 +956,8 @@ impl BlastLoadingFem {
                 }
             }
             BlastModel::ConWep => {
-                let r = self.params.standoff;
-                let w = self.params.charge_mass;
-                let z = r / w.cbrt();
-                let p_mpa = if z < 0.5 {
-                    67.36 / (z * z * z)
-                } else {
-                    0.84 + 3.35 / z + 0.66 / (z * z)
-                };
-                let p0 = p_mpa * 1e6;
-                let td = self.params.duration;
-                if t < 0.0 || t > td {
-                    0.0
-                } else {
-                    p0 * (1.0 - t / td) * (-b_coeff(z) * t / td).exp()
-                }
+                BlastWave::surface_burst(self.params.standoff, self.params.charge_mass)
+                    .map_or(0.0, |wave| wave.overpressure_at(t))
             }
             BlastModel::UserDefined => interpolate_table(&self.params.table, t),
         }
@@ -937,6 +1058,10 @@ impl ExplicitState {
     }
 }
 /// Blast loading parameters.
+///
+/// `peak_pressure`, `duration` and `decay_coeff` define the Friedlander and
+/// triangular pulses; the [`BlastModel::ConWep`] model derives its pulse from
+/// `standoff` and `charge_mass` instead.
 #[derive(Debug, Clone)]
 pub struct BlastParameters {
     /// Peak overpressure (Pa).
@@ -1000,13 +1125,22 @@ pub struct ContactPair {
     pub slave_node: usize,
     /// Indices of the two master segment nodes.
     pub master_segment: [usize; 2],
-    /// Current gap value (negative = penetration).
+    /// Current signed gap along the outward master normal (negative =
+    /// penetration).
     pub gap: f64,
-    /// Contact normal (pointing slave → master).
+    /// Unit contact normal: the outward normal of the master segment, pointing
+    /// from the master toward the slave side.  A contact force pushes the slave
+    /// node along `+normal` and the master nodes along `-normal`.
     pub normal: [f64; 3],
+    /// Parameter of the contact point on the master segment: 0 at
+    /// `master_segment[0]`, 1 at `master_segment[1]`.  The master reaction is
+    /// shared as `(1 - t)` and `t`.
+    pub t: f64,
     /// Contact pressure.
     pub pressure: f64,
-    /// Lagrange multiplier (for Lagrange enforcement).
+    /// Contact multiplier `λ ≥ 0` (compressive-positive): the contact force of
+    /// a Lagrange pair and the multiplier estimate of an augmented-Lagrangian
+    /// pair.
     pub lambda: f64,
 }
 impl ContactPair {
@@ -1017,6 +1151,7 @@ impl ContactPair {
             master_segment,
             gap: 0.0,
             normal: [0.0, 1.0, 0.0],
+            t: 0.5,
             pressure: 0.0,
             lambda: 0.0,
         }

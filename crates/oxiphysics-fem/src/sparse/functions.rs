@@ -1239,6 +1239,385 @@ mod tests {
         let icc = IccPreconditioner::new(&m);
         assert_eq!(icc.nnz(), 6, "ICC nnz should equal lower-triangle nnz");
     }
+    /// Symmetric tridiagonal CSR matrix `tridiag(off, diag, off)` built directly
+    /// from its arrays (no hashing), so large instances are cheap to create.
+    fn tridiagonal_csr(n: usize, diag: f64, off: f64) -> CsrMatrix {
+        let mut row_ptr = Vec::with_capacity(n + 1);
+        let mut col_indices = Vec::with_capacity(3 * n);
+        let mut values = Vec::with_capacity(3 * n);
+        row_ptr.push(0);
+        for i in 0..n {
+            if i > 0 {
+                col_indices.push(i - 1);
+                values.push(off);
+            }
+            col_indices.push(i);
+            values.push(diag);
+            if i + 1 < n {
+                col_indices.push(i + 1);
+                values.push(off);
+            }
+            row_ptr.push(col_indices.len());
+        }
+        CsrMatrix {
+            row_ptr,
+            col_indices,
+            values,
+            nrows: n,
+            ncols: n,
+        }
+    }
+    /// 5-point Laplacian on an `m x m` grid (Dirichlet), `n = m * m`.
+    fn poisson_2d_csr(m: usize) -> CsrMatrix {
+        let mut triplets = Vec::new();
+        for gy in 0..m {
+            for gx in 0..m {
+                let i = gy * m + gx;
+                triplets.push((i, i, 4.0));
+                if gx > 0 {
+                    triplets.push((i, i - 1, -1.0));
+                }
+                if gx + 1 < m {
+                    triplets.push((i, i + 1, -1.0));
+                }
+                if gy > 0 {
+                    triplets.push((i, i - m, -1.0));
+                }
+                if gy + 1 < m {
+                    triplets.push((i, i + m, -1.0));
+                }
+            }
+        }
+        CsrMatrix::from_triplets(m * m, m * m, &triplets)
+    }
+    /// Entry `(i, j)` of `L L^T` for the lower-triangular factor of `icc`.
+    fn icc_product_entry(icc: &IccPreconditioner, i: usize, j: usize) -> f64 {
+        let row = |r: usize| -> Vec<(usize, f64)> {
+            (icc.row_ptr[r]..icc.row_ptr[r + 1])
+                .map(|p| (icc.col_indices[p], icc.l_values[p]))
+                .collect()
+        };
+        let row_i = row(i);
+        let row_j = row(j);
+        let mut sum = 0.0;
+        for &(ci, vi) in &row_i {
+            for &(cj, vj) in &row_j {
+                if ci == cj {
+                    sum += vi * vj;
+                }
+            }
+        }
+        sum
+    }
+    #[test]
+    fn test_icc_reproduces_matrix_on_its_sparsity_pattern() {
+        // Defining property of IC(0): (L L^T)_ij = A_ij wherever A_ij is stored.
+        for a in [poisson_2d_csr(5), tridiagonal_csr(9, 3.0, -1.0)] {
+            let icc = IccPreconditioner::new(&a);
+            assert_eq!(icc.shift(), 0.0);
+            assert!(!icc.used_diagonal_fallback());
+            for i in 0..a.nrows {
+                for p in a.row_ptr[i]..a.row_ptr[i + 1] {
+                    let j = a.col_indices[p];
+                    let reproduced = icc_product_entry(&icc, i, j);
+                    assert!(
+                        (reproduced - a.values[p]).abs() < 1e-12,
+                        "(L L^T)[{i},{j}] = {reproduced}, A = {}",
+                        a.values[p]
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn test_icc_of_tridiagonal_matrix_is_the_exact_cholesky_solve() {
+        // No fill-in is dropped for a tridiagonal matrix, so M^-1 = A^-1.
+        let n = 2000;
+        let a = tridiagonal_csr(n, 2.5, -1.0);
+        let icc = IccPreconditioner::new(&a);
+        assert_eq!(icc.shift(), 0.0);
+        let x_exact: Vec<f64> = (0..n).map(|i| ((i % 17) as f64 - 8.0) / 3.0).collect();
+        let rhs = a.mul_vec(&x_exact);
+        let z = icc.solve(&rhs);
+        let worst = z
+            .iter()
+            .zip(x_exact.iter())
+            .map(|(zi, xi)| (zi - xi).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(worst < 1e-11, "max |z - x| = {worst}");
+    }
+    #[test]
+    fn test_icc_of_tridiagonal_matrix_matches_dense_cholesky_entries() {
+        let n = 6;
+        let a = tridiagonal_csr(n, 2.0, -1.0);
+        let icc = IccPreconditioner::new(&a);
+        // Dense Cholesky of tridiag(-1, 2, -1): L_ii = sqrt((i + 2) / (i + 1)),
+        // L_{i+1,i} = -1 / L_ii.
+        for i in 0..n {
+            let l_ii = ((i as f64 + 2.0) / (i as f64 + 1.0)).sqrt();
+            let diag_pos = icc.row_ptr[i + 1] - 1;
+            assert_eq!(icc.col_indices[diag_pos], i);
+            assert!((icc.l_values[diag_pos] - l_ii).abs() < 1e-13, "L[{i},{i}]");
+            if i + 1 < n {
+                let next_row_start = icc.row_ptr[i + 1];
+                assert_eq!(icc.col_indices[next_row_start], i);
+                assert!((icc.l_values[next_row_start] + 1.0 / l_ii).abs() < 1e-13);
+            }
+        }
+    }
+    #[test]
+    fn test_icc_factorization_of_large_poisson_matrix_is_linear_time() {
+        // The column-by-all-rows search of the previous implementation was
+        // O(n^2 * row_nnz): minutes to hours for n = 1e5.  The row-oriented
+        // factorization takes milliseconds.  An optimised build must stay
+        // within 100 ms; unoptimised test builds run the same loops an order
+        // of magnitude slower on a machine shared with other test processes, so
+        // there the bound only guards against a return to quadratic behaviour.
+        let budget = if cfg!(debug_assertions) {
+            std::time::Duration::from_secs(2)
+        } else {
+            std::time::Duration::from_millis(100)
+        };
+        let n = 100_000;
+        let a = tridiagonal_csr(n, 2.0, -1.0);
+        let started = std::time::Instant::now();
+        let icc = IccPreconditioner::new(&a);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < budget,
+            "IC(0) of a 1e5 tridiagonal matrix took {elapsed:?} (budget {budget:?})"
+        );
+        assert_eq!(icc.nnz(), 2 * n - 1);
+        assert_eq!(icc.shift(), 0.0);
+        // L_ii^2 = (i + 2) / (i + 1) exactly for the 1-D Poisson matrix.
+        for i in [0, 1, 17, 4_999, n - 1] {
+            let d = icc.l_values[icc.row_ptr[i + 1] - 1];
+            let expected = ((i as f64 + 2.0) / (i as f64 + 1.0)).sqrt();
+            assert!((d - expected).abs() < 1e-9, "L[{i},{i}] = {d}");
+        }
+    }
+    /// The 4-cycle matrix with edge weights `t` and one negated edge: symmetric
+    /// positive definite for `t < 1/sqrt(2)` (eigenvalues `1 +- sqrt(2) t`), but
+    /// IC(0) drops the fill-in at (2, 1) and the last pivot becomes
+    /// `1 - 2 t^2 / (1 - t^2) < 0` once `t^2 > 1/3`.
+    fn frustrated_four_cycle(t: f64) -> CsrMatrix {
+        CsrMatrix::from_triplets(
+            4,
+            4,
+            &[
+                (0, 0, 1.0),
+                (1, 1, 1.0),
+                (2, 2, 1.0),
+                (3, 3, 1.0),
+                (0, 1, t),
+                (1, 0, t),
+                (0, 2, t),
+                (2, 0, t),
+                (1, 3, t),
+                (3, 1, t),
+                (2, 3, -t),
+                (3, 2, -t),
+            ],
+        )
+    }
+    #[test]
+    fn test_icc_breakdown_is_cured_by_manteuffel_shift() {
+        let t = 0.65;
+        let a = frustrated_four_cycle(t);
+        // The matrix is positive definite: its smallest eigenvalue is 1 - sqrt(2) t.
+        let dense: Vec<Vec<f64>> = (0..4)
+            .map(|i| (0..4).map(|j| a.get(i, j)).collect())
+            .collect();
+        let (eigenvalues, _) = crate::eigen::jacobi_eigen_dense(&dense, 4);
+        let lambda_min = eigenvalues.iter().cloned().fold(f64::INFINITY, f64::min);
+        assert!(
+            (lambda_min - (1.0 - 2.0_f64.sqrt() * t)).abs() < 1e-12,
+            "lambda_min = {lambda_min}"
+        );
+        // Plain IC(0) has the pivot 1 - 2 t^2 / (1 - t^2) = -0.463 < 0, so the
+        // factorization must have been restarted with a shift.  The shifts
+        // 1e-3 * 2^k fail for k <= 6 and the first success is 0.128.
+        let icc = IccPreconditioner::new(&a);
+        assert!(!icc.used_diagonal_fallback());
+        assert!(
+            (icc.shift() - 0.128).abs() < 1e-12,
+            "shift = {}",
+            icc.shift()
+        );
+        // The factor is a bounded Cholesky factor of A + shift * diag(A) on the
+        // pattern, not the 1e-15 clamp that used to blow up the solve.
+        let max_entry = icc.l_values.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        let min_diag = (0..4)
+            .map(|i| icc.l_values[icc.row_ptr[i + 1] - 1])
+            .fold(f64::INFINITY, f64::min);
+        assert!(max_entry < 2.0, "max |L| = {max_entry}");
+        assert!(min_diag > 0.05, "min L_ii = {min_diag}");
+        for i in 0..4 {
+            for p in a.row_ptr[i]..a.row_ptr[i + 1] {
+                let j = a.col_indices[p];
+                if j > i {
+                    continue;
+                }
+                let target = if i == j { 1.128 } else { a.values[p] };
+                let reproduced = icc_product_entry(&icc, i, j);
+                assert!(
+                    (reproduced - target).abs() < 1e-12,
+                    "[{i},{j}] {reproduced}"
+                );
+            }
+        }
+        // As a preconditioner it is symmetric positive definite and PCG
+        // converges on the exact-arithmetic-terminating 4 x 4 system.
+        let b = vec![1.0, -2.0, 0.5, 3.0];
+        let (x, stats) = crate::solvers::pcg_icc(&a, &b, 50, 1e-10);
+        assert!(stats.converged, "iterations = {}", stats.iterations);
+        assert!(stats.iterations <= 8, "iterations = {}", stats.iterations);
+        let ax = a.mul_vec(&x);
+        for (axi, bi) in ax.iter().zip(b.iter()) {
+            assert!((axi - bi).abs() < 1e-9);
+        }
+        let z = icc.solve(&b);
+        let zb: f64 = z.iter().zip(b.iter()).map(|(zi, bi)| zi * bi).sum();
+        assert!(zb > 0.0, "preconditioner must be positive definite: {zb}");
+    }
+    #[test]
+    fn test_icc_indefinite_matrix_falls_back_to_diagonal_scaling() {
+        // [[4, 10], [10, 9]] has determinant -64 < 0 (indefinite).  With the
+        // diagonal scaled by 1 + s the second pivot is 9 (1 + s) - 25 / (1 + s),
+        // positive only for s > 2/3, beyond the largest shift 0.512 tried.
+        let a = CsrMatrix::from_triplets(
+            2,
+            2,
+            &[(0, 0, 4.0), (0, 1, 10.0), (1, 0, 10.0), (1, 1, 9.0)],
+        );
+        let icc = IccPreconditioner::new(&a);
+        assert!(icc.used_diagonal_fallback());
+        assert!(icc.shift().is_infinite());
+        let z = icc.solve(&[8.0, 27.0]);
+        assert!((z[0] - 2.0).abs() < 1e-14, "z0 = {}", z[0]);
+        assert!((z[1] - 3.0).abs() < 1e-14, "z1 = {}", z[1]);
+    }
+    #[test]
+    fn test_icc_missing_or_non_positive_diagonal_does_not_poison_the_factor() {
+        // Row 1 stores no diagonal entry at all.
+        let a = CsrMatrix::from_triplets(3, 3, &[(0, 0, 4.0), (1, 0, 1.0), (2, 2, 9.0)]);
+        let icc = IccPreconditioner::new(&a);
+        assert!(icc.used_diagonal_fallback());
+        let z = icc.solve(&[4.0, 5.0, 18.0]);
+        assert!(z.iter().all(|v| v.is_finite()), "z = {z:?}");
+        assert!((z[0] - 1.0).abs() < 1e-14);
+        assert!(
+            (z[1] - 5.0).abs() < 1e-14,
+            "unit scaling for the empty diagonal"
+        );
+        assert!((z[2] - 2.0).abs() < 1e-14);
+    }
+    #[test]
+    fn test_icc_accepts_unsorted_and_duplicate_csr_entries() {
+        let sorted = tridiagonal_csr(4, 3.0, -1.0);
+        // The same matrix with scrambled column order in every row, the diagonal
+        // split into two summed halves, and the upper triangle stored as well.
+        let scrambled = CsrMatrix {
+            row_ptr: vec![0, 3, 7, 11, 14],
+            col_indices: vec![1, 0, 0, 2, 1, 0, 1, 3, 2, 1, 2, 3, 2, 3],
+            values: vec![
+                -1.0, 1.5, 1.5, -1.0, 1.5, -1.0, 1.5, -1.0, 1.5, -1.0, 1.5, 1.5, -1.0, 1.5,
+            ],
+            nrows: 4,
+            ncols: 4,
+        };
+        let reference = IccPreconditioner::new(&sorted);
+        let icc = IccPreconditioner::new(&scrambled);
+        assert_eq!(icc.row_ptr, reference.row_ptr);
+        assert_eq!(icc.col_indices, reference.col_indices);
+        for (got, want) in icc.l_values.iter().zip(reference.l_values.iter()) {
+            assert!((got - want).abs() < 1e-14, "{got} vs {want}");
+        }
+    }
+    #[test]
+    fn test_icc_pcg_needs_far_fewer_iterations_than_plain_cg() {
+        let a = poisson_2d_csr(24);
+        let n = a.nrows;
+        let b: Vec<f64> = (0..n).map(|i| 1.0 + (i % 5) as f64).collect();
+        let (x, icc_stats) = crate::solvers::pcg_icc(&a, &b, 400, 1e-10);
+        assert!(icc_stats.converged);
+        let ax = a.mul_vec(&x);
+        let resid = ax
+            .iter()
+            .zip(b.iter())
+            .map(|(p, q)| (p - q).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let b_norm = b.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!(
+            resid / b_norm < 1e-9,
+            "relative residual {}",
+            resid / b_norm
+        );
+        let identity = vec![1.0; n];
+        let (_, cg_stats) = crate::solvers::pcg_solve(&a, &b, &identity, 400, 1e-10);
+        assert!(cg_stats.converged);
+        // IC(0) on the 5-point Laplacian typically needs ~55-60 % of the CG
+        // iterations (the condition number is reduced by a constant factor).
+        assert!(
+            10 * icc_stats.iterations < 7 * cg_stats.iterations,
+            "ICC-PCG: {} iterations, CG: {}",
+            icc_stats.iterations,
+            cg_stats.iterations
+        );
+    }
+    #[test]
+    fn test_icc_pcg_on_assembled_elasticity_matrix_beats_jacobi_pcg() {
+        use crate::assembly::{apply_dirichlet_bc, assemble_stiffness};
+        use crate::constitutive::LinearElasticMaterial;
+        use crate::mesh::TetrahedralMesh;
+        // Unit cube of linear tetrahedra, clamped at z = 0 and sheared and
+        // pressed on z = 1.  A tetrahedral elasticity matrix is not an
+        // M-matrix, so this is a realistic case for IC(0).
+        let mesh = TetrahedralMesh::generate_beam(1.0, 1.0, 1.0, 5, 5, 5);
+        let material = LinearElasticMaterial::new(1.0e3, 0.3);
+        let mut k = assemble_stiffness(&mesh, &material);
+        let n = k.nrows;
+        let mut f = vec![0.0_f64; n];
+        let mut fixed: Vec<usize> = Vec::new();
+        for (node, p) in mesh.nodes.iter().enumerate() {
+            if p.z < 1.0e-9 {
+                fixed.extend([3 * node, 3 * node + 1, 3 * node + 2]);
+            } else if p.z > 1.0 - 1.0e-9 {
+                f[3 * node] = 1.0;
+                f[3 * node + 2] = -0.5;
+            }
+        }
+        apply_dirichlet_bc(&mut k, &mut f, &fixed).expect("fixed DOFs are in range");
+        let f_norm = f.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!(f_norm > 1.0, "the load must not vanish: {f_norm}");
+        let icc = IccPreconditioner::new(&k);
+        assert!(!icc.used_diagonal_fallback(), "shift = {}", icc.shift());
+        assert!(icc.shift() < 0.1, "shift = {}", icc.shift());
+        let (x, icc_stats) = crate::solvers::pcg_icc(&k, &f, 1000, 1e-10);
+        assert!(icc_stats.converged, "ICC-PCG: {icc_stats:?}");
+        let residual = k
+            .mul_vec(&x)
+            .iter()
+            .zip(f.iter())
+            .map(|(ax, b)| (ax - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            residual < 1e-8 * f_norm,
+            "relative residual {}",
+            residual / f_norm
+        );
+        let jacobi: Vec<f64> = (0..n).map(|i| 1.0 / k.get(i, i)).collect();
+        let (_, jacobi_stats) = crate::solvers::pcg_solve(&k, &f, &jacobi, 3000, 1e-10);
+        assert!(jacobi_stats.converged, "Jacobi-PCG: {jacobi_stats:?}");
+        assert!(
+            5 * icc_stats.iterations < 4 * jacobi_stats.iterations,
+            "ICC-PCG: {} iterations, Jacobi-PCG: {}",
+            icc_stats.iterations,
+            jacobi_stats.iterations
+        );
+    }
     #[test]
     fn test_block_csr_identity_mul_vec() {
         let id3: [f64; 9] = [1., 0., 0., 0., 1., 0., 0., 0., 1.];

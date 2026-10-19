@@ -393,38 +393,54 @@ pub fn am15_photon_flux(lambda_nm: f64) -> f64 {
     }
     irradiance / photon_energy
 }
-/// View factor F12 for two perpendicular rectangles sharing a common edge.
+/// View factor F12 for two finite rectangles that share a common edge and meet
+/// at 90° (Howell catalog configuration C-14, "perpendicular rectangles with a
+/// common edge").
 ///
-/// Uses the analytical formula from Howell's view factor catalog (Configuration C-11).
-/// Rectangles of dimensions H×W and L×W sharing a common edge of length W,
-/// oriented perpendicularly.
+/// Surface 1 extends `h` away from the common edge, surface 2 extends `l` away
+/// from it, and both are `w` long along the common edge.  With
+/// `A = h/w` (the dimension of the *emitting* surface), `B = l/w` and
+/// `S = A² + B²`:
 ///
-/// Simplified version for two equal-width perpendicular strips (H = L = a, W = b):
+/// ```text
+/// F12 = 1/(π A) · [ A·atan(1/A) + B·atan(1/B) − √S·atan(1/√S)
+///                  + ¼·ln{ (1+A²)(1+B²)/(1+S)
+///                          · [A²(1+S)/((1+A²)·S)]^(A²)
+///                          · [B²(1+S)/((1+B²)·S)]^(B²) } ]
+/// ```
 ///
-/// `F12 = (1/π) * [W * atan(1/W) + H * atan(1/H) - sqrt(H²+W²)*atan(1/sqrt(H²+W²))
-///                 + (1/4)*ln(part)]`
-///
-/// where H = h/w, W = l/w  (w = common edge length).
-///
-/// This provides the exact formula for the simplest case (equal-size rectangles).
+/// Two unit squares give `F12 ≈ 0.2000`; the result obeys reciprocity,
+/// `h·F12(h, l, w) = l·F12(l, h, w)`, and is invariant under a common scaling
+/// of `h`, `l` and `w`.  Non-positive or non-finite dimensions (or ratios that
+/// overflow) describe a degenerate geometry, for which `0.0` is returned.
 ///
 /// # Arguments
-/// * `h` — height of first rectangle \[m\]
-/// * `l` — length of second rectangle \[m\]
-/// * `w` — width (shared edge) \[m\]
+/// * `h` — extent of the first (emitting) rectangle perpendicular to the common edge \[m\]
+/// * `l` — extent of the second rectangle perpendicular to the common edge \[m\]
+/// * `w` — length of the shared edge \[m\]
 pub fn view_factor_perpendicular_rectangles(h: f64, l: f64, w: f64) -> f64 {
-    let big_h = h / w;
-    let big_l = l / w;
-    let h2 = big_h * big_h;
-    let l2 = big_l * big_l;
-    let t1 = big_h * (1.0 + l2).sqrt().atan2(big_h * (1.0 + l2).sqrt()) * (1.0 + l2).sqrt();
-    let t2 = big_l * (1.0 + h2).sqrt().atan2(big_l) * (1.0 + h2).sqrt();
-    let f = (1.0 / (std::f64::consts::PI * big_h))
-        * (big_h * (big_l).atan() + big_l * (big_h).atan()
-            - (h2 + l2).sqrt() * ((h2 + l2).sqrt()).atan()
-            + 0.25 * ((1.0 + h2) * (1.0 + l2) / (1.0 + h2 + l2)).ln());
-    let _ = (t1, t2);
-    f.clamp(0.0, 1.0)
+    let dimensions_valid = h.is_finite() && l.is_finite() && w.is_finite();
+    if !dimensions_valid || h <= 0.0 || l <= 0.0 || w <= 0.0 {
+        return 0.0;
+    }
+    let a = h / w;
+    let b = l / w;
+    if !(a.is_finite() && b.is_finite()) {
+        return 0.0;
+    }
+    let a2 = a * a;
+    let b2 = b * b;
+    let s = a2 + b2;
+    let root_s = s.sqrt();
+    // ln{ (1+A²)(1+B²)/(1+S) · [A²(1+S)/((1+A²)S)]^(A²) · [B²(1+S)/((1+B²)S)]^(B²) },
+    // using A²(1+S)/((1+A²)S) = 1 − B²/((1+A²)S) and B²(1+S)/((1+B²)S) = 1 − A²/((1+B²)S)
+    // so that every logarithm is evaluated through `ln_1p` without cancellation.
+    let log_term = a2.ln_1p() + b2.ln_1p() - s.ln_1p()
+        + a2 * (-b2 / ((1.0 + a2) * s)).ln_1p()
+        + b2 * (-a2 / ((1.0 + b2) * s)).ln_1p();
+    let bracket = a * (1.0 / a).atan() + b * (1.0 / b).atan() - root_s * (1.0 / root_s).atan()
+        + 0.25 * log_term;
+    (bracket / (std::f64::consts::PI * a)).clamp(0.0, 1.0)
 }
 /// View factor from a small convex sphere of area A1 to a surrounding enclosure.
 ///
@@ -1053,6 +1069,58 @@ mod tests {
         );
     }
     #[test]
+    fn test_view_factor_perpendicular_unit_squares_is_0_2000() {
+        // Two unit squares sharing an edge at 90 degrees: F12 = 0.20004 (Howell C-14).
+        let f = view_factor_perpendicular_rectangles(1.0, 1.0, 1.0);
+        assert!((f - 0.20004).abs() < 1.0e-4, "F12(1,1,1) = {f}");
+    }
+    #[test]
+    fn test_view_factor_perpendicular_rectangles_reference_and_reciprocity() {
+        // Reference values from 4-D numerical integration of the diffuse view-factor integral.
+        let f211 = view_factor_perpendicular_rectangles(2.0, 1.0, 1.0);
+        let f121 = view_factor_perpendicular_rectangles(1.0, 2.0, 1.0);
+        assert!((f211 - 0.116_426).abs() < 1.0e-5, "F12(2,1,1) = {f211}");
+        assert!((f121 - 0.232_853).abs() < 1.0e-5, "F12(1,2,1) = {f121}");
+        // Reciprocity: A1 F12 = A2 F21 with A1 = h*w, A2 = l*w.
+        assert!(
+            (2.0 * f211 - f121).abs() < 1.0e-12,
+            "reciprocity: 2*{f211} vs {f121}"
+        );
+        let f3052 = view_factor_perpendicular_rectangles(3.0, 0.5, 2.0);
+        assert!((f3052 - 0.062_796).abs() < 1.0e-5, "F12(3,0.5,2) = {f3052}");
+        let thin = view_factor_perpendicular_rectangles(0.1, 5.0, 1.0);
+        assert!((thin - 0.439_151).abs() < 1.0e-5, "F12(0.1,5,1) = {thin}");
+    }
+    #[test]
+    fn test_view_factor_perpendicular_rectangles_scale_invariance_and_strip_limit() {
+        let base = view_factor_perpendicular_rectangles(1.0, 2.0, 3.0);
+        let scaled = view_factor_perpendicular_rectangles(10.0, 20.0, 30.0);
+        assert!((base - scaled).abs() < 1.0e-13, "{base} vs {scaled}");
+        // For w >> h, l the rectangles become two infinite strips sharing an edge, for
+        // which the crossed-string method gives F12 = (h + l - sqrt(h² + l²)) / (2 h).
+        for (h, l) in [(1.0, 1.0), (1.0, 2.0), (2.0, 1.0), (0.5, 3.0)] {
+            let strips = view_factor_perpendicular_rectangles(h, l, 1.0e6);
+            let crossed = (h + l - (h * h + l * l).sqrt()) / (2.0 * h);
+            assert!(
+                (strips - crossed).abs() < 1.0e-5,
+                "strip limit for ({h},{l}): {strips} vs {crossed}"
+            );
+        }
+    }
+    #[test]
+    fn test_view_factor_perpendicular_rectangles_degenerate_inputs_give_zero() {
+        for (h, l, w) in [
+            (0.0, 1.0, 1.0),
+            (1.0, -1.0, 1.0),
+            (1.0, 1.0, 0.0),
+            (f64::NAN, 1.0, 1.0),
+            (1.0, f64::INFINITY, 1.0),
+        ] {
+            let f = view_factor_perpendicular_rectangles(h, l, w);
+            assert_eq!(f, 0.0, "({h},{l},{w}) must be degenerate, got {f}");
+        }
+    }
+    #[test]
     fn test_solar_cell_thermal_voltage_at_300k() {
         let cell = SolarCell::new(5.0, 1e-10, 1.0, 300.0, 0.0);
         let vt = cell.thermal_voltage();
@@ -1184,28 +1252,219 @@ mod tests {
     #[test]
     fn test_mc_transport_transmission_positive() {
         let mut mc = MCRadiationTransport::new(1000, 42);
-        let t = mc.slab_transmittance(0.5, 1.0);
+        let t = mc.slab_transmittance(0.5, 1.0).unwrap();
         assert!((0.0..=1.0).contains(&t), "transmittance in [0,1], got {t}");
     }
     #[test]
     fn test_mc_transport_opaque_slab_low_transmittance() {
         let mut mc = MCRadiationTransport::new(2000, 99);
-        let t = mc.slab_transmittance(10.0, 1.0);
+        let t = mc.slab_transmittance(10.0, 1.0).unwrap();
         assert!(t < 0.1, "opaque slab should transmit little, got {t}");
     }
     #[test]
     fn test_mc_transport_transparent_slab_high_transmittance() {
         let mut mc = MCRadiationTransport::new(2000, 7);
-        let t = mc.slab_transmittance(0.01, 1.0);
+        let t = mc.slab_transmittance(0.01, 1.0).unwrap();
         assert!(t > 0.9, "transparent slab should transmit most, got {t}");
     }
     #[test]
     fn test_mc_transport_albedo_effect() {
-        let mut mc_abs = MCRadiationTransport::new(2000, 1);
-        let mut mc_scat = MCRadiationTransport::new(2000, 1);
-        let t_abs = mc_abs.slab_transmittance_full(1.0, 1.0, 0.0);
-        let t_scat = mc_scat.slab_transmittance_full(1.0, 1.0, 1.0);
-        assert!(t_abs >= 0.0 && t_scat >= 0.0);
+        // Fixed extinction coefficient: the more of it is scattering (instead of
+        // absorption), the more photons survive and reach the far face.
+        let mut previous = 0.0_f64;
+        for albedo in [0.0, 0.5, 0.8, 0.95, 1.0] {
+            let mut mc = MCRadiationTransport::new(100_000, 1);
+            let (t, _r) = mc.slab_transport(1.0, 1.0, albedo).unwrap();
+            assert!(
+                t > previous,
+                "T must rise with the albedo: omega={albedo} gave {t} after {previous}"
+            );
+            previous = t;
+        }
+        // At fixed *absorption* coefficient, scattering adds extinction, and the
+        // wrapper must derive beta = kappa / (1 - omega) = 2 for omega = 0.5.
+        let mut mc = MCRadiationTransport::new(100_000, 1);
+        let t = mc.slab_transmittance_full(1.0, 1.0, 0.5).unwrap();
+        assert!((t - 0.1893).abs() < 0.006, "T(tau = 2, omega = 0.5) = {t}");
+    }
+    #[test]
+    fn test_mc_view_factor_coaxial_disks_matches_analytic() {
+        let cases = [
+            (1.0, 1.0, 1.0),
+            (1.0, 0.5, 1.0),
+            (0.5, 1.0, 1.0),
+            (1.0, 2.0, 1.5),
+        ];
+        for (r1, r2, h) in cases {
+            let mut mc = MonteCarloViewFactor::new(200_000);
+            let f_mc = mc.parallel_disks(r1, r2, h);
+            let f_exact = view_factor_coaxial_disks(r1, r2, h);
+            assert!(
+                (f_mc - f_exact).abs() < 0.005,
+                "disks ({r1},{r2},{h}): MC {f_mc} vs analytic {f_exact}"
+            );
+        }
+    }
+    #[test]
+    fn test_mc_view_factor_zero_rays_is_zero() {
+        let mut mc = MonteCarloViewFactor::new(0);
+        assert_eq!(mc.parallel_disks(1.0, 1.0, 1.0), 0.0);
+    }
+    #[test]
+    fn test_mc_mean_free_path_matches_inverse_extinction() {
+        let mut mc = MCRadiationTransport::new(100_000, 2024);
+        let mfp = mc.estimate_mean_free_path(2.0);
+        assert!(
+            (mfp - 0.5).abs() / 0.5 < 0.02,
+            "MC mean free path {mfp} vs analytic 0.5"
+        );
+    }
+    #[test]
+    fn test_mc_mean_free_path_degenerate_extinction() {
+        let mut mc = MCRadiationTransport::new(100, 5);
+        assert!(mc.estimate_mean_free_path(0.0).is_infinite());
+        assert!(mc.estimate_mean_free_path(-1.0).is_nan());
+        assert!(mc.estimate_mean_free_path(f64::NAN).is_nan());
+    }
+    #[test]
+    fn test_mc_slab_transmittance_pure_absorber_follows_beer_lambert() {
+        let cases = [(1.0, 1.0), (0.5, 2.0), (3.0, 1.0), (0.1, 1.0)];
+        for (kappa, thickness) in cases {
+            let mut mc = MCRadiationTransport::new(200_000, 31);
+            let t = mc.slab_transmittance(kappa, thickness).unwrap();
+            let exact = (-kappa * thickness).exp();
+            assert!(
+                (t - exact).abs() < 0.004,
+                "kappa={kappa}, L={thickness}: MC {t} vs exp(-kappa L) = {exact}"
+            );
+        }
+        let mut mc = MCRadiationTransport::new(100_000, 11);
+        let t = mc.slab_transmittance(1.0, 1.0).unwrap();
+        assert!(
+            (t - (-1.0_f64).exp()).abs() / (-1.0_f64).exp() < 0.02,
+            "T = {t} vs e^-1"
+        );
+    }
+    #[test]
+    fn test_mc_slab_transport_absorber_has_no_reflectance() {
+        let mut mc = MCRadiationTransport::new(200_000, 13);
+        let (t, r) = mc.slab_transport(1.0, 1.0, 0.0).unwrap();
+        assert_eq!(r, 0.0, "a purely absorbing slab cannot reflect");
+        assert!(
+            (t - (-1.0_f64).exp()).abs() / (-1.0_f64).exp() < 0.01,
+            "T = {t} vs e^-1"
+        );
+    }
+    #[test]
+    fn test_mc_slab_transport_conservative_slab_conserves_weight() {
+        // omega = 1: every packet eventually leaves the slab, so T + R = 1 exactly.
+        for (beta, thickness) in [(1.0, 1.0), (2.0, 1.0), (0.3, 2.0), (5.0, 1.0)] {
+            let mut mc = MCRadiationTransport::new(20_000, 7);
+            let (t, r) = mc.slab_transport(beta, thickness, 1.0).unwrap();
+            assert!(
+                (t + r - 1.0).abs() < 1.0e-12,
+                "beta={beta}, L={thickness}: T+R = {}",
+                t + r
+            );
+            assert!(
+                r > 0.0,
+                "back-scattered packets must reach the entrance face"
+            );
+        }
+    }
+    #[test]
+    fn test_mc_slab_transport_never_creates_energy() {
+        for albedo in [0.0, 0.3, 0.7, 0.95, 1.0] {
+            let mut mc = MCRadiationTransport::new(20_000, 99);
+            let (t, r) = mc.slab_transport(2.0, 1.0, albedo).unwrap();
+            assert!(t >= 0.0 && r >= 0.0);
+            assert!(
+                t + r <= 1.0 + 1.0e-12,
+                "omega={albedo}: T+R = {} exceeds the incident weight",
+                t + r
+            );
+        }
+    }
+    #[test]
+    fn test_mc_slab_transport_matches_deterministic_reference() {
+        // Reference (T, R) from the Fredholm integral equation of the scalar flux with the
+        // exponential-integral kernel, solved by Nystrom collocation (converged to ~1e-5).
+        let cases = [
+            // (beta, L, omega, T_ref, R_ref)
+            (1.0, 1.0, 0.5, 0.446_06, 0.099_12),
+            (1.0, 1.0, 0.9, 0.591_63, 0.267_41),
+            (1.0, 1.0, 1.0, 0.658_67, 0.341_33),
+            (2.0, 1.0, 1.0, 0.482_49, 0.517_52),
+            (1.0, 2.0, 0.5, 0.189_32, 0.112_83),
+            (5.0, 1.0, 0.9, 0.076_65, 0.412_56),
+        ];
+        for (beta, thickness, albedo, t_ref, r_ref) in cases {
+            let mut mc = MCRadiationTransport::new(100_000, 20_240_607);
+            let (t, r) = mc.slab_transport(beta, thickness, albedo).unwrap();
+            assert!(
+                (t - t_ref).abs() < 0.006,
+                "beta={beta}, L={thickness}, omega={albedo}: T = {t} vs {t_ref}"
+            );
+            assert!(
+                (r - r_ref).abs() < 0.006,
+                "beta={beta}, L={thickness}, omega={albedo}: R = {r} vs {r_ref}"
+            );
+        }
+    }
+    #[test]
+    fn test_mc_slab_transmittance_full_derives_extinction_from_absorption() {
+        // kappa = beta (1 - omega): kappa = 0.5, omega = 0.5  <=>  beta = 1.
+        let mut via_kappa = MCRadiationTransport::new(10_000, 3);
+        let mut via_beta = MCRadiationTransport::new(10_000, 3);
+        let t_kappa = via_kappa.slab_transmittance_full(0.5, 1.0, 0.5).unwrap();
+        let (t_beta, _r) = via_beta.slab_transport(1.0, 1.0, 0.5).unwrap();
+        assert_eq!(
+            t_kappa, t_beta,
+            "same seed and extinction -> identical estimate"
+        );
+    }
+    #[test]
+    fn test_mc_slab_transport_is_reproducible_and_seed_dependent() {
+        let run = |seed: u64| {
+            MCRadiationTransport::new(5_000, seed)
+                .slab_transport(1.0, 1.0, 0.8)
+                .unwrap()
+        };
+        assert_eq!(run(5), run(5));
+        assert_ne!(run(5), run(6));
+    }
+    #[test]
+    fn test_mc_slab_transport_trivial_media() {
+        let mut mc = MCRadiationTransport::new(1_000, 1);
+        // Vacuum and zero-thickness slabs transmit everything.
+        assert_eq!(mc.slab_transport(0.0, 1.0, 0.5).unwrap(), (1.0, 0.0));
+        assert_eq!(mc.slab_transport(3.0, 0.0, 0.5).unwrap(), (1.0, 0.0));
+        let mut none = MCRadiationTransport::new(0, 1);
+        assert_eq!(none.slab_transport(1.0, 1.0, 0.5).unwrap(), (0.0, 0.0));
+    }
+    #[test]
+    fn test_mc_slab_transmittance_rejects_invalid_arguments() {
+        use crate::Error;
+        let mut mc = MCRadiationTransport::new(100, 1);
+        // omega = 1 cannot define beta from kappa.
+        assert!(matches!(
+            mc.slab_transmittance_full(1.0, 1.0, 1.0),
+            Err(Error::Singularity { .. })
+        ));
+        assert!(matches!(
+            mc.slab_transmittance_full(1.0, 1.0, 1.5),
+            Err(Error::ParameterOutOfRange { .. })
+        ));
+        assert!(matches!(
+            mc.slab_transmittance_full(1.0, 1.0, -0.1),
+            Err(Error::ParameterOutOfRange { .. })
+        ));
+        assert!(mc.slab_transmittance(-1.0, 1.0).is_err());
+        assert!(mc.slab_transmittance(1.0, -1.0).is_err());
+        assert!(mc.slab_transmittance(f64::NAN, 1.0).is_err());
+        assert!(mc.slab_transport(1.0, f64::INFINITY, 0.5).is_err());
+        assert!(mc.slab_transport(f64::INFINITY, 1.0, 0.5).is_err());
+        assert!(mc.slab_transport(1.0, 1.0, f64::NAN).is_err());
     }
     #[test]
     fn test_view_factor_sphere_to_enclosing_plane_in_range() {

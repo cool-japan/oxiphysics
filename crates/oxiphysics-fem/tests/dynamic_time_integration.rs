@@ -37,7 +37,9 @@ fn test_newmark_free_vibration_matches_analytic_solution() {
     let mut v = vec![0.0_f64];
     let mut a = vec![-100.0_f64];
     for step in 1..=1000 {
-        let (un, vn, an) = da.newmark_beta_step(&u, &v, &a, &[0.0], dt, 0.25, 0.5);
+        let (un, vn, an) = da
+            .newmark_beta_step(&u, &v, &a, &[0.0], dt, 0.25, 0.5)
+            .expect("integration step");
         u = un;
         v = vn;
         a = an;
@@ -88,7 +90,9 @@ fn test_newmark_step_satisfies_the_equation_of_motion() {
     let f_ext = [5.0, -3.0, 2.0];
     let dt = 0.01;
     for &(beta, gamma) in &[(0.25, 0.5), (1.0 / 6.0, 0.5), (0.3025, 0.6)] {
-        let (un, vn, an) = da.newmark_beta_step(&u, &v, &a, &f_ext, dt, beta, gamma);
+        let (un, vn, an) = da
+            .newmark_beta_step(&u, &v, &a, &f_ext, dt, beta, gamma)
+            .expect("integration step");
         let ma = matvec(&m, &an);
         let cv = matvec(&c, &vn);
         let ku = matvec(&k, &un);
@@ -117,7 +121,9 @@ fn test_newmark_is_second_order_accurate() {
         let mut v = vec![0.0_f64];
         let mut a = vec![-100.0_f64];
         for _ in 0..steps {
-            let (un, vn, an) = da.newmark_beta_step(&u, &v, &a, &[0.0], dt, 0.25, 0.5);
+            let (un, vn, an) = da
+                .newmark_beta_step(&u, &v, &a, &[0.0], dt, 0.25, 0.5)
+                .expect("integration step");
             u = un;
             v = vn;
             a = an;
@@ -143,7 +149,9 @@ fn test_newmark_static_equilibrium() {
     let mut a = vec![5.0_f64]; // consistent initial acceleration: m·a₀ = f
     let f = vec![5.0_f64];
     for _ in 0..5000 {
-        let (un, vn, an) = da.newmark_beta_step(&u, &v, &a, &f, 0.01, 0.25, 0.5);
+        let (un, vn, an) = da
+            .newmark_beta_step(&u, &v, &a, &f, 0.01, 0.25, 0.5)
+            .expect("integration step");
         u = un;
         v = vn;
         a = an;
@@ -163,7 +171,9 @@ fn test_newmark_average_acceleration_is_unconditionally_stable() {
     let mut v = vec![0.0_f64];
     let mut a = vec![-1.0e4_f64];
     for step in 0..200 {
-        let (un, vn, an) = da.newmark_beta_step(&u, &v, &a, &[0.0], dt, 0.25, 0.5);
+        let (un, vn, an) = da
+            .newmark_beta_step(&u, &v, &a, &[0.0], dt, 0.25, 0.5)
+            .expect("integration step");
         u = un;
         v = vn;
         a = an;
@@ -185,7 +195,9 @@ fn test_wilson_theta_forced_oscillator_matches_analytic_solution() {
     let mut v = vec![0.0_f64];
     let mut a = vec![1.0_f64];
     for step in 1..=100 {
-        let (un, vn, an) = da.wilson_theta_step(&u, &v, &a, &[1.0], &[1.0], dt, 1.4);
+        let (un, vn, an) = da
+            .wilson_theta_step(&u, &v, &a, &[1.0], &[1.0], dt, 1.4)
+            .expect("integration step");
         u = un;
         v = vn;
         a = an;
@@ -222,7 +234,9 @@ fn test_wilson_theta_integrates_constant_acceleration_exactly() {
     let mut v = vec![0.0_f64];
     let mut a = vec![1.0_f64];
     for step in 1..=10 {
-        let (un, vn, an) = da.wilson_theta_step(&u, &v, &a, &[1.0], &[1.0], dt, 1.4);
+        let (un, vn, an) = da
+            .wilson_theta_step(&u, &v, &a, &[1.0], &[1.0], dt, 1.4)
+            .expect("integration step");
         u = un;
         v = vn;
         a = an;
@@ -245,7 +259,9 @@ fn test_wilson_theta_uses_the_load_increment() {
     let mut a = vec![0.0_f64];
     for step in 0..50 {
         let t0 = step as f64 * dt;
-        let (un, vn, an) = da.wilson_theta_step(&u, &v, &a, &[t0], &[t0 + dt], dt, 1.4);
+        let (un, vn, an) = da
+            .wilson_theta_step(&u, &v, &a, &[t0], &[t0 + dt], dt, 1.4)
+            .expect("integration step");
         u = un;
         v = vn;
         a = an;
@@ -272,7 +288,9 @@ fn test_wilson_theta_two_dof_mode_shape() {
     let mut a = vec![-1.0_f64, -1.0];
     let zero = [0.0, 0.0];
     for step in 1..=200 {
-        let (un, vn, an) = da.wilson_theta_step(&u, &v, &a, &zero, &zero, dt, 1.4);
+        let (un, vn, an) = da
+            .wilson_theta_step(&u, &v, &a, &zero, &zero, dt, 1.4)
+            .expect("integration step");
         u = un;
         v = vn;
         a = an;
@@ -297,7 +315,9 @@ fn test_wilson_theta_static_equilibrium() {
     let mut v = vec![0.0_f64];
     let mut a = vec![5.0_f64];
     for _ in 0..5000 {
-        let (un, vn, an) = da.wilson_theta_step(&u, &v, &a, &[5.0], &[5.0], dt, 1.4);
+        let (un, vn, an) = da
+            .wilson_theta_step(&u, &v, &a, &[5.0], &[5.0], dt, 1.4)
+            .expect("integration step");
         u = un;
         v = vn;
         a = an;
@@ -315,7 +335,9 @@ fn large_step_free_vibration(theta: f64, steps: usize) -> (f64, f64) {
     let mut a = vec![-1.0e4_f64];
     let mut max_abs_u = 0.0_f64;
     for _ in 0..steps {
-        let (un, vn, an) = da.wilson_theta_step(&u, &v, &a, &[0.0], &[0.0], dt, theta);
+        let (un, vn, an) = da
+            .wilson_theta_step(&u, &v, &a, &[0.0], &[0.0], dt, theta)
+            .expect("integration step");
         u = un;
         v = vn;
         a = an;
@@ -342,4 +364,290 @@ fn test_wilson_theta_is_unconditionally_stable() {
         unstable_max > 1.0e10,
         "θ = 1 should be unstable at ω·dt = 10, got max |u| = {unstable_max}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Error reporting and factorisation reuse
+// ---------------------------------------------------------------------------
+
+/// The step matrices used to be solved with a Gaussian elimination that
+/// `continue`d past a vanishing pivot and then divided by it, returning NaN /
+/// garbage; the factorisation was also rebuilt from scratch on every step.
+mod step_matrix_handling {
+    use super::*;
+    use oxiphysics_fem::analysis::FemError;
+    use std::f64::consts::PI;
+
+    /// `m = 1`, `k = (2π)²`: a unit-period oscillator started at `u₀ = 1`.
+    /// After one second the average-acceleration scheme (dt = 1 ms) is back at
+    /// `u = 1`; its phase error is only ≈ 2·10⁻⁵.
+    #[test]
+    fn unit_period_oscillator_returns_to_its_start_after_one_second() {
+        let stiffness = (2.0 * PI) * (2.0 * PI);
+        let da = sdof(1.0, 0.0, stiffness);
+        let dt = 1.0e-3;
+        let mut u = vec![1.0_f64];
+        let mut v = vec![0.0_f64];
+        let mut a = vec![-stiffness];
+        for _ in 0..1000 {
+            let (un, vn, an) = da
+                .newmark_beta_step(&u, &v, &a, &[0.0], dt, 0.25, 0.5)
+                .expect("regular step matrix");
+            u = un;
+            v = vn;
+            a = an;
+        }
+        assert!((u[0] - 1.0).abs() < 1.0e-3, "u(1 s) = {}", u[0]);
+        assert!(v[0].abs() < 2.0e-2, "v(1 s) = {}", v[0]);
+        // One factorisation served all 1000 steps.
+        assert_eq!(da.factorization_count(), 1);
+    }
+
+    /// Central difference (β = 0) is an explicit scheme: its step matrix is
+    /// just `M + γ·dt·C`, which the solver must accept.
+    #[test]
+    fn explicit_central_difference_step_is_supported() {
+        let da = sdof(1.0, 0.0, 100.0);
+        let dt = 1.0e-3;
+        let mut u = vec![1.0_f64];
+        let mut v = vec![0.0_f64];
+        let mut a = vec![-100.0_f64];
+        for step in 1..=1000 {
+            let (un, vn, an) = da
+                .newmark_beta_step(&u, &v, &a, &[0.0], dt, 0.0, 0.5)
+                .expect("explicit step");
+            u = un;
+            v = vn;
+            a = an;
+            let t = step as f64 * dt;
+            assert!(
+                (u[0] - (10.0 * t).cos()).abs() < 5.0e-3,
+                "step {step}: u = {}",
+                u[0]
+            );
+        }
+    }
+
+    /// `M = C = 0` and β = 0 give the zero step matrix.
+    #[test]
+    fn singular_newmark_matrix_is_an_error_not_nan() {
+        let da = sdof(0.0, 0.0, 1.0);
+        let result = da.newmark_beta_step(&[0.0], &[0.0], &[0.0], &[1.0], 0.01, 0.0, 0.5);
+        assert!(
+            matches!(result, Err(FemError::SingularSystem)),
+            "{result:?}"
+        );
+        // A mass cancelled exactly by the stiffness term: with dt = 1/2 and
+        // β = 1/4 (exact in binary) M + β·dt²·K = 1 + (1/16)·(−16) = 0.
+        let dt = 0.5_f64;
+        let beta = 0.25_f64;
+        let cancelling = sdof(1.0, 0.0, -1.0 / (beta * dt * dt));
+        let result = cancelling.newmark_beta_step(&[0.0], &[0.0], &[0.0], &[1.0], dt, beta, 0.5);
+        assert!(
+            matches!(result, Err(FemError::SingularSystem)),
+            "{result:?}"
+        );
+        // Nothing was factorised for a singular matrix.
+        assert_eq!(da.factorization_count(), 0);
+    }
+
+    /// `K̂ = K + 6/τ²·M` vanishes for `K = −6/τ²` (τ = θ·dt): with dt = 1/2 and
+    /// θ = 2, τ = 1 and `K = −6` cancel exactly.
+    #[test]
+    fn singular_wilson_matrix_is_an_error_not_nan() {
+        let dt = 0.5_f64;
+        let theta = 2.0_f64;
+        let da = sdof(1.0, 0.0, -6.0);
+        let result = da.wilson_theta_step(&[0.0], &[0.0], &[0.0], &[0.0], &[1.0], dt, theta);
+        assert!(
+            matches!(result, Err(FemError::SingularSystem)),
+            "{result:?}"
+        );
+        assert_eq!(da.factorization_count(), 0);
+    }
+
+    #[test]
+    fn invalid_arguments_are_rejected() {
+        let da = sdof(1.0, 0.0, 10.0);
+        let zero = [0.0_f64];
+        let bad_dt = |dt: f64| da.newmark_beta_step(&zero, &zero, &zero, &zero, dt, 0.25, 0.5);
+        for dt in [0.0, -0.01, f64::NAN, f64::INFINITY] {
+            assert!(
+                matches!(bad_dt(dt), Err(FemError::InvalidInput(_))),
+                "dt = {dt}"
+            );
+        }
+        assert!(matches!(
+            da.newmark_beta_step(&zero, &zero, &zero, &zero, 0.01, -0.1, 0.5),
+            Err(FemError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            da.newmark_beta_step(&zero, &zero, &zero, &zero, 0.01, 0.25, f64::NAN),
+            Err(FemError::InvalidInput(_))
+        ));
+        // Wrong vector length and a non-finite load.
+        assert!(matches!(
+            da.newmark_beta_step(&[0.0, 0.0], &zero, &zero, &zero, 0.01, 0.25, 0.5),
+            Err(FemError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            da.newmark_beta_step(&zero, &zero, &zero, &[f64::NAN], 0.01, 0.25, 0.5),
+            Err(FemError::InvalidInput(_))
+        ));
+        // θ below 1 is not a Wilson scheme.
+        assert!(matches!(
+            da.wilson_theta_step(&zero, &zero, &zero, &zero, &zero, 0.01, 0.9),
+            Err(FemError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            da.wilson_theta_step(&zero, &zero, &zero, &zero, &zero, 0.01, f64::NAN),
+            Err(FemError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            da.wilson_theta_step(&zero, &zero, &zero, &[], &zero, 0.01, 1.4),
+            Err(FemError::InvalidInput(_))
+        ));
+        // A system whose matrices do not match `n`.
+        let broken = DynamicAnalysis::new(vec![1.0; 3], vec![0.0; 4], vec![1.0; 4], 2);
+        assert!(matches!(
+            broken.newmark_beta_step(&[0.0; 2], &[0.0; 2], &[0.0; 2], &[0.0; 2], 0.01, 0.25, 0.5),
+            Err(FemError::InvalidInput(_))
+        ));
+    }
+
+    /// The step matrix is factorised once per (scheme, parameters) and reused.
+    #[test]
+    fn factorisation_is_reused_while_the_step_matrix_is_constant() {
+        let da = sdof(1.0, 0.1, 50.0);
+        let mut u = vec![1.0_f64];
+        let mut v = vec![0.0_f64];
+        let mut a = vec![-50.0_f64];
+        assert_eq!(da.factorization_count(), 0);
+        for _ in 0..40 {
+            let (un, vn, an) = da
+                .newmark_beta_step(&u, &v, &a, &[0.0], 0.01, 0.25, 0.5)
+                .expect("step");
+            u = un;
+            v = vn;
+            a = an;
+        }
+        assert_eq!(da.factorization_count(), 1);
+        // A different time step changes the matrix ...
+        let (un, vn, an) = da
+            .newmark_beta_step(&u, &v, &a, &[0.0], 0.02, 0.25, 0.5)
+            .expect("step");
+        assert_eq!(da.factorization_count(), 2);
+        // ... and so do β and γ.
+        da.newmark_beta_step(&un, &vn, &an, &[0.0], 0.02, 1.0 / 6.0, 0.5)
+            .expect("step");
+        assert_eq!(da.factorization_count(), 3);
+        // Wilson-θ has its own slot, so interleaving the schemes never refactors.
+        let zero = [0.0_f64];
+        for _ in 0..5 {
+            da.wilson_theta_step(&un, &vn, &an, &zero, &zero, 0.02, 1.4)
+                .expect("step");
+            da.newmark_beta_step(&un, &vn, &an, &zero, 0.02, 1.0 / 6.0, 0.5)
+                .expect("step");
+        }
+        assert_eq!(da.factorization_count(), 4);
+    }
+
+    /// `m`, `c`, `k` are public: mutating them between steps must be honoured,
+    /// not answered from a stale factorisation of the old matrices.
+    #[test]
+    fn mutating_the_system_matrices_invalidates_the_cached_factors() {
+        let mut da = sdof(1.0, 0.0, 100.0);
+        let (u, v, a) = ([1.0_f64], [0.0_f64], [-100.0_f64]);
+        let first = da
+            .newmark_beta_step(&u, &v, &a, &[0.0], 0.01, 0.25, 0.5)
+            .expect("step");
+        assert_eq!(da.factorization_count(), 1);
+
+        da.k[0] = 400.0;
+        let after_change = da
+            .newmark_beta_step(&u, &v, &a, &[0.0], 0.01, 0.25, 0.5)
+            .expect("step");
+        assert_eq!(da.factorization_count(), 2);
+
+        let fresh = sdof(1.0, 0.0, 400.0)
+            .newmark_beta_step(&u, &v, &a, &[0.0], 0.01, 0.25, 0.5)
+            .expect("step");
+        assert_eq!(after_change, fresh);
+        assert_ne!(after_change, first);
+
+        // Changing it back reproduces the very first answer.
+        da.k[0] = 100.0;
+        let restored = da
+            .newmark_beta_step(&u, &v, &a, &[0.0], 0.01, 0.25, 0.5)
+            .expect("step");
+        assert_eq!(restored, first);
+    }
+
+    /// Reusing the factors must not change the numbers.
+    #[test]
+    fn cached_steps_equal_steps_of_a_fresh_instance() {
+        let m = vec![2.0, 0.0, 0.0, 1.0];
+        let c = vec![0.3, -0.1, -0.1, 0.2];
+        let k = vec![60.0, -20.0, -20.0, 30.0];
+        let reused = DynamicAnalysis::new(m.clone(), c.clone(), k.clone(), 2);
+        let mut state = (vec![0.01, -0.02], vec![0.1, 0.0], vec![1.0, -1.0]);
+        for step in 0..25 {
+            let load = [(0.3 * step as f64).sin(), 0.5];
+            let from_reused = reused
+                .newmark_beta_step(&state.0, &state.1, &state.2, &load, 0.01, 0.25, 0.5)
+                .expect("step");
+            let fresh = DynamicAnalysis::new(m.clone(), c.clone(), k.clone(), 2);
+            let from_fresh = fresh
+                .newmark_beta_step(&state.0, &state.1, &state.2, &load, 0.01, 0.25, 0.5)
+                .expect("step");
+            assert_eq!(from_reused, from_fresh, "step {step}");
+            state = from_reused;
+        }
+        assert_eq!(reused.factorization_count(), 1);
+    }
+
+    #[test]
+    fn dynamic_analysis_can_be_shared_between_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<DynamicAnalysis>();
+
+        let da = sdof(1.0, 0.05, 80.0);
+        let reference = {
+            let mut state = (vec![1.0_f64], vec![0.0_f64], vec![-80.0_f64]);
+            for _ in 0..50 {
+                state = da
+                    .newmark_beta_step(&state.0, &state.1, &state.2, &[0.0], 0.005, 0.25, 0.5)
+                    .expect("step");
+            }
+            state
+        };
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut state = (vec![1.0_f64], vec![0.0_f64], vec![-80.0_f64]);
+                        for _ in 0..50 {
+                            state = da
+                                .newmark_beta_step(
+                                    &state.0,
+                                    &state.1,
+                                    &state.2,
+                                    &[0.0],
+                                    0.005,
+                                    0.25,
+                                    0.5,
+                                )
+                                .expect("step");
+                        }
+                        state
+                    })
+                })
+                .collect();
+            for handle in handles {
+                let state = handle.join().expect("worker thread");
+                assert_eq!(state, reference);
+            }
+        });
+        assert_eq!(da.factorization_count(), 1);
+    }
 }

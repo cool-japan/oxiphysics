@@ -478,109 +478,114 @@ pub fn compute_heat_flux_acf(heat_flux: &[[f64; 3]], dt: f64) -> HeatFluxAcf {
     };
     HeatFluxAcf { times, acf, j0_sq }
 }
-/// Compute spherical harmonic Y_l^m(theta, phi) for real-valued combinations.
+/// Fully normalised associated Legendre function of the polar angle,
 ///
-/// We use the real representation: q_lm = sum of real-part of Y_l^m.
-/// For simplicity we store the real-valued Steinhardt ql per particle.
-pub(super) fn yl_real_components(theta: f64, phi: f64, l: usize) -> Vec<f64> {
-    match l {
-        4 => {
-            let ct = theta.cos();
-            let st = theta.sin();
-            let c2t = (2.0 * theta).cos();
-            let _c4t = (4.0 * theta).cos();
-            vec![
-                (3.0 / 16.0) * (35.0 / (2.0 * PI)).sqrt() * st.powi(4) * (4.0 * phi).sin(),
-                (3.0 / 8.0) * (35.0 / PI).sqrt() * st.powi(3) * ct * (3.0 * phi).sin(),
-                (3.0 / 8.0)
-                    * (5.0 / (2.0 * PI)).sqrt()
-                    * st.powi(2)
-                    * (7.0 * ct * ct - 1.0)
-                    * (2.0 * phi).sin(),
-                (3.0 / 4.0) * (5.0 / PI).sqrt() * st * (7.0 * ct.powi(3) - 3.0 * ct) * phi.sin(),
-                (3.0 / 16.0)
-                    * (1.0 / PI).sqrt()
-                    * (35.0 * ct.powi(4) - 30.0 * c2t - 13.0 + 30.0 * ct * ct),
-                (3.0 / 4.0) * (5.0 / PI).sqrt() * st * (7.0 * ct.powi(3) - 3.0 * ct) * phi.cos(),
-                (3.0 / 8.0)
-                    * (5.0 / (2.0 * PI)).sqrt()
-                    * st.powi(2)
-                    * (7.0 * ct * ct - 1.0)
-                    * (2.0 * phi).cos(),
-                (3.0 / 8.0) * (35.0 / PI).sqrt() * st.powi(3) * ct * (3.0 * phi).cos(),
-                (3.0 / 16.0) * (35.0 / (2.0 * PI)).sqrt() * st.powi(4) * (4.0 * phi).cos(),
-            ]
-        }
-        6 => {
-            let ct = theta.cos();
-            let st = theta.sin();
-            vec![
-                (1.0 / 64.0) * ((3003.0 / PI).sqrt()) * st.powi(6) * (6.0 * phi).sin(),
-                (3.0 / 32.0) * ((1001.0 / PI).sqrt()) * st.powi(5) * ct * (5.0 * phi).sin(),
-                (3.0 / 32.0)
-                    * ((91.0 / (2.0 * PI)).sqrt())
-                    * st.powi(4)
-                    * (11.0 * ct * ct - 1.0)
-                    * (4.0 * phi).sin(),
-                (1.0 / 32.0)
-                    * ((1365.0 / PI).sqrt())
-                    * st.powi(3)
-                    * (11.0 * ct.powi(3) - 3.0 * ct)
-                    * (3.0 * phi).sin(),
-                (1.0 / 64.0)
-                    * ((1365.0 / PI).sqrt())
-                    * st
-                    * st
-                    * (33.0 * ct.powi(4) - 18.0 * ct * ct + 1.0)
-                    * (2.0 * phi).sin(),
-                (1.0 / 16.0)
-                    * ((273.0 / (2.0 * PI)).sqrt())
-                    * st
-                    * (33.0 * ct.powi(5) - 30.0 * ct.powi(3) + 5.0 * ct)
-                    * phi.sin(),
-                (1.0 / 32.0)
-                    * (13.0 / PI).sqrt()
-                    * (231.0 * ct.powi(6) - 315.0 * ct.powi(4) + 105.0 * ct * ct - 5.0),
-                (1.0 / 16.0)
-                    * ((273.0 / (2.0 * PI)).sqrt())
-                    * st
-                    * (33.0 * ct.powi(5) - 30.0 * ct.powi(3) + 5.0 * ct)
-                    * phi.cos(),
-                (1.0 / 64.0)
-                    * ((1365.0 / PI).sqrt())
-                    * st
-                    * st
-                    * (33.0 * ct.powi(4) - 18.0 * ct * ct + 1.0)
-                    * (2.0 * phi).cos(),
-                (1.0 / 32.0)
-                    * ((1365.0 / PI).sqrt())
-                    * st.powi(3)
-                    * (11.0 * ct.powi(3) - 3.0 * ct)
-                    * (3.0 * phi).cos(),
-                (3.0 / 32.0)
-                    * ((91.0 / (2.0 * PI)).sqrt())
-                    * st.powi(4)
-                    * (11.0 * ct * ct - 1.0)
-                    * (4.0 * phi).cos(),
-                (3.0 / 32.0) * ((1001.0 / PI).sqrt()) * st.powi(5) * ct * (5.0 * phi).cos(),
-                (1.0 / 64.0) * ((3003.0 / PI).sqrt()) * st.powi(6) * (6.0 * phi).cos(),
-            ]
-        }
-        _ => vec![],
+/// `P̄_l^m(cos θ) = √((2l+1)/(4π) · (l−m)!/(l+m)!) · P_l^m(cos θ)`,
+///
+/// including the Condon-Shortley phase `(−1)^m`, so that the complex
+/// spherical harmonic is `Y_l^m(θ, φ) = P̄_l^m(cos θ) · e^{imφ}` for
+/// `0 ≤ m ≤ l`.  Returns `0.0` for `m > l`.
+///
+/// `cos_theta` and `sin_theta` (`≥ 0`) are passed separately so that
+/// directions close to the poles keep their full precision.  The stable
+/// three-term recurrence in `l` at fixed `m` is seeded with
+/// `P̄_m^m = −√((2m+1)/(2m)) · sin θ · P̄_{m−1}^{m−1}` (`P̄_0^0 = 1/√(4π)`) and
+/// `P̄_{m+1}^m = √(2m+3) · cos θ · P̄_m^m`.
+fn normalised_legendre(l: usize, m: usize, cos_theta: f64, sin_theta: f64) -> f64 {
+    if m > l {
+        return 0.0;
+    }
+    let mut p_mm = (1.0 / (4.0 * PI)).sqrt();
+    for k in 1..=m {
+        let kf = k as f64;
+        p_mm *= -((2.0 * kf + 1.0) / (2.0 * kf)).sqrt() * sin_theta;
+    }
+    if l == m {
+        return p_mm;
+    }
+    let mf = m as f64;
+    let mut p_lower = p_mm;
+    let mut p_upper = (2.0 * mf + 3.0).sqrt() * cos_theta * p_mm;
+    for k in (m + 2)..=l {
+        let kf = k as f64;
+        let scale = ((4.0 * kf * kf - 1.0) / (kf * kf - mf * mf)).sqrt();
+        let shrink =
+            (((kf - 1.0) * (kf - 1.0) - mf * mf) / (4.0 * (kf - 1.0) * (kf - 1.0) - 1.0)).sqrt();
+        let p_next = scale * (cos_theta * p_upper - shrink * p_lower);
+        p_lower = p_upper;
+        p_upper = p_next;
+    }
+    p_upper
+}
+
+/// Add the real, orthonormal spherical harmonics of degree `l` evaluated in
+/// the direction `(θ, φ)` to the accumulator `acc`.
+///
+/// The direction is given by the cosine and sine (`≥ 0`) of the polar angle and
+/// by the azimuth `phi`.  `acc` must hold at least `2l + 1` entries (a shorter
+/// slice is left untouched); the components are
+///
+/// ```text
+/// [Y_l0, √2·Re Y_l1, √2·Im Y_l1, …, √2·Re Y_ll, √2·Im Y_ll]
+/// ```
+///
+/// The `√2` makes the basis orthonormal on the sphere: since
+/// `|Q_{l,−m}| = |Q_{l,m}|` for every real bond distribution, the pair
+/// `(Re, Im)` of order `m > 0` carries the weight of both `±m` and
+/// `Σ_m |Q_lm|²` equals the sum of squares of the bond-averaged components.
+/// For a single direction the addition theorem gives
+/// `Σ_k y_k² = (2l + 1)/(4π)`.
+pub(super) fn accumulate_real_harmonics(
+    acc: &mut [f64],
+    l: usize,
+    cos_theta: f64,
+    sin_theta: f64,
+    phi: f64,
+) {
+    let Some(acc) = acc.get_mut(..2 * l + 1) else {
+        return;
+    };
+    acc[0] += normalised_legendre(l, 0, cos_theta, sin_theta);
+    for m in 1..=l {
+        let amplitude = std::f64::consts::SQRT_2 * normalised_legendre(l, m, cos_theta, sin_theta);
+        let angle = m as f64 * phi;
+        acc[2 * m - 1] += amplitude * angle.cos();
+        acc[2 * m] += amplitude * angle.sin();
     }
 }
+
+/// Steinhardt order parameter `Q_l = √(4π/(2l+1) · Σ_m |Q_lm|²)` from the
+/// bond sums of the real harmonic components of degree `l`.
+fn steinhardt_order_parameter(component_sums: &[f64], n_bonds: f64, l: usize) -> f64 {
+    let sum_sq: f64 = component_sums
+        .iter()
+        .map(|&q| {
+            let mean = q / n_bonds;
+            mean * mean
+        })
+        .sum();
+    (4.0 * PI / (2 * l + 1) as f64 * sum_sq).sqrt()
+}
+
 /// Compute global Steinhardt bond-orientational order parameters Q4 and Q6.
 ///
-/// Q_l = sqrt( (4π/(2l+1)) * Σ_m |⟨Y_lm⟩|² )
+/// `Q_l = sqrt( (4π/(2l+1)) · Σ_{m=−l}^{l} |Q_lm|² )` with
+/// `Q_lm = ⟨Y_lm(r̂_ij)⟩`, where the average is over all bonds `(i, j)` with
+/// `|r_ij| < cutoff` (each pair counted once).  The sum over `m` is evaluated
+/// with the real orthonormal spherical harmonics of degree `l` (the `√2`-weighted
+/// `Re`/`Im` pairs of the complex `Y_lm`, orthonormal on the sphere).
 ///
-/// where the average is over all bonds (i, j) with |r_ij| < cutoff.
+/// `Q_l` is invariant under rotations and translations of the configuration.
+/// Reference values for the bulk lattices (nearest-neighbour bonds) are
+/// FCC `Q4 = 0.190941`, `Q6 = 0.574524`; a single bond has `Q4 = Q6 = 1`.
 ///
 /// # Arguments
 /// * `positions` – Atomic positions.
 /// * `cutoff`    – Neighbour cutoff distance.
 ///
 /// # Returns
-/// `(Q4, Q6)` — both lie in \[0, 1\].
+/// `(Q4, Q6)` — both lie in \[0, 1\] (up to floating-point rounding); `(0, 0)`
+/// if there are fewer than two atoms or no bond.
 pub fn compute_bond_order_params(positions: &[[f64; 3]], cutoff: f64) -> (f64, f64) {
     let n = positions.len();
     if n < 2 {
@@ -598,16 +603,11 @@ pub fn compute_bond_order_params(positions: &[[f64; 3]], cutoff: f64) -> (f64, f
             if r >= cutoff || r < 1e-14 {
                 continue;
             }
-            let theta = (dz / r).clamp(-1.0, 1.0).acos();
+            let cos_theta = (dz / r).clamp(-1.0, 1.0);
+            let sin_theta = dx.hypot(dy) / r;
             let phi = dy.atan2(dx);
-            let y4 = yl_real_components(theta, phi, 4);
-            let y6 = yl_real_components(theta, phi, 6);
-            for (q, y) in qlm4.iter_mut().zip(y4.iter()) {
-                *q += y;
-            }
-            for (q, y) in qlm6.iter_mut().zip(y6.iter()) {
-                *q += y;
-            }
+            accumulate_real_harmonics(&mut qlm4, 4, cos_theta, sin_theta, phi);
+            accumulate_real_harmonics(&mut qlm6, 6, cos_theta, sin_theta, phi);
             n_bonds += 1;
         }
     }
@@ -615,11 +615,10 @@ pub fn compute_bond_order_params(positions: &[[f64; 3]], cutoff: f64) -> (f64, f
         return (0.0, 0.0);
     }
     let nb = n_bonds as f64;
-    let sum4: f64 = qlm4.iter().map(|&q| (q / nb) * (q / nb)).sum();
-    let sum6: f64 = qlm6.iter().map(|&q| (q / nb) * (q / nb)).sum();
-    let q4 = (4.0 * PI / 9.0 * sum4).sqrt().min(1.0);
-    let q6 = (4.0 * PI / 13.0 * sum6).sqrt().min(1.0);
-    (q4, q6)
+    (
+        steinhardt_order_parameter(&qlm4, nb, 4),
+        steinhardt_order_parameter(&qlm6, nb, 6),
+    )
 }
 /// Compute the running coordination number N(r) from a radial distribution function.
 ///

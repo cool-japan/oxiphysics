@@ -28,6 +28,18 @@
 //! - `DesyncReport` — emitted when a hash mismatch is detected.
 //! - `RollbackError` — error variants for resimulation failures.
 //!
+//! ## Snapshot hashing
+//!
+//! Desync detection compares **64-bit FNV-1a** hashes of the raw snapshot
+//! bytes (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`).  The
+//! hash is [`oxiphysics_core::fnv1a_64`], the single workspace-wide
+//! definition that the Python and WASM bindings also use, so a peer on any
+//! target that hashes its snapshot bytes with a standard FNV-1a-64 obtains the
+//! same value.  Use [`RollbackWorld::snapshot_hash`] (or
+//! [`RollbackBuffer::snapshot_hash`]) to read the local hash to send to a
+//! remote peer, and [`RollbackWorld::check_desync`] to compare it against the
+//! hash received from one.
+//!
 //! ## Example
 //!
 //! ```rust,no_run
@@ -51,6 +63,7 @@
 //! assert_eq!(rw.world.state, 5);
 //! ```
 
+use oxiphysics_core::fnv1a_64;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -82,6 +95,19 @@ where
     pub snapshot: Vec<u8>,
     /// Inputs keyed by peer. Local inputs are stored under [`LOCAL_PEER_ID`].
     pub inputs: HashMap<PeerId, Cmd>,
+}
+
+impl<Cmd> Frame<Cmd>
+where
+    Cmd: Serialize + DeserializeOwned,
+{
+    /// 64-bit FNV-1a hash of this frame's snapshot bytes.
+    ///
+    /// This is the value exchanged between peers for desync detection; see the
+    /// [module documentation](self#snapshot-hashing).
+    pub fn snapshot_hash(&self) -> u64 {
+        hash_snapshot(&self.snapshot)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +174,29 @@ impl<Cmd: Clone + Serialize + DeserializeOwned> RollbackBuffer<Cmd> {
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
+
+    /// 64-bit FNV-1a hash of the snapshot stored at `tick`, or `None` if the
+    /// tick is not in the buffer.
+    pub fn snapshot_hash(&self, tick: u64) -> Option<u64> {
+        self.get(tick).map(Frame::snapshot_hash)
+    }
+
+    /// Compare the local snapshot hash at `tick` to `remote_hash`.
+    ///
+    /// Returns `Some(DesyncReport)` on a mismatch, or `None` if the hashes
+    /// match or the tick is not in the buffer.
+    pub fn check_desync(&self, tick: u64, remote_hash: u64) -> Option<DesyncReport> {
+        let local_hash = self.snapshot_hash(tick)?;
+        if local_hash != remote_hash {
+            Some(DesyncReport {
+                tick,
+                local_hash,
+                remote_hash,
+            })
+        } else {
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +208,8 @@ impl<Cmd: Clone + Serialize + DeserializeOwned> RollbackBuffer<Cmd> {
 pub struct DesyncReport {
     /// The tick at which the desync was detected.
     pub tick: u64,
-    /// FNV-1a hash of the local snapshot at that tick.
+    /// 64-bit FNV-1a hash ([`oxiphysics_core::fnv1a_64`]) of the local
+    /// snapshot at that tick.
     pub local_hash: u64,
     /// The remote hash that was compared against.
     pub remote_hash: u64,
@@ -182,14 +232,13 @@ pub enum RollbackError {
 // Snapshot hashing (FNV-1a 64-bit)
 // ---------------------------------------------------------------------------
 
-/// Compute an FNV-1a 64-bit hash of a snapshot byte slice.
+/// Compute the 64-bit FNV-1a hash of a snapshot byte slice.
+///
+/// Delegates to [`oxiphysics_core::fnv1a_64`] (offset basis
+/// `0xcbf29ce484222325`, prime `0x100000001b3`) so that native, Python and WASM
+/// peers agree bit for bit.
 fn hash_snapshot(snap: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for &b in snap {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000003d811_u64);
-    }
-    h
+    fnv1a_64(snap)
 }
 
 // ---------------------------------------------------------------------------
@@ -372,22 +421,23 @@ where
         Ok(())
     }
 
+    /// 64-bit FNV-1a hash of the snapshot stored at `tick`, or `None` if the
+    /// tick is not in the buffer.
+    ///
+    /// Send this value to remote peers; they feed it to their own
+    /// [`check_desync`](Self::check_desync).  The hash is computed over the
+    /// raw bytes produced by the user-supplied snapshot function (see the
+    /// [module documentation](self#snapshot-hashing)).
+    pub fn snapshot_hash(&self, tick: u64) -> Option<u64> {
+        self.buffer.snapshot_hash(tick)
+    }
+
     /// Compare the local snapshot hash at `tick` to `remote_hash`.
     ///
     /// Returns `Some(DesyncReport)` on a mismatch, or `None` if the hashes
     /// match or the tick is not in the buffer.
     pub fn check_desync(&self, tick: u64, remote_hash: u64) -> Option<DesyncReport> {
-        let frame = self.buffer.get(tick)?;
-        let local_hash = hash_snapshot(&frame.snapshot);
-        if local_hash != remote_hash {
-            Some(DesyncReport {
-                tick,
-                local_hash,
-                remote_hash,
-            })
-        } else {
-            None
-        }
+        self.buffer.check_desync(tick, remote_hash)
     }
 
     // -----------------------------------------------------------------------
@@ -585,5 +635,149 @@ mod tests {
         // Tick 999 is not in the buffer.
         let result = rw.resimulate_from(999, 1.0 / 60.0);
         assert_eq!(result, Err(RollbackError::TickNotInBuffer(999)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Snapshot hash: real FNV-1a-64 (regression for the wrong-prime hash)
+    // -----------------------------------------------------------------------
+
+    /// FNV-1a-64 straight from the specification, using the decimal constants
+    /// of the reference description (offset basis 14695981039346656037, prime
+    /// 1099511628211) and 128-bit arithmetic, so that nothing is shared with
+    /// the production implementation.
+    fn reference_fnv1a_64(bytes: &[u8]) -> u64 {
+        const OFFSET_BASIS: u128 = 14_695_981_039_346_656_037;
+        const PRIME: u128 = 1_099_511_628_211;
+        let mut hash = OFFSET_BASIS;
+        for &byte in bytes {
+            hash ^= u128::from(byte);
+            hash = (hash * PRIME) % (1_u128 << 64);
+        }
+        u64::try_from(hash).expect("hash reduced modulo 2^64 fits in u64")
+    }
+
+    #[test]
+    fn test_snapshot_hash_is_standard_fnv1a_64() {
+        let mut rw = make_world(8);
+        rw.step(1.0 / 60.0, &[5_i32]);
+
+        // Tick 0 snapshots state 0, tick 1 snapshots state 5 (little-endian i64).
+        // Expected values were computed with an independent big-integer FNV-1a.
+        assert_eq!(rw.snapshot_hash(0), Some(0xa8c7_f832_281a_39c5));
+        assert_eq!(rw.snapshot_hash(1), Some(0x0de2_1504_f16d_c720));
+        assert_eq!(
+            rw.snapshot_hash(1),
+            Some(reference_fnv1a_64(&5_i64.to_le_bytes()))
+        );
+        // The pre-fix hash multiplied by 0x100000003d811 and produced this value.
+        assert_ne!(rw.snapshot_hash(1), Some(0x73ab_ec31_7153_3320));
+        // A tick that is not buffered has no hash.
+        assert_eq!(rw.snapshot_hash(2), None);
+        assert_eq!(rw.buffer.snapshot_hash(999), None);
+    }
+
+    #[test]
+    fn test_frame_snapshot_hash_known_vectors() {
+        let frame = |snapshot: &[u8]| Frame::<i32> {
+            tick: 0,
+            snapshot: snapshot.to_vec(),
+            inputs: HashMap::new(),
+        };
+        assert_eq!(frame(b"").snapshot_hash(), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(frame(b"a").snapshot_hash(), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(frame(b"foobar").snapshot_hash(), 0x8594_4171_f739_67e8);
+        assert_eq!(frame(b"foobar").snapshot_hash(), hash_snapshot(b"foobar"));
+    }
+
+    #[test]
+    fn test_peer_following_documented_hash_sees_no_desync() {
+        let mut rw = make_world(8);
+        rw.step(1.0 / 60.0, &[5_i32]);
+        let tick = rw.current_tick;
+
+        // A remote peer that hashes its (identical) snapshot bytes with a
+        // standard FNV-1a-64 must agree with the local hash: no desync.
+        let remote_snapshot = 5_i64.to_le_bytes();
+        let remote_hash = reference_fnv1a_64(&remote_snapshot);
+        assert_eq!(rw.check_desync(tick, remote_hash), None);
+        assert_eq!(rw.snapshot_hash(tick), Some(remote_hash));
+
+        // A peer whose state diverged (6 instead of 5) is reported, with both
+        // hashes carried in the report.
+        let diverged_hash = reference_fnv1a_64(&6_i64.to_le_bytes());
+        let report = rw
+            .check_desync(tick, diverged_hash)
+            .expect("diverged peer must be reported");
+        assert_eq!(report.tick, tick);
+        assert_eq!(report.local_hash, remote_hash);
+        assert_eq!(report.remote_hash, diverged_hash);
+
+        // Unknown tick: nothing to compare.
+        assert_eq!(rw.check_desync(tick + 10, remote_hash), None);
+    }
+
+    /// End to end: peer B misses a remote input, desyncs, receives the input
+    /// late, rolls back and resimulates -- afterwards every buffered tick hashes
+    /// identically on both peers, so `check_desync` stays quiet.
+    #[test]
+    fn test_peers_agree_on_hashes_after_a_late_input_rollback() {
+        let dt = 1.0 / 60.0;
+        let remote_peer: PeerId = 2;
+
+        // Peer A has the remote input of tick 2 in time.
+        let mut a = make_world(16);
+        a.record_input(remote_peer, 2, 10_i32);
+        for _ in 0..3 {
+            a.step(dt, &[1_i32]);
+        }
+
+        // Peer B steps without it.
+        let mut b = make_world(16);
+        for _ in 0..3 {
+            b.step(dt, &[1_i32]);
+        }
+        assert_eq!((a.world.state, b.world.state), (13, 3));
+        assert_eq!(
+            a.snapshot_hash(1),
+            b.snapshot_hash(1),
+            "tick 1 is unaffected"
+        );
+        let b_hash = b.snapshot_hash(2).expect("tick 2 is buffered");
+        let report = a
+            .check_desync(2, b_hash)
+            .expect("the missing input must show up as a desync");
+        assert_eq!(report.remote_hash, b_hash);
+        assert_ne!(report.local_hash, b_hash);
+
+        // The late input arrives; B rolls back to tick 2 and resimulates.
+        b.record_input(remote_peer, 2, 10_i32);
+        b.resimulate_from(2, dt).expect("tick 2 is buffered");
+        assert_eq!(b.world.state, 13);
+
+        for tick in 1..=3_u64 {
+            let hash_a = a.snapshot_hash(tick).expect("buffered on A");
+            let hash_b = b.snapshot_hash(tick).expect("buffered on B");
+            assert_eq!(hash_a, hash_b, "tick {tick}");
+            assert_eq!(a.check_desync(tick, hash_b), None, "tick {tick}");
+            assert_eq!(b.check_desync(tick, hash_a), None, "tick {tick}");
+        }
+    }
+
+    #[test]
+    fn test_buffer_check_desync_matches_world() {
+        let mut rw = make_world(8);
+        rw.step(1.0 / 60.0, &[2_i32]);
+        rw.step(1.0 / 60.0, &[3_i32]);
+        for tick in 0..=2_u64 {
+            let hash = rw.snapshot_hash(tick).expect("tick is buffered");
+            assert_eq!(rw.buffer.check_desync(tick, hash), None);
+            assert_eq!(rw.check_desync(tick, hash), None);
+            let wrong = hash ^ 1;
+            assert_eq!(
+                rw.buffer.check_desync(tick, wrong),
+                rw.check_desync(tick, wrong)
+            );
+            assert!(rw.check_desync(tick, wrong).is_some());
+        }
     }
 }

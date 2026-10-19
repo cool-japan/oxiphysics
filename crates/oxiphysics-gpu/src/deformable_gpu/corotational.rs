@@ -3,7 +3,7 @@
 //!
 //! All matrices are row-major `[[f64; 3]; 3]`.
 
-use super::functions::{cross3, dot3, length3, scale3, sub3};
+use super::functions::{add3, cross3, dot3, length3, scale3, sub3};
 
 /// Row-major 3×3 matrix.
 pub(super) type Mat3 = [[f64; 3]; 3];
@@ -62,6 +62,78 @@ fn outer(u: [f64; 3], v: [f64; 3]) -> Mat3 {
         }
     }
     out
+}
+
+/// Rest-pose data of a tetrahedron with vertices `rest = [a, b, c, d]`: its
+/// volume `|det Dm| / 6` and `Dm⁻ᵀ` (row-major), where
+/// `Dm = [b − a | c − a | d − a]` is the rest edge matrix.
+///
+/// Returns `None` if the edge vectors are linearly dependent (relative
+/// determinant `|det Dm| <= 1e-12 |b − a| |c − a| |d − a|`, or a `NaN`), i.e. if
+/// the rest tetrahedron is degenerate and `Dm` cannot be inverted.
+pub(super) fn rest_shape(rest: &[[f64; 3]; 4]) -> Option<(f64, Mat3)> {
+    let ra = rest[0];
+    let c0 = sub3(rest[1], ra);
+    let c1 = sub3(rest[2], ra);
+    let c2 = sub3(rest[3], ra);
+    let det = dot3(c0, cross3(c1, c2));
+    let edge_scale = length3(c0) * length3(c1) * length3(c2);
+    if det.is_nan() || det.abs() <= 1.0e-12 * edge_scale {
+        return None;
+    }
+    // Rows of Dm⁻¹ are (c1×c2, c2×c0, c0×c1)/det, so its columns -- the rows of
+    // Dm⁻ᵀ returned below -- are assembled component by component.
+    let inv_det = 1.0 / det;
+    let r0 = scale3(cross3(c1, c2), inv_det);
+    let r1 = scale3(cross3(c2, c0), inv_det);
+    let r2 = scale3(cross3(c0, c1), inv_det);
+    Some((
+        det.abs() / 6.0,
+        [
+            [r0[0], r1[0], r2[0]],
+            [r0[1], r1[1], r2[1]],
+            [r0[2], r1[2], r2[2]],
+        ],
+    ))
+}
+
+/// Deformation gradient `F = Ds · Dm⁻¹` of the tetrahedron whose current vertex
+/// positions are `positions = [a, b, c, d]`, with `Ds = [b − a | c − a | d − a]`
+/// and `dm_inv_t = Dm⁻ᵀ` as returned by [`rest_shape`].
+pub(super) fn deformation_gradient(dm_inv_t: &Mat3, positions: &[[f64; 3]; 4]) -> Mat3 {
+    let pa = positions[0];
+    let edges = [
+        sub3(positions[1], pa),
+        sub3(positions[2], pa),
+        sub3(positions[3], pa),
+    ];
+    let mut f = [[0.0; 3]; 3];
+    for (a, row) in f.iter_mut().enumerate() {
+        for (b, entry) in row.iter_mut().enumerate() {
+            let dm_col = dm_inv_t[b];
+            *entry = edges[0][a] * dm_col[0] + edges[1][a] * dm_col[1] + edges[2][a] * dm_col[2];
+        }
+    }
+    f
+}
+
+/// Nodal forces `[f_a, f_b, f_c, f_d]` of a tetrahedron with first
+/// Piola-Kirchhoff stress `piola` (evaluated at its deformation gradient).
+///
+/// The forces on `b`, `c`, `d` are the columns of `−V₀ · P · Dm⁻ᵀ` and node `a`
+/// takes the negative sum, so the element exerts no net force.  For a
+/// hyperelastic `P = ∂ψ/∂F` they are the exact negative gradient of the strain
+/// energy `V₀ ψ` with respect to the vertex positions.
+pub(super) fn nodal_forces(piola: &Mat3, dm_inv_t: &Mat3, rest_volume: f64) -> [[f64; 3]; 4] {
+    let mut forces = [[0.0f64; 3]; 4];
+    for column in 0..3 {
+        for i in 0..3 {
+            let h: f64 = (0..3).map(|l| piola[i][l] * dm_inv_t[l][column]).sum();
+            forces[column + 1][i] = -rest_volume * h;
+        }
+    }
+    forces[0] = scale3(add3(add3(forces[1], forces[2]), forces[3]), -1.0);
+    forces
 }
 
 /// A unit vector perpendicular to the unit vector `u`.

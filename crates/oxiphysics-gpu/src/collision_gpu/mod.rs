@@ -2,6 +2,9 @@
 
 /// Functions and utilities.
 mod functions;
+/// Regression tests of the persistent contact manifolds.
+#[cfg(test)]
+mod manifold_tests;
 /// Type definitions.
 mod types;
 

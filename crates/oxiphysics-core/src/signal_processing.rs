@@ -1172,50 +1172,87 @@ pub fn haar_idwt(coeffs: &[f64], levels: usize) -> Vec<f64> {
     approx
 }
 
-// Daubechies db2 (Daubechies-4) filter coefficients
-const DB2_LO: [f64; 4] = [0.6830127, 1.1830127, 0.3169873, -0.1830127];
-const DB2_HI: [f64; 4] = [-0.1830127, -0.3169873, 1.1830127, -0.6830127];
-// Inverse (synthesis) low/high pass
-const DB2_LO_R: [f64; 4] = [-0.1830127, 0.3169873, 1.1830127, 0.6830127];
-const DB2_HI_R: [f64; 4] = [-0.6830127, 1.1830127, -0.3169873, -0.1830127];
+// Daubechies db2 (Daubechies-4, two vanishing moments) filters.
+//
+// `DB2_LO` is the orthonormal scaling filter `h = [1 + √3, 3 + √3, 3 - √3, 1 - √3] / (4 √2)`
+// scaled by `√2`; `DB2_HI` is its quadrature mirror `g_j = (-1)^j h_(3-j)` (same scale).
+// Both are applied with the factor `1/√2`, which makes the transform orthonormal.
+const SQRT_3: f64 = 1.732_050_807_568_877_2;
+const DB2_LO: [f64; 4] = [
+    (1.0 + SQRT_3) / 4.0,
+    (3.0 + SQRT_3) / 4.0,
+    (3.0 - SQRT_3) / 4.0,
+    (1.0 - SQRT_3) / 4.0,
+];
+const DB2_HI: [f64; 4] = [DB2_LO[3], -DB2_LO[2], DB2_LO[1], -DB2_LO[0]];
 
-/// Daubechies-4 (db2) single-level forward DWT.
+/// Daubechies-4 (db2) single-level forward DWT with periodic extension.
+///
+/// Returns `(approximation, detail)` with
+/// `a[k] = Σ_j h_j x[(2k + j) mod n]` and `d[k] = Σ_j g_j x[(2k + j) mod n]`
+/// (`h` the scaling filter, `g` its quadrature mirror), each of length `n / 2`.
+/// The periodic extension makes the transform orthonormal: it preserves the
+/// energy `‖a‖² + ‖d‖² = ‖x‖²` and [`db2_reconstruct`] inverts it up to rounding,
+/// edges included.  The two vanishing moments of db2 give an exactly zero detail
+/// band for a constant signal and, away from the wrap-around, a zero one (up to
+/// rounding) for a linear ramp.
+///
+/// An odd-length signal is first extended by repeating its last sample (the
+/// bands then have length `(n + 1) / 2` and the reconstruction has `n + 1`
+/// samples, the last one being the repeated sample).  An empty signal gives two
+/// empty bands.
 pub fn db2_decompose(signal: &[f64]) -> (Vec<f64>, Vec<f64>) {
     let n = signal.len();
-    let filt_len = DB2_LO.len();
-    let out_len = (n + filt_len - 1) / 2;
-    let mut approx = vec![0.0f64; out_len];
-    let mut detail = vec![0.0f64; out_len];
-    for k in 0..out_len {
+    if n == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let even = n + n % 2;
+    let pairs = even / 2;
+    let mut approx = Vec::with_capacity(pairs);
+    let mut detail = Vec::with_capacity(pairs);
+    for k in 0..pairs {
+        // Tap `j` of the window that starts at sample `2k` of the periodically
+        // extended (and, for odd `n`, padded) signal.
+        let sample = |j: usize| signal[((2 * k + j) % even).min(n - 1)];
+        let first = sample(0);
         let mut a = 0.0;
         let mut d = 0.0;
-        for j in 0..filt_len {
-            let idx = 2 * k + j;
-            let s = if idx < n { signal[idx] } else { 0.0 };
-            a += DB2_LO[j] * s;
-            d += DB2_HI[j] * s;
+        for (j, (&lo, &hi)) in DB2_LO.iter().zip(DB2_HI.iter()).enumerate() {
+            let s = sample(j);
+            a += lo * s;
+            // The high-pass taps sum to zero: measuring against the first sample
+            // gives the same coefficient without the rounding noise of the
+            // offset, and a constant signal exactly zero.
+            d += hi * (s - first);
         }
-        approx[k] = a / 2.0f64.sqrt();
-        detail[k] = d / 2.0f64.sqrt();
+        approx.push(a * std::f64::consts::FRAC_1_SQRT_2);
+        detail.push(d * std::f64::consts::FRAC_1_SQRT_2);
     }
     (approx, detail)
 }
 
-/// Daubechies-4 (db2) single-level inverse DWT.
+/// Daubechies-4 (db2) single-level inverse DWT with periodic extension.
+///
+/// Applies the adjoint of [`db2_decompose`], which for an orthonormal transform is
+/// its inverse: every coefficient pair adds `a[k] h_j + d[k] g_j` to
+/// `x[(2k + j) mod n]`, where `n` is the length of the output.  Feeding it the
+/// two bands of `db2_decompose(x)` therefore returns `x` up to rounding for every
+/// even-length `x`.
+///
+/// The output has `2 · max(approx.len(), detail.len())` samples; if the two bands
+/// differ in length the missing coefficients of the shorter one are taken as zero.
 pub fn db2_reconstruct(approx: &[f64], detail: &[f64]) -> Vec<f64> {
-    let n = approx.len();
-    let out_len = 2 * n;
-    let mut out = vec![0.0f64; out_len + DB2_LO_R.len()];
-    for k in 0..n {
-        for j in 0..DB2_LO_R.len() {
-            let idx = 2 * k + j;
-            if idx < out.len() {
-                out[idx] += approx[k] * DB2_LO_R[j] / 2.0f64.sqrt();
-                out[idx] += detail[k] * DB2_HI_R[j] / 2.0f64.sqrt();
-            }
+    let pairs = approx.len().max(detail.len());
+    let n = 2 * pairs;
+    let mut out = vec![0.0f64; n];
+    for k in 0..pairs {
+        let a = approx.get(k).copied().unwrap_or(0.0);
+        let d = detail.get(k).copied().unwrap_or(0.0);
+        for (j, (&lo, &hi)) in DB2_LO.iter().zip(DB2_HI.iter()).enumerate() {
+            out[(2 * k + j) % n] += (a * lo + d * hi) * std::f64::consts::FRAC_1_SQRT_2;
         }
     }
-    out[..out_len].to_vec()
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,25 +1273,18 @@ pub fn downsample(signal: &[f64], down: usize) -> Vec<f64> {
     signal.iter().step_by(down).cloned().collect()
 }
 
-/// Resample a signal from sample rate `fs_in` to `fs_out` using rational resampling.
+/// Resample a signal from sample rate `fs_in` to `fs_out` with a polyphase
+/// Kaiser-windowed-sinc FIR filter.
 ///
-/// Computes the integer up/down ratio and applies a low-pass anti-aliasing filter.
+/// The rate ratio is realised as an exact (integer rates) or best rational
+/// (continued fractions, denominator at most 1000) up/down factor pair; the
+/// result keeps the amplitude of the input, is anti-aliased and delay-free, and
+/// has `ceil(len · fs_out / fs_in)` samples.  Invalid rates (not positive and
+/// finite) or a ratio that cannot be realised give an empty vector; use
+/// [`try_resample`] to get the reason, and [`resample_poly`] for explicit
+/// integer factors.
 pub fn resample(signal: &[f64], fs_in: f64, fs_out: f64) -> Vec<f64> {
-    // Compute rational ratio using GCD approximation
-    let ratio = fs_out / fs_in;
-    let up = (ratio * 100.0).round() as usize;
-    let down = 100usize;
-    let up_factor = up.max(1);
-    let down_factor = down.max(1);
-    // Upsample
-    let up_sig = upsample(signal, up_factor);
-    // Anti-aliasing filter
-    let cutoff = 1.0 / up_factor.max(down_factor) as f64;
-    let filt = FirFilter::lowpass(65, cutoff);
-    let filtered = filt.apply(&up_sig);
-    // Downsample
-
-    downsample(&filtered, down_factor)
+    try_resample(signal, fs_in, fs_out).unwrap_or_default()
 }
 
 /// Linear interpolation resampling.
@@ -1570,6 +1600,9 @@ pub fn istft(
     }
     out
 }
+
+mod resampling;
+pub use resampling::{resample_poly, try_resample};
 
 #[cfg(test)]
 mod tests;

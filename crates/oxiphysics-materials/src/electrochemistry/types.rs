@@ -298,14 +298,18 @@ impl ButlerVolmerKinetics {
 }
 /// Electrochemical Impedance Spectroscopy (EIS) model.
 ///
-/// Models a simple Randles circuit:
-/// Z = R_s + (R_ct ∥ C_dl) + Warburg diffusion element
+/// Models the Randles circuit: the solution resistance in series with the
+/// parallel combination of the double-layer capacitance and the faradaic
+/// branch, which is the charge-transfer resistance in series with a
+/// semi-infinite Warburg diffusion element:
+///
+/// `Z = R_s + Z_f ∥ Z_c`, `Z_f = R_ct + σ(1 − j)/√ω`, `Z_c = 1/(jωC_dl)`
 ///
 /// where:
 /// - R_s = solution (ohmic) resistance
 /// - R_ct = charge transfer resistance
 /// - C_dl = double-layer capacitance
-/// - W = Warburg coefficient
+/// - σ = Warburg coefficient
 #[derive(Debug, Clone)]
 pub struct ImpedanceModel {
     /// Solution resistance R_s \[Ω\]
@@ -331,41 +335,68 @@ impl ImpedanceModel {
     pub fn angular_frequency(f_hz: f64) -> f64 {
         2.0 * std::f64::consts::PI * f_hz
     }
+    /// Complex impedance `(Z', Z'')` \[Ω\] of the whole cell at angular
+    /// frequency ω.
+    ///
+    /// With the faradaic branch `Z_f = a + jb`, `a = R_ct + σ/√ω`,
+    /// `b = −σ/√ω`, the parallel combination with the double-layer capacitor is
+    /// `Z_f ∥ Z_c = Z_f / (1 + jωC_dl·Z_f)`, which is finite for `C_dl = 0`
+    /// and for `Z_f = 0`.  Splitting into real and imaginary parts:
+    ///
+    /// `Z' = R_s + a / |D|²`, `Z'' = (b − ωC_dl (a² + b²)) / |D|²`,
+    /// `D = (1 − ωC_dl·b) + jωC_dl·a`.
+    ///
+    /// Limits: ω → ∞ gives `R_s` (`R_s + R_ct` without a capacitor); ω → 0
+    /// (and any ω ≤ 0, treated as DC) gives `R_s + R_ct` without diffusion
+    /// (σ = 0), while for σ ≠ 0 the Warburg impedance diverges and
+    /// `(±∞, ∓∞)` is returned.
+    fn impedance(&self, omega: f64) -> (f64, f64) {
+        if omega.is_nan() {
+            return (f64::NAN, f64::NAN);
+        }
+        if omega <= 0.0 {
+            if self.warburg_sigma == 0.0 {
+                return (self.r_solution + self.r_ct, 0.0);
+            }
+            let sign = self.warburg_sigma.signum();
+            return (sign * f64::INFINITY, -sign * f64::INFINITY);
+        }
+        if omega == f64::INFINITY {
+            let r_total = if self.c_dl > 0.0 {
+                self.r_solution
+            } else {
+                self.r_solution + self.r_ct
+            };
+            return (r_total, 0.0);
+        }
+        let zw = self.warburg_sigma / omega.sqrt();
+        let a = self.r_ct + zw;
+        let b = -zw;
+        let wc = omega * self.c_dl;
+        let d_re = 1.0 - wc * b;
+        let d_im = wc * a;
+        let d_sq = d_re * d_re + d_im * d_im;
+        (
+            self.r_solution + a / d_sq,
+            (b - wc * (a * a + b * b)) / d_sq,
+        )
+    }
     /// Real part of impedance Z' at angular frequency ω \[Ω\].
     ///
-    /// Z' = R_s + (R_ct + σ/√ω) / ((1 + C_dl·ω·σ·√ω)² + (C_dl·ω·R_ct)²)  \[simplified\]
-    ///
-    /// For the Warburg element: Z_W = σ·(1 - j) / √ω
+    /// `Z' = R_s + Re(Z_f ∥ Z_c)` with `Z_f = R_ct + σ(1 − j)/√ω`, so the
+    /// Warburg reactance enters the real part through the parallel capacitor.
+    /// Limits: `Z'(ω → 0) = R_s + R_ct` for σ = 0 and `+∞` for σ > 0 (diffusion
+    /// limited); `Z'(ω → ∞) = R_s`.
     pub fn z_real(&self, omega: f64) -> f64 {
-        if omega < 1e-15 {
-            return self.r_solution + self.r_ct;
-        }
-        let sqrt_w = omega.sqrt();
-        let sigma = self.warburg_sigma;
-        let zw_r = sigma / sqrt_w;
-        let rw = self.r_ct + zw_r;
-        let xc = 1.0 / (omega * self.c_dl);
-        let _denom = rw * rw + xc * xc;
-        let z_par_r = rw / (1.0 + (rw / xc).powi(2));
-        self.r_solution + z_par_r
+        self.impedance(omega).0
     }
     /// Imaginary part of impedance Z'' at angular frequency ω \[Ω\].
     ///
-    /// Negative for capacitive behaviour.
+    /// Negative for capacitive behaviour; it vanishes at both ends of the
+    /// frequency range for σ = 0 (the semicircle of the Nyquist plot) and
+    /// follows the −45° Warburg line at low frequency for σ > 0.
     pub fn z_imag(&self, omega: f64) -> f64 {
-        if omega < 1e-15 {
-            return 0.0;
-        }
-        let sqrt_w = omega.sqrt();
-        let sigma = self.warburg_sigma;
-        let zw_r = sigma / sqrt_w;
-        let zw_i = -sigma / sqrt_w;
-        let rw = self.r_ct + zw_r;
-        let xw = zw_i;
-        let xc = 1.0 / (omega * self.c_dl);
-        let denom = 1.0 + (rw / xc).powi(2);
-
-        (xw - rw * rw / xc - xc) / denom
+        self.impedance(omega).1
     }
     /// Magnitude |Z| at angular frequency ω \[Ω\].
     pub fn z_magnitude(&self, omega: f64) -> f64 {
@@ -885,8 +916,9 @@ impl DoubleLayerCapacitance {
 /// Corrosion kinetics from Tafel polarisation data.
 ///
 /// The corrosion rate is derived from the corrosion current density `i_corr`
-/// via: `CR [mm/year] = (i_corr · M_w) / (n · F · ρ) · K`
-/// where `K = 3.27 × 10⁻³` (unit conversion constant for SI inputs).
+/// through Faraday's law, `CR = i_corr · M_w / (n · F · ρ)`, expressed in
+/// mm/year.  With `i_corr` in A/m² (1 A/m² = 100 µA/cm²) this equals the
+/// ASTM G102 relation `CR = 3.27×10⁻³ · i[µA/cm²] · (M_w / n) / ρ`.
 #[derive(Debug, Clone)]
 pub struct CorrosionRate {
     /// Corrosion current density i_corr \[A/m²\]
@@ -910,11 +942,15 @@ impl CorrosionRate {
     }
     /// Corrosion rate \[mm/year\].
     ///
-    /// Uses the standard electrochemical formula with unit conversion constant
-    /// `K = 3.27 × 10⁻³` mm·g/(µA·cm·year) adapted to SI (A/m²).
+    /// Faraday's law `i_corr · M_w / (n · F · ρ)` converted to mm/year; shares
+    /// its implementation with [`crate::corrosion::corrosion_rate_mm_per_year`].
     pub fn mm_per_year(&self) -> f64 {
-        let i_ua_cm2 = self.i_corr * 0.1;
-        0.00327 * i_ua_cm2 * self.molar_mass / ((self.n_electrons as f64) * self.density_g_cm3)
+        crate::corrosion::corrosion_rate_mm_per_year(
+            self.i_corr,
+            self.molar_mass,
+            self.n_electrons as f64,
+            self.density_g_cm3,
+        )
     }
     /// Corrosion current density from Tafel slopes using the Stern-Geary equation.
     ///

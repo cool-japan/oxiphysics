@@ -104,4 +104,15 @@ fn test_nacl_madelung_constant() {
         (measured_neg_m - baseline.expected).abs(),
     );
     assert_close!(measured_neg_m, baseline);
+
+    // The ratio above divides by COULOMB_K, so it cannot see a wrong unit system.
+    // Pin the absolute energy scale as well: for distances in angstrom the Coulomb
+    // constant is e^2 N_A / (4 pi eps0) = 1389.354576 kJ A / (mol e^2) (ten times
+    // the nm-based 138.935 of GROMACS-style code), i.e. -2427.9 kJ/mol per ion
+    // pair at a0 = 1 A.
+    let expected_per_pair = -1.747_564_594_6 * 1_389.354_576 / a0;
+    assert!(
+        (e_per_pair - expected_per_pair).abs() < 5e-3 * expected_per_pair.abs(),
+        "energy per ion pair {e_per_pair:.3} kJ/mol, expected {expected_per_pair:.3} kJ/mol"
+    );
 }

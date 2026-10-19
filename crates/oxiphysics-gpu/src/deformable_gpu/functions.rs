@@ -754,10 +754,10 @@ mod tests {
     fn test_corotational_deformation_gradient_is_identity_at_rest() {
         let elem = skewed_element(1.0e5, 0.3);
         let f = elem.deformation_gradient(&SKEWED_REST).unwrap();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in f.iter().enumerate() {
+            for (j, &entry) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert_close(f[i][j], expected, 1.0e-14, "F at rest");
+                assert_close(entry, expected, 1.0e-14, "F at rest");
             }
         }
     }
@@ -960,10 +960,10 @@ mod tests {
             if node >= 1 {
                 expected = add3(expected, fb[node - 1]);
             }
-            for axis in 0..3 {
+            for (axis, &expected_component) in expected.iter().enumerate() {
                 assert_close(
                     buf.forces[node][axis],
-                    expected[axis],
+                    expected_component,
                     1.0e-9,
                     "assembled force",
                 );

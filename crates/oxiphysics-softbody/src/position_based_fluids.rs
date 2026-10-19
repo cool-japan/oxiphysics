@@ -5,6 +5,37 @@
 //!
 //! Implements the PBF method (Macklin & Müller, 2013), including SPH kernels,
 //! density constraint projection, vorticity confinement, and XSPH viscosity.
+//!
+//! Neighbour search uses a uniform spatial hash
+//! ([`oxiphysics_geometry::spatial_hash::SpatialHash3D`]) so a step costs
+//! O(n · k) instead of O(n²), and the neighbour lists are built **once per
+//! step** (after the position prediction) exactly as in Algorithm 1 of the
+//! paper. The all-pairs entry points ([`pbf_density`], [`pbf_delta_pos`], ...)
+//! are kept for callers that do not have a neighbour list at hand; they share
+//! their arithmetic with the neighbour-list variants (`*_nb`).
+//!
+//! # Mass handling
+//!
+//! The density constraint is `C_i = ρ_i / ρ₀ − 1` with `ρ_i = Σ_j m_j W(x_i − x_j)`.
+//! Its gradients therefore carry the neighbour masses:
+//!
+//! * `∇_{p_i} C_i = (1/ρ₀) Σ_j m_j ∇W(x_i − x_j)`
+//! * `∇_{p_j} C_i = −(m_j/ρ₀) ∇W(x_i − x_j)`
+//!
+//! and the position correction is `Δp_i = (1/ρ₀) Σ_j (m_j λ_i + m_i λ_j) ∇W(x_i − x_j)`.
+//! For unit masses this reduces to the formulas printed in the paper.
+//!
+//! # Relaxation
+//!
+//! `λ_i = −C_i / (Σ_k |∇_{p_k} C_i|² + ε)`: the constraint-force-mixing term `ε`
+//! is part of the method, not a numerical afterthought. All particles are
+//! corrected simultaneously (Jacobi), so each one receives the corrections of
+//! every constraint it takes part in; without `ε` of the order of the gradient
+//! sum (`≈ k / h²`) the iteration overshoots and expels free-surface
+//! particles. [`default_cfm_epsilon`] returns `6 / h²` (`ε = 600` at `h = 0.1`,
+//! the value of the paper).
+
+use oxiphysics_geometry::spatial_hash::SpatialHash3D;
 
 /// A single PBF particle.
 #[derive(Debug, Clone)]
@@ -114,29 +145,208 @@ pub fn spiky_gradient(r_vec: [f64; 3], h: f64) -> [f64; 3] {
     vec3_scale(r_vec, factor)
 }
 
-/// Find neighbors of each particle using a simple O(n²) spatial scan.
+#[inline]
+fn vec3_dist_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
+    vec3_norm_sq(vec3_sub(a, b))
+}
+
+// ------------------------------------------------------------------
+// Neighbour search
+// ------------------------------------------------------------------
+
+/// Relative enlargement of the spatial-hash cell edge over `h`.
 ///
-/// Returns a `Vec<Vec`usize`>` where element `i` contains the indices of all
-/// particles within smoothing radius `h` of particle `i` (excluding itself).
+/// With a cell edge of exactly `h`, two particles closer than `h` could end
+/// up two cells apart after floating-point rounding of the cell index; the
+/// margin makes the 27-cell stencil provably sufficient.
+const CELL_EDGE_MARGIN: f64 = 1.0e-9;
+
+/// Largest extent (in cells of edge `h`) the hash path is trusted with.
+///
+/// The hash works on coordinates translated to the cloud's lower corner, so
+/// each coordinate carries a rounding error of about `2.2e-16 · extent`. The
+/// [`CELL_EDGE_MARGIN`] only absorbs that error while it stays below
+/// `1e-9 · h`, i.e. for extents up to a few million cells; larger clouds (and
+/// the `i32` cell coordinates of [`SpatialHash3D`] would overflow long before
+/// `2e9` cells) fall back to the exhaustive scan, which has neither limit.
+const MAX_HASH_CELLS_PER_AXIS: f64 = 1.0e6;
+
+/// Particle neighbour lists in compressed-sparse-row (CSR) layout.
+///
+/// `neighbors(i)` yields, in ascending order, the indices of all particles
+/// `j ≠ i` with `|x_i − x_j| < h`. The relation is symmetric, and particles
+/// with a non-finite coordinate neither have neighbours nor appear in anyone's
+/// list. Lists are produced with a uniform spatial hash, so building them
+/// costs O(n · k) for `k` candidate neighbours per particle; the result is
+/// identical to the exhaustive O(n²) scan.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NeighborCsr {
+    /// `offsets[i]..offsets[i + 1]` is the slice of `indices` owned by `i`.
+    offsets: Vec<usize>,
+    /// Concatenated, per-particle sorted neighbour indices.
+    indices: Vec<usize>,
+}
+
+impl NeighborCsr {
+    /// Builds the neighbour lists of `positions` for smoothing radius `h`.
+    ///
+    /// A non-positive or NaN `h` yields empty lists (no pair can satisfy
+    /// `|r| < h`).
+    pub fn from_positions(positions: &[[f64; 3]], h: f64) -> Self {
+        Self::build(positions.len(), |i| positions[i], h, false)
+    }
+
+    /// Reference implementation: exhaustive O(n²) pair scan.
+    ///
+    /// Produces exactly the same lists as [`NeighborCsr::from_positions`]; it
+    /// exists for validation and as the fallback for point clouds whose extent
+    /// is too large for the spatial hash.
+    pub fn from_positions_all_pairs(positions: &[[f64; 3]], h: f64) -> Self {
+        Self::build(positions.len(), |i| positions[i], h, true)
+    }
+
+    /// Number of particles the lists were built for.
+    pub fn len(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
+    /// `true` if the lists were built for zero particles.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Total number of directed `(i, j)` pairs stored (twice the pair count).
+    pub fn pair_count(&self) -> usize {
+        self.indices.len()
+    }
+
+    /// Sorted neighbour indices of particle `i`; empty for an unknown `i`.
+    pub fn neighbors(&self, i: usize) -> &[usize] {
+        match (self.offsets.get(i), self.offsets.get(i + 1)) {
+            (Some(&begin), Some(&end)) => self.indices.get(begin..end).unwrap_or(&[]),
+            _ => &[],
+        }
+    }
+
+    /// Converts to one `Vec<usize>` per particle.
+    pub fn to_lists(&self) -> Vec<Vec<usize>> {
+        (0..self.len())
+            .map(|i| self.neighbors(i).to_vec())
+            .collect()
+    }
+
+    /// Shared builder: `pos(i)` supplies the position of particle `i`.
+    fn build<P: Fn(usize) -> [f64; 3]>(n: usize, pos: P, h: f64, force_all_pairs: bool) -> Self {
+        let mut offsets = vec![0usize; n + 1];
+        let mut indices: Vec<usize> = Vec::new();
+        if n < 2 || h.is_nan() || h <= 0.0 {
+            return Self { offsets, indices };
+        }
+        let h2 = h * h;
+        let points: Vec<[f64; 3]> = (0..n).map(&pos).collect();
+        let finite: Vec<bool> = points
+            .iter()
+            .map(|p| p.iter().all(|c| c.is_finite()))
+            .collect();
+
+        // Bounding box of the finite points; translating by its lower corner
+        // keeps cell indices small and non-negative.
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for (p, &ok) in points.iter().zip(&finite) {
+            if ok {
+                lo = std::array::from_fn(|k| lo[k].min(p[k]));
+                hi = std::array::from_fn(|k| hi[k].max(p[k]));
+            }
+        }
+        if lo[0] > hi[0] {
+            // No finite point at all.
+            return Self { offsets, indices };
+        }
+        let extent = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(hi[2] - lo[2]);
+        let use_hash = !force_all_pairs && h.is_finite() && extent / h < MAX_HASH_CELLS_PER_AXIS;
+
+        if use_hash {
+            let mut hash: SpatialHash3D<()> = SpatialHash3D::new(h * (1.0 + CELL_EDGE_MARGIN));
+            for (i, p) in points.iter().enumerate() {
+                if finite[i] {
+                    hash.insert(i, vec3_sub(*p, lo), ());
+                }
+            }
+            let mut scratch: Vec<usize> = Vec::new();
+            for i in 0..n {
+                if finite[i] {
+                    let p = points[i];
+                    scratch.clear();
+                    for (j, _) in hash.query_radius(vec3_sub(p, lo), h) {
+                        if j != i && vec3_dist_sq(p, points[j]) < h2 {
+                            scratch.push(j);
+                        }
+                    }
+                    scratch.sort_unstable();
+                    indices.extend_from_slice(&scratch);
+                }
+                offsets[i + 1] = indices.len();
+            }
+        } else {
+            for i in 0..n {
+                if finite[i] {
+                    for j in 0..n {
+                        if j != i && finite[j] && vec3_dist_sq(points[i], points[j]) < h2 {
+                            indices.push(j);
+                        }
+                    }
+                }
+                offsets[i + 1] = indices.len();
+            }
+        }
+        Self { offsets, indices }
+    }
+}
+
+/// Find the neighbours of each particle (by predicted position) with a
+/// uniform spatial hash.
+///
+/// Returns a `Vec<Vec<usize>>` where element `i` contains, in ascending
+/// order, the indices of all particles at distance `< h` from particle `i`
+/// (excluding itself). The result is identical to an exhaustive O(n²) scan;
+/// see [`NeighborCsr`] for the compact representation used internally.
 ///
 /// # Arguments
 /// * `particles` – slice of PBF particles
 /// * `h`         – smoothing radius \[m\]
 pub fn find_neighbors(particles: &[PbfParticle], h: f64) -> Vec<Vec<usize>> {
-    let n = particles.len();
-    let mut neighbors = vec![Vec::new(); n];
-    for i in 0..n {
-        for j in 0..n {
-            if i == j {
-                continue;
-            }
-            let diff = vec3_sub(particles[i].predicted, particles[j].predicted);
-            if vec3_norm(diff) < h {
-                neighbors[i].push(j);
-            }
-        }
+    NeighborCsr::build(particles.len(), |i| particles[i].predicted, h, false).to_lists()
+}
+
+/// Σ_k |∇_{p_k} C_i|² of the density constraint for one particle.
+///
+/// `pairs` yields `(x_i − x_j, m_j)` for every neighbour `j`. With
+/// `g_j = (m_j / ρ₀) ∇W_spiky(x_i − x_j)` the sum is `|Σ_j g_j|² + Σ_j |g_j|²`
+/// (the first term is `k = i`, the second the `k = j` contributions).
+fn density_gradient_sum<I>(pairs: I, h: f64, rho0: f64) -> f64
+where
+    I: Iterator<Item = ([f64; 3], f64)>,
+{
+    let mut grad_i = [0.0f64; 3];
+    let mut sum_sq = 0.0;
+    for (r_vec, m_j) in pairs {
+        let g = vec3_scale(spiky_gradient(r_vec, h), m_j / rho0);
+        grad_i = vec3_add(grad_i, g);
+        sum_sq += vec3_norm_sq(g);
     }
-    neighbors
+    vec3_norm_sq(grad_i) + sum_sq
+}
+
+/// PBF multiplier `λ = −C / (Σ_k |∇_{p_k} C|² + ε)`.
+///
+/// Returns `0` when the denominator vanishes (no neighbours and no
+/// relaxation): without a constraint gradient the density cannot be corrected,
+/// and `−C / 0` would otherwise leak `±∞` / `NaN` into the solver state.
+#[inline]
+fn constraint_multiplier(c: f64, grad_sum: f64, epsilon: f64) -> f64 {
+    let denom = grad_sum + epsilon;
+    if denom > 0.0 { -c / denom } else { 0.0 }
 }
 
 /// SPH density estimate at particle `i`.
@@ -164,7 +374,9 @@ pub fn density_constraint(particles: &[PbfParticle], neighbors: &[usize], i: usi
 ///
 /// λ_i = −C_i / (Σ_k |∇_{p_k} C_i|² + ε)
 ///
-/// where C_i = ρ_i / ρ_0 − 1.
+/// where C_i = ρ_i / ρ_0 − 1 and ρ_i = Σ_j m_j W_poly6. The gradients use the
+/// Spiky kernel and carry the neighbour masses (see the module documentation);
+/// for unit masses they reduce to the expressions of Macklin & Müller (2013).
 ///
 /// # Arguments
 /// * `particles`   – slice of PBF particles
@@ -172,7 +384,7 @@ pub fn density_constraint(particles: &[PbfParticle], neighbors: &[usize], i: usi
 /// * `i`           – particle index
 /// * `h`           – smoothing radius \[m\]
 /// * `rho0`        – rest density \[kg/m³\]
-/// * `epsilon`     – regularisation (CFM) parameter
+/// * `epsilon`     – regularisation (CFM) parameter, see [`default_cfm_epsilon`]
 pub fn lambda_compute(
     particles: &[PbfParticle],
     neighbors: &[usize],
@@ -183,34 +395,26 @@ pub fn lambda_compute(
 ) -> f64 {
     let rho_i = density_constraint(particles, neighbors, i, h);
     let c_i = rho_i / rho0 - 1.0;
-
-    // ∇_{p_k} C_i for each k.
-    let mut denom = 0.0;
-
-    // k = i: sum of all neighbour spiky gradients.
-    let mut grad_i = [0.0f64; 3];
-    for &j in neighbors {
-        let r_vec = vec3_sub(particles[i].predicted, particles[j].predicted);
-        let g = spiky_gradient(r_vec, h);
-        let scaled = vec3_scale(g, 1.0 / rho0);
-        grad_i = vec3_add(grad_i, scaled);
-    }
-    denom += vec3_norm_sq(grad_i);
-
-    // k = j: each neighbour contributes its own gradient.
-    for &j in neighbors {
-        let r_vec = vec3_sub(particles[i].predicted, particles[j].predicted);
-        let g = spiky_gradient(r_vec, h);
-        let scaled = vec3_scale(g, -1.0 / rho0);
-        denom += vec3_norm_sq(scaled);
-    }
-
-    -c_i / (denom + epsilon)
+    let denom = density_gradient_sum(
+        neighbors.iter().map(|&j| {
+            (
+                vec3_sub(particles[i].predicted, particles[j].predicted),
+                particles[j].mass,
+            )
+        }),
+        h,
+        rho0,
+    );
+    constraint_multiplier(c_i, denom, epsilon)
 }
 
 /// Position correction Δp_i from lambda values.
 ///
-/// Δp_i = (1/ρ_0) Σ_j (λ_i + λ_j) ∇W_spiky(x_i − x_j, h)
+/// Δp_i = (1/ρ_0) Σ_j (m_j λ_i + m_i λ_j) ∇W_spiky(x_i − x_j, h)
+///
+/// This is `Σ_c λ_c ∇_{p_i} C_c` over the constraints that depend on `p_i`
+/// (its own and its neighbours'); for unit masses it is the familiar
+/// `(1/ρ_0) Σ_j (λ_i + λ_j) ∇W`.
 ///
 /// # Arguments
 /// * `particles`  – slice of PBF particles (lambdas must be pre-computed)
@@ -229,7 +433,9 @@ pub fn delta_position(
     for &j in neighbors {
         let r_vec = vec3_sub(particles[i].predicted, particles[j].predicted);
         let g = spiky_gradient(r_vec, h);
-        let factor = (particles[i].lambda + particles[j].lambda) / rho0;
+        let factor = (particles[j].mass * particles[i].lambda
+            + particles[i].mass * particles[j].lambda)
+            / rho0;
         dp = vec3_add(dp, vec3_scale(g, factor));
     }
     dp
@@ -320,7 +526,17 @@ pub fn xsph_viscosity(
 
 /// Full PBF substep: predict → solve density constraints → update velocities.
 ///
-/// Modifies `particles` in-place.
+/// Follows Algorithm 1 of Macklin & Müller (2013): the neighbour lists are
+/// built **once**, from the predicted positions, and reused by every solver
+/// iteration and by the XSPH pass (kernels vanish beyond `h`, so pairs that
+/// drift apart during the iterations simply stop contributing).
+///
+/// The XSPH correction smooths the velocities *produced by* the constraint
+/// solve, `v_i ← (x*_i − x_i)/Δt + c Σ_j (v_j − v_i) W(x*_i − x*_j)`, with all
+/// corrections evaluated from the same velocity snapshot.
+///
+/// Modifies `particles` in-place. A non-positive or NaN `dt` leaves them
+/// untouched.
 ///
 /// # Arguments
 /// * `particles`   – mutable slice of PBF particles
@@ -328,7 +544,8 @@ pub fn xsph_viscosity(
 /// * `dt`          – time step \[s\]
 /// * `h`           – smoothing radius \[m\]
 /// * `rho0`        – rest density \[kg/m³\]
-/// * `epsilon`     – CFM (constraint-force-mixing) regularisation
+/// * `epsilon`     – CFM (constraint-force-mixing) relaxation \[1/m²\]; see
+///   [`default_cfm_epsilon`] (a value ≪ Σ|∇C|² makes the Jacobi iteration unstable)
 /// * `solver_iters`– number of constraint projection iterations
 /// * `xsph_c`      – XSPH viscosity coefficient
 pub fn pbf_step(
@@ -342,6 +559,9 @@ pub fn pbf_step(
     xsph_c: f64,
 ) {
     let n = particles.len();
+    if n == 0 || dt.is_nan() || dt <= 0.0 {
+        return;
+    }
 
     // 1. Apply gravity and predict positions.
     for p in particles.iter_mut() {
@@ -349,36 +569,39 @@ pub fn pbf_step(
         p.predicted = vec3_add(p.position, vec3_scale(p.velocity, dt));
     }
 
-    // 2. Iterative constraint projection.
-    for _ in 0..solver_iters {
-        let neighbors = find_neighbors(particles, h);
+    // 2. Neighbour search, once per step.
+    let neighbors = {
+        let snapshot: &[PbfParticle] = particles;
+        NeighborCsr::build(n, |i| snapshot[i].predicted, h, false)
+    };
 
-        // Compute lambdas.
+    // 3. Iterative constraint projection.
+    for _ in 0..solver_iters {
         let lambdas: Vec<f64> = (0..n)
-            .map(|i| lambda_compute(particles, &neighbors[i], i, h, rho0, epsilon))
+            .map(|i| lambda_compute(particles, neighbors.neighbors(i), i, h, rho0, epsilon))
             .collect();
         for (p, &lam) in particles.iter_mut().zip(lambdas.iter()) {
             p.lambda = lam;
         }
 
-        // Compute and apply position corrections.
         let deltas: Vec<[f64; 3]> = (0..n)
-            .map(|i| delta_position(particles, &neighbors[i], i, h, rho0))
+            .map(|i| delta_position(particles, neighbors.neighbors(i), i, h, rho0))
             .collect();
         for (p, &dp) in particles.iter_mut().zip(deltas.iter()) {
             p.predicted = vec3_add(p.predicted, dp);
         }
     }
 
-    // 3. Update velocities and positions.
-    let neighbors = find_neighbors(particles, h);
+    // 4. Velocities from the corrected positions, then XSPH on those velocities.
+    let inv_dt = 1.0 / dt;
+    for p in particles.iter_mut() {
+        p.velocity = vec3_scale(vec3_sub(p.predicted, p.position), inv_dt);
+    }
     let xsph_corrections: Vec<[f64; 3]> = (0..n)
-        .map(|i| xsph_viscosity(particles, &neighbors[i], i, h, xsph_c))
+        .map(|i| xsph_viscosity(particles, neighbors.neighbors(i), i, h, xsph_c))
         .collect();
-
-    for (i, p) in particles.iter_mut().enumerate() {
-        p.velocity = vec3_scale(vec3_sub(p.predicted, p.position), 1.0 / dt);
-        p.velocity = vec3_add(p.velocity, xsph_corrections[i]);
+    for (p, &dv) in particles.iter_mut().zip(xsph_corrections.iter()) {
+        p.velocity = vec3_add(p.velocity, dv);
         p.position = p.predicted;
     }
 }
@@ -798,44 +1021,209 @@ impl PbfExtParticle {
 // Free functions for PbfExtParticle
 // ------------------------------------------------------------------
 
-/// SPH density estimate at particle `i` using predicted positions.
+/// Shared SPH density sum over the candidate neighbours `js` of particle `i`.
 ///
-/// ρ_i = Σ_j m_j · W_poly6(|pred_i − pred_j|, h)
-///
-/// * `particles` – extended particle slice
-/// * `i`         – query particle index
-/// * `h`         – smoothing radius \[m\]
-pub fn pbf_density(particles: &[PbfExtParticle], i: usize, h: f64) -> f64 {
-    let mut rho = 0.0;
-    for (j, pj) in particles.iter().enumerate() {
-        let diff = [
-            particles[i].pred_pos[0] - pj.pred_pos[0],
-            particles[i].pred_pos[1] - pj.pred_pos[1],
-            particles[i].pred_pos[2] - pj.pred_pos[2],
-        ];
-        let r = (diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]).sqrt();
-        if j != i || r < h {
-            rho += pj.mass * poly6_kernel(r, h);
+/// Pairs with `r² ≥ h²` are rejected before the square root (the kernel is
+/// zero there anyway); the self term is always included for `h > 0`.
+fn density_over<I: Iterator<Item = usize>>(
+    particles: &[PbfExtParticle],
+    i: usize,
+    h: f64,
+    js: I,
+) -> f64 {
+    let Some(pi) = particles.get(i) else {
+        return 0.0;
+    };
+    if h.is_nan() || h <= 0.0 {
+        return 0.0;
+    }
+    let h2 = h * h;
+    let mut rho = pi.mass * poly6_kernel(0.0, h);
+    for j in js {
+        if j == i {
+            continue;
+        }
+        let Some(pj) = particles.get(j) else {
+            continue;
+        };
+        let d2 = vec3_dist_sq(pi.pred_pos, pj.pred_pos);
+        if d2 < h2 {
+            rho += pj.mass * poly6_kernel(d2.sqrt(), h);
         }
     }
     rho
 }
 
+/// SPH density estimate at particle `i` using predicted positions (all-pairs).
+///
+/// ρ_i = Σ_j m_j · W_poly6(|pred_i − pred_j|, h)
+///
+/// This scans every particle; use [`pbf_density_nb`] with a neighbour list
+/// (see [`NeighborCsr`]) inside solver loops. Both return identical values.
+///
+/// * `particles` – extended particle slice
+/// * `i`         – query particle index
+/// * `h`         – smoothing radius \[m\]
+pub fn pbf_density(particles: &[PbfExtParticle], i: usize, h: f64) -> f64 {
+    density_over(particles, i, h, 0..particles.len())
+}
+
+/// SPH density estimate at particle `i` summed over the neighbour list `nbrs`.
+///
+/// Identical to [`pbf_density`] provided `nbrs` contains every particle
+/// within `h` of particle `i`; the particle's own contribution is always
+/// included and an `i` appearing in `nbrs` is ignored.
+///
+/// * `particles` – extended particle slice
+/// * `i`         – query particle index
+/// * `nbrs`      – neighbour indices of `i` (e.g. [`NeighborCsr::neighbors`])
+/// * `h`         – smoothing radius \[m\]
+pub fn pbf_density_nb(particles: &[PbfExtParticle], i: usize, nbrs: &[usize], h: f64) -> f64 {
+    density_over(particles, i, h, nbrs.iter().copied())
+}
+
+/// Σ_k |∇_{p_k} C_i|² for the density constraint of particle `i`, summed
+/// over the candidate neighbours `js`.
+fn gradient_sum_over<I: Iterator<Item = usize>>(
+    particles: &[PbfExtParticle],
+    i: usize,
+    h: f64,
+    rho0: f64,
+    js: I,
+) -> f64 {
+    let Some(pi) = particles.get(i) else {
+        return 0.0;
+    };
+    if h.is_nan() || h <= 0.0 {
+        return 0.0;
+    }
+    let h2 = h * h;
+    density_gradient_sum(
+        js.filter(|&j| j != i).filter_map(|j| {
+            let pj = particles.get(j)?;
+            let r_vec = vec3_sub(pi.pred_pos, pj.pred_pos);
+            (vec3_norm_sq(r_vec) < h2).then_some((r_vec, pj.mass))
+        }),
+        h,
+        rho0,
+    )
+}
+
+/// Σ_k |∇_{p_k} C_i|² of the density constraint `C_i = ρ_i/ρ₀ − 1` (all-pairs).
+///
+/// With `g_j = (m_j/ρ₀) ∇W_spiky(pred_i − pred_j)` this equals
+/// `|Σ_j g_j|² + Σ_j |g_j|²`: the first term is the gradient with respect to
+/// `p_i`, the second the gradients with respect to each neighbour. It is the
+/// `grad_sum` argument of [`pbf_lambda`].
+///
+/// * `particles` – extended particle slice
+/// * `i`         – query particle index
+/// * `h`         – smoothing radius \[m\]
+/// * `rho0`      – rest density \[kg/m³\]
+pub fn pbf_grad_sum(particles: &[PbfExtParticle], i: usize, h: f64, rho0: f64) -> f64 {
+    gradient_sum_over(particles, i, h, rho0, 0..particles.len())
+}
+
+/// Neighbour-list variant of [`pbf_grad_sum`]; identical when `nbrs` holds
+/// every particle within `h` of particle `i`.
+///
+/// * `particles` – extended particle slice
+/// * `i`         – query particle index
+/// * `nbrs`      – neighbour indices of `i`
+/// * `h`         – smoothing radius \[m\]
+/// * `rho0`      – rest density \[kg/m³\]
+pub fn pbf_grad_sum_nb(
+    particles: &[PbfExtParticle],
+    i: usize,
+    nbrs: &[usize],
+    h: f64,
+    rho0: f64,
+) -> f64 {
+    gradient_sum_over(particles, i, h, rho0, nbrs.iter().copied())
+}
+
+/// PBF multiplier λ_i from the particle's neighbour list.
+///
+/// Evaluates `ρ_i` ([`pbf_density_nb`]), `Σ_k |∇_{p_k} C_i|²`
+/// ([`pbf_grad_sum_nb`]) and combines them with [`pbf_lambda`]. For unit
+/// masses it equals [`lambda_compute`] on the equivalent [`PbfParticle`] set.
+///
+/// * `particles` – extended particle slice
+/// * `i`         – query particle index
+/// * `nbrs`      – neighbour indices of `i`
+/// * `h`         – smoothing radius \[m\]
+/// * `rho0`      – rest density \[kg/m³\]
+/// * `eps`       – regularisation constant (CFM)
+pub fn pbf_lambda_nb(
+    particles: &[PbfExtParticle],
+    i: usize,
+    nbrs: &[usize],
+    h: f64,
+    rho0: f64,
+    eps: f64,
+) -> f64 {
+    let rho_i = pbf_density_nb(particles, i, nbrs, h);
+    let grad_sum = pbf_grad_sum_nb(particles, i, nbrs, h, rho0);
+    pbf_lambda(rho_i, rho0, grad_sum, eps)
+}
+
 /// PBF constraint multiplier λ for particle `i`.
 ///
-/// λ = −(ρ_i/ρ₀ − 1) / (Σ|∇W|² + ε)
+/// λ = −(ρ_i/ρ₀ − 1) / (Σ_k |∇_{p_k} C_i|² + ε)
+///
+/// Returns `0` if the denominator is not positive (see [`pbf_grad_sum`] for
+/// the gradient sum).
 ///
 /// * `rho_i`    – density estimate at particle `i`
 /// * `rho0`     – rest density \[kg/m³\]
-/// * `grad_sum` – sum of squared gradient magnitudes (denominator term)
-/// * `eps`      – regularisation constant (CFM)
+/// * `grad_sum` – Σ_k |∇_{p_k} C_i|² \[1/m²\] (see [`pbf_grad_sum`])
+/// * `eps`      – regularisation constant (CFM), see [`default_cfm_epsilon`]
 pub fn pbf_lambda(rho_i: f64, rho0: f64, grad_sum: f64, eps: f64) -> f64 {
-    -(rho_i / rho0 - 1.0) / (grad_sum + eps)
+    constraint_multiplier(rho_i / rho0 - 1.0, grad_sum, eps)
 }
 
-/// Position correction Δp_i for particle `i` from pre-computed lambdas.
+/// Shared position-correction sum over the candidate neighbours `js`.
+fn delta_pos_over<I: Iterator<Item = usize>>(
+    particles: &[PbfExtParticle],
+    i: usize,
+    lambdas: &[f64],
+    h: f64,
+    rho0: f64,
+    js: I,
+) -> [f64; 3] {
+    let mut dp = [0.0f64; 3];
+    let (Some(pi), Some(&lambda_i)) = (particles.get(i), lambdas.get(i)) else {
+        return dp;
+    };
+    if h.is_nan() || h <= 0.0 {
+        return dp;
+    }
+    let h2 = h * h;
+    for j in js {
+        if j == i {
+            continue;
+        }
+        let (Some(pj), Some(&lambda_j)) = (particles.get(j), lambdas.get(j)) else {
+            continue;
+        };
+        let r_vec = vec3_sub(pi.pred_pos, pj.pred_pos);
+        if vec3_norm_sq(r_vec) >= h2 {
+            continue;
+        }
+        let g = spiky_gradient(r_vec, h);
+        let factor = (pj.mass * lambda_i + pi.mass * lambda_j) / rho0;
+        dp = vec3_add(dp, vec3_scale(g, factor));
+    }
+    dp
+}
+
+/// Position correction Δp_i for particle `i` from pre-computed lambdas
+/// (all-pairs).
 ///
-/// Δp_i = (1/ρ₀) Σ_j (λ_i + λ_j) ∇W_spiky(pred_i − pred_j, h)
+/// Δp_i = (1/ρ₀) Σ_j (m_j λ_i + m_i λ_j) ∇W_spiky(pred_i − pred_j, h)
+///
+/// For unit masses this is the familiar `(1/ρ₀) Σ_j (λ_i + λ_j) ∇W`. Scans
+/// every particle; use [`pbf_delta_pos_nb`] inside solver loops.
 ///
 /// * `particles` – extended particle slice (lambdas pre-computed)
 /// * `i`         – query particle index
@@ -849,23 +1237,29 @@ pub fn pbf_delta_pos(
     h: f64,
     rho0: f64,
 ) -> [f64; 3] {
-    let mut dp = [0.0f64; 3];
-    for j in 0..particles.len() {
-        if i == j {
-            continue;
-        }
-        let r_vec = [
-            particles[i].pred_pos[0] - particles[j].pred_pos[0],
-            particles[i].pred_pos[1] - particles[j].pred_pos[1],
-            particles[i].pred_pos[2] - particles[j].pred_pos[2],
-        ];
-        let g = spiky_gradient(r_vec, h);
-        let factor = (lambdas[i] + lambdas[j]) / rho0;
-        dp[0] += g[0] * factor;
-        dp[1] += g[1] * factor;
-        dp[2] += g[2] * factor;
-    }
-    dp
+    delta_pos_over(particles, i, lambdas, h, rho0, 0..particles.len())
+}
+
+/// Position correction Δp_i summed over the neighbour list `nbrs`.
+///
+/// Identical to [`pbf_delta_pos`] provided `nbrs` contains every particle
+/// within `h` of particle `i`.
+///
+/// * `particles` – extended particle slice (lambdas pre-computed)
+/// * `i`         – query particle index
+/// * `nbrs`      – neighbour indices of `i`
+/// * `lambdas`   – lambda slice aligned with `particles`
+/// * `h`         – smoothing radius \[m\]
+/// * `rho0`      – rest density \[kg/m³\]
+pub fn pbf_delta_pos_nb(
+    particles: &[PbfExtParticle],
+    i: usize,
+    nbrs: &[usize],
+    lambdas: &[f64],
+    h: f64,
+    rho0: f64,
+) -> [f64; 3] {
+    delta_pos_over(particles, i, lambdas, h, rho0, nbrs.iter().copied())
 }
 
 /// Tensile instability correction (surface tension term) s_corr.
@@ -891,6 +1285,30 @@ pub fn tensile_instability_correction(q: f64, k: f64, n: usize) -> f64 {
 // PbfSolver
 // ------------------------------------------------------------------
 
+/// Relaxation coefficient κ of the default CFM parameter `ε = κ / h²`.
+///
+/// `Σ_k |∇_{p_k} C_i|²` grows like `(number of neighbours) / h²`, so a
+/// relaxation proportional to `1/h²` keeps `ε / Σ|∇C|²` independent of the
+/// length scale. `κ = 6` reproduces the `ε = 600` that Macklin & Müller (2013)
+/// use for `h = 0.1`.
+///
+/// The relaxation is what keeps the Jacobi iteration stable: every particle is
+/// moved by the constraints of all its ≈ 50 neighbours at once, and with
+/// `ε ≪ Σ|∇C|²` (a full Newton step per constraint) free-surface particles are
+/// thrown out of the fluid within a few steps.
+pub const PBF_RELAXATION_COEFFICIENT: f64 = 6.0;
+
+/// Default CFM regularisation ε \[1/m²\] for smoothing radius `h`:
+/// `κ / h²` with `κ` = [`PBF_RELAXATION_COEFFICIENT`] (`0` for a non-positive
+/// or non-finite `h`, for which no neighbour interaction exists anyway).
+pub fn default_cfm_epsilon(h: f64) -> f64 {
+    if h.is_finite() && h > 0.0 {
+        PBF_RELAXATION_COEFFICIENT / (h * h)
+    } else {
+        0.0
+    }
+}
+
 /// A self-contained Position-Based Fluids solver using `PbfExtParticle`.
 #[derive(Debug, Clone)]
 pub struct PbfSolver {
@@ -902,6 +1320,15 @@ pub struct PbfSolver {
     pub h: f64,
     /// Number of constraint-projection substeps per time step.
     pub substeps: usize,
+    /// CFM regularisation ε \[1/m²\] added to Σ_k |∇C_i|² in
+    /// `λ_i = −C_i / (Σ_k |∇C_i|² + ε)`.
+    ///
+    /// Larger values under-relax the projection; they bound the correction of
+    /// sparsely populated neighbourhoods (free surface, spray) where the
+    /// gradient sum is small, and keep the Jacobi iteration stable. Set to
+    /// [`default_cfm_epsilon`]`(h)` (`6/h²`) by [`PbfSolver::new`]; recompute it
+    /// if `h` is changed afterwards.
+    pub epsilon: f64,
 }
 
 impl PbfSolver {
@@ -912,6 +1339,7 @@ impl PbfSolver {
             rho0,
             h,
             substeps,
+            epsilon: default_cfm_epsilon(h),
         }
     }
 
@@ -925,13 +1353,31 @@ impl PbfSolver {
         self.particles.len()
     }
 
+    /// Neighbour lists of the current predicted positions (radius `h`).
+    fn neighbor_lists(&self) -> NeighborCsr {
+        NeighborCsr::build(
+            self.particles.len(),
+            |i| self.particles[i].pred_pos,
+            self.h,
+            false,
+        )
+    }
+
     /// Advances the simulation by one time step using `substeps` iterations.
+    ///
+    /// Predicts positions, builds the neighbour lists once (Algorithm 1 of
+    /// Macklin & Müller 2013), runs `substeps` Jacobi iterations of the density
+    /// constraint `C_i = ρ_i/ρ₀ − 1` with
+    /// `λ_i = −C_i / (Σ_k |∇_{p_k} C_i|² + ε)` and
+    /// `Δp_i = (1/ρ₀) Σ_j (m_j λ_i + m_i λ_j) ∇W_spiky`, and finally derives
+    /// the velocities from the corrected positions. A non-positive or NaN `dt`
+    /// leaves the particles untouched.
     ///
     /// * `dt`      – time step \[s\]
     /// * `gravity` – gravitational acceleration \[m/s²\]
     pub fn step(&mut self, dt: f64, gravity: [f64; 3]) {
         let n = self.particles.len();
-        if n == 0 {
+        if n == 0 || dt.is_nan() || dt <= 0.0 {
             return;
         }
 
@@ -940,53 +1386,69 @@ impl PbfSolver {
             p.predict(gravity, dt);
         }
 
-        // 2. Constraint projection iterations.
-        let eps_cfm = 1.0e-4;
+        // 2. Neighbour search, once per step.
+        let neighbors = self.neighbor_lists();
+
+        // 3. Constraint projection iterations.
         for _ in 0..self.substeps {
-            // Compute densities.
             let densities: Vec<f64> = (0..n)
-                .map(|i| pbf_density(&self.particles, i, self.h))
+                .map(|i| pbf_density_nb(&self.particles, i, neighbors.neighbors(i), self.h))
                 .collect();
 
-            // Compute lambdas.
             let lambdas: Vec<f64> = (0..n)
                 .map(|i| {
-                    // Approximate gradient sum using neighbour count.
-                    let grad_sum = densities[i] / (self.rho0 * self.rho0) + 1.0e-6;
-                    pbf_lambda(densities[i], self.rho0, grad_sum, eps_cfm)
+                    let grad_sum = pbf_grad_sum_nb(
+                        &self.particles,
+                        i,
+                        neighbors.neighbors(i),
+                        self.h,
+                        self.rho0,
+                    );
+                    pbf_lambda(densities[i], self.rho0, grad_sum, self.epsilon)
                 })
                 .collect();
 
-            // Compute and apply position corrections.
             let deltas: Vec<[f64; 3]> = (0..n)
-                .map(|i| pbf_delta_pos(&self.particles, i, &lambdas, self.h, self.rho0))
+                .map(|i| {
+                    pbf_delta_pos_nb(
+                        &self.particles,
+                        i,
+                        neighbors.neighbors(i),
+                        &lambdas,
+                        self.h,
+                        self.rho0,
+                    )
+                })
                 .collect();
 
-            for (p, &dp) in self.particles.iter_mut().zip(deltas.iter()) {
-                p.pred_pos[0] += dp[0];
-                p.pred_pos[1] += dp[1];
-                p.pred_pos[2] += dp[2];
-            }
-
-            // Store lambdas.
-            for (p, &lam) in self.particles.iter_mut().zip(lambdas.iter()) {
+            for ((p, &dp), (&lam, &rho)) in self
+                .particles
+                .iter_mut()
+                .zip(deltas.iter())
+                .zip(lambdas.iter().zip(densities.iter()))
+            {
+                p.pred_pos = vec3_add(p.pred_pos, dp);
                 p.lambda = lam;
+                p.rho = rho;
             }
         }
 
-        // 3. Update velocities.
+        // 4. Update velocities.
         for p in &mut self.particles {
             p.update_velocity(dt);
         }
     }
 
     /// Sum of |ρ_i/ρ₀ − 1| across all particles (density error).
+    ///
+    /// Densities are evaluated at the particles' predicted positions (equal to
+    /// their positions after [`PbfSolver::step`]) with a spatial-hash
+    /// neighbour search.
     pub fn total_density_error(&self) -> f64 {
-        self.particles
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
-                let rho = pbf_density(&self.particles, i, self.h);
+        let neighbors = self.neighbor_lists();
+        (0..self.particles.len())
+            .map(|i| {
+                let rho = pbf_density_nb(&self.particles, i, neighbors.neighbors(i), self.h);
                 (rho / self.rho0 - 1.0).abs()
             })
             .sum()
@@ -1361,3 +1823,6 @@ mod pbf_ext_tests {
         assert!(diff < EPS, "XSPH pbf should scale linearly with c");
     }
 }
+
+#[cfg(test)]
+mod nb_tests;

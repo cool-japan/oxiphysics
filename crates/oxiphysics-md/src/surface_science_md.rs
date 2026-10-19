@@ -39,7 +39,12 @@ const H_PLANCK: f64 = 6.626_070_15e-34;
 // Helper math utilities
 // ---------------------------------------------------------------------------
 
-/// Compute `exp(-barrier / (KB * temperature))` safely (returns 0 for very large barriers).
+/// Compute the Boltzmann factor `exp(-barrier / (KB * temperature))` without overflow.
+///
+/// A barrier far above `k_B T` (exponent below `-700`) returns 0, and an energy
+/// far below zero (a negative `barrier_j`, exponent above `700`) saturates at
+/// [`f64::MAX`] instead of overflowing to infinity.  A temperature below
+/// `1e-12 K` returns 0.
 #[inline]
 fn arrhenius_factor(barrier_j: f64, temperature_k: f64) -> f64 {
     if temperature_k < 1e-12 {
@@ -48,6 +53,8 @@ fn arrhenius_factor(barrier_j: f64, temperature_k: f64) -> f64 {
     let exponent = -barrier_j / (KB * temperature_k);
     if exponent < -700.0 {
         0.0
+    } else if exponent > 700.0 {
+        f64::MAX
     } else {
         exponent.exp()
     }
@@ -346,9 +353,14 @@ impl LangmuirAdsorption {
 
     /// Compute Langmuir isotherm coverage θ = K·P / (1 + K·P).
     ///
-    /// Returns fractional coverage θ ∈ \[0, 1).
+    /// Returns the fractional coverage θ ∈ \[0, θ_max\].  When `K·P` overflows (a
+    /// very strongly binding surface at high pressure) the coverage is the
+    /// saturation value `θ_max`, the limit of the isotherm.
     pub fn langmuir_coverage(&self, pressure_pa: f64) -> f64 {
         let kp = self.equilibrium_constant * pressure_pa;
+        if kp == f64::INFINITY {
+            return self.theta_max;
+        }
         self.theta_max * kp / (1.0 + kp)
     }
 
@@ -376,14 +388,24 @@ impl LangmuirAdsorption {
 
     /// Compute the Langmuir equilibrium constant from thermodynamics.
     ///
-    /// K = (h² / (2π·m·kT))^(3/2) / (kT) · exp(-ΔE_ads / (kT))
+    /// ```text
+    /// K = λ³ / (k_B T) · exp(−E_ads / (k_B T)),     λ = h / sqrt(2π m k_B T)
+    /// ```
     ///
-    /// Uses a simplified pre-exponential from kinetic theory.
+    /// `λ` is the thermal de Broglie wavelength of the gas.  The translational
+    /// partition function of a gas particle at pressure `P` is `q = k_B T / (P λ³)`,
+    /// so `K = exp(−E_ads / k_B T) / (q P)`: the adsorbed phase is a single bound
+    /// state of energy `E_ads` and internal degrees of freedom are not included.
+    /// `E_ads` is negative for exothermic adsorption, so stronger binding gives an
+    /// exponentially larger `K`.  The Boltzmann factor saturates at [`f64::MAX`]
+    /// for a binding energy of more than 700 `k_B T`, so `K` stays finite.
     ///
     /// # Arguments
     /// * `adsorption_energy_j` — adsorption energy (J, negative for exothermic)
     /// * `temperature_k` — temperature (K)
     /// * `mass_kg` — adsorbate molecular mass (kg)
+    ///
+    /// Returns 0 for a temperature below `1e-10 K` or a mass below `1e-40 kg`.
     pub fn equilibrium_constant_from_thermo(
         adsorption_energy_j: f64,
         temperature_k: f64,
@@ -395,7 +417,8 @@ impl LangmuirAdsorption {
         let kbt = KB * temperature_k;
         let thermal_wavelength = H_PLANCK / (2.0 * PI * mass_kg * kbt).sqrt();
         let pre_exp = thermal_wavelength.powi(3) / kbt;
-        pre_exp * arrhenius_factor(-adsorption_energy_j, temperature_k)
+        let k = pre_exp * arrhenius_factor(adsorption_energy_j, temperature_k);
+        if k.is_infinite() { f64::MAX } else { k }
     }
 
     /// Isosteric heat of adsorption from van't Hoff relation.
@@ -1219,6 +1242,9 @@ impl CatalyticCycle {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {

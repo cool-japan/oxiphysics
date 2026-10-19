@@ -665,108 +665,10 @@ impl FormationReconfiguration {
 
 // ── ORCA / Velocity Obstacle Collision Avoidance ─────────────────────────────
 
-/// A 2D half-plane constraint for ORCA (Optimal Reciprocal Collision Avoidance).
-///
-/// The constraint is `n · (v − p) ≥ 0`, where `n` is the outward normal of the
-/// half-plane and `p` is a point on the boundary.
-#[derive(Debug, Clone)]
-pub struct HalfPlane2D {
-    /// Point on the boundary of the half-plane.
-    pub point: [f64; 2],
-    /// Outward normal of the half-plane (unit vector).
-    pub normal: [f64; 2],
-}
-
-/// Compute the ORCA half-plane for agent A (radius `r_a`, position `p_a`,
-/// velocity `v_a`) with respect to agent B (radius `r_b`, position `p_b`,
-/// velocity `v_b`) over a time horizon `tau`.
-///
-/// Returns the ORCA half-plane. The agent should choose a new velocity that
-/// satisfies all such half-planes.
-pub fn orca_half_plane(
-    p_a: [f64; 2],
-    v_a: [f64; 2],
-    r_a: f64,
-    p_b: [f64; 2],
-    v_b: [f64; 2],
-    r_b: f64,
-    tau: f64,
-) -> HalfPlane2D {
-    let rel_pos = vec2_sub(p_b, p_a);
-    let rel_vel = vec2_sub(v_a, v_b);
-    let combined_r = r_a + r_b;
-    let dist2 = vec2_dot(rel_pos, rel_pos);
-    let dist = dist2.sqrt();
-
-    // If agents overlap, push apart
-    if dist < combined_r {
-        let n = vec2_normalize(rel_pos);
-        let u = vec2_scale(n, combined_r - dist + 0.001);
-        return HalfPlane2D {
-            point: vec2_add(v_a, vec2_scale(u, 0.5)),
-            normal: n,
-        };
-    }
-
-    // Velocity obstacle centre (in relative velocity space)
-    let vo_centre = vec2_scale(rel_pos, 1.0 / tau);
-    let r_vo = combined_r / tau;
-
-    // Vector from VO centre to relative velocity
-    let w = vec2_sub(rel_vel, vo_centre);
-    let w_len = vec2_len(w);
-
-    let (u, n);
-    if w_len < r_vo {
-        // Inside VO — project to boundary
-        let n_out = if w_len > 1e-15 {
-            vec2_normalize(w)
-        } else {
-            vec2_normalize([-rel_pos[1], rel_pos[0]])
-        };
-        u = vec2_scale(n_out, r_vo - w_len);
-        n = n_out;
-    } else {
-        // Outside VO — no constraint needed; return trivial half-plane
-        n = vec2_normalize(w);
-        u = [0.0; 2];
-    }
-
-    HalfPlane2D {
-        point: vec2_add(v_a, vec2_scale(u, 0.5)),
-        normal: n,
-    }
-}
-
-/// Solve a linear program to find the velocity closest to `v_pref` that
-/// satisfies all ORCA half-plane constraints (2D, iterative algorithm).
-///
-/// Returns the best feasible velocity.
-pub fn orca_solve_velocity(
-    v_pref: [f64; 2],
-    max_speed: f64,
-    constraints: &[HalfPlane2D],
-) -> [f64; 2] {
-    let mut v = v_pref;
-    // Clamp to max speed
-    if vec2_len(v) > max_speed {
-        v = vec2_scale(vec2_normalize(v), max_speed);
-    }
-    for hp in constraints {
-        if vec2_dot(hp.normal, vec2_sub(v, hp.point)) < 0.0 {
-            // Project onto the half-plane boundary
-            let n = hp.normal;
-            let dot = vec2_dot(n, vec2_sub(hp.point, v));
-            v = vec2_add(v, vec2_scale(n, dot));
-            // Re-clamp to max speed
-            let spd = vec2_len(v);
-            if spd > max_speed {
-                v = vec2_scale(vec2_normalize(v), max_speed);
-            }
-        }
-    }
-    v
-}
+mod orca;
+pub use orca::{
+    HalfPlane2D, OrcaDisc, orca_compute_new_velocity, orca_half_plane, orca_solve_velocity,
+};
 
 // ── Bearing-Only Constraint ───────────────────────────────────────────────────
 
@@ -1430,9 +1332,15 @@ mod tests {
             [0.0, 0.0],
             0.3,
             2.0,
+            0.1,
         );
-        // Far apart — HP normal should be defined
-        assert!(vec2_len(hp.normal) > 1e-9 || hp.point[0].abs() < 1e3);
+        // Far apart: the half-plane is a genuine unit-normal boundary and the
+        // agent's current velocity, and any slower one, stays permitted.
+        assert!((vec2_len(hp.normal) - 1.0).abs() < 1e-12);
+        for v in [[1.0, 0.0], [0.5, 0.0], [0.0, 1.0], [-1.0, 0.0]] {
+            let signed = vec2_dot(hp.normal, vec2_sub(v, hp.point));
+            assert!(signed >= 0.0, "velocity {v:?} wrongly excluded: {signed}");
+        }
     }
 
     #[test]

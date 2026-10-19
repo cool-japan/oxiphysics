@@ -45,6 +45,17 @@ pub const E_CHARGE: f64 = 1.602_176_634e-19;
 pub const EPS_0: f64 = 8.854_187_817e-12;
 /// Ångström in metres.
 pub const ANGSTROM: f64 = 1.0e-10;
+/// Planck constant (J s).
+pub const PLANCK: f64 = 6.626_070_15e-34;
+/// Atomic mass unit (kg).
+pub const AMU: f64 = 1.660_539_066_60e-27;
+/// Guest mass used by [`GcmcSimulation::new`]: methane, 16.043 u (kg).
+pub const DEFAULT_GUEST_MASS: f64 = 16.043 * AMU;
+/// Seed of the [`GcmcSimulation`] random number generator unless overridden.
+const DEFAULT_GCMC_SEED: u64 = 0x2545_F491_4F6C_DD1D;
+/// Separation (Å) below which two interaction sites count as overlapping and
+/// the pair energy is treated as infinite.
+const GCMC_OVERLAP_DISTANCE: f64 = 1.0e-6;
 
 // ---------------------------------------------------------------------------
 // Zeolite framework topology
@@ -528,13 +539,38 @@ impl GcmcState {
 
 /// Grand Canonical Monte Carlo simulation for zeolite adsorption.
 ///
-/// Implements insertion, deletion, and translation MC moves using the
-/// Metropolis criterion at fixed μ, V, T.
+/// Samples the grand-canonical ensemble (fixed chemical potential `μ`, volume
+/// `V` and temperature `T`) of rigid single-site guest molecules in a frozen
+/// framework with the Metropolis algorithm.  Three move types are available,
+/// chosen with equal probability by [`GcmcSimulation::mc_step`]:
+///
+/// - **insertion** at a uniformly random position, accepted with probability
+///   `min(1, V/(Λ³(N+1))·exp[β(μ − ΔU)])`;
+/// - **deletion** of a uniformly random molecule, accepted with probability
+///   `min(1, Λ³N/V·exp[−β(μ + ΔU)])`;
+/// - **translation** of a uniformly random molecule by a random displacement,
+///   accepted with probability `min(1, exp[−βΔU])`.
+///
+/// `ΔU` is the change of the configurational energy, `V` the cell volume in
+/// m³, `Λ = h/√(2π m k_B T)` the thermal de Broglie wavelength of a guest of
+/// mass `m`, and `μ` the *total* chemical potential (ideal-gas translational
+/// part included).  For non-interacting guests this gives the Poisson mean
+/// `⟨N⟩ = V·e^{βμ}/Λ³`.
+///
+/// The configurational energy has two parts: the guest–framework interaction
+/// [`MoleculeZeoliteFF::total_energy`] (Lennard-Jones + point-charge Coulomb)
+/// between a guest and every T-site of the framework, and the guest–guest
+/// Lennard-Jones interaction [`MoleculeZeoliteFF::lj_energy`] (the guest charge
+/// couples to the framework charge only).  Distances use the minimum image of
+/// the orthorhombic cell and are cut off at `ff.cutoff`.
+///
+/// All randomness comes from an internal SplitMix64 generator, so a run is
+/// reproducible from [`GcmcSimulation::with_seed`].
 #[derive(Debug, Clone)]
 pub struct GcmcSimulation {
     /// Temperature (K).
     pub temperature: f64,
-    /// Chemical potential (J).
+    /// Total chemical potential of the guest (J), ideal-gas part included.
     pub chemical_potential: f64,
     /// Force field for molecule-framework interactions.
     pub ff: MoleculeZeoliteFF,
@@ -550,10 +586,19 @@ pub struct GcmcSimulation {
     pub n_accept_trans: u64,
     /// Total attempted moves.
     pub n_attempts: u64,
+    /// Mass of one guest molecule (kg); sets the thermal wavelength Λ.
+    pub mass: f64,
+    /// State of the internal SplitMix64 generator.
+    rng_state: u64,
 }
 
 impl GcmcSimulation {
     /// Construct a new GCMC simulation.
+    ///
+    /// The guest is a methane-like molecule ([`DEFAULT_GUEST_MASS`], 16.043 u)
+    /// and the random number generator starts from a fixed seed; use
+    /// [`GcmcSimulation::with_mass`] and [`GcmcSimulation::with_seed`] to
+    /// change them.  `temperature` must be positive.
     pub fn new(
         temperature: f64,
         chemical_potential: f64,
@@ -572,54 +617,168 @@ impl GcmcSimulation {
             n_accept_del: 0,
             n_accept_trans: 0,
             n_attempts: 0,
+            mass: DEFAULT_GUEST_MASS,
+            rng_state: DEFAULT_GCMC_SEED,
         }
     }
 
-    /// Compute total energy of current configuration (simplified pair sum).
+    /// Seed the internal random number generator.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.rng_state = seed;
+        self
+    }
+
+    /// Set the mass of one guest molecule (kg).
+    pub fn with_mass(mut self, mass_kg: f64) -> Self {
+        self.mass = mass_kg;
+        self
+    }
+
+    /// Thermal de Broglie wavelength `Λ = h/√(2π m k_B T)` of a guest (m).
+    pub fn thermal_wavelength(&self) -> f64 {
+        PLANCK / (2.0 * PI * self.mass * K_B * self.temperature).sqrt()
+    }
+
+    /// Volume of the simulation cell (m³).
+    pub fn volume_m3(&self) -> f64 {
+        self.state.pbox.volume() * ANGSTROM.powi(3)
+    }
+
+    /// Inverse temperature `β = 1/(k_B T)` (J⁻¹).
+    fn beta(&self) -> f64 {
+        1.0 / (K_B * self.temperature)
+    }
+
+    /// `ln(V/Λ³)` with `V` in m³.
+    fn ln_volume_over_lambda_cubed(&self) -> f64 {
+        self.volume_m3().ln() - 3.0 * self.thermal_wavelength().ln()
+    }
+
+    /// Next 64-bit output of the SplitMix64 generator.
+    fn next_u64(&mut self) -> u64 {
+        self.rng_state = self.rng_state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.rng_state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform deviate in `[0, 1)` with 53 random bits.
+    fn uniform(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Uniformly distributed position inside the cell (Å).
+    fn random_position(&mut self) -> [f64; 3] {
+        let [lx, ly, lz] = self.state.pbox.lengths;
+        let (ux, uy, uz) = (self.uniform(), self.uniform(), self.uniform());
+        [ux * lx, uy * ly, uz * lz]
+    }
+
+    /// Uniformly distributed index in `0..n` (`n ≥ 1`).
+    fn random_index(&mut self, n: usize) -> usize {
+        ((self.uniform() * n as f64) as usize).min(n.saturating_sub(1))
+    }
+
+    /// Interaction energy (J) of a guest at `pos` (Å) with every T-site of the
+    /// framework: [`MoleculeZeoliteFF::total_energy`] at the minimum-image
+    /// distance.  A guest sitting on top of a site has infinite energy.
+    pub fn framework_energy(&self, pos: [f64; 3]) -> f64 {
+        let mut energy = 0.0;
+        for &frac in &self.framework.t_sites {
+            let site = self.framework.frac_to_cart(frac);
+            let r = self.state.pbox.distance(pos, site);
+            if r < GCMC_OVERLAP_DISTANCE {
+                return f64::INFINITY;
+            }
+            energy += self.ff.total_energy(r);
+        }
+        energy
+    }
+
+    /// Lennard-Jones energy (J) of a guest at `pos` (Å) with all other guests,
+    /// ignoring the guest with index `skip`.
+    fn guest_energy(&self, pos: [f64; 3], skip: Option<usize>) -> f64 {
+        let mut energy = 0.0;
+        for (j, &other) in self.state.positions.iter().enumerate() {
+            if Some(j) == skip {
+                continue;
+            }
+            let r = self.state.pbox.distance(pos, other);
+            if r < GCMC_OVERLAP_DISTANCE {
+                return f64::INFINITY;
+            }
+            energy += self.ff.lj_energy(r);
+        }
+        energy
+    }
+
+    /// Energy (J) of one guest at `pos`: framework plus all other guests
+    /// (the guest with index `skip`, if any, is the molecule itself).
+    fn site_energy(&self, pos: [f64; 3], skip: Option<usize>) -> f64 {
+        self.framework_energy(pos) + self.guest_energy(pos, skip)
+    }
+
+    /// Total configurational energy (J) of the current configuration: every
+    /// guest–guest Lennard-Jones pair plus every guest–framework interaction.
     pub fn compute_energy(&self) -> f64 {
         let n = self.state.positions.len();
-        let mut e = 0.0;
+        let mut energy = 0.0;
         for i in 0..n {
+            let pos_i = self.state.positions[i];
+            energy += self.framework_energy(pos_i);
             for j in (i + 1)..n {
-                let r = self
-                    .state
-                    .pbox
-                    .distance(self.state.positions[i], self.state.positions[j]);
-                e += self.ff.lj_energy(r);
+                let r = self.state.pbox.distance(pos_i, self.state.positions[j]);
+                energy += if r < GCMC_OVERLAP_DISTANCE {
+                    f64::INFINITY
+                } else {
+                    self.ff.lj_energy(r)
+                };
             }
         }
-        e
+        energy
     }
 
-    /// Metropolis acceptance criterion.
-    pub fn accept(&self, delta_e: f64) -> bool {
+    /// Metropolis acceptance test at fixed particle number: accepts every
+    /// energy change `delta_e <= 0` and an uphill move with probability
+    /// `exp(−β·delta_e)`, drawing from the internal generator.
+    pub fn accept(&mut self, delta_e: f64) -> bool {
+        if delta_e.is_nan() {
+            return false;
+        }
         if delta_e <= 0.0 {
             return true;
         }
-        let beta = 1.0 / (K_B * self.temperature);
-        let prob = (-beta * delta_e).exp();
-        prob > 0.5 // deterministic for tests (avoids rand dependency in pure unit)
+        let ln_acc = -self.beta() * delta_e;
+        self.accept_log_probability(ln_acc)
     }
 
-    /// Attempt a trial insertion at position `pos`.
+    /// Accept with probability `min(1, exp(ln_acc))`.  A NaN logarithm is a
+    /// rejection.
+    fn accept_log_probability(&mut self, ln_acc: f64) -> bool {
+        if ln_acc.is_nan() {
+            return false;
+        }
+        if ln_acc >= 0.0 {
+            return true;
+        }
+        self.uniform() < ln_acc.exp()
+    }
+
+    /// Attempt a trial insertion at position `pos` (Å).
     ///
+    /// The molecule is accepted with probability
+    /// `min(1, V/(Λ³(N+1))·exp[β(μ − ΔU)])`, where `ΔU` is its interaction
+    /// energy with the framework and with the `N` molecules already present.
     /// Returns true if accepted.
     pub fn try_insert(&mut self, pos: [f64; 3]) -> bool {
         self.n_attempts += 1;
+        let wrapped = self.state.pbox.wrap(pos);
+        let delta_e = self.site_energy(wrapped, None);
         let n = self.state.n_molecules() as f64;
-        let vol = self.state.pbox.volume();
-        // Energy contribution of new molecule
-        let mut delta_e = 0.0;
-        for &other in &self.state.positions {
-            let r = self.state.pbox.distance(pos, other);
-            delta_e += self.ff.lj_energy(r);
-        }
-        let beta = 1.0 / (K_B * self.temperature);
-        // Rosenbluth insertion criterion: acc = V/(n+1) * exp(-β(ΔE - μ))
-        let acc = (vol / (n + 1.0)) * (-beta * (delta_e - self.chemical_potential)).exp();
-        if acc >= 1.0 || acc > 0.3 {
-            // simplified deterministic threshold
-            let wrapped = self.state.pbox.wrap(pos);
+        let ln_acc = self.ln_volume_over_lambda_cubed() - (n + 1.0).ln()
+            + self.beta() * (self.chemical_potential - delta_e);
+        if self.accept_log_probability(ln_acc) {
             self.state.positions.push(wrapped);
             self.state.energy += delta_e;
             self.n_accept_ins += 1;
@@ -629,27 +788,24 @@ impl GcmcSimulation {
         }
     }
 
-    /// Attempt to delete a molecule at index `idx`.
+    /// Attempt to delete the molecule at index `idx`.
     ///
-    /// Returns true if accepted.
+    /// The deletion is accepted with probability
+    /// `min(1, Λ³N/V·exp[−β(μ + ΔU)])`, where `ΔU` is minus the energy of the
+    /// molecule with the framework and all other molecules.  An index that is
+    /// out of range (or an empty cell) is not a trial: nothing happens and
+    /// `false` is returned.  Returns true if the molecule was removed.
     pub fn try_delete(&mut self, idx: usize) -> bool {
-        if self.state.positions.is_empty() {
+        let Some(&pos) = self.state.positions.get(idx) else {
             return false;
-        }
+        };
         self.n_attempts += 1;
         let n = self.state.n_molecules() as f64;
-        let vol = self.state.pbox.volume();
-        let pos = self.state.positions[idx];
-        let mut delta_e = 0.0;
-        for (i, &other) in self.state.positions.iter().enumerate() {
-            if i != idx {
-                let r = self.state.pbox.distance(pos, other);
-                delta_e -= self.ff.lj_energy(r);
-            }
-        }
-        let beta = 1.0 / (K_B * self.temperature);
-        let acc = (n / vol) * (-beta * (delta_e + self.chemical_potential)).exp();
-        if acc >= 1.0 || acc > 0.3 {
+        let delta_e = -self.site_energy(pos, Some(idx));
+        let ln_acc = n.ln()
+            - self.ln_volume_over_lambda_cubed()
+            - self.beta() * (self.chemical_potential + delta_e);
+        if self.accept_log_probability(ln_acc) {
             self.state.positions.remove(idx);
             self.state.energy += delta_e;
             self.n_accept_del += 1;
@@ -659,7 +815,77 @@ impl GcmcSimulation {
         }
     }
 
-    /// Insertion acceptance rate.
+    /// Attempt to move the molecule `idx` to `new_pos` (Å) with the Metropolis
+    /// rule `min(1, exp[−βΔU])`.  An out-of-range index is not a trial and
+    /// returns `false`.  Returns true if the move was accepted.
+    pub fn try_move_to(&mut self, idx: usize, new_pos: [f64; 3]) -> bool {
+        let Some(&old_pos) = self.state.positions.get(idx) else {
+            return false;
+        };
+        self.n_attempts += 1;
+        let wrapped = self.state.pbox.wrap(new_pos);
+        let old_energy = self.site_energy(old_pos, Some(idx));
+        let new_energy = self.site_energy(wrapped, Some(idx));
+        let delta_e = new_energy - old_energy;
+        if self.accept(delta_e) {
+            self.state.positions[idx] = wrapped;
+            self.state.energy += delta_e;
+            self.n_accept_trans += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Attempt to translate the molecule `idx` by a displacement drawn
+    /// uniformly from `[−max_displacement, max_displacement]³` (Å).
+    /// Returns true if the move was accepted.
+    pub fn try_translate(&mut self, idx: usize, max_displacement: f64) -> bool {
+        let Some(&old_pos) = self.state.positions.get(idx) else {
+            return false;
+        };
+        let mut new_pos = old_pos;
+        for coordinate in &mut new_pos {
+            *coordinate += (2.0 * self.uniform() - 1.0) * max_displacement;
+        }
+        self.try_move_to(idx, new_pos)
+    }
+
+    /// Perform one Monte Carlo move chosen with equal probability among
+    /// insertion (uniform random position), deletion (uniform random molecule)
+    /// and translation (uniform random molecule, displacement up to
+    /// `max_displacement` Å).  Selecting a deletion or translation in an empty
+    /// cell is a rejected move.
+    pub fn mc_step(&mut self, max_displacement: f64) {
+        let n = self.state.n_molecules();
+        match (self.uniform() * 3.0) as u32 {
+            0 => {
+                let pos = self.random_position();
+                self.try_insert(pos);
+            }
+            1 => {
+                if n > 0 {
+                    let idx = self.random_index(n);
+                    self.try_delete(idx);
+                }
+            }
+            _ => {
+                if n > 0 {
+                    let idx = self.random_index(n);
+                    self.try_translate(idx, max_displacement);
+                }
+            }
+        }
+    }
+
+    /// Perform `n_moves` Monte Carlo moves, see [`GcmcSimulation::mc_step`].
+    pub fn run(&mut self, n_moves: usize, max_displacement: f64) {
+        for _ in 0..n_moves {
+            self.mc_step(max_displacement);
+        }
+    }
+
+    /// Fraction of all attempted moves that were accepted insertions.
     pub fn insertion_rate(&self) -> f64 {
         if self.n_attempts == 0 {
             0.0
@@ -668,7 +894,9 @@ impl GcmcSimulation {
         }
     }
 
-    /// Average loading (molecules per unit cell).
+    /// Current loading: the number of adsorbed molecules in the simulation
+    /// cell (one unit cell).  This is an instantaneous count; average it over
+    /// the production run to obtain the ensemble-average loading.
     pub fn average_loading(&self) -> f64 {
         self.state.n_molecules() as f64
     }
@@ -1297,12 +1525,14 @@ mod tests {
         let fw = ZeoliteFramework::fau();
         let ff = MoleculeZeoliteFF::new(1e-22, 3.5, 0.0, 0.0, 20.0);
         let mut gcmc = GcmcSimulation::new(300.0, -1e-21, ff, fw);
-        // Insert at a position far from any framework T-site
+        // Insert at a position far from any framework T-site.  With
+        // ln(V/Lambda^3) ~ 13.8 and a tiny interaction energy the Metropolis
+        // acceptance probability is exactly 1.
         let inserted = gcmc.try_insert([12.0, 12.0, 12.0]);
-        // May or may not be accepted depending on acc criterion
-        let _ = inserted;
-        // Just check no panic
-        assert!(gcmc.n_attempts == 1);
+        assert!(inserted, "a favourable insertion must be accepted");
+        assert_eq!(gcmc.n_attempts, 1);
+        assert_eq!(gcmc.n_accept_ins, 1);
+        assert_eq!(gcmc.state.n_molecules(), 1);
     }
 
     #[test]
@@ -1433,3 +1663,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod gcmc_tests;

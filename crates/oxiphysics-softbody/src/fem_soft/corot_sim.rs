@@ -369,8 +369,12 @@ impl NewmarkBetaSim {
             }
         }
         // Rayleigh stiffness-proportional damping: F_d = -β_r * K * v.
-        // Approximated via a finite-difference perturbation on elastic forces:
-        //   K * v ≈ (F_elastic(x + ε*v) - F_elastic(x)) / ε
+        //
+        // The elastic forces are the negative energy gradient, f_el = -dE/dx, so the
+        // tangent stiffness is K = -d f_el / dx and a finite-difference perturbation
+        // along the velocity yields
+        //   (f_el(x + ε*v) - f_el(x)) / ε ≈ -K * v.
+        // The damping force is therefore +β_r times this difference quotient.
         if self.rayleigh_beta.abs() > 1e-30 {
             let eps = 1e-7_f64;
             // Capture elastic forces at the current (unperturbed) positions.
@@ -415,7 +419,9 @@ impl NewmarkBetaSim {
             for (i, saved_pos) in saved.iter().enumerate() {
                 self.nodes[i].position = *saved_pos;
             }
-            // Subtract β_r * K * v approximation from the already-accumulated forces.
+            // Add the damping force -β_r * K * v to the already-accumulated forces.
+            // The difference quotient already equals -K * v, so it enters with a
+            // plus sign; subtracting it would be anti-damping (energy injection).
             for i in 0..n {
                 if self.pinned[i] {
                     continue;
@@ -425,8 +431,8 @@ impl NewmarkBetaSim {
                     .iter_mut()
                     .zip(f_elastic_perturbed[i].iter().zip(f_elastic_orig[i].iter()))
                 {
-                    let kv_d = (fp_d - fo_d) / eps;
-                    *force_d -= self.rayleigh_beta * kv_d;
+                    let minus_kv_d = (fp_d - fo_d) / eps;
+                    *force_d += self.rayleigh_beta * minus_kv_d;
                 }
             }
         }
@@ -942,32 +948,121 @@ mod tests {
         assert!((sim.rayleigh_beta - 0.01).abs() < 1e-15);
     }
 
-    #[test]
-    fn rayleigh_damping_beta_reduces_high_freq_residual() {
-        // Verify that stiffness-proportional Rayleigh damping actually applies
-        // a non-zero damping force when velocity is non-zero.
-        //
-        // Strategy: run one step of `accumulate_forces` on an undamped and a
-        // damped simulation from identical initial conditions.  The net force
-        // on the moving node should differ.
-        let mut undamped = minimal_sim(0.0, 0.0);
-        let mut damped = minimal_sim(0.0, 0.1);
+    /// Velocities of the four nodes of the deformed fixture (all non-zero).
+    const VELOCITIES: [[f64; 3]; 4] = [
+        [0.30, -0.20, 0.50],
+        [-0.40, 0.10, 0.20],
+        [0.25, 0.35, -0.30],
+        [0.10, -0.50, 0.45],
+    ];
 
+    /// The unit corner tetrahedron of [`minimal_sim`] pushed through a homogeneous
+    /// deformation (stretch, shear and a small rotation) with every node moving.
+    fn deformed_moving_sim(rayleigh_beta: f64) -> NewmarkBetaSim {
+        let mut sim = minimal_sim(0.0, rayleigh_beta);
+        let f = [[1.10, 0.05, -0.02], [0.03, 0.92, 0.04], [-0.01, 0.06, 1.05]];
+        for (node, velocity) in sim.nodes.iter_mut().zip(VELOCITIES.iter()) {
+            let p = node.position;
+            for (row, x) in f.iter().zip(node.position.iter_mut()) {
+                *x = row[0] * p[0] + row[1] * p[1] + row[2] * p[2];
+            }
+            node.velocity = *velocity;
+        }
+        sim
+    }
+
+    /// Elastic nodal forces of `sim` with every node displaced by `shift * velocity`.
+    fn elastic_forces_shifted(sim: &NewmarkBetaSim, shift: f64) -> Vec<[f64; 3]> {
+        let mut nodes = sim.nodes.clone();
+        for node in &mut nodes {
+            for (x, v) in node.position.iter_mut().zip(node.velocity.iter()) {
+                *x += shift * v;
+            }
+        }
+        let mut forces = vec![[0.0_f64; 3]; nodes.len()];
+        for tet in &sim.tets {
+            let fs = tet.compute_elastic_forces(&nodes, sim.mu, sim.lambda);
+            for (k, f) in fs.iter().enumerate() {
+                for (acc, fd) in forces[tet.node_indices[k]].iter_mut().zip(f.iter()) {
+                    *acc += fd;
+                }
+            }
+        }
+        forces
+    }
+
+    // The stiffness-proportional damping force is -beta_r K v.  The elastic forces
+    // are f = -K x, so the difference quotient of the elastic forces along v is
+    // -K v and enters with a plus sign; the earlier code subtracted it and so
+    // injected energy.  The test pins the sign AND the size of the force against an
+    // independent central difference of the elastic forces.
+    #[test]
+    fn rayleigh_stiffness_damping_force_is_minus_beta_k_v() {
+        let beta_r = 0.01;
+        let mut undamped = deformed_moving_sim(0.0);
+        let mut damped = deformed_moving_sim(beta_r);
         undamped.accumulate_forces();
         damped.accumulate_forces();
 
-        // Node 0 has velocity [1,0,0].  With β > 0 and non-zero stiffness,
-        // the stiffness-proportional term -(β * K * v) should change the force.
-        let f_undamped = undamped.nodes[0].force;
-        let f_damped = damped.nodes[0].force;
-
-        let diff = (f_undamped[0] - f_damped[0]).abs()
-            + (f_undamped[1] - f_damped[1]).abs()
-            + (f_undamped[2] - f_damped[2]).abs();
-
+        // K v = (f(x - h v) - f(x + h v)) / (2 h) for f = -K x.
+        let h = 1e-5;
+        let f_plus = elastic_forces_shifted(&undamped, h);
+        let f_minus = elastic_forces_shifted(&undamped, -h);
+        let mut scale = 0.0_f64;
+        let mut dissipated_power = 0.0_f64;
+        let mut expected_power = 0.0_f64;
+        for i in 0..4 {
+            for d in 0..3 {
+                let kv = (f_minus[i][d] - f_plus[i][d]) / (2.0 * h);
+                let damping_force = damped.nodes[i].force[d] - undamped.nodes[i].force[d];
+                scale = scale.max((beta_r * kv).abs());
+                assert!(
+                    (damping_force + beta_r * kv).abs() < 1e-5 * (beta_r * kv).abs().max(1e-3),
+                    "node {i} axis {d}: damping force {damping_force:e} vs -beta K v = {:e}",
+                    -beta_r * kv
+                );
+                dissipated_power += damping_force * VELOCITIES[i][d];
+                expected_power -= beta_r * kv * VELOCITIES[i][d];
+            }
+        }
         assert!(
-            diff > 1e-12,
-            "damping force should differ from undamped: diff={diff}"
+            scale > 1e-3,
+            "the damping force must be non-trivial: {scale:e}"
+        );
+        // Power of the damping force: -beta v^T K v, strictly negative for a
+        // velocity field that deforms the element.
+        assert!(
+            dissipated_power < 0.0,
+            "stiffness damping must dissipate: power {dissipated_power:e}"
+        );
+        assert!(
+            (dissipated_power - expected_power).abs() < 1e-5 * expected_power.abs(),
+            "power {dissipated_power:e} vs {expected_power:e}"
+        );
+    }
+
+    // Anti-damping made vibrations grow; with the right sign the mechanical energy
+    // of a vibrating tetrahedron decays faster the larger beta_r is.
+    #[test]
+    fn rayleigh_beta_dissipates_vibration_energy() {
+        let run = |beta_r: f64| {
+            let mut sim = deformed_moving_sim(beta_r);
+            sim.pin_node(0);
+            for _ in 0..3000 {
+                sim.step();
+            }
+            sim.total_mechanical_energy()
+        };
+        let undamped = run(0.0);
+        let light = run(0.002);
+        let heavy = run(0.01);
+        assert!(
+            heavy < light && light < undamped,
+            "energy must decay monotonically with beta_r: {undamped:e}, {light:e}, {heavy:e}"
+        );
+        assert!(
+            heavy < 0.5 * undamped,
+            "beta_r = 0.01 must remove at least half the energy: {undamped:e} -> {heavy:e}"
         );
     }
 }

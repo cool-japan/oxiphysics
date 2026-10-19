@@ -37,8 +37,25 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 // ─── SteeredMd ────────────────────────────────────────────────────────────────
 
-/// General steered MD probe: pulls a specific atom index with a spring moving
-/// at constant velocity along a given direction.
+/// General steered MD probe: pulls a specific atom index with a harmonic spring
+/// whose anchor moves at constant velocity along a given direction.
+///
+/// The anchor is a point in space that is independent of the pulled atom: it sits
+/// at `anchor_origin` at time `start_time` and moves as
+///
+/// ```text
+/// anchor(t) = anchor_origin + velocity · (t − start_time) · direction
+/// ```
+///
+/// The spring pulls the atom towards it with `F = k (anchor(t) − r)`, so the force
+/// is a restoring force that depends on where the atom is: an atom lagging behind
+/// the anchor by `Δ` along the pulling direction feels `k Δ`, and an atom sitting
+/// on the anchor feels nothing.
+///
+/// [`SteeredMd::new`] leaves the anchor origin unset; the first call to
+/// [`SteeredMd::apply_force`] pins it to the current position of the pulled atom
+/// and to the time of that call, so pulling starts from the atom's initial
+/// position.  [`SteeredMd::with_anchor`] places the anchor explicitly instead.
 ///
 /// Returns the incremental work done at each call to [`SteeredMd::apply_force`].
 pub struct SteeredMd {
@@ -50,6 +67,13 @@ pub struct SteeredMd {
     pub spring_constant: f64,
     /// Pulling velocity (nm ps⁻¹).
     pub velocity: f64,
+    /// Position of the anchor at `start_time` (nm); `None` until it is pinned by
+    /// the first call to [`SteeredMd::apply_force`] or set by
+    /// [`SteeredMd::with_anchor`].
+    pub anchor_origin: Option<[f64; 3]>,
+    /// Time at which the anchor is at `anchor_origin` (ps).  Meaningful once the
+    /// anchor origin is set.
+    pub start_time: f64,
     /// Cumulative time elapsed.
     pub time_elapsed: f64,
     /// Accumulated work (kJ mol⁻¹).
@@ -59,7 +83,8 @@ pub struct SteeredMd {
 impl SteeredMd {
     /// Create a new `SteeredMd` pulling atom `pulled_atom`.
     ///
-    /// `direction` is normalised automatically.
+    /// `direction` is normalised automatically.  The anchor starts at the position
+    /// the pulled atom has in the first call to [`SteeredMd::apply_force`].
     pub fn new(
         pulled_atom: usize,
         direction: [f64; 3],
@@ -71,14 +96,49 @@ impl SteeredMd {
             direction: normalise(direction),
             spring_constant,
             velocity,
+            anchor_origin: None,
+            start_time: 0.0,
             time_elapsed: 0.0,
             work_accumulated: 0.0,
         }
     }
 
+    /// Place the anchor explicitly: it is at `origin` (nm) at time `start_time`
+    /// (ps) and moves from there.
+    pub fn with_anchor(mut self, origin: [f64; 3], start_time: f64) -> Self {
+        self.anchor_origin = Some(origin);
+        self.start_time = start_time;
+        self
+    }
+
+    /// Position of the anchor at `time` for an anchor that is at `origin` at
+    /// `self.start_time`.
+    fn anchor_from(&self, origin: [f64; 3], time: f64) -> [f64; 3] {
+        let travelled = self.velocity * (time - self.start_time);
+        [
+            origin[0] + travelled * self.direction[0],
+            origin[1] + travelled * self.direction[1],
+            origin[2] + travelled * self.direction[2],
+        ]
+    }
+
+    /// Position of the anchor at `time`, or `None` while the anchor origin is
+    /// still unset (before the first call to [`SteeredMd::apply_force`]).
+    pub fn anchor_position(&self, time: f64) -> Option<[f64; 3]> {
+        self.anchor_origin
+            .map(|origin| self.anchor_from(origin, time))
+    }
+
     /// Apply the spring force to the pulled atom and return the work done this step.
     ///
-    /// Updates `forces[self.pulled_atom]` in place and returns `W = F · v · dt`.
+    /// Adds `F = k (anchor(time) − r)` to `forces[self.pulled_atom]` in place and
+    /// returns the incremental work `W = (F · direction) · v · dt` done by the
+    /// moving anchor.  The first call pins the anchor to the atom's current
+    /// position and to `time` unless the anchor was set with
+    /// [`SteeredMd::with_anchor`].
+    ///
+    /// Does nothing and returns `0.0` when `pulled_atom` is not an index of
+    /// `positions` and `forces`.
     pub fn apply_force(
         &mut self,
         positions: &[[f64; 3]],
@@ -86,25 +146,30 @@ impl SteeredMd {
         time: f64,
         dt: f64,
     ) -> f64 {
+        let (Some(&pos), Some(atom_force)) = (
+            positions.get(self.pulled_atom),
+            forces.get_mut(self.pulled_atom),
+        ) else {
+            return 0.0;
+        };
         self.time_elapsed = time;
-        let pos = positions[self.pulled_atom];
 
-        // Virtual anchor position: start (pos at t=0) + v * t * direction.
-        // For simplicity anchor starts at atom's initial position and moves.
-        let anchor = [
-            pos[0] + self.velocity * time * self.direction[0],
-            pos[1] + self.velocity * time * self.direction[1],
-            pos[2] + self.velocity * time * self.direction[2],
-        ];
-        // Spring force on atom
+        // Pulling starts where the atom is when the first force is requested.
+        let origin = *self.anchor_origin.get_or_insert_with(|| {
+            self.start_time = time;
+            pos
+        });
+        let anchor = self.anchor_from(origin, time);
+
+        // Harmonic spring between the moving anchor and the atom.
         let f = [
             self.spring_constant * (anchor[0] - pos[0]),
             self.spring_constant * (anchor[1] - pos[1]),
             self.spring_constant * (anchor[2] - pos[2]),
         ];
-        forces[self.pulled_atom][0] += f[0];
-        forces[self.pulled_atom][1] += f[1];
-        forces[self.pulled_atom][2] += f[2];
+        atom_force[0] += f[0];
+        atom_force[1] += f[1];
+        atom_force[2] += f[2];
 
         // Work = F · v * dt (scalar projection of force onto pulling direction times |v|)
         let f_proj = dot3(f, self.direction);
@@ -1149,6 +1214,9 @@ pub fn bell_evans_rupture_force(r_f: f64, k_off: f64, x_beta: f64, kt: f64) -> f
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+mod regression_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1227,12 +1295,23 @@ mod tests {
         let mut smd = SteeredMd::new(0, [1.0, 0.0, 0.0], 10.0, 1.0);
         let positions = vec![[0.0f64, 0.0, 0.0]];
         let mut forces = vec![[0.0f64; 3]];
-        // At t=1 the anchor is at x=1, atom at x=0 → spring force = 10 along x
-        let _dw = smd.apply_force(&positions, &mut forces, 1.0, 0.001);
+        // The first call (t=0) pins the anchor at the atom; at t=1 the anchor is at
+        // x=1 while the atom stays at x=0 → spring force = 10 along x.
+        smd.apply_force(&positions, &mut forces, 0.0, 0.001);
+        let dw = smd.apply_force(&positions, &mut forces, 1.0, 0.001);
         assert!(smd.work_accumulated.is_finite(), "Work should be finite");
         assert!(
-            forces[0][0] > 0.0,
-            "Force on atom x should be positive when anchor is ahead"
+            (forces[0][0] - 10.0).abs() < 1e-12,
+            "Force on atom x should be k·v·t = 10 when the anchor is 1 ahead, got {}",
+            forces[0][0]
+        );
+        assert!(
+            (dw - 10.0 * 1.0 * 0.001).abs() < 1e-15,
+            "dW = F·v·dt = 0.01, got {dw}"
+        );
+        assert!(
+            (smd.work_accumulated - dw).abs() < 1e-15,
+            "the first call (zero extension) adds no work"
         );
     }
 

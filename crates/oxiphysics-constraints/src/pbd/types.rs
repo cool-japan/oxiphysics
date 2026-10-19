@@ -1534,7 +1534,40 @@ impl PbdVolumeConstraint {
         }
     }
 }
+/// `sin θ` below which the bend plane of an [`XpbdBendingConstraint`] is
+/// undefined (the chain is straight or folded back onto itself).
+const BENDING_MIN_SIN: f64 = 1e-10;
+
+/// A unit vector perpendicular to the unit vector `u`.
+///
+/// The coordinate axis least aligned with `u` is used, so the cross product is
+/// never short and the result is deterministic.
+fn bending_perpendicular(u: [f64; 3]) -> [f64; 3] {
+    let (ax, ay, az) = (u[0].abs(), u[1].abs(), u[2].abs());
+    let axis = if ax <= ay && ax <= az {
+        [1.0, 0.0, 0.0]
+    } else if ay <= az {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let p = vec3_cross(u, axis);
+    vec3_scale(p, 1.0 / vec3_norm(p))
+}
+
 /// XPBD bending constraint between three particles p1–p2–p3.
+///
+/// The constraint keeps the angle `θ` at the hinge particle `p2`, between the
+/// edges `p1 - p2` and `p3 - p2`, at its rest value:
+///
+/// ```text
+/// C = θ - θ_rest,   θ = atan2(|ê1 × ê2|, ê1 · ê2) ∈ [0, π]
+/// ```
+///
+/// (`θ = π` is a straight chain).  The projection uses the exact gradient of
+/// `θ` (see [`angle_gradients`](Self::angle_gradients)), so it conserves linear
+/// and angular momentum and a free chain bends about its own centre of mass.
+#[derive(Debug, Clone, Copy)]
 pub struct XpbdBendingConstraint {
     /// Index of the first end particle.
     pub p1: usize,
@@ -1542,7 +1575,7 @@ pub struct XpbdBendingConstraint {
     pub p2: usize,
     /// Index of the second end particle.
     pub p3: usize,
-    /// Rest bending angle (radians).
+    /// Rest bending angle (radians), in `[0, π]`.
     pub rest_angle: f64,
     /// Compliance α.
     pub compliance: f64,
@@ -1558,45 +1591,138 @@ impl XpbdBendingConstraint {
             compliance,
         }
     }
-    /// Project the bending constraint.
-    pub fn project(&self, positions: &mut [[f64; 3]], masses: &[f64], lambda: &mut f64, dt: f64) {
-        let w1 = if masses[self.p1] > 0.0 {
-            1.0 / masses[self.p1]
-        } else {
-            0.0
-        };
-        let w2 = if masses[self.p2] > 0.0 {
-            1.0 / masses[self.p2]
-        } else {
-            0.0
-        };
-        let w3 = if masses[self.p3] > 0.0 {
-            1.0 / masses[self.p3]
-        } else {
-            0.0
-        };
+    /// Unit edge directions and lengths `(ê1, |e1|, ê2, |e2|)` with
+    /// `e1 = p1 - p2` and `e2 = p3 - p2`; `None` when an edge is shorter than
+    /// `1e-12` and the angle is undefined.
+    fn unit_edges(&self, positions: &[[f64; 3]]) -> Option<([f64; 3], f64, [f64; 3], f64)> {
         let e1 = vec3_sub(positions[self.p1], positions[self.p2]);
         let e2 = vec3_sub(positions[self.p3], positions[self.p2]);
         let len1 = vec3_norm(e1);
         let len2 = vec3_norm(e2);
         if len1 < 1e-12 || len2 < 1e-12 {
-            return;
+            return None;
         }
-        let cos_theta = (vec3_dot(e1, e2) / (len1 * len2)).clamp(-1.0, 1.0);
-        let theta = cos_theta.acos();
+        Some((
+            vec3_scale(e1, 1.0 / len1),
+            len1,
+            vec3_scale(e2, 1.0 / len2),
+            len2,
+        ))
+    }
+    /// The bending angle `θ ∈ [0, π]` at the hinge particle.
+    ///
+    /// It is evaluated as `atan2(|ê1 × ê2|, ê1 · ê2)`, which stays accurate down
+    /// to rounding level next to `0` and `π` where `acos` loses half of its
+    /// digits.  A degenerate edge (shorter than `1e-12`) has no angle; the rest
+    /// angle is returned so that the constraint is satisfied.
+    pub fn compute_angle(&self, positions: &[[f64; 3]]) -> f64 {
+        match self.unit_edges(positions) {
+            Some((u1, _, u2, _)) => vec3_norm(vec3_cross(u1, u2)).atan2(vec3_dot(u1, u2)),
+            None => self.rest_angle,
+        }
+    }
+    /// Gradient of `θ` for unit edges `u1`, `u2` of lengths `len1`, `len2`:
+    /// `([∂θ/∂p1, ∂θ/∂p2, ∂θ/∂p3], well_conditioned)`.
+    ///
+    /// With `θ = acos(ê1 · ê2)` and `s = sin θ`:
+    ///
+    /// ```text
+    /// ∂θ/∂p1 = -(ê2 - cosθ ê1) / (|e1| s)
+    /// ∂θ/∂p3 = -(ê1 - cosθ ê2) / (|e2| s)
+    /// ∂θ/∂p2 = -(∂θ/∂p1 + ∂θ/∂p3)
+    /// ```
+    ///
+    /// Each end particle moves the angle perpendicular to its own edge, so
+    /// `|∂θ/∂p1| = 1/|e1|` and `|∂θ/∂p3| = 1/|e2|`.  When `s` is below
+    /// [`BENDING_MIN_SIN`] the chain is straight (`cosθ < 0`) or folded back
+    /// (`cosθ > 0`), the plane of the bend is undefined and the gradient is
+    /// built for an arbitrary axis perpendicular to the chain (flag `false`).
+    fn hinge_gradients(u1: [f64; 3], len1: f64, u2: [f64; 3], len2: f64) -> ([[f64; 3]; 3], bool) {
+        let sin_theta = vec3_norm(vec3_cross(u1, u2));
+        let cos_theta = vec3_dot(u1, u2);
+        let (g1, g3, well_conditioned) = if sin_theta >= BENDING_MIN_SIN {
+            let perp1 = vec3_sub(u2, vec3_scale(u1, cos_theta));
+            let perp3 = vec3_sub(u1, vec3_scale(u2, cos_theta));
+            (
+                vec3_scale(perp1, -1.0 / (len1 * sin_theta)),
+                vec3_scale(perp3, -1.0 / (len2 * sin_theta)),
+                true,
+            )
+        } else {
+            let axis = bending_perpendicular(u1);
+            let orientation = if cos_theta < 0.0 { -1.0 } else { 1.0 };
+            (
+                vec3_scale(axis, -1.0 / len1),
+                vec3_scale(axis, orientation / len2),
+                false,
+            )
+        };
+        let g2 = vec3_scale(vec3_add(g1, g3), -1.0);
+        ([g1, g2, g3], well_conditioned)
+    }
+    /// Analytic gradient of the bending angle with respect to the three particle
+    /// positions, `[∂θ/∂p1, ∂θ/∂p2, ∂θ/∂p3]`.
+    ///
+    /// The gradients sum to zero (translation invariance) and are torque free
+    /// (rotation invariance).  Returns `None` when an edge is shorter than
+    /// `1e-12` or `sin θ < 1e-10` (a straight or folded chain), where the angle
+    /// is not differentiable.
+    pub fn angle_gradients(&self, positions: &[[f64; 3]]) -> Option<[[f64; 3]; 3]> {
+        let (u1, len1, u2, len2) = self.unit_edges(positions)?;
+        let (gradients, well_conditioned) = Self::hinge_gradients(u1, len1, u2, len2);
+        well_conditioned.then_some(gradients)
+    }
+    /// Project the bending constraint for one XPBD sub-step.
+    ///
+    /// Enforces `C = θ - θ_rest = 0` with the exact angle gradient:
+    ///
+    /// ```text
+    /// Δλ  = (-C - α̃ λ) / (Σ w_i |∇θ_i|² + α̃),   α̃ = α / dt²
+    /// p_i += w_i ∇θ_i Δλ
+    /// ```
+    ///
+    /// `masses` holds the particle masses; a mass that is not positive pins the
+    /// particle.  The correction conserves linear and angular momentum.  A
+    /// straight or folded chain has no defined bend plane: if it already
+    /// satisfies the constraint to within `1e-10` rad nothing happens, otherwise
+    /// it is bent about an arbitrary axis perpendicular to the chain.  A time
+    /// step below `1e-15` treats the constraint as rigid (`α̃ = 0`).
+    pub fn project(&self, positions: &mut [[f64; 3]], masses: &[f64], lambda: &mut f64, dt: f64) {
+        let Some((u1, len1, u2, len2)) = self.unit_edges(positions) else {
+            return;
+        };
+        let theta = vec3_norm(vec3_cross(u1, u2)).atan2(vec3_dot(u1, u2));
         let c = theta - self.rest_angle;
-        let w_sum = w1 + w2 + w3;
-        if w_sum < 1e-30 {
+        let (gradients, well_conditioned) = Self::hinge_gradients(u1, len1, u2, len2);
+        if !well_conditioned && c.abs() <= BENDING_MIN_SIN {
             return;
         }
-        let alpha_tilde = self.compliance / (dt * dt);
-        let d_lambda = -(c + alpha_tilde * *lambda) / (w_sum + alpha_tilde);
+        let particles = [self.p1, self.p2, self.p3];
+        let inv_masses = particles.map(|i| {
+            if masses[i] > 0.0 {
+                1.0 / masses[i]
+            } else {
+                0.0
+            }
+        });
+        let denom: f64 = inv_masses
+            .iter()
+            .zip(gradients.iter())
+            .map(|(&w, g)| w * vec3_dot(*g, *g))
+            .sum();
+        if denom < 1e-30 {
+            return;
+        }
+        let alpha_tilde = pbd2_alpha_tilde(self.compliance, dt);
+        let d_lambda = -(c + alpha_tilde * *lambda) / (denom + alpha_tilde);
         *lambda += d_lambda;
-        let grad = vec3_scale(vec3_sub(e1, e2), d_lambda / (len1 * len2 + 1e-12));
-        positions[self.p1] = vec3_add(positions[self.p1], vec3_scale(grad, w1));
-        positions[self.p3] = vec3_add(positions[self.p3], vec3_scale(grad, w3));
-        let opp = vec3_scale(grad, -(w1 + w3));
-        positions[self.p2] = vec3_add(positions[self.p2], vec3_scale(opp, w2));
+        for ((&idx, &w), g) in particles
+            .iter()
+            .zip(inv_masses.iter())
+            .zip(gradients.iter())
+        {
+            positions[idx] = vec3_add(positions[idx], vec3_scale(*g, w * d_lambda));
+        }
     }
 }
 /// A PBD sub-step solver that runs multiple sub-steps per frame.

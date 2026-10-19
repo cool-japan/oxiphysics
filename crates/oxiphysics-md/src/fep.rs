@@ -6,10 +6,29 @@
 //! Implements alchemical free energy calculations via:
 //! - **Thermodynamic Integration (TI)**: numerical integration of <dU/dλ>
 //! - **Exponential Averaging** (Zwanzig equation): -kBT ln<exp(-βΔU)>_A
-//! - **Bennett Acceptance Ratio (BAR)**: self-consistent estimator using samples from both states
+//! - **Bennett Acceptance Ratio (BAR)**: optimal estimator from samples of both
+//!   states, solved exactly (see [`Bar`])
+//! - **Multistate BAR (MBAR)** with a leave-one-out jackknife and an analytic
+//!   asymptotic-covariance error estimate (see [`Mbar`],
+//!   [`mbar_jackknife_uncertainty`] and [`mbar_analytic_uncertainty`])
+
+mod bar_solver;
+mod numerics;
+
+#[cfg(test)]
+mod bar_tests;
+#[cfg(test)]
+mod mbar_tests;
+
+use bar_solver::bar_reduced_free_energy;
+use numerics::log_sum_exp;
 
 /// Boltzmann constant in J/K.
 const KB_J: f64 = 1.380_649e-23;
+
+/// Largest change of any `f_k` (in kT) between two MBAR sweeps that counts as
+/// converged.
+const MBAR_TOLERANCE: f64 = 1.0e-10;
 
 // ─── AlchemicalState ─────────────────────────────────────────────────────────
 
@@ -223,10 +242,17 @@ impl ExponentialAveraging {
 
 /// Bennett Acceptance Ratio (BAR) estimator.
 ///
-/// Uses samples of ΔU from both endpoints to produce a more efficient
-/// estimate of ΔF than the one-sided Zwanzig equation.  The simplified
-/// implementation here iterates the BAR self-consistency equation; it falls
-/// back to the Zwanzig estimate when one side is empty.
+/// Uses samples of ΔU = U_B − U_A from both end states to produce the minimum
+/// variance estimate of ΔF = F_B − F_A (Bennett, J. Comput. Phys. 22, 245
+/// (1976)); it is far more efficient than the one-sided Zwanzig equation.
+///
+/// `beta` and the samples must use one energy unit: [`Bar::new`] takes the
+/// temperature in kelvin and sets `β = 1 / (k_B T)` in J⁻¹, so the samples are
+/// expected in joules per sample configuration and ΔF is returned in joules.
+/// (For energies in any other unit, or in units of kT, set the public `beta`
+/// field to the matching inverse energy, e.g. `1.0` for kT.)
+/// With one side empty the estimate falls back to the Zwanzig (exponential
+/// averaging) formula of the available side.
 pub struct Bar {
     /// Inverse thermal energy β = 1 / (k_B T).
     pub beta: f64,
@@ -257,88 +283,32 @@ impl Bar {
         self.samples_b.push(delta_u);
     }
 
-    /// BAR free energy estimate.
+    /// BAR free energy estimate ΔF = F_B − F_A, in the energy unit of the samples.
     ///
-    /// Uses a simplified iterative solver.  When only one side has samples,
-    /// falls back to the Zwanzig (exponential averaging) formula.
+    /// With `w = β ΔU`, `n_A` samples `w_i` from state A, `n_B` samples `w_j` from
+    /// state B, `M = ln(n_A / n_B)` and the Fermi function `f(y) = 1 / (1 + eʸ)`,
+    /// Bennett's optimal estimator `x = β ΔF` solves
     ///
-    /// The BAR equation in the equal-sample-size limit reduces to:
-    ///   C = (1/β) · ln(n_A / n_B) + ΔF
-    /// with the self-consistent solution obtained by iterating:
-    ///   ΔF_{k+1} = (1/β) · ln \[ Σ_B f(β(ΔU_B − C)) / Σ_A f(β(ΔU_A − C)) \]
-    /// where f(x) = 1 / (1 + exp(x)) (Fermi function), C = ΔF.
+    /// ```text
+    ///   Σ_A f(w_i − C) = Σ_B f(C − w_j),        C = x − M.
+    /// ```
+    ///
+    /// The left side increases and the right side decreases with `C`, so the
+    /// root is unique.  It is found by a bracketed Newton iteration on the
+    /// logarithms of the two sums (log-sum-exp form, accurate to a relative
+    /// 1e-13 in `C`), which is exact for any overlap between the states and
+    /// immune to overflow even for joule-valued energies (`β ΔU ~ 10²⁰`).
+    ///
+    /// When only one side has samples the estimate is the Zwanzig formula
+    /// `−ln ⟨e^{−w}⟩_A / β` or `ln ⟨e^{w}⟩_B / β`; without any sample it is `0`.
+    /// Infinite samples are allowed where they carry zero weight.  The result is
+    /// NaN if a sample is NaN or the two states do not overlap at all, and
+    /// meaningless unless `beta` is positive and finite (a zero or infinite
+    /// temperature).
     pub fn delta_f_estimate(&self) -> f64 {
-        let n_a = self.samples_a.len();
-        let n_b = self.samples_b.len();
-
-        // Fallback: use Zwanzig when one side is empty
-        if n_b == 0 {
-            if n_a == 0 {
-                return 0.0;
-            }
-            let avg_exp: f64 = self
-                .samples_a
-                .iter()
-                .map(|&du| (-self.beta * du).exp())
-                .sum::<f64>()
-                / n_a as f64;
-            return if avg_exp <= 0.0 {
-                f64::INFINITY
-            } else {
-                -avg_exp.ln() / self.beta
-            };
-        }
-        if n_a == 0 {
-            let avg_exp: f64 = self
-                .samples_b
-                .iter()
-                .map(|&du| (self.beta * du).exp())
-                .sum::<f64>()
-                / n_b as f64;
-            return if avg_exp <= 0.0 {
-                f64::NEG_INFINITY
-            } else {
-                avg_exp.ln() / self.beta
-            };
-        }
-
-        // Fermi / logistic function for numerical stability
-        let fermi = |x: f64| -> f64 { 1.0 / (1.0 + x.exp()) };
-
-        // Iterate BAR self-consistency equation
-        let mut df = 0.0_f64;
-        let ln_ratio = ((n_a as f64) / (n_b as f64)).ln() / self.beta;
-
-        for _ in 0..1000 {
-            let c = df - ln_ratio * self.beta; // dimensionless shift
-
-            let num: f64 = self
-                .samples_b
-                .iter()
-                .map(|&du| fermi(self.beta * du - c))
-                .sum::<f64>();
-
-            let den: f64 = self
-                .samples_a
-                .iter()
-                .map(|&du| fermi(-self.beta * du + c))
-                .sum::<f64>();
-
-            if den.abs() < 1e-300 {
-                break;
-            }
-
-            let df_new =
-                (num / den).ln() / self.beta + ((n_a as f64) / (n_b as f64)).ln() / self.beta;
-
-            if (df_new - df).abs() < 1e-10 {
-                df = df_new;
-                break;
-            }
-            df = df_new;
-        }
-
-        df
+        let reduced =
+            |samples: &[f64]| -> Vec<f64> { samples.iter().map(|&du| self.beta * du).collect() };
+        bar_reduced_free_energy(&reduced(&self.samples_a), &reduced(&self.samples_b)) / self.beta
     }
 }
 
@@ -361,6 +331,13 @@ pub struct Mbar {
     pub u_kn: Vec<Vec<f64>>,
     /// Number of samples from each state.
     pub n_k: Vec<usize>,
+    /// State each sample `n` (a column of `u_kn`) was drawn from.
+    ///
+    /// Recorded by [`Mbar::add_sample`].  Leave-one-out resampling
+    /// ([`mbar_jackknife_uncertainty`]) needs it to give every remaining sample
+    /// back to the state it came from; keep it consistent with `n_k` when the
+    /// public fields are edited directly.
+    pub sampled_from: Vec<usize>,
 }
 
 impl Mbar {
@@ -375,84 +352,176 @@ impl Mbar {
             beta: 1.0 / (KB_J * temperature),
             u_kn: vec![Vec::new(); n_states],
             n_k: vec![0; n_states],
+            sampled_from: Vec::new(),
         }
     }
 
-    /// Add a sample: the reduced potential of state `state_k` evaluated
-    /// at configuration `x_n` (which was sampled from state `sampled_from`).
+    /// Add a sample: the configuration `x_n` was drawn from state
+    /// `sampled_from`, and `u_values[k]` is the reduced potential `u_k(x_n)` of
+    /// every state `k` evaluated at it.
     ///
-    /// For simplicity, this stores u_k(x_n) for all k for each sample.
-    /// `u_values` should have length `n_states`.
+    /// `u_values` must have length `n_states` and `sampled_from` must be a valid
+    /// state index.
+    ///
+    /// # Panics
+    /// Panics, before anything is stored, if `u_values.len() != n_states` or
+    /// `sampled_from >= n_states`.
     pub fn add_sample(&mut self, sampled_from: usize, u_values: &[f64]) {
         assert_eq!(u_values.len(), self.n_states);
+        self.n_k[sampled_from] += 1;
+        self.sampled_from.push(sampled_from);
         for (k, &u) in u_values.iter().enumerate() {
             self.u_kn[k].push(u);
         }
-        self.n_k[sampled_from] += 1;
+    }
+
+    /// Number of stored samples (columns of `u_kn`).
+    pub fn n_samples(&self) -> usize {
+        if self.u_kn.len() < self.n_states {
+            return 0;
+        }
+        self.u_kn
+            .iter()
+            .take(self.n_states)
+            .map(Vec::len)
+            .min()
+            .unwrap_or(0)
+    }
+
+    /// Whether `u_kn`, `n_k` and `sampled_from` describe the same samples.
+    fn is_consistent(&self) -> bool {
+        let n_samples = self.n_samples();
+        if self.u_kn.len() != self.n_states
+            || self.n_k.len() != self.n_states
+            || self.sampled_from.len() != n_samples
+            || self.u_kn.iter().any(|row| row.len() != n_samples)
+        {
+            return false;
+        }
+        let mut counts = vec![0_usize; self.n_states];
+        for &state in &self.sampled_from {
+            match counts.get_mut(state) {
+                Some(count) => *count += 1,
+                None => return false,
+            }
+        }
+        counts == self.n_k
     }
 
     /// Estimate free energies using MBAR self-consistency iteration.
     ///
     /// Returns a vector of `n_states` free energies (f_k), with f_0 = 0.
     pub fn estimate_free_energies(&self, max_iter: usize) -> Vec<f64> {
+        self.estimate_free_energies_from(&vec![0.0; self.n_states], max_iter)
+    }
+
+    /// Like [`Mbar::estimate_free_energies`], starting the self-consistency
+    /// iteration from `f_init` instead of zero (a good guess, such as the
+    /// solution of a nearly identical data set, converges in a few sweeps).
+    ///
+    /// Missing entries of `f_init` count as zero and surplus entries are
+    /// ignored; the gauge `f_0 = 0` is imposed on the start as well as on the
+    /// result.  At most `max_iter` sweeps are done; the iteration stops earlier
+    /// once no `f_k` changes by more than `1e-10`.
+    pub fn estimate_free_energies_from(&self, f_init: &[f64], max_iter: usize) -> Vec<f64> {
+        self.solve_free_energies(None, f_init, max_iter)
+    }
+
+    /// MBAR iteration over all samples except `excluded` (a sample index).
+    ///
+    /// The excluded sample is removed from the count `N_k` of the state it was
+    /// drawn from, exactly as if it had never been added.  Each sweep costs
+    /// `O(K N)`: the log-denominators `ln Σ_l N_l exp(f_l − u_ln)` are computed
+    /// once per sample and shared by all `K` updates
+    /// `f_k = −ln Σ_n exp(−u_kn − ln D_n)`.
+    fn solve_free_energies(
+        &self,
+        excluded: Option<usize>,
+        f_init: &[f64],
+        max_iter: usize,
+    ) -> Vec<f64> {
         let k_states = self.n_states;
         if k_states == 0 {
-            return vec![];
+            return Vec::new();
         }
-        let n_total = self.u_kn[0].len();
-        if n_total == 0 {
+        let n_total = self.n_samples();
+        let is_active = |n: usize| Some(n) != excluded;
+        let n_active = (0..n_total).filter(|&n| is_active(n)).count();
+        if n_active == 0 {
             return vec![0.0; k_states];
         }
 
-        let mut f_k = vec![0.0f64; k_states];
-
-        for _ in 0..max_iter {
-            let mut f_new = vec![0.0f64; k_states];
-
-            for (k, f_new_k) in f_new.iter_mut().enumerate() {
-                // f_k = -ln( sum_n [ exp(-u_kn) / sum_l N_l exp(f_l - u_ln) ] )
-                let mut sum = 0.0f64;
-                for n in 0..n_total {
-                    let u_k_n = self.u_kn[k][n];
-
-                    // Compute log denominator for numerical stability
-                    let mut max_arg = f64::NEG_INFINITY;
-                    for (l, &fkl) in f_k.iter().enumerate().take(k_states) {
-                        let arg = fkl - self.u_kn[l][n];
-                        if arg > max_arg {
-                            max_arg = arg;
-                        }
-                    }
-                    let denom: f64 = (0..k_states)
-                        .map(|l| self.n_k[l] as f64 * (f_k[l] - self.u_kn[l][n] - max_arg).exp())
-                        .sum();
-                    let log_denom = max_arg + denom.ln();
-
-                    sum += (-u_k_n - log_denom).exp();
+        let mut counts: Vec<usize> = (0..k_states)
+            .map(|k| self.n_k.get(k).copied().unwrap_or(0))
+            .collect();
+        if let Some(count) = excluded
+            .and_then(|n| self.sampled_from.get(n))
+            .and_then(|&state| counts.get_mut(state))
+        {
+            *count = count.saturating_sub(1);
+        }
+        let ln_counts: Vec<f64> = counts
+            .iter()
+            .map(|&n| {
+                if n > 0 {
+                    (n as f64).ln()
+                } else {
+                    f64::NEG_INFINITY
                 }
-                *f_new_k = if sum > 0.0 { -sum.ln() } else { 0.0 };
+            })
+            .collect();
+
+        let mut f: Vec<f64> = (0..k_states)
+            .map(|k| f_init.get(k).copied().unwrap_or(0.0))
+            .collect();
+        let gauge = f[0];
+        for value in &mut f {
+            *value -= gauge;
+        }
+
+        let mut ln_denominator = vec![0.0_f64; n_total];
+        for _ in 0..max_iter {
+            for n in (0..n_total).filter(|&n| is_active(n)) {
+                ln_denominator[n] =
+                    log_sum_exp((0..k_states).map(|l| ln_counts[l] + f[l] - self.u_kn[l][n]));
+            }
+            // NaN or +inf means a NaN reduced potential: no valid estimate.  A
+            // -inf denominator is a sample that no sampled state can produce; it
+            // has zero weight and is skipped.
+            if (0..n_total).any(|n| {
+                is_active(n) && (ln_denominator[n].is_nan() || ln_denominator[n] == f64::INFINITY)
+            }) {
+                return vec![f64::NAN; k_states];
             }
 
-            // Normalize so f_0 = 0
-            let f0 = f_new[0];
-            for fk in &mut f_new {
-                *fk -= f0;
+            let mut f_new: Vec<f64> = (0..k_states)
+                .map(|k| {
+                    let ln_sum = log_sum_exp(
+                        (0..n_total)
+                            .filter(|&n| is_active(n) && ln_denominator[n].is_finite())
+                            .map(|n| -self.u_kn[k][n] - ln_denominator[n]),
+                    );
+                    if ln_sum.is_finite() { -ln_sum } else { 0.0 }
+                })
+                .collect();
+
+            // Normalise so f_0 = 0.
+            let gauge = f_new[0];
+            for value in &mut f_new {
+                *value -= gauge;
             }
 
-            // Check convergence
-            let delta: f64 = f_new
+            let change = f_new
                 .iter()
-                .zip(f_k.iter())
-                .map(|(a, b)| (a - b).abs())
+                .zip(&f)
+                .map(|(new, old)| (new - old).abs())
                 .fold(0.0_f64, f64::max);
-
-            f_k = f_new;
-            if delta < 1e-10 {
+            f = f_new;
+            if change < MBAR_TOLERANCE {
                 break;
             }
         }
-
-        f_k
+        f
     }
 }
 
@@ -636,53 +705,118 @@ impl AlchemicalSchedule {
 
 // ─── MBAR with uncertainty estimation ────────────────────────────────────────
 
-/// MBAR free energy uncertainty estimate via bootstrap-like analysis.
+/// Standard errors of the MBAR free energies from a leave-one-out jackknife.
 ///
-/// Computes per-state free-energy uncertainties by jackknife resampling
-/// of the sample rows.
+/// Each of the `N` stored samples is removed in turn, handing the remaining
+/// `N − 1` samples back to the states they were drawn from (so `N_k` drops by
+/// one for the state of the removed sample; see [`Mbar::sampled_from`]), and the
+/// MBAR equations are re-solved warm-started from the full-data solution.  With
+/// `f_{(−s),k}` the free energy of state `k` without sample `s` and `f̄_k` the
+/// mean of these `N` replicates, the jackknife standard error is
+///
+/// ```text
+///   σ_k = sqrt( (N − 1)/N · Σ_s (f_{(−s),k} − f̄_k)² ).
+/// ```
+///
+/// The free energies are measured from state 0 (`f_0 = 0`), so `σ_0 = 0` and
+/// `σ_k` is the uncertainty of `f_k − f_0`, in units of kT like `f`.
+///
+/// `max_iter` bounds the self-consistency sweeps of every one of the `N + 1`
+/// solves; the replicate solves start next to their solution and converge in a
+/// few sweeps.  The cost is `O(N² K)` per sweep of all replicates, so thin long
+/// trajectories to their independent samples (a few thousand) first, or use
+/// [`mbar_analytic_uncertainty`], which avoids the quadratic cost.  The
+/// jackknife also assumes the samples are statistically independent and
+/// understates the error of correlated MD frames.
+///
+/// Every entry is NaN when the jackknife is undefined: fewer than two samples,
+/// `max_iter == 0` (no solve is performed, so there is no spread to measure),
+/// or `sampled_from`, `n_k` and `u_kn` of `mbar` disagree.  An empty vector is
+/// returned for an estimator without states.
 pub fn mbar_jackknife_uncertainty(mbar: &Mbar, max_iter: usize) -> Vec<f64> {
-    let n_total = if mbar.n_states > 0 {
-        mbar.u_kn[0].len()
-    } else {
-        0
-    };
-    if n_total < 2 {
-        return vec![0.0; mbar.n_states];
+    let k_states = mbar.n_states;
+    if k_states == 0 {
+        return Vec::new();
+    }
+    let n_total = mbar.n_samples();
+    if n_total < 2 || max_iter == 0 || !mbar.is_consistent() {
+        return vec![f64::NAN; k_states];
     }
 
     let f_full = mbar.estimate_free_energies(max_iter);
-    let n = n_total as f64;
 
-    // Jackknife: leave one sample out, recompute free energies
-    let mut sum_sq = vec![0.0f64; mbar.n_states];
+    // Streaming mean and sum of squared deviations (Welford) over the replicates.
+    let mut mean = vec![0.0_f64; k_states];
+    let mut sum_sq = vec![0.0_f64; k_states];
     for leave_out in 0..n_total {
-        // Build a sub-Mbar without sample `leave_out`
-        let mut sub = Mbar::new(mbar.n_states, 1.0 / (KB_J * mbar.beta));
-        for (k_state, n_k) in mbar.n_k.iter().enumerate() {
-            // re-attribute samples (approximate: treat sampled-from as k_state)
-            for s in 0..n_total {
-                if s == leave_out {
-                    continue;
-                }
-                let u_vals: Vec<f64> = (0..mbar.n_states).map(|k| mbar.u_kn[k][s]).collect();
-                // Assign this sample to state k_state if within its quota
-                let _ = k_state;
-                let _ = n_k;
-                sub.add_sample(0, &u_vals);
-                break; // one per leave_out just to avoid re-counting — simplified
-            }
-        }
-        let f_lo = sub.estimate_free_energies(max_iter.min(50));
-        for k in 0..mbar.n_states {
-            let diff = f_lo[k] - f_full[k];
-            sum_sq[k] += diff * diff;
+        let f_leave_out = mbar.solve_free_energies(Some(leave_out), &f_full, max_iter);
+        let seen = (leave_out + 1) as f64;
+        for ((mean_k, sum_sq_k), &f_k) in mean.iter_mut().zip(sum_sq.iter_mut()).zip(&f_leave_out) {
+            let delta = f_k - *mean_k;
+            *mean_k += delta / seen;
+            *sum_sq_k += delta * (f_k - *mean_k);
         }
     }
 
-    // Jackknife variance: (n-1)/n * Σ(f_lo - f_full)²
+    let n = n_total as f64;
     sum_sq
         .iter()
         .map(|&ss| ((n - 1.0) / n * ss).sqrt())
+        .collect()
+}
+
+/// Asymptotic standard errors of the MBAR free energies from the analytic
+/// covariance of Shirts & Chodera, J. Chem. Phys. 129, 124105 (2008),
+/// Appendix D.
+///
+/// The free energies are solved with at most `max_iter` sweeps of
+/// [`Mbar::estimate_free_energies`] and the asymptotic covariance of that
+/// solution is evaluated by [`crate::free_energy::mbar_df_uncertainty`].  Entry
+/// `k` of the result is `σ_k = sqrt(Var(f_k − f_0))`, the standard error of the
+/// free energy of state `k` measured from state 0, in units of kT like `f`
+/// (so `σ_0 = 0`).
+///
+/// Each `σ_k` costs one pass over the `N` samples (`O(N K²)`) plus `K × K`
+/// eigendecompositions, against `O(N² K)` per sweep for the leave-one-out
+/// jackknife [`mbar_jackknife_uncertainty`], which makes the analytic estimate
+/// the one to use for long data sets.  The formula describes the converged
+/// solution (give `max_iter` generously) and, like the jackknife, assumes
+/// statistically independent samples: it understates the error of correlated
+/// MD frames.
+///
+/// An estimator without states gives an empty vector.
+///
+/// # Errors
+/// Returns a [`crate::MdError`] if `max_iter` is zero (no solve is performed),
+/// the estimator holds no sample, `sampled_from`, `n_k` and `u_kn` of `mbar`
+/// disagree, or the free energies are not finite (a NaN reduced potential).
+pub fn mbar_analytic_uncertainty(mbar: &Mbar, max_iter: usize) -> Result<Vec<f64>, crate::MdError> {
+    let k_states = mbar.n_states;
+    if k_states == 0 {
+        return Ok(Vec::new());
+    }
+    if max_iter == 0 {
+        return Err(crate::MdError::General(
+            "mbar_analytic_uncertainty: max_iter must be at least 1".to_string(),
+        ));
+    }
+    if mbar.n_samples() == 0 {
+        return Err(crate::MdError::General(
+            "mbar_analytic_uncertainty: the estimator holds no sample".to_string(),
+        ));
+    }
+    if !mbar.is_consistent() {
+        return Err(crate::MdError::General(
+            "mbar_analytic_uncertainty: u_kn, n_k and sampled_from of the estimator disagree"
+                .to_string(),
+        ));
+    }
+
+    let f = mbar.estimate_free_energies(max_iter);
+    (0..k_states)
+        .map(|k| {
+            crate::free_energy::mbar_df_uncertainty(&mbar.u_kn, &mbar.n_k, &f, 0, k).map(f64::sqrt)
+        })
         .collect()
 }
 
@@ -1017,21 +1151,6 @@ mod tests {
         assert!(
             df.abs() < 1e-12,
             "ExponentialAveraging with all ΔU=0 should give ΔF=0, got {df}"
-        );
-    }
-
-    #[test]
-    fn test_bar_symmetric() {
-        // Symmetric ΔU from both states (equal magnitude, equal count) → ΔF ≈ 0
-        let mut bar = Bar::new(300.0);
-        for du in [1.0_f64, -1.0, 2.0, -2.0] {
-            bar.add_sample_a(du);
-            bar.add_sample_b(-du);
-        }
-        let df = bar.delta_f_estimate();
-        assert!(
-            df.abs() < 1e-6,
-            "BAR with symmetric samples should give ΔF≈0, got {df}"
         );
     }
 
@@ -1383,30 +1502,6 @@ mod tests {
         }
         let (_mean, se) = exp_averaging_bootstrap(&ea, 100);
         assert!(se >= 0.0, "Bootstrap SE should be non-negative");
-    }
-
-    // --- mbar_jackknife_uncertainty tests ---
-
-    #[test]
-    fn test_mbar_jackknife_returns_correct_length() {
-        let mut mbar = Mbar::new(2, 300.0);
-        for _ in 0..10 {
-            mbar.add_sample(0, &[1e-20, 1e-20]);
-        }
-        let unc = mbar_jackknife_uncertainty(&mbar, 50);
-        assert_eq!(unc.len(), 2, "Should return uncertainty for each state");
-    }
-
-    #[test]
-    fn test_mbar_jackknife_non_negative() {
-        let mut mbar = Mbar::new(3, 300.0);
-        for _ in 0..5 {
-            mbar.add_sample(0, &[1e-20, 2e-20, 3e-20]);
-        }
-        let unc = mbar_jackknife_uncertainty(&mbar, 20);
-        for (i, &u) in unc.iter().enumerate() {
-            assert!(u >= 0.0, "Uncertainty[{i}] should be non-negative, got {u}");
-        }
     }
 
     // ── B5: ThermodynamicIntegration variance / uncertainty tests ─────────────

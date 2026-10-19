@@ -3,9 +3,10 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::types::{
-    ContactResult, EnhBox, EnhSimplex, EnhSphere, EpaEnhancedResult, EpaFaceE, GjkMetrics,
-    GjkResult, SupportCache, SupportPoint, ToiResult, TranslatedShape, WarmStartCache,
+    ContactResult, EnhBox, EnhSimplex, EnhSphere, EpaEnhancedResult, GjkMetrics, GjkResult,
+    SupportCache, SupportPoint, ToiResult, TranslatedShape, WarmStartCache,
 };
+use crate::gjk_epa::{SupportPoint as EpaPoint, complete_tetrahedron, expand_polytope};
 
 /// Add two 3-vectors.
 #[inline]
@@ -145,7 +146,13 @@ pub fn johnson_tetrahedron(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -
         let to_origin = vdot(n, vneg(p));
         to_apex * to_origin >= 0.0
     };
-    if inside(a, b, c, d) && inside(a, b, d, c) && inside(a, c, d, b) && inside(b, c, d, a) {
+    // A flat tetrahedron has no interior: every apex lies in the plane of the
+    // opposite face, so the sign tests would pass for any origin.
+    let edge = vlen(vsub(b, a)).max(vlen(vsub(c, a))).max(vlen(vsub(d, a)));
+    let volume = vdot(vcross(vsub(b, a), vsub(c, a)), vsub(d, a)).abs();
+    let flat = volume.is_nan() || volume <= 1e-12 * edge * edge * edge;
+    if !flat && inside(a, b, c, d) && inside(a, b, d, c) && inside(a, c, d, b) && inside(b, c, d, a)
+    {
         return ([0.0; 3], true);
     }
     let faces = [(a, b, c), (a, b, d), (a, c, d), (b, c, d)];
@@ -195,12 +202,19 @@ pub(super) struct GjkCore {
 
 /// Enhanced GJK algorithm with warm starting.
 ///
-/// Accepts an optional `WarmStartCache` from the previous frame.
-/// Returns a `GjkResult` and optionally updates the cache.
+/// Accepts an optional `WarmStartCache` from the previous frame. A valid cache
+/// seeds the first search direction with its cached separating axis; the
+/// search always starts from an empty simplex, because the cached vertices
+/// belong to the previous configuration of the shapes. The cache itself is not
+/// modified: call [`WarmStartCache::update`] with the returned simplex.
 ///
 /// For separated shapes the iteration runs until the distance has converged,
 /// so [`GjkResult::distance`] is the true distance (to within roughly
-/// `1e-9 * (1 + distance)`), not merely an upper bound.
+/// `1e-9 * (1 + distance)`), not merely an upper bound. If `max_iter`
+/// iterations are not enough, the best simplex found so far is reported and its
+/// distance is an upper bound of the true distance (for shapes that overlap it
+/// can therefore be positive). At least one iteration is always performed, so
+/// the result never describes an empty simplex.
 pub fn gjk_enhanced(
     shape_a: &dyn ConvexShape,
     shape_b: &dyn ConvexShape,
@@ -219,14 +233,37 @@ pub(super) fn gjk_enhanced_core(
     max_iter: u32,
 ) -> GjkCore {
     let mut metrics = GjkMetrics::new();
-    let mut simplex = EnhSimplex::new();
-    let mut dir = if let Some(c) = cache.filter(|c| c.valid) {
-        metrics.warm_started = true;
-        simplex = EnhSimplex::from_cache(c);
-        c.direction
-    } else {
-        vsub(shape_b.centre(), shape_a.centre())
+    // A warm start seeds the search direction only. The cached vertices belong to
+    // the previous configuration of the shapes: starting from them would measure
+    // a stale Minkowski difference, and a cached intersection (four vertices)
+    // plus the first new support point is no simplex at all.
+    let warm_direction = cache
+        .filter(|c| c.valid)
+        .map(|c| c.direction)
+        .filter(|d| d.iter().all(|x| x.is_finite()) && vlen_sq(*d) > 1e-18);
+    metrics.warm_started = warm_direction.is_some();
+    let dir = warm_direction.unwrap_or_else(|| vsub(shape_b.centre(), shape_a.centre()));
+    let mut support = |counter: &mut GjkMetrics, d: [f64; 3]| {
+        counter.support_calls += 2;
+        let sa = shape_a.support(d);
+        let sb = shape_b.support(vneg(d));
+        SupportPoint::new(vsub(sa, sb), sa, sb)
     };
+    gjk_iterate(dir, max_iter, metrics, &mut support)
+}
+/// The GJK distance iteration over a support oracle.
+///
+/// `dir` is the first search direction (a zero or non-finite vector falls back
+/// to `+x`); `support(metrics, d)` returns the support point of the Minkowski
+/// difference `A - B` along the unit direction `d` and counts its own support
+/// calls in `metrics`. See [`gjk_enhanced`] for the termination rules.
+fn gjk_iterate(
+    mut dir: [f64; 3],
+    max_iter: u32,
+    mut metrics: GjkMetrics,
+    support: &mut dyn FnMut(&mut GjkMetrics, [f64; 3]) -> SupportPoint,
+) -> GjkCore {
+    let mut simplex = EnhSimplex::new();
     if vlen_sq(dir) < 1e-18 {
         dir = [1.0, 0.0, 0.0];
     }
@@ -237,12 +274,10 @@ pub(super) fn gjk_enhanced_core(
     let mut prev_dist_sq = f64::INFINITY;
     let mut axis = [0.0; 3];
     let mut gap = 0.0_f64;
-    for _iter in 0..max_iter {
+    for _iter in 0..max_iter.max(1) {
         metrics.iterations += 1;
-        let sa = shape_a.support(dir);
-        let sb = shape_b.support(vneg(dir));
-        metrics.support_calls += 2;
-        let w = vsub(sa, sb);
+        let point = support(&mut metrics, dir);
+        let w = point.w;
         // `dir` is a unit vector: `reach` is how far the Minkowski difference
         // extends along it, measured from the origin. A negative value proves
         // that A and B are separated along `dir` by at least `-reach`.
@@ -266,7 +301,7 @@ pub(super) fn gjk_enhanced_core(
                 };
             }
         }
-        simplex.add(SupportPoint::new(w, sa, sb));
+        simplex.add(point);
         let (new_dir, contains_origin) = simplex.reduce();
         metrics.simplex_reductions += 1;
         if contains_origin {
@@ -399,7 +434,31 @@ pub fn gjk_closest_points(
 }
 /// Run the enhanced EPA after GJK confirmed intersection.
 ///
-/// `simplex_verts` must be a full tetrahedral GJK simplex (4 points).
+/// `initial_simplex` is the simplex GJK ended with. It may hold any number of
+/// points: the distinct, affinely independent ones are kept and completed to a
+/// tetrahedron of support points of the Minkowski difference `A - B`. The
+/// tetrahedron does not have to enclose the origin; the polytope first grows
+/// toward it.
+///
+/// Each step takes the face nearest to the origin, asks for the support point
+/// along its normal, removes **every** face that can see that point and joins
+/// the point to the horizon (the edges of exactly one removed face), so the
+/// polytope stays convex. The iteration stops when the support point lies
+/// within `tolerance` beyond the nearest face, or after `max_iter` steps (the
+/// depth is then a lower bound).
+///
+/// The result is that of the nearest facet: `normal` points from B into A (the
+/// direction in which A has to move to separate), `depth` is the distance of
+/// the facet from the origin and `contact_point` is the midpoint of the two
+/// deepest points, the barycentric blends of the support points of the facet
+/// that reproduce the foot of the perpendicular from the origin. The deepest
+/// point of A is `contact_point - normal * depth / 2` and that of B
+/// `contact_point + normal * depth / 2`.
+///
+/// If no penetration can be derived (the Minkowski difference is flat, or the
+/// shapes do not overlap) the depth is zero, `normal` points along the line of
+/// centres from B to A (or +y when they coincide), `contact_point` is the
+/// midpoint of the centres and `iterations` is 0.
 pub fn epa_enhanced(
     shape_a: &dyn ConvexShape,
     shape_b: &dyn ConvexShape,
@@ -407,199 +466,53 @@ pub fn epa_enhanced(
     max_iter: u32,
     tolerance: f64,
 ) -> EpaEnhancedResult {
-    let mut verts: Vec<SupportPoint> = initial_simplex;
-    let expand_dirs: [[f64; 3]; 14] = [
-        [1.0, 0.0, 0.0],
-        [-1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [0.0, -1.0, 0.0],
-        [0.0, 0.0, 1.0],
-        [0.0, 0.0, -1.0],
-        [1.0, 1.0, 0.0],
-        [-1.0, 1.0, 0.0],
-        [1.0, 0.0, 1.0],
-        [-1.0, 0.0, 1.0],
-        [0.0, 1.0, 1.0],
-        [0.0, -1.0, 1.0],
-        [1.0, 1.0, 1.0],
-        [-1.0, -1.0, 1.0],
-    ];
-    for &d in &expand_dirs {
-        if verts.len() >= 4 {
-            break;
+    let oracle = |direction: [f64; 3]| {
+        let a = shape_a.support(direction);
+        let b = shape_b.support(vneg(direction));
+        EpaPoint {
+            w: vsub(a, b),
+            a,
+            b,
         }
-        let dn = vnorm(d);
-        let sa = shape_a.support(dn);
-        let sb = shape_b.support(vneg(dn));
-        let w = vsub(sa, sb);
-        let is_new = verts.iter().all(|v| vlen_sq(vsub(v.w, w)) > 1e-12);
-        if is_new {
-            verts.push(SupportPoint::new(w, sa, sb));
-        }
-    }
-    let is_degenerate = |pts: &[SupportPoint]| -> bool {
-        if pts.len() < 4 {
-            return true;
-        }
-        let a = pts[0].w;
-        let b = pts[1].w;
-        let c = pts[2].w;
-        let d = pts[3].w;
-        let ab = vsub(b, a);
-        let ac = vsub(c, a);
-        let ad = vsub(d, a);
-        let n = vcross(ab, ac);
-        vdot(n, ad).abs() < 1e-8
     };
-    if is_degenerate(&verts) {
-        for &d in &expand_dirs {
-            if !is_degenerate(&verts) {
-                break;
+    let known: Vec<EpaPoint> = initial_simplex
+        .iter()
+        .map(|p| EpaPoint {
+            w: p.w,
+            a: p.a,
+            b: p.b,
+        })
+        .collect();
+    let penetration = <[EpaPoint; 4]>::try_from(complete_tetrahedron(&known, &oracle).as_slice())
+        .ok()
+        .and_then(|seed| {
+            expand_polytope(
+                seed,
+                &oracle,
+                tolerance,
+                usize::try_from(max_iter).unwrap_or(usize::MAX),
+            )
+        });
+    match penetration {
+        Some(found) => EpaEnhancedResult {
+            depth: found.depth,
+            normal: vneg(found.normal),
+            contact_point: vscale(vadd(found.contact_a, found.contact_b), 0.5),
+            iterations: u32::try_from(found.iterations).unwrap_or(u32::MAX),
+        },
+        None => {
+            let toward_a = vnorm(vsub(shape_a.centre(), shape_b.centre()));
+            EpaEnhancedResult {
+                depth: 0.0,
+                normal: if vlen_sq(toward_a) > 0.0 {
+                    toward_a
+                } else {
+                    [0.0, 1.0, 0.0]
+                },
+                contact_point: vscale(vadd(shape_a.centre(), shape_b.centre()), 0.5),
+                iterations: 0,
             }
-            let dn = vnorm(d);
-            let sa = shape_a.support(dn);
-            let sb = shape_b.support(vneg(dn));
-            let w = vsub(sa, sb);
-            let is_new = verts.iter().all(|v| vlen_sq(vsub(v.w, w)) > 1e-12);
-            if is_new {
-                verts.push(SupportPoint::new(w, sa, sb));
-                if verts.len() > 4 {
-                    let n = verts.len();
-                    let candidate = vec![verts[0], verts[1], verts[2], verts[n - 1]];
-                    if !is_degenerate(&candidate) {
-                        verts = candidate;
-                    } else {
-                        let candidate2 = vec![verts[0], verts[1], verts[n - 1], verts[n - 2]];
-                        if !is_degenerate(&candidate2) {
-                            verts = candidate2;
-                        }
-                    }
-                }
-            }
         }
-    }
-    if verts.len() < 4 || is_degenerate(&verts) {
-        return EpaEnhancedResult {
-            depth: 0.0,
-            normal: [0.0, 1.0, 0.0],
-            contact_point: [0.0; 3],
-            iterations: 0,
-        };
-    }
-    let mut faces: Vec<EpaFaceE> = vec![
-        epa_make_face(&verts, 0, 1, 2),
-        epa_make_face(&verts, 0, 1, 3),
-        epa_make_face(&verts, 0, 2, 3),
-        epa_make_face(&verts, 1, 2, 3),
-    ];
-    for iter in 0..max_iter {
-        let Some((fi, &face)) = faces
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| f.dist > 1e-12)
-            .min_by(|(_, a), (_, b)| {
-                a.dist
-                    .partial_cmp(&b.dist)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .or_else(|| {
-                faces.iter().enumerate().min_by(|(_, a), (_, b)| {
-                    a.dist
-                        .partial_cmp(&b.dist)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-            })
-        else {
-            break;
-        };
-        let sa = shape_a.support(face.normal);
-        let sb = shape_b.support(vneg(face.normal));
-        let w = vsub(sa, sb);
-        let new_dist = vdot(face.normal, w);
-        if new_dist - face.dist < tolerance {
-            let depth = new_dist.max(face.dist).max(0.0);
-            if depth < 1e-12 {
-                break;
-            }
-            let cp_a = vscale(
-                vadd(
-                    verts[face.indices[0]].a,
-                    vadd(verts[face.indices[1]].a, verts[face.indices[2]].a),
-                ),
-                1.0 / 3.0,
-            );
-            let cp_b = vscale(
-                vadd(
-                    verts[face.indices[0]].b,
-                    vadd(verts[face.indices[1]].b, verts[face.indices[2]].b),
-                ),
-                1.0 / 3.0,
-            );
-            return EpaEnhancedResult {
-                depth,
-                normal: face.normal,
-                contact_point: vscale(vadd(cp_a, cp_b), 0.5),
-                iterations: iter,
-            };
-        }
-        let new_idx = verts.len();
-        verts.push(SupportPoint::new(w, sa, sb));
-        let old_face = faces.remove(fi);
-        let [i0, i1, i2] = old_face.indices;
-        faces.push(epa_make_face(&verts, i0, i1, new_idx));
-        faces.push(epa_make_face(&verts, i1, i2, new_idx));
-        faces.push(epa_make_face(&verts, i2, i0, new_idx));
-    }
-    let best_face_opt = faces.iter().filter(|f| f.dist > 1e-12).min_by(|a, b| {
-        a.dist
-            .partial_cmp(&b.dist)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    if let Some(&face) = best_face_opt {
-        let cp_a = vscale(
-            vadd(
-                verts[face.indices[0]].a,
-                vadd(verts[face.indices[1]].a, verts[face.indices[2]].a),
-            ),
-            1.0 / 3.0,
-        );
-        let cp_b = vscale(
-            vadd(
-                verts[face.indices[0]].b,
-                vadd(verts[face.indices[1]].b, verts[face.indices[2]].b),
-            ),
-            1.0 / 3.0,
-        );
-        EpaEnhancedResult {
-            depth: face.dist,
-            normal: face.normal,
-            contact_point: vscale(vadd(cp_a, cp_b), 0.5),
-            iterations: max_iter,
-        }
-    } else {
-        EpaEnhancedResult {
-            depth: 0.0,
-            normal: [0.0, 1.0, 0.0],
-            contact_point: [0.0; 3],
-            iterations: max_iter,
-        }
-    }
-}
-pub(super) fn epa_make_face(verts: &[SupportPoint], i0: usize, i1: usize, i2: usize) -> EpaFaceE {
-    let a = verts[i0].w;
-    let b = verts[i1].w;
-    let c = verts[i2].w;
-    let ab = vsub(b, a);
-    let ac = vsub(c, a);
-    let mut n = vnorm(vcross(ab, ac));
-    if vdot(n, a) < 0.0 {
-        n = vneg(n);
-    }
-    let dist = vdot(n, a);
-    EpaFaceE {
-        indices: [i0, i1, i2],
-        normal: n,
-        dist,
     }
 }
 /// Run the combined GJK-EPA pipeline.
@@ -639,11 +552,13 @@ pub fn gjk_epa_pipeline(
     ContactResult {
         in_contact: true,
         signed_distance: -epa_res.depth,
-        point_a: vadd(
+        // The deepest point of A lies half a depth against the B-to-A normal
+        // from the midpoint, that of B half a depth along it.
+        point_a: vsub(
             epa_res.contact_point,
             vscale(epa_res.normal, epa_res.depth * 0.5),
         ),
-        point_b: vsub(
+        point_b: vadd(
             epa_res.contact_point,
             vscale(epa_res.normal, epa_res.depth * 0.5),
         ),
@@ -851,54 +766,32 @@ pub fn segment_segment_distance(
     (pa, pb, dist)
 }
 /// GJK variant that maintains a `SupportCache` to skip redundant support calls.
+///
+/// It runs the same distance iteration as [`gjk_enhanced`] (so the distance is
+/// the true distance, not the first separating-axis estimate); a support query
+/// whose direction matches the cached one within `1e-6` reuses the cached
+/// support points instead of calling the shapes.
 pub fn gjk_with_support_cache(
     shape_a: &dyn ConvexShape,
     shape_b: &dyn ConvexShape,
     cache: &mut SupportCache,
     max_iter: u32,
 ) -> GjkResult {
-    let mut metrics = GjkMetrics::new();
-    let mut simplex = EnhSimplex::new();
-    let mut dir = vsub(shape_b.centre(), shape_a.centre());
-    if vlen_sq(dir) < 1e-18 {
-        dir = [1.0, 0.0, 0.0];
-    }
-    for _ in 0..max_iter {
-        metrics.iterations += 1;
-        let (sa, sb) = if let Some((a, b)) = cache.get(dir, 1e-6) {
-            (a, b)
-        } else {
-            let a = shape_a.support(dir);
-            let b = shape_b.support(vneg(dir));
-            cache.put(dir, a, b);
-            metrics.support_calls += 2;
-            (a, b)
+    let dir = vsub(shape_b.centre(), shape_a.centre());
+    let mut support = |metrics: &mut GjkMetrics, d: [f64; 3]| {
+        let (sa, sb) = match cache.get(d, 1e-6) {
+            Some(cached) => cached,
+            None => {
+                let sa = shape_a.support(d);
+                let sb = shape_b.support(vneg(d));
+                cache.put(d, sa, sb);
+                metrics.support_calls += 2;
+                (sa, sb)
+            }
         };
-        let w = vsub(sa, sb);
-        if vdot(w, dir) < vdot(dir, dir) * 1e-10 {
-            metrics.converged_early = true;
-            return build_separated_result(simplex, metrics);
-        }
-        simplex.add(SupportPoint::new(w, sa, sb));
-        let (new_dir, contains_origin) = simplex.reduce();
-        metrics.simplex_reductions += 1;
-        if contains_origin {
-            return GjkResult {
-                intersecting: true,
-                closest_a: [0.0; 3],
-                closest_b: [0.0; 3],
-                dist_sq: 0.0,
-                simplex: simplex.verts,
-                metrics,
-            };
-        }
-        if vlen_sq(new_dir) < 1e-18 {
-            metrics.converged_early = true;
-            return build_separated_result(simplex, metrics);
-        }
-        dir = new_dir;
-    }
-    build_separated_result(simplex, metrics)
+        SupportPoint::new(vsub(sa, sb), sa, sb)
+    };
+    gjk_iterate(dir, max_iter, GjkMetrics::new(), &mut support).result
 }
 #[cfg(test)]
 mod tests_vector_math {
@@ -1135,5 +1028,12 @@ mod tests_gjk_enhanced {
         let s2b = EnhSphere::new([5.1, 0.0, 0.0], 1.0);
         let res2 = gjk_enhanced(&s1, &s2b, Some(&cache), 64);
         assert!(res2.metrics.warm_started);
+        // Radii 1 + 1 against a centre distance of 5.1.
+        assert!(!res2.intersecting);
+        assert!(
+            (res2.distance() - 3.1).abs() < 1e-9,
+            "dist={}",
+            res2.distance()
+        );
     }
 }

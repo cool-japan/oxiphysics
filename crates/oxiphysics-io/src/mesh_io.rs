@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use crate::gltf::types::{AccessorType, ComponentType, TypedAccessor};
+use crate::mesh_orientation::count_inverted_faces;
 
 // ---------------------------------------------------------------------------
 // Helper free functions
@@ -1168,15 +1169,30 @@ pub struct MeshQuality {
     pub min_area: f64,
     /// Number of degenerate triangles (area < epsilon).
     pub degenerate_count: usize,
-    /// Number of inverted triangles (negative Jacobian).
+    /// Number of inverted triangles: triangles whose winding contradicts the
+    /// surface they belong to.
+    ///
+    /// The mesh is split into connected components and the winding of a seed
+    /// triangle is propagated across shared edges.  In a closed component the
+    /// triangles that disagree with the outward direction (the sign of the signed
+    /// volume decides) are inverted, so a closed mesh that is consistently oriented
+    /// but inside out reports every triangle.  In an open component the minority
+    /// orientation is reported.
     pub inverted_count: usize,
+    /// Number of triangles that index a vertex outside the vertex list.  They
+    /// are left out of every other statistic.
+    pub out_of_range_count: usize,
 }
 
-/// Check mesh quality: aspect ratio, Jacobian, area, orientation.
+/// Check mesh quality: aspect ratio, area, degeneracy and winding consistency.
 pub struct MeshValidator;
 
 impl MeshValidator {
     /// Compute quality metrics for a triangle mesh.
+    ///
+    /// Triangles that reference a vertex index outside `vertices` cannot be
+    /// measured: they are counted in [`MeshQuality::out_of_range_count`] and
+    /// skipped (see [`MeshValidator::check_bounds`] for a yes/no test).
     pub fn validate(
         vertices: &[[f64; 3]],
         triangles: &[[u32; 3]],
@@ -1186,12 +1202,19 @@ impl MeshValidator {
         let mut max_ar = f64::MIN;
         let mut min_area = f64::MAX;
         let mut deg_count = 0;
-        let mut inv_count = 0;
+        let mut out_of_range = 0;
+        let mut measured: Vec<[u32; 3]> = Vec::with_capacity(triangles.len());
 
         for &[a, b, c] in triangles {
-            let va = vertices[a as usize];
-            let vb = vertices[b as usize];
-            let vc = vertices[c as usize];
+            let (Some(&va), Some(&vb), Some(&vc)) = (
+                vertices.get(a as usize),
+                vertices.get(b as usize),
+                vertices.get(c as usize),
+            ) else {
+                out_of_range += 1;
+                continue;
+            };
+            measured.push([a, b, c]);
             let ab = sub3(vb, va);
             let ac = sub3(vc, va);
             let bc = sub3(vc, vb);
@@ -1204,13 +1227,9 @@ impl MeshValidator {
             if area < area_epsilon {
                 deg_count += 1;
             }
-            // Check orientation: if normal's y < 0 after projecting, might be inverted
-            if cross[1] < 0.0 {
-                inv_count += 1;
-            }
         }
 
-        if triangles.is_empty() {
+        if measured.is_empty() {
             min_ar = 0.0;
             max_ar = 0.0;
             min_area = 0.0;
@@ -1221,7 +1240,8 @@ impl MeshValidator {
             max_aspect_ratio: max_ar,
             min_area,
             degenerate_count: deg_count,
-            inverted_count: inv_count,
+            inverted_count: count_inverted_faces(vertices, &measured),
+            out_of_range_count: out_of_range,
         }
     }
 
@@ -1607,6 +1627,170 @@ mod tests {
         let verts = vec![[0.0f64; 3]; 2];
         let tris = vec![[0u32, 1, 5]];
         assert!(!MeshValidator::check_bounds(&verts, &tris));
+    }
+
+    /// Octahedron with outward-facing triangles: four of its eight face normals
+    /// point towards -y, which the old `normal.y < 0` test reported as inverted.
+    fn octahedron() -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        let vertices = vec![
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ];
+        let mut triangles = Vec::new();
+        for (ix, sx) in [(0u32, 1.0), (1, -1.0)] {
+            for (iy, sy) in [(2u32, 1.0), (3, -1.0)] {
+                for (iz, sz) in [(4u32, 1.0), (5, -1.0)] {
+                    if sx * sy * sz > 0.0 {
+                        triangles.push([ix, iy, iz]);
+                    } else {
+                        triangles.push([ix, iz, iy]);
+                    }
+                }
+            }
+        }
+        (vertices, triangles)
+    }
+
+    /// Unit cube with outward-facing triangles.
+    fn unit_cube() -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        let vertices = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ];
+        let triangles = vec![
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [3, 6, 2],
+            [3, 7, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ];
+        (vertices, triangles)
+    }
+
+    #[test]
+    fn validator_octahedron_has_no_inverted_triangles() {
+        let (verts, tris) = octahedron();
+        let facing_down = tris
+            .iter()
+            .filter(|&&[a, b, c]| {
+                let (va, vb, vc) = (verts[a as usize], verts[b as usize], verts[c as usize]);
+                cross3(sub3(vb, va), sub3(vc, va))[1] < 0.0
+            })
+            .count();
+        assert_eq!(facing_down, 4, "half of the faces look towards -y");
+        let q = MeshValidator::validate(&verts, &tris, 1e-10);
+        assert_eq!(q.inverted_count, 0);
+        assert_eq!(q.degenerate_count, 0);
+        assert_eq!(q.out_of_range_count, 0);
+    }
+
+    #[test]
+    fn validator_cube_has_no_inverted_triangles() {
+        let (verts, tris) = unit_cube();
+        let q = MeshValidator::validate(&verts, &tris, 1e-10);
+        assert_eq!(q.inverted_count, 0);
+        assert!((q.min_area - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn validator_flags_a_single_flipped_triangle() {
+        for index in 0..12 {
+            let (verts, mut tris) = unit_cube();
+            tris[index].swap(1, 2);
+            let q = MeshValidator::validate(&verts, &tris, 1e-10);
+            assert_eq!(q.inverted_count, 1, "triangle {index} flipped");
+        }
+        let (verts, mut tris) = octahedron();
+        tris[5].swap(0, 1);
+        assert_eq!(
+            MeshValidator::validate(&verts, &tris, 1e-10).inverted_count,
+            1
+        );
+    }
+
+    #[test]
+    fn validator_flags_an_inside_out_closed_mesh() {
+        let (verts, mut tris) = octahedron();
+        for tri in &mut tris {
+            tri.swap(1, 2);
+        }
+        let q = MeshValidator::validate(&verts, &tris, 1e-10);
+        assert_eq!(q.inverted_count, 8);
+    }
+
+    #[test]
+    fn validator_open_sheet_reports_the_minority_orientation() {
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+        ];
+        let tris = vec![[0u32, 1, 2], [0, 2, 3], [1, 4, 5], [1, 5, 2]];
+        assert_eq!(
+            MeshValidator::validate(&verts, &tris, 1e-10).inverted_count,
+            0
+        );
+        let mut flipped = tris.clone();
+        flipped[3].swap(1, 2);
+        assert_eq!(
+            MeshValidator::validate(&verts, &flipped, 1e-10).inverted_count,
+            1
+        );
+    }
+
+    #[test]
+    fn validator_skips_out_of_range_triangles_without_panicking() {
+        let verts = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let tris = vec![[0u32, 1, 2], [0, 1, 5], [7, 8, 9], [u32::MAX, 0, 1]];
+        let q = MeshValidator::validate(&verts, &tris, 1e-10);
+        assert_eq!(q.out_of_range_count, 3);
+        assert_eq!(q.degenerate_count, 0);
+        assert_eq!(q.inverted_count, 0);
+        assert!((q.min_area - 0.5).abs() < 1e-12);
+        assert!(q.min_aspect_ratio.is_finite() && q.max_aspect_ratio.is_finite());
+    }
+
+    #[test]
+    fn validator_with_only_invalid_triangles_reports_zeros() {
+        let verts = vec![[0.0, 0.0, 0.0]];
+        let q = MeshValidator::validate(&verts, &[[0, 1, 2], [3, 4, 5]], 1e-10);
+        assert_eq!(q.out_of_range_count, 2);
+        assert_eq!(
+            (q.min_aspect_ratio, q.max_aspect_ratio, q.min_area),
+            (0.0, 0.0, 0.0)
+        );
+        assert_eq!((q.degenerate_count, q.inverted_count), (0, 0));
+        let empty = MeshValidator::validate(&[], &[], 1e-10);
+        assert_eq!((empty.out_of_range_count, empty.inverted_count), (0, 0));
+    }
+
+    #[test]
+    fn validator_counts_degenerate_triangles_with_repeated_indices() {
+        let verts = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let tris = vec![[0u32, 1, 2], [0, 0, 1]];
+        let q = MeshValidator::validate(&verts, &tris, 1e-10);
+        assert_eq!(q.degenerate_count, 1);
+        assert_eq!(q.inverted_count, 0);
     }
 
     // --- write_gltf_accessor ---

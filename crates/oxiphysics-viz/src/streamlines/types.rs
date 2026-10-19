@@ -381,8 +381,8 @@ impl StreamRibbon {
             .collect()
     }
 }
-/// Analyses flow topology by detecting stagnation points, saddle points, and
-/// vortex centres in a 2-D slice.
+/// A classified critical (near-zero-velocity) point of a 2-D flow slice:
+/// a degenerate stagnation point, saddle, vortex centre, source or sink.
 #[derive(Debug, Clone)]
 pub struct FlowTopologyPoint {
     /// World-space position.
@@ -502,15 +502,27 @@ impl Streakline {
         self.particle_positions.is_empty()
     }
 }
-/// Classification of a flow topology critical point.
+/// Classification of a flow topology critical point, from the eigenvalues of
+/// the local 2×2 velocity-gradient matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopologyPointKind {
-    /// Stagnation point: velocity → 0.
+    /// Degenerate stagnation point: the velocity vanishes but the
+    /// velocity-gradient matrix is singular (zero determinant), so the local
+    /// flow pattern is not a saddle, centre, source or sink.
     Stagnation,
-    /// Saddle point: one attracting and one repelling direction.
+    /// Saddle point: real eigenvalues of opposite sign — one attracting and
+    /// one repelling direction.
     Saddle,
-    /// Vortex centre: purely rotational flow nearby.
+    /// Vortex centre: complex-conjugate eigenvalues — the flow circulates
+    /// around the point (a closed-orbit centre, or a spiral focus when the
+    /// trace of the gradient matrix is non-zero).
     VortexCentre,
+    /// Source: both eigenvalues real and positive — nearby streamlines leave
+    /// the point.
+    Source,
+    /// Sink: both eigenvalues real and negative — nearby streamlines approach
+    /// the point.
+    Sink,
 }
 /// A streamline: a sequence of 3-D points tracing a flow path, with optional
 /// per-point velocity magnitude.

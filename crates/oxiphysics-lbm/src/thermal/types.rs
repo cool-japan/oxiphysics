@@ -629,17 +629,22 @@ impl ThermalLbm {
 }
 /// Boussinesq buoyancy coupling for thermal LBM.
 ///
-/// The buoyancy body force is:
+/// The Boussinesq approximation lets the density vary linearly with the
+/// temperature, `ρ = ρ₀ [1 − β (T − T_ref)]`, in the gravity term only.  The
+/// buoyancy body force (the deviation from the hydrostatic state) is:
 ///
 /// ```text
-/// F = ρ · g_vec · β · (T − T_ref)
+/// F = −ρ · β · (T − T_ref) · g_vec
 /// ```
 ///
-/// where `g_vec` is the gravitational acceleration vector (in LBM units),
-/// `β` is the thermal expansion coefficient, and `T_ref` is the reference
-/// temperature.
+/// where `g_vec` is the gravitational acceleration vector (in LBM units, e.g.
+/// `[0, −g]` when gravity points towards −y), `β` is the thermal expansion
+/// coefficient, and `T_ref` is the reference temperature.  Fluid hotter than
+/// `T_ref` is lighter and is pushed *against* the gravity vector (it rises);
+/// colder fluid is pushed along it (it sinks).
 pub struct BoussinesqCoupling {
-    /// Gravitational acceleration vector (e.g. `[0.0, -9.81e-4]` in LBM units).
+    /// Gravitational acceleration vector, pointing in the direction in which
+    /// objects fall (e.g. `[0.0, -9.81e-4]` in LBM units).
     pub gravity: [f64; 2],
     /// Thermal expansion coefficient β.
     pub thermal_expansion: f64,
@@ -658,9 +663,12 @@ impl BoussinesqCoupling {
     /// Compute the buoyancy body force `[Fx, Fy]` for the given density and
     /// temperature.
     ///
-    /// `F = ρ · g_vec · β · (T − T_ref)`
+    /// `F = −ρ · β · (T − T_ref) · g_vec`
+    ///
+    /// The force is directed against the gravity vector for `T > T_ref` (hot
+    /// fluid rises) and along it for `T < T_ref` (cold fluid sinks).
     pub fn buoyancy_force(&self, rho: f64, temperature: f64) -> [f64; 2] {
-        let factor = rho * self.thermal_expansion * (temperature - self.t_reference);
+        let factor = -rho * self.thermal_expansion * (temperature - self.t_reference);
         [self.gravity[0] * factor, self.gravity[1] * factor]
     }
     /// Apply buoyancy to a D2Q9 velocity distribution using the Guo forcing

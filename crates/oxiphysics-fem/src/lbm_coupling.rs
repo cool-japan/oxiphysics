@@ -15,7 +15,8 @@
 //! - Roma, Peskin, Berger (1999), "An adaptive version of the immersed boundary method"
 //! - Peskin (2002), "The immersed boundary method", Acta Numerica
 
-use std::collections::HashMap;
+#[cfg(test)]
+mod velocity_bc_tests;
 
 /// Configuration parameters for FEM-LBM coupling.
 #[derive(Debug, Clone)]
@@ -401,57 +402,102 @@ impl FemLbmCoupling {
     /// Transfer velocity boundary conditions from FEM interface to LBM grid.
     ///
     /// Returns a list of `(grid_index, velocity)` pairs that should be imposed
-    /// as velocity boundary conditions on the LBM grid. Forces are spread using
-    /// the IBM delta function kernel.
+    /// as velocity boundary conditions on the LBM grid.  Every grid node in the
+    /// support of the IBM delta kernel of at least one IB point is reported
+    /// exactly once, with the kernel-weighted average of the velocities of the
+    /// points that reach it:
+    ///
+    /// ```text
+    /// u_bc(i, j, k) = Σ_p ω_p u_p / Σ_p ω_p,
+    /// ω_p = φ(x_p/h - i) φ(y_p/h - j) φ(z_p/h - k)
+    /// ```
+    ///
+    /// `φ` is the dimensionless 1-D Roma kernel (unit spacing, so that
+    /// `Σ_i φ(s - i) = 1`).  A node that only one point reaches therefore gets
+    /// exactly that point's velocity, however far from the point it lies, and
+    /// the result does not depend on the grid spacing.  Nodes outside the grid
+    /// are dropped.  The list is ordered by ascending grid index (row-major), so
+    /// repeated calls are bit-for-bit reproducible.
     ///
     /// # Arguments
     /// * `grid_dims` - Dimensions of the LBM grid `[nx, ny, nz]`.
     ///
     /// # Errors
-    /// Returns an error if the coupling is not initialized.
+    /// Returns an error if the coupling is not initialized or if the stored grid
+    /// spacing is not positive and finite.
+    ///
+    /// # Examples
+    ///
+    /// A single structure point imposes its own velocity on all 3 x 3 x 3 grid nodes
+    /// of its kernel support:
+    ///
+    /// ```
+    /// use oxiphysics_fem::lbm_coupling::{CouplingError, FemLbmCoupling, FemLbmCouplingConfig};
+    ///
+    /// let mut coupling = FemLbmCoupling::new(FemLbmCouplingConfig::default());
+    /// let position = [5.3, 4.8, 6.1];
+    /// coupling.set_interface_nodes(vec![0], vec![position], 1.0)?;
+    /// coupling.update_fem_state(&[position], &[[0.7, -0.2, 1.3]])?;
+    ///
+    /// let bcs = coupling.transfer_velocity_to_lbm([12, 12, 12])?;
+    /// assert_eq!(bcs.len(), 27);
+    /// for (_node, velocity) in &bcs {
+    ///     assert!((velocity[0] - 0.7).abs() < 1e-12);
+    ///     assert!((velocity[1] + 0.2).abs() < 1e-12);
+    ///     assert!((velocity[2] - 1.3).abs() < 1e-12);
+    /// }
+    /// # Ok::<(), CouplingError>(())
+    /// ```
     pub fn transfer_velocity_to_lbm(&self, grid_dims: [usize; 3]) -> LbmCouplingResult {
         if !self.initialized {
             return Err(CouplingError::NotInitialized);
         }
-
-        let mut velocity_bcs: HashMap<[usize; 3], [f64; 3]> = HashMap::new();
-        let mut weight_map: HashMap<[usize; 3], f64> = HashMap::new();
         let h = self.lbm_grid_spacing;
+        if !h.is_finite() || h <= 0.0 {
+            return Err(CouplingError::InvalidParameter(
+                "grid spacing must be positive and finite".to_string(),
+            ));
+        }
 
+        // One record per (IB point, stencil node): the node, omega * u and omega.
+        let mut records: Vec<([usize; 3], [f64; 3], f64)> = Vec::new();
         for ib_point in &self.ib_points {
-            let contributions = spread_to_grid(ib_point.position, ib_point.velocity, h, grid_dims);
+            let u = ib_point.velocity;
+            for (node, omega) in kernel_stencil(ib_point.position, h, grid_dims) {
+                records.push((node, [omega * u[0], omega * u[1], omega * u[2]], omega));
+            }
+        }
+        // The lexicographic order of `[i, j, k]` is the row-major flat-index
+        // order.  The sort is stable, so the contributions of a node are summed
+        // in IB-point order and the result is reproducible bit for bit.
+        records.sort_by_key(|record| record.0);
 
-            for (idx, vel) in contributions {
-                let entry = velocity_bcs.entry(idx).or_insert([0.0; 3]);
-                let w_entry = weight_map.entry(idx).or_insert(0.0);
-
-                // The spread value already includes the delta weight; we accumulate
-                // and track total weight for later normalisation.
-                let w = roma_delta_1d(ib_point.position[0] / h - idx[0] as f64, 1.0)
-                    * roma_delta_1d(ib_point.position[1] / h - idx[1] as f64, 1.0)
-                    * roma_delta_1d(ib_point.position[2] / h - idx[2] as f64, 1.0);
-
-                entry[0] += vel[0] * w;
-                entry[1] += vel[1] * w;
-                entry[2] += vel[2] * w;
-                *w_entry += w;
+        let mut velocity_bcs = LbmVelocityBcList::new();
+        for node_records in records.chunk_by(|a, b| a.0 == b.0) {
+            let Some(&(node, _, _)) = node_records.first() else {
+                continue;
+            };
+            let mut weighted_velocity = [0.0; 3];
+            let mut weight_sum = 0.0;
+            for (_, weighted_u, omega) in node_records {
+                for (acc, component) in weighted_velocity.iter_mut().zip(weighted_u.iter()) {
+                    *acc += component;
+                }
+                weight_sum += omega;
+            }
+            if weight_sum > MIN_KERNEL_WEIGHT {
+                velocity_bcs.push((
+                    node,
+                    [
+                        weighted_velocity[0] / weight_sum,
+                        weighted_velocity[1] / weight_sum,
+                        weighted_velocity[2] / weight_sum,
+                    ],
+                ));
             }
         }
 
-        // Normalise so each grid cell receives a properly weighted velocity
-        let result: Vec<([usize; 3], [f64; 3])> = velocity_bcs
-            .into_iter()
-            .filter_map(|(idx, vel)| {
-                let w = weight_map.get(&idx).copied().unwrap_or(0.0);
-                if w > 1e-30 {
-                    Some((idx, [vel[0] / w, vel[1] / w, vel[2] / w]))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        Ok(result)
+        Ok(velocity_bcs)
     }
 
     /// Compute fluid forces on FEM interface nodes from LBM pressure and velocity fields.
@@ -671,6 +717,9 @@ impl std::fmt::Display for CouplingError {
 impl std::error::Error for CouplingError {}
 
 /// A list of `(grid_index, velocity)` pairs for LBM velocity boundary conditions.
+///
+/// [`FemLbmCoupling::transfer_velocity_to_lbm`] reports every grid node at most
+/// once, in ascending row-major order of the index.
 pub type LbmVelocityBcList = Vec<([usize; 3], [f64; 3])>;
 
 /// Result type for LBM velocity transfer and coupling step operations.
@@ -839,6 +888,61 @@ fn spread_to_grid(
     result
 }
 
+/// Kernel weights not above this value are treated as zero (outside the support).
+const MIN_KERNEL_WEIGHT: f64 = 1e-30;
+
+/// Grid indices along one axis in the support of the delta kernel of a point at
+/// the normalised coordinate `s = position / spacing`, with their dimensionless
+/// 1-D kernel weights `φ(s - i)` (Roma kernel at unit spacing).
+///
+/// Only indices `0 <= i < dim` with a non-zero weight are returned, in ascending
+/// order.  An empty axis or a non-finite `s` gives no nodes.
+fn kernel_axis_weights(s: f64, dim: usize) -> Vec<(usize, f64)> {
+    if dim == 0 || !s.is_finite() {
+        return Vec::new();
+    }
+    let last = (dim - 1) as f64;
+    let lowest = (s - 1.5).floor();
+    let highest = (s + 1.5).ceil();
+    if highest < 0.0 || lowest > last {
+        return Vec::new();
+    }
+    let first = lowest.max(0.0) as usize;
+    let end = highest.min(last) as usize;
+    (first..=end)
+        .filter_map(|node| {
+            let weight = roma_delta_1d(s - node as f64, 1.0);
+            (weight > MIN_KERNEL_WEIGHT).then_some((node, weight))
+        })
+        .collect()
+}
+
+/// Nodes of the LBM grid in the support of the IBM delta kernel of the point
+/// `pos`, with the dimensionless weights
+/// `ω = φ(x/h - i) φ(y/h - j) φ(z/h - k)` of the 3-D kernel (the product of
+/// three 1-D Roma kernels at unit spacing).
+///
+/// When the whole support lies inside the grid the weights sum to one; nodes
+/// outside the grid are dropped, so near a face of the grid the stencil is
+/// clipped and the sum is smaller.  The nodes come in ascending row-major order.
+fn kernel_stencil(pos: [f64; 3], h: f64, grid_dims: [usize; 3]) -> Vec<([usize; 3], f64)> {
+    let xs = kernel_axis_weights(pos[0] / h, grid_dims[0]);
+    let ys = kernel_axis_weights(pos[1] / h, grid_dims[1]);
+    let zs = kernel_axis_weights(pos[2] / h, grid_dims[2]);
+    let mut stencil = Vec::with_capacity(xs.len() * ys.len() * zs.len());
+    for &(i, weight_x) in &xs {
+        for &(j, weight_y) in &ys {
+            for &(k, weight_z) in &zs {
+                let omega = weight_x * weight_y * weight_z;
+                if omega > MIN_KERNEL_WEIGHT {
+                    stencil.push(([i, j, k], omega));
+                }
+            }
+        }
+    }
+    stencil
+}
+
 /// Interpolate a velocity field from the Eulerian grid to a Lagrangian point.
 ///
 /// Uses the 3D Roma delta function for interpolation.
@@ -994,6 +1098,7 @@ fn compute_velocity_gradient(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     /// Test that the 1D Roma delta function integrates to 1 over the support.
     #[test]

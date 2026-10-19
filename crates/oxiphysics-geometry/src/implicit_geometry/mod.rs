@@ -33,7 +33,11 @@ pub mod sdfunion_traits;
 pub mod types;
 
 #[cfg(test)]
+mod cone_hexprism_tests;
+#[cfg(test)]
 mod isosurface_tests;
+#[cfg(test)]
+mod pyramid_prism_tests;
 
 // Re-export all types
 pub use functions::*;

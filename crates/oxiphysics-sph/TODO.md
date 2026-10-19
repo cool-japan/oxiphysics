@@ -220,25 +220,25 @@ Verified: 333 (critical 11, high 116, medium 169, low 37); 33 further raw findin
 - [ ] **F4431** (high, bug, easy/small) `dfsph_full.rs:211` — Divergence-free kappa missing rho factor, correction about 1/rho too weak
 - [x] **F4434** (high, perf, easy/small) `dfsph_full.rs:509` — DfsphSimulation rebuilds neighbours with O(n²) brute force each step
 - [x] **F4435** (high, bug, easy/small) `dfsph_solver.rs:70` — dfsph_solver Wendland C2/C4 kernels normalised 8x too large
-- [ ] **F4438** (high, bug, easy/trivial) `dfsph_solver.rs:901` — Morris viscosity is anti-dissipative and missing a density factor
-- [ ] **F4441** (high, perf, easy/small) `dfsph_solver.rs:1127` — DFSPH neighbour search probes 125 cells and clones lists per particle
-- [ ] **F4442** (high, bug, medium/small) `dfsph_solver.rs:1269` — Divergence solve re-applies accumulated pressure every iteration
+- [x] **F4438** (high, bug, easy/trivial) `dfsph_solver.rs:901` — Morris viscosity is anti-dissipative and missing a density factor
+- [x] **F4441** (high, perf, easy/small) `dfsph_solver.rs:1127` — DFSPH neighbour search probes 125 cells and clones lists per particle
+- [x] **F4442** (high, bug, medium/small) `dfsph_solver.rs:1269` — Divergence solve re-applies accumulated pressure every iteration
 - [x] **F4443** (high, perf, easy/small) `dfsph_solver.rs:1277` — Whole neighbor_lists cloned per particle per solver iteration
 - [x] **F4444** (high, bug, medium/medium) `dfsph_solver.rs:1315` — solve_constant_density uses frozen density, accumulates and reapplies pressure
-- [ ] **F4445** (high, bug, medium/small) `dfsph_solver.rs:1325` — solve_constant_density uses frozen density and accumulates pressure unboundedly
-- [ ] **F4448** (high, bug, easy/trivial) `elastic_sph/functions.rs:236` — stress_divergence sign inverted: compressed particles attract
-- [ ] **F4449** (high, bug, easy/trivial) `elastic_sph/functions.rs:281` — hourglass_control injects energy and has wrong units
-- [ ] **F4451** (high, fabrication, medium/small) `elastic_sph/functions.rs:758` — deformation_gradient_sph returns an unnormalised kernel moment, not F
+- [x] **F4445** (high, bug, medium/small) `dfsph_solver.rs:1325` — solve_constant_density uses frozen density and accumulates pressure unboundedly
+- [x] **F4448** (high, bug, easy/trivial) `elastic_sph/functions.rs:236` — stress_divergence sign inverted: compressed particles attract
+- [x] **F4449** (high, bug, easy/trivial) `elastic_sph/functions.rs:281` — hourglass_control injects energy and has wrong units
+- [x] **F4451** (high, fabrication, medium/small) `elastic_sph/functions.rs:758` — deformation_gradient_sph returns an unnormalised kernel moment, not F
 - [x] **F4452** (high, bug, medium/small) `elastic_sph/functions.rs:793` — deformation_gradient_sph is unnormalised; undeformed F ≠ I
-- [ ] **F4455** (high, bug, easy/trivial) `elastic_sph/types.rs:630` — Jaumann co-rotational term has the wrong sign
+- [x] **F4455** (high, bug, easy/trivial) `elastic_sph/types.rs:630` — Jaumann co-rotational term has the wrong sign
 - [x] **F4462** (high, bug, easy/small) `explosion_sph.rs:104` — Kinney–Graham Ps/P0 ratio treated as kPa: overpressure ~100x low
-- [ ] **F4464** (high, bug, medium/small) `explosion_sph.rs:630` — Sod exact Riemann solver has reversed contact velocity
+- [x] **F4464** (high, bug, medium/small) `explosion_sph.rs:630` — Sod exact Riemann solver has reversed contact velocity
 - [x] **F4468** (high, bug, easy/small) `fracture_sph/functions.rs:125` — max_eigenvector_3x3 converges to the minimum-eigenvalue direction
 - [x] **F4469** (high, bug, easy/trivial) `fracture_sph/functions.rs:149` — Fracture Wendland C2 kernel normalisation 8x too large
-- [ ] **F4472** (high, fabrication, hard/medium) `fracture_sph/types.rs:714` — Fracture step never integrates momentum; stress does not affect motion
+- [x] **F4472** (high, fabrication, hard/medium) `fracture_sph/types.rs:714` — Fracture step never integrates momentum; stress does not affect motion
 - [x] **F4473** (high, bug, easy/small) `free_surface.rs:133` — SurfaceTension normals/curvature hardcode h=1.0, ignore smoothing_length
 - [x] **F4482** (high, bug, easy/trivial) `geothermal_sph.rs:240` — water_viscosity Vogel formula misapplied: ~3.6e4x too small
-- [ ] **F4483** (high, bug, easy/small) `geothermal_sph.rs:1036` — Thermal diffusion missing 1/rho_i and Brookshaw factor 2
+- [x] **F4483** (high, bug, easy/small) `geothermal_sph.rs:1036` — Thermal diffusion missing 1/rho_i and Brookshaw factor 2
 - [ ] **F4486** (high, fabrication, medium/medium) `granular/types.rs:264` — GranularSim ignores friction parameters, so rolling resistance is a no-op
 - [ ] **F4489** (high, bug, medium/medium) `granular/types.rs:731` — DEM tangential force accelerates sliding and has no spring history
 - [x] **F4494** (high, fabrication, hard/medium) `iisph.rs:317` — IisphSolver dimensionally inconsistent, not Ihmsen IISPH
@@ -274,17 +274,17 @@ Verified: 333 (critical 11, high 116, medium 169, low 37); 33 further raw findin
 - [ ] **F4594** (high, bug, medium/medium) `plasma_sph.rs:391` — MhdSph::euler_step: no gas pressure, and the curl operators are sign-inverted
 - [ ] **F4597** (high, fabrication, hard/medium) `pressure_solvers/types_advanced.rs:365` — DFSPH and PCISPH iterative solvers never update state, so cannot converge
 - [ ] **F4598** (high, fabrication, medium/medium) `pressure_solvers/types_advanced.rs:684` — PcisphSolver::predict_correct_step never applies pressure; densities frozen
-- [ ] **F4599** (high, fabrication, medium/medium) `pressure_solvers/types_core.rs:144` — IISPH, PCISPH corrector and projector use fake 1/r kernel gradients
-- [ ] **F4601** (high, bug, easy/small) `pressure_solvers/types_core.rs:561` — Continuity drho_dt and ISPH divergence have inverted signs
-- [ ] **F4605** (high, bug, easy/small) `quantum_sph.rs:259` — Gaussian Laplacian sign flipped and Bohm force off by m² factor
-- [ ] **F4614** (high, bug, easy/trivial) `sediment/types.rs:427` — Rubey settling uses d^2 instead of d^3 in viscous term
-- [ ] **F4615** (high, bug, easy/trivial) `sediment/types.rs:796` — SphSedimentAdvection::diffusion_rate is anti-diffusive (extra minus)
-- [ ] **F4617** (high, bug, easy/trivial) `sediment_sph.rs:142` — Ferguson-Church settling uses sqrt(R g d^4) instead of d^3
-- [ ] **F4618** (high, bug, easy/trivial) `sediment_sph.rs:457` — sph_diffusion_pair has anti-diffusive sign
-- [ ] **F4619** (high, fabrication, medium/medium) `sediment_sph.rs:988` — morphological_step fakes Exner update with placeholders and magic constants
+- [x] **F4599** (high, fabrication, medium/medium) `pressure_solvers/types_core.rs:144` — IISPH, PCISPH corrector and projector use fake 1/r kernel gradients
+- [x] **F4601** (high, bug, easy/small) `pressure_solvers/types_core.rs:561` — Continuity drho_dt and ISPH divergence have inverted signs
+- [x] **F4605** (high, bug, easy/small) `quantum_sph.rs:259` — Gaussian Laplacian sign flipped and Bohm force off by m² factor
+- [x] **F4614** (high, bug, easy/trivial) `sediment/types.rs:427` — Rubey settling uses d^2 instead of d^3 in viscous term
+- [x] **F4615** (high, bug, easy/trivial) `sediment/types.rs:796` — SphSedimentAdvection::diffusion_rate is anti-diffusive (extra minus)
+- [x] **F4617** (high, bug, easy/trivial) `sediment_sph.rs:142` — Ferguson-Church settling uses sqrt(R g d^4) instead of d^3
+- [x] **F4618** (high, bug, easy/trivial) `sediment_sph.rs:457` — sph_diffusion_pair has anti-diffusive sign
+- [x] **F4619** (high, fabrication, medium/medium) `sediment_sph.rs:988` — morphological_step fakes Exner update with placeholders and magic constants
 - [ ] **F4623** (high, fabrication, hard/large) `sediment_transport.rs:734` — TurbidityCurrentSph has no particle interaction at all
-- [ ] **F4628** (high, bug, easy/small) `shifting.rs:114` — fickian_shift moves particles toward clusters and has m³ units
-- [ ] **F4629** (high, perf, medium/medium) `simulation/types.rs:139` — SphSim density/pressure/viscosity loops are O(N²) all-pairs
+- [x] **F4628** (high, bug, easy/small) `shifting.rs:114` — fickian_shift moves particles toward clusters and has m³ units
+- [x] **F4629** (high, perf, medium/medium) `simulation/types.rs:139` — SphSim density/pressure/viscosity loops are O(N²) all-pairs
 - [ ] **F4636** (high, bug, easy/trivial) `simulation/types_sim.rs:294` — SphSimulation Tait EOS divides stiffness by gamma twice
 - [ ] **F4639** (high, panic, easy/trivial) `simulation/types_sim.rs:484` — apply_periodic_bc loops forever on infinite or huge coordinates
 - [ ] **F4641** (high, bug, medium/medium) `simulation/types_sim.rs:725` — PeriodicSphSim wraps positions but has no periodic interactions
@@ -295,21 +295,21 @@ Verified: 333 (critical 11, high 116, medium 169, low 37); 33 further raw findin
 - [ ] **F4654** (high, bug, easy/trivial) `sph_analysis.rs:979` — sph_curl computes negated curl (cross product order reversed)
 - [ ] **F4655** (high, bug, easy/trivial) `sph_analysis.rs:1019` — sph_laplacian Brookshaw operator returns negated Laplacian
 - [ ] **F4656** (high, bug, easy/trivial) `sph_boundary.rs:182` — Lennard-Jones wall force attractive for r0 < r < 2r0
-- [ ] **F4658** (high, bug, easy/small) `sph_coupling.rs:142` — transfer_stress multiplies traction by volume, giving N·m not N
-- [ ] **F4660** (high, bug, easy/small) `sph_coupling.rs:335` — penalty_coupling force is attractive, unsigned and zero at contact
-- [ ] **F4665** (high, bug, easy/small) `sph_thermal.rs:191` — compute_heat_flux is missing the r factor and has an extra 2x
-- [ ] **F4666** (high, fabrication, medium/small) `sph_thermal.rs:266` — phase_change() latent heat never affects temperature evolution
-- [ ] **F4671** (high, bug, medium/small) `surface_tension/functions.rs:387` — Marangoni force has the wrong sign and is applied in the bulk, not tangentially
-- [ ] **F4674** (high, fabrication, medium/small) `surface_tension/types.rs:328` — Akinci curvature term replaced by magic 0.001 density-difference term
+- [x] **F4658** (high, bug, easy/small) `sph_coupling.rs:142` — transfer_stress multiplies traction by volume, giving N·m not N
+- [x] **F4660** (high, bug, easy/small) `sph_coupling.rs:335` — penalty_coupling force is attractive, unsigned and zero at contact
+- [x] **F4665** (high, bug, easy/small) `sph_thermal.rs:191` — compute_heat_flux is missing the r factor and has an extra 2x
+- [x] **F4666** (high, fabrication, medium/small) `sph_thermal.rs:266` — phase_change() latent heat never affects temperature evolution
+- [x] **F4671** (high, bug, medium/small) `surface_tension/functions.rs:387` — Marangoni force has the wrong sign and is applied in the bulk, not tangentially
+- [x] **F4674** (high, fabrication, medium/small) `surface_tension/types.rs:328` — Akinci curvature term replaced by magic 0.001 density-difference term
 - [x] **F4679** (high, fabrication, medium/small) `thermal_sph/types.rs:249` — ThermalSphSimulation::step silently ignores configured phase change
 - [x] **F4690** (high, test, easy/small) `transport_sph/functions.rs:168` — Vacuous transport tests hide the anti-diffusion sign bugs
-- [ ] **F4691** (high, fabrication, easy/small) `transport_sph/functions.rs:491` — Kernel-value-only 'Laplacians' are placeholders, not consistent SPH operators
-- [ ] **F4692** (high, fabrication, medium/small) `transport_sph/types.rs:64` — AdvectionScheme Upwind anti-diffusive; WenoSph limiter identically one
+- [x] **F4691** (high, fabrication, easy/small) `transport_sph/functions.rs:491` — Kernel-value-only 'Laplacians' are placeholders, not consistent SPH operators
+- [x] **F4692** (high, fabrication, medium/small) `transport_sph/types.rs:64` — AdvectionScheme Upwind anti-diffusive; WenoSph limiter identically one
 - [x] **F4695** (high, bug, easy/small) `transport_sph/types.rs:422` — HeatTransferSPH conduction: inverted sign and doubled conductivity
-- [ ] **F4699** (high, bug, medium/small) `transport_sph/types.rs:936` — AdvectionSPH anti-diffusive stabiliser; semi_lagrangian flag is fake
+- [x] **F4699** (high, bug, medium/small) `transport_sph/types.rs:936` — AdvectionSPH anti-diffusive stabiliser; semi_lagrangian flag is fake
 - [x] **F4701** (high, bug, medium/small) `transport_sph/types.rs:1315` — FickianDiffusion Laplacian anti-diffusive; anisotropic tensor silently ignored
-- [ ] **F4703** (high, bug, easy/small) `turbulence/types.rs:164` — SPS stress: C_I squared, factor 2 missing, density ignored
-- [ ] **F4704** (high, bug, easy/trivial) `turbulence/types.rs:334` — Smagorinsky SGS acceleration anti-dissipative: +∇·τ with τ = −2ρν_tS
+- [x] **F4703** (high, bug, easy/small) `turbulence/types.rs:164` — SPS stress: C_I squared, factor 2 missing, density ignored
+- [x] **F4704** (high, bug, easy/trivial) `turbulence/types.rs:334` — Smagorinsky SGS acceleration anti-dissipative: +∇·τ with τ = −2ρν_tS
 - [x] **F4705** (high, fabrication, hard/medium) `turbulence/types.rs:383` — Dynamic Smagorinsky Germano coefficient is a constant: L = M/2
 - [x] **F4707** (high, bug, easy/small) `turbulence/types.rs:672` — turbulence::SigmaModel singular values wrong: cubic q has wrong sign
 - [x] **F4712** (high, fabrication, medium/small) `turbulence_sph.rs:610` — Root-exported SigmaModel::eddy_viscosity is fabricated Smagorinsky×0.1

@@ -15,6 +15,8 @@ pub mod translatedshape_traits;
 pub mod types;
 
 #[cfg(test)]
+mod epa_tests;
+#[cfg(test)]
 mod toi_tests;
 
 // Re-export all types

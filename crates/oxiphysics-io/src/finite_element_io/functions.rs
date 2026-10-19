@@ -273,7 +273,7 @@ mod tests {
         let msh = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n\
                    $Nodes\n3\n1 0 0 0\n2 1 0 0\n3 0 1 0\n$EndNodes\n\
                    $Elements\n0\n$EndElements\n";
-        let mesh = GmshMesh::parse(msh);
+        let mesh = GmshMesh::parse(msh).expect("valid MSH 2.2 file");
         assert_eq!(mesh.version, Some(GmshVersion::V2));
         assert_eq!(mesh.nodes.len(), 3);
     }
@@ -282,7 +282,7 @@ mod tests {
         let msh = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n\
                    $Nodes\n0\n$EndNodes\n\
                    $Elements\n1\n1 4 0 1 2 3 4\n$EndElements\n";
-        let mesh = GmshMesh::parse(msh);
+        let mesh = GmshMesh::parse(msh).expect("valid MSH 2.2 file");
         assert_eq!(mesh.elements.len(), 1);
         assert_eq!(mesh.elements[0].element_type, FeElementType::Tet4);
     }

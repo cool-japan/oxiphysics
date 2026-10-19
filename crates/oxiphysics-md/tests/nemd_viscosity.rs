@@ -385,11 +385,11 @@ fn sllod_viscosity(
 /// Headline cross-method gate: equilibrium Green-Kubo and non-equilibrium SLLOD
 /// shear viscosities of the same LJ state point are cross-validated.
 ///
-/// The original 10% target is *approached but not robustly met* at a CI-feasible
-/// system size / run length: the methods agree to ~15% here.  The residual gap
-/// is a genuine, well-understood NEMD calibration limit, not an implementation
-/// error — see the notes inside the test and in the `nemd` module docs.  The
-/// gate is therefore set at 18% (a deviation from the 10% goal, documented).
+/// The two independent routes agree to about 2% at this CI-feasible system size
+/// and run length (GK ≈ 1.17, SLLOD ≈ 1.18–1.22); the gate is the 10% design
+/// target.  An earlier SLLOD integrator boosted the peculiar `p_x` at every
+/// Lees-Edwards boundary crossing and left an apparent ~15% gap, which this test
+/// had to tolerate with an 18% gate; see the `nemd` module docs.
 #[test]
 fn test_gk_vs_sllod_cross_method() {
     let k = 5;
@@ -471,18 +471,12 @@ fn test_gk_vs_sllod_cross_method() {
         "GK = {eta_gk:.4} | SLLOD = {eta_sllod:.4} | relative difference = {:.1}%",
         rel * 100.0
     );
-    // DEVIATION NOTE (10% goal not robustly met): both estimators are correctly
-    // implemented and individually well-converged (SLLOD is stable and flat
-    // across γ with tight error bars; GK plateaus cleanly).  The residual ~15%
-    // gap is the well-known difficulty of matching equilibrium Green-Kubo with
-    // non-equilibrium SLLOD for a small LJ system at CI-feasible run lengths:
-    // GK's running integral overshoots before settling, and SLLOD's zero-shear
-    // limit cannot be pinned more tightly than the small-γ statistics allow.
-    // Enlarging N (tested up to 216) did not close it, so the gap is method/
-    // estimator-intrinsic rather than finite-size.  The gate is set at 18%.
+    // SLLOD is stable and flat across γ with tight error bars and GK plateaus
+    // cleanly; the observed difference is ~2%.  The 10% gate leaves room for the
+    // statistical error of the finite runs (a few % on each side).
     assert!(
-        rel < 0.18,
-        "GK ({eta_gk:.4}) and SLLOD ({eta_sllod:.4}) differ by {:.1}% (>18%)",
+        rel < 0.10,
+        "GK ({eta_gk:.4}) and SLLOD ({eta_sllod:.4}) differ by {:.1}% (>10%)",
         rel * 100.0
     );
 }

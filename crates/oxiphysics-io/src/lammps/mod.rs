@@ -5,6 +5,8 @@ mod data_reader;
 mod data_reader_tests;
 pub mod functions;
 pub mod lammpsdatasectionbuilder_traits;
+#[cfg(test)]
+mod reader_tests;
 pub mod types;
 
 // Re-export all types

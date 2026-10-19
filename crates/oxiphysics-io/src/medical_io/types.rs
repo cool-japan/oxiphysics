@@ -172,8 +172,23 @@ pub enum NrrdEncoding {
     Raw,
     /// ASCII text.
     Text,
-    /// Gzip compressed (mock: same as raw in unit tests).
+    /// Gzip compressed (RFC 1952); [`NrrdReader::load_data`] inflates it.
     Gzip,
+}
+impl NrrdEncoding {
+    /// Encoding named by the value of an NRRD `encoding:` field (ASCII case is
+    /// ignored): `raw`, `text` / `txt` / `ascii` and `gzip` / `gz`.
+    ///
+    /// Returns `None` for every other name, including the `hex` and `bzip2` /
+    /// `bz2` encodings this reader does not decode.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "raw" => Some(NrrdEncoding::Raw),
+            "text" | "txt" | "ascii" => Some(NrrdEncoding::Text),
+            "gzip" | "gz" => Some(NrrdEncoding::Gzip),
+            _ => None,
+        }
+    }
 }
 /// DICOM header tag (group, element).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -225,7 +240,10 @@ impl DicomTag {
         Self::new(0x0028, 0x1051)
     }
 }
-/// NIfTI-1 header (.nii / .nii.gz reader mock).
+/// In-memory NIfTI-1 volume: header fields, affine and voxel values (x varies fastest).
+///
+/// This is the model that [`NiftiWriter`](super::NiftiWriter) serialises to a `.nii` /
+/// `.nii.gz` file; a file is read with `medical_imaging_io::NiftiReader`.
 #[derive(Clone, Debug)]
 pub struct NiftiReader {
     /// File path.
@@ -544,12 +562,9 @@ impl NrrdReader {
                 let key = k.trim().to_lowercase();
                 let val = v.trim().to_string();
                 if key == "encoding" {
-                    self.encoding = match val.as_str() {
-                        "raw" => NrrdEncoding::Raw,
-                        "text" | "ascii" => NrrdEncoding::Text,
-                        "gzip" | "gz" => NrrdEncoding::Gzip,
-                        _ => NrrdEncoding::Raw,
-                    };
+                    // An encoding this reader cannot decode keeps `Raw` here;
+                    // `load_data` reports it from the stored field.
+                    self.encoding = NrrdEncoding::from_name(&val).unwrap_or(NrrdEncoding::Raw);
                 }
                 if key == "sizes" {
                     self.sizes = val

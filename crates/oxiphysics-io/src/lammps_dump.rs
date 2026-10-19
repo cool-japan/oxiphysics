@@ -20,15 +20,22 @@
 //! ITEM: ATOMS id type x y z [vx vy vz]
 //! 1 1 x y z ...
 //! ```
+//!
+//! The columns of the `ITEM: ATOMS` table are located by name, so any column
+//! order is read, including the scaled coordinates (`xs ys zs`) of `dump atom`.
 
 use std::io::{BufRead, Write};
 
+#[cfg(test)]
+mod frame_stream_tests;
 mod layout;
 #[cfg(test)]
 mod layout_tests;
 mod rdf;
 #[cfg(test)]
 mod rdf_tests;
+#[cfg(test)]
+mod writer_tests;
 
 use layout::{AtomTable, DumpBox, DumpLayout};
 pub use rdf::radial_distribution_function;
@@ -58,17 +65,15 @@ pub struct LammpsDumpFrame {
 
 impl LammpsDumpFrame {
     /// Extract positions for atoms of a given type.
+    ///
+    /// A type without a matching entry in [`LammpsDumpFrame::positions`] (the
+    /// arrays disagree) is skipped.
     pub fn positions_by_type(&self, atom_type: u32) -> Vec<[f64; 3]> {
         self.types
             .iter()
-            .enumerate()
-            .filter_map(|(i, &t)| {
-                if t == atom_type {
-                    Some(self.positions[i])
-                } else {
-                    None
-                }
-            })
+            .zip(&self.positions)
+            .filter(|&(&t, _)| t == atom_type)
+            .map(|(_, &position)| position)
             .collect()
     }
 
@@ -151,6 +156,9 @@ impl LammpsDumpReader {
     /// returned in [`LammpsDumpFrame::custom_properties`]; an `element` column
     /// holds text and is skipped.  A row with fewer values than the header names
     /// columns, or a value that is not a number, is an error.
+    ///
+    /// Blank lines and the `ITEM: UNITS` / `ITEM: TIME` blocks that
+    /// `dump_modify units yes time yes` writes in front of a frame are skipped.
     pub fn read_frame(reader: impl BufRead) -> Option<Result<LammpsDumpFrame, String>> {
         let mut lines = reader.lines().peekable();
 
@@ -197,7 +205,21 @@ impl LammpsDumpReader {
         }
         // ----------------------------------------------------------------
 
-        expect_keyword!("ITEM: TIMESTEP");
+        // An `ITEM: UNITS` or `ITEM: TIME` block is the item line and one value line.
+        loop {
+            let item = next_line!("ITEM: TIMESTEP");
+            match item.trim() {
+                "ITEM: UNITS" | "ITEM: TIME" => {
+                    next_line!(item.trim());
+                }
+                other if other.starts_with("ITEM: TIMESTEP") => break,
+                other => {
+                    return Some(Err(format!(
+                        "LAMMPS dump: expected 'ITEM: TIMESTEP', got '{other}'"
+                    )));
+                }
+            }
+        }
         let ts_str = next_line!("timestep value");
         let timestep: u64 = match ts_str.trim().parse() {
             Ok(v) => v,
@@ -301,23 +323,18 @@ impl LammpsDumpReader {
         }))
     }
 
-    /// Read all frames from a `BufRead` source.
+    /// Read every frame of the dump text `content`, in file order.
+    ///
+    /// The frames are read one after another with
+    /// [`LammpsDumpReader::read_frame`], so line endings may be `\n` or `\r\n`,
+    /// and blank lines and `ITEM: UNITS` / `ITEM: TIME` blocks between frames
+    /// are skipped.  Anything else between two frames, or a frame that is cut
+    /// short, is an error.
     pub fn read_all_frames(content: &str) -> Result<Vec<LammpsDumpFrame>, String> {
+        let mut stream = std::io::Cursor::new(content.as_bytes());
         let mut frames = Vec::new();
-        // Split by "ITEM: TIMESTEP" to get individual frame chunks
-        let chunks: Vec<&str> = content
-            .split("ITEM: TIMESTEP\n")
-            .filter(|s| !s.trim().is_empty())
-            .collect();
-
-        for chunk in chunks {
-            let full = format!("ITEM: TIMESTEP\n{chunk}");
-            let cursor = std::io::Cursor::new(full.as_bytes());
-            match Self::read_frame(cursor) {
-                Some(Ok(frame)) => frames.push(frame),
-                Some(Err(e)) => return Err(e),
-                None => {}
-            }
+        while let Some(frame) = Self::read_frame(&mut stream) {
+            frames.push(frame?);
         }
         Ok(frames)
     }
@@ -341,9 +358,41 @@ impl LammpsDumpReader {
 /// Writer for LAMMPS dump files.
 pub struct LammpsDumpWriter;
 
+/// The first `n` entries of a per-atom array, or an error naming the array when
+/// it is shorter.
+fn first_entries<'a, T>(values: &'a [T], n: usize, what: &str) -> Result<&'a [T], String> {
+    values.get(..n).ok_or_else(|| {
+        format!(
+            "LAMMPS dump: frame declares {n} atoms but {what} holds only {} entries",
+            values.len()
+        )
+    })
+}
+
 impl LammpsDumpWriter {
     /// Write one frame to any `Write` sink.
+    ///
+    /// `atom_ids`, `types`, `positions`, `velocities` (when present) and every
+    /// custom property must hold at least `n_atoms` values.  A shorter array is
+    /// reported as an error before anything is written; entries beyond
+    /// `n_atoms` are not written.
     pub fn write_frame(mut writer: impl Write, frame: &LammpsDumpFrame) -> Result<(), String> {
+        let n_atoms = frame.n_atoms;
+        let atom_ids = first_entries(&frame.atom_ids, n_atoms, "atom_ids")?;
+        let types = first_entries(&frame.types, n_atoms, "types")?;
+        let positions = first_entries(&frame.positions, n_atoms, "positions")?;
+        let velocities = match &frame.velocities {
+            Some(values) => Some(first_entries(values, n_atoms, "velocities")?),
+            None => None,
+        };
+        let mut custom_values: Vec<&[f64]> = Vec::with_capacity(frame.custom_properties.len());
+        for (name, values) in &frame.custom_properties {
+            custom_values.push(first_entries(
+                values,
+                n_atoms,
+                &format!("custom property '{name}'"),
+            )?);
+        }
         writeln!(writer, "ITEM: TIMESTEP").map_err(|e| e.to_string())?;
         writeln!(writer, "{}", frame.timestep).map_err(|e| e.to_string())?;
         writeln!(writer, "ITEM: NUMBER OF ATOMS").map_err(|e| e.to_string())?;
@@ -361,7 +410,6 @@ impl LammpsDumpWriter {
             }
         }
 
-        let has_vel = frame.velocities.is_some();
         let custom_names: Vec<&str> = frame
             .custom_properties
             .iter()
@@ -370,7 +418,7 @@ impl LammpsDumpWriter {
 
         // Build header
         let mut header = String::from("ITEM: ATOMS id type x y z");
-        if has_vel {
+        if velocities.is_some() {
             header.push_str(" vx vy vz");
         }
         for name in &custom_names {
@@ -379,26 +427,18 @@ impl LammpsDumpWriter {
         }
         writeln!(writer, "{}", header).map_err(|e| e.to_string())?;
 
-        let vels = frame.velocities.as_deref();
-        for i in 0..frame.n_atoms {
-            let [x, y, z] = frame.positions[i];
-            let mut line = if has_vel {
-                let [vx, vy, vz] = vels.expect("value should be present")[i];
-                format!(
-                    "{} {} {} {} {} {} {} {}",
-                    frame.atom_ids[i], frame.types[i], x, y, z, vx, vy, vz,
-                )
-            } else {
-                format!("{} {} {} {} {}", frame.atom_ids[i], frame.types[i], x, y, z,)
-            };
-
-            for (_, values) in &frame.custom_properties {
-                if i < values.len() {
-                    line.push_str(&format!(" {}", values[i]));
-                }
+        // Every slice holds exactly `n_atoms` entries, so `i` is in range for all of them.
+        let rows = atom_ids.iter().zip(types).zip(positions).enumerate();
+        for (i, ((id, atom_type), [x, y, z])) in rows {
+            let mut line = format!("{id} {atom_type} {x} {y} {z}");
+            if let Some(velocities) = velocities {
+                let [vx, vy, vz] = velocities[i];
+                line.push_str(&format!(" {vx} {vy} {vz}"));
             }
-
-            writeln!(writer, "{}", line).map_err(|e| e.to_string())?;
+            for values in &custom_values {
+                line.push_str(&format!(" {}", values[i]));
+            }
+            writeln!(writer, "{line}").map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -442,29 +482,28 @@ pub fn mean_kinetic_energy(frame: &LammpsDumpFrame) -> Option<f64> {
 ///
 /// LAMMPS may output the 6 independent Voigt components:
 /// `c_stress[1..6]` or `sxx syy szz sxy sxz syz`.
+///
+/// Returns `None` unless all six named components (`sxx syy szz sxy sxz syz`)
+/// are present and hold a value for each of the `n_atoms` atoms.
 pub fn extract_stress_tensor(frame: &LammpsDumpFrame) -> Option<Vec<[f64; 6]>> {
-    // Try Voigt-named properties
-    let names = ["sxx", "syy", "szz", "sxy", "sxz", "syz"];
-    let props: Vec<Option<&[f64]>> = names.iter().map(|n| frame.get_custom_property(n)).collect();
-
-    if props.iter().all(|p| p.is_some()) {
-        let n = frame.n_atoms;
-        let result: Vec<[f64; 6]> = (0..n)
-            .map(|i| {
-                [
-                    props[0].expect("value should be present")[i],
-                    props[1].expect("value should be present")[i],
-                    props[2].expect("value should be present")[i],
-                    props[3].expect("value should be present")[i],
-                    props[4].expect("value should be present")[i],
-                    props[5].expect("value should be present")[i],
-                ]
-            })
-            .collect();
-        return Some(result);
-    }
-
-    None
+    let sxx = frame.get_custom_property("sxx")?;
+    let syy = frame.get_custom_property("syy")?;
+    let szz = frame.get_custom_property("szz")?;
+    let sxy = frame.get_custom_property("sxy")?;
+    let sxz = frame.get_custom_property("sxz")?;
+    let syz = frame.get_custom_property("syz")?;
+    (0..frame.n_atoms)
+        .map(|i| {
+            Some([
+                *sxx.get(i)?,
+                *syy.get(i)?,
+                *szz.get(i)?,
+                *sxy.get(i)?,
+                *sxz.get(i)?,
+                *syz.get(i)?,
+            ])
+        })
+        .collect()
 }
 
 /// Compute the von Mises stress from a Voigt stress tensor \[s11,s22,s33,s12,s13,s23\].
@@ -585,13 +624,16 @@ pub fn detect_atom_style(header: &str) -> LammpsAtomStyle {
 // ─── Per-atom force extraction ────────────────────────────────────────────────
 
 /// Extract per-atom force vectors from custom properties `fx`, `fy`, `fz`.
+///
+/// Returns `None` unless all three components are present and hold a value for
+/// each of the `n_atoms` atoms.
 pub fn extract_forces(frame: &LammpsDumpFrame) -> Option<Vec<[f64; 3]>> {
     let fx = frame.get_custom_property("fx")?;
     let fy = frame.get_custom_property("fy")?;
     let fz = frame.get_custom_property("fz")?;
-    let n = frame.n_atoms;
-    let forces: Vec<[f64; 3]> = (0..n).map(|i| [fx[i], fy[i], fz[i]]).collect();
-    Some(forces)
+    (0..frame.n_atoms)
+        .map(|i| Some([*fx.get(i)?, *fy.get(i)?, *fz.get(i)?]))
+        .collect()
 }
 
 /// Mean force magnitude per atom.

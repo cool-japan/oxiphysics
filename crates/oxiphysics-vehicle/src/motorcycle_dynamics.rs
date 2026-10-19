@@ -7,6 +7,8 @@
 //! including:
 //!
 //! - **Lean dynamics**: tilt angle, gyroscopic precession effects
+//! - **Lateral dynamics**: lateral velocity and yaw rate of the single-track
+//!   model, driven by the steering angle
 //! - **Counter-steering model**: steering torque to lean coupling
 //! - **Single-track (Pacejka) tire forces**: Magic Formula for both tyres
 //! - **Tank-slapper / weave / wobble modes**: linearised eigenvalue analysis
@@ -19,7 +21,9 @@
 
 use std::f64::consts::PI;
 
+mod lateral;
 mod longitudinal;
+use lateral::{Chassis, LateralInput, LateralState};
 use longitudinal::{ChassisInput, TyreLongitudinal, WheelInput, advance, slip_ratio};
 
 // ---------------------------------------------------------------------------
@@ -155,14 +159,19 @@ impl PacejkaMotoTire {
     }
 
     /// Update the relaxation filter for the slip angle.
+    ///
+    /// The filtered slip angle relaxes towards `raw_slip` over the rolling
+    /// distance `s = |v|·t`: `dα/ds = (α_raw − α) / σ`.  For a raw slip angle
+    /// that is constant during the step this is integrated exactly,
+    /// `α ← α_raw + (α − α_raw)·exp(−|v|·dt / σ)`, so the filter is stable for
+    /// any speed and step size.
     pub fn update_relaxation(&mut self, raw_slip: f64, velocity: f64, dt: f64) {
         if velocity.abs() < 1e-3 {
             self.filtered_slip_angle = raw_slip;
             return;
         }
-        // First-order relaxation: dα/ds = (α_raw - α) / σ
-        let rate = velocity / self.relaxation_length;
-        self.filtered_slip_angle += dt * rate * (raw_slip - self.filtered_slip_angle);
+        let decay = (-velocity.abs() * dt / self.relaxation_length.max(1e-6)).exp();
+        self.filtered_slip_angle = raw_slip + (self.filtered_slip_angle - raw_slip) * decay;
         self.filtered_slip_angle = clamp(self.filtered_slip_angle, -0.5, 0.5);
     }
 
@@ -825,8 +834,11 @@ pub struct MotorcycleState {
     pub steer_angle: f64,
     /// Steering rate (rad/s).
     pub steer_rate: f64,
-    /// Yaw rate (rad/s).
+    /// Yaw rate (rad/s), positive = right.
     pub yaw_rate: f64,
+    /// Lateral velocity of the centre of mass in the body frame (m/s),
+    /// positive = right.
+    pub lateral_velocity: f64,
     /// Front wheel angular velocity (rad/s).
     pub front_wheel_omega: f64,
     /// Rear wheel angular velocity (rad/s).
@@ -855,6 +867,7 @@ impl MotorcycleState {
             steer_angle: 0.0,
             steer_rate: 0.0,
             yaw_rate: 0.0,
+            lateral_velocity: 0.0,
             front_wheel_omega: 0.0,
             rear_wheel_omega: 0.0,
             front_compression: 0.02,
@@ -932,11 +945,14 @@ impl MotorcycleParameters {
 
 /// Full single-track motorcycle dynamics simulator.
 ///
-/// Integrates the equations of motion for lean, yaw, steer, and longitudinal
-/// dynamics using a semi-explicit Euler scheme; the stiff longitudinal
-/// wheel/ground subsystem (forward speed and the two wheel speeds) is integrated
-/// linearly implicitly.  Tyre forces use the Pacejka Magic Formula.  Suspension is
-/// modelled as decoupled spring-dampers at each axle.
+/// Integrates the equations of motion for lean, yaw, lateral velocity, steer and
+/// longitudinal dynamics using a semi-explicit Euler scheme; the stiff
+/// longitudinal wheel/ground subsystem (forward speed and the two wheel speeds)
+/// is integrated linearly implicitly, the lateral subsystem (lateral velocity,
+/// yaw rate and tyre relaxation) with as many explicit sub-steps as its
+/// stability needs.  The steering angle follows the steering rate.  Tyre forces
+/// use the Pacejka Magic Formula.  Suspension is modelled as decoupled
+/// spring-dampers at each axle.
 #[derive(Debug, Clone)]
 pub struct MotorcycleDynamicsSimulator {
     /// Physical parameters.
@@ -1047,13 +1063,25 @@ impl MotorcycleDynamicsSimulator {
     /// Advance the simulation by one time step `dt` (seconds).
     ///
     /// The bike is a single-track model with right-positive conventions (yaw rate,
-    /// steer angle, lean angle and lateral force all point to the right).  The
-    /// longitudinal subsystem (forward speed and the two wheel speeds) is coupled
-    /// through the tyre forces only and is integrated linearly implicitly.
+    /// lateral velocity, steer angle, lean angle and lateral force all point to
+    /// the right).
+    ///
+    /// * The steering angle follows the steering rate: `δ ← δ + dt · δ̇`; the
+    ///   front wheel is steered by the angle reached at the end of the step.
+    /// * The lateral subsystem (lateral velocity `v_y`, yaw rate `r` and the
+    ///   tyre relaxation) obeys `α_f = δ − (v_y + a r)/v`, `α_r = (b r − v_y)/v`,
+    ///   `m (v̇_y + v r) = F_y,f cos δ + F_y,r` and
+    ///   `I_z ṙ = a F_y,f cos δ − b F_y,r`; see the `lateral` module.  Below
+    ///   0.1 m/s the bike follows the kinematic no-side-slip motion.
+    /// * The longitudinal subsystem (forward speed and the two wheel speeds) is
+    ///   coupled through the tyre forces only and is integrated linearly
+    ///   implicitly.
+    /// * The roll dynamics see the lateral acceleration of the centre of mass.
     pub fn step(&mut self, dt: f64) {
         let v = self.state.speed;
         let phi = self.state.lean_angle;
-        let delta = self.state.steer_angle;
+        // The handlebar follows the commanded steering rate.
+        let delta = self.state.steer_angle + dt * self.state.steer_rate;
 
         // --- Tyre slip ---
         let rr = self.params.rear_wheel_radius;
@@ -1062,36 +1090,39 @@ impl MotorcycleDynamicsSimulator {
         let rear_slip_ratio = slip_ratio(self.state.rear_wheel_omega, rr, v);
         let front_slip_ratio = slip_ratio(self.state.front_wheel_omega, rf, v);
 
-        // Lateral slip angles (small angle model).  The front axle is `a` ahead of
-        // the centre of mass and the rear axle `b` behind it, so a yaw rate carries
-        // the front axle sideways with `a * yaw_rate` and the rear axle the other way
-        // with `b * yaw_rate`.
+        // --- Lateral dynamics ---
+        // The front axle is `a` ahead of the centre of mass and the rear axle `b`
+        // behind it, so a yaw rate carries the front axle sideways with `a * r`
+        // and the rear axle the other way with `b * r`; a lateral velocity moves
+        // both axles alike.  The tyre relaxation filters advance with it.
         let a = self.params.a;
         let b = self.params.wheelbase - a;
-        let front_slip_angle = if v.abs() > 0.1 {
-            delta - (self.state.yaw_rate * a / v)
-        } else {
-            0.0
-        };
-        let rear_slip_angle = if v.abs() > 0.1 {
-            self.state.yaw_rate * b / v
-        } else {
-            0.0
-        };
-
-        // Update relaxation filters
-        self.front_tire.update_relaxation(front_slip_angle, v, dt);
-        self.rear_tire.update_relaxation(rear_slip_angle, v, dt);
-
-        // --- Tyre forces ---
+        let (lateral, lateral_accel) = lateral::advance(
+            dt,
+            Chassis {
+                mass: self.params.total_mass,
+                yaw_inertia: self.params.yaw_inertia,
+                a,
+                b,
+            },
+            LateralInput {
+                speed: v,
+                steer: delta,
+                lean: phi,
+                front_normal: self.state.front_normal,
+                rear_normal: self.state.rear_normal,
+                front_slip_ratio,
+                rear_slip_ratio,
+            },
+            LateralState {
+                lateral_velocity: self.state.lateral_velocity,
+                yaw_rate: self.state.yaw_rate,
+            },
+            &mut self.front_tire,
+            &mut self.rear_tire,
+        );
         let rear_alpha = self.rear_tire.filtered_slip_angle;
         let front_alpha = self.front_tire.filtered_slip_angle;
-        let (rear_fy, _, _rear_mz) =
-            self.rear_tire
-                .forces(rear_alpha, rear_slip_ratio, self.state.rear_normal, phi);
-        let (front_fy, _, _front_mz) =
-            self.front_tire
-                .forces(front_alpha, front_slip_ratio, self.state.front_normal, phi);
 
         // --- Longitudinal dynamics ---
         // Drive and brake torques act on the wheels; the bike feels them only
@@ -1134,9 +1165,12 @@ impl MotorcycleDynamicsSimulator {
         let (longitudinal, long_accel) = advance(dt, chassis, rear_wheel, front_wheel);
 
         // --- Lean (roll) dynamics ---
+        // The inertial force of the lateral acceleration of the centre of mass
+        // (`v_y' + v r`, i.e. the lateral tyre force over the mass) acts against
+        // the lean.
         let gravity_lean = self.params.total_mass * G * self.params.com_height * phi.sin();
         let centrifugal_lean =
-            -self.params.total_mass * self.state.yaw_rate * v * self.params.com_height * phi.cos();
+            -self.params.total_mass * lateral_accel * self.params.com_height * phi.cos();
         let gyro_lean = self
             .counter_steer
             .gyroscopic_lean_moment(self.state.steer_rate);
@@ -1145,12 +1179,6 @@ impl MotorcycleDynamicsSimulator {
         let net_lean_torque =
             gravity_lean + centrifugal_lean + gyro_lean + rider_torque + limiter_torque;
         let lean_accel = net_lean_torque / self.params.roll_inertia;
-
-        // --- Yaw dynamics ---
-        // The front lateral force acts on the lever arm `a`, the rear one on `b`
-        // (and in the opposite sense).
-        let net_yaw_torque = (front_fy * a) - (rear_fy * b);
-        let yaw_accel = net_yaw_torque / self.params.yaw_inertia;
 
         // --- Suspension step ---
         let road_vel = 0.0; // flat ground
@@ -1179,7 +1207,9 @@ impl MotorcycleDynamicsSimulator {
         self.state.lean_angle += dt * self.state.lean_rate;
         self.state.lean_angle = self.lean_limiter.apply_hard_limit(self.state.lean_angle);
 
-        self.state.yaw_rate += dt * yaw_accel;
+        self.state.steer_angle = delta;
+        self.state.lateral_velocity = lateral.lateral_velocity;
+        self.state.yaw_rate = lateral.yaw_rate;
 
         self.state.front_compression = self.front_suspension.compression;
         self.state.rear_compression = self.rear_suspension.compression;
@@ -1305,6 +1335,45 @@ mod tests {
             fy > 0.0,
             "Positive slip angle should give positive lateral force"
         );
+    }
+
+    #[test]
+    fn test_tire_relaxation_is_exact_for_any_step_size() {
+        // dα/ds = (raw - α) / σ with a constant raw slip angle has the solution
+        // α(t) = raw + (α0 - raw) exp(-|v| t / σ); explicit Euler overshoots and
+        // diverges once |v| dt / σ exceeds 2.
+        let (raw, speed, alpha_0) = (0.12, 25.0, -0.1);
+        for dt in [1e-4, 0.01, 0.2, 5.0] {
+            let mut tire = PacejkaMotoTire::new();
+            tire.filtered_slip_angle = alpha_0;
+            tire.update_relaxation(raw, speed, dt);
+            let expected = raw + (alpha_0 - raw) * (-speed * dt / tire.relaxation_length).exp();
+            assert!(
+                (tire.filtered_slip_angle - expected).abs() < 1e-12,
+                "dt = {dt}: {} vs {expected}",
+                tire.filtered_slip_angle
+            );
+            assert!(
+                tire.filtered_slip_angle >= alpha_0 - 1e-15
+                    && tire.filtered_slip_angle <= raw + 1e-15,
+                "dt = {dt}: the filter must not overshoot, got {}",
+                tire.filtered_slip_angle
+            );
+        }
+        // two half steps are one full step
+        let mut halves = PacejkaMotoTire::new();
+        halves.filtered_slip_angle = alpha_0;
+        halves.update_relaxation(raw, speed, 0.005);
+        halves.update_relaxation(raw, speed, 0.005);
+        let mut whole = PacejkaMotoTire::new();
+        whole.filtered_slip_angle = alpha_0;
+        whole.update_relaxation(raw, speed, 0.01);
+        assert!((halves.filtered_slip_angle - whole.filtered_slip_angle).abs() < 1e-12);
+        // rolling backwards relaxes towards the raw angle just the same
+        let mut backwards = PacejkaMotoTire::new();
+        backwards.filtered_slip_angle = alpha_0;
+        backwards.update_relaxation(raw, -speed, 0.01);
+        assert!((backwards.filtered_slip_angle - whole.filtered_slip_angle).abs() < 1e-12);
     }
 
     #[test]

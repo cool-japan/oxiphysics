@@ -2,6 +2,8 @@
 
 pub mod ekfstate_traits;
 pub mod functions;
+#[cfg(test)]
+mod slam_ukf_tests;
 pub mod types;
 pub mod ukfstate_traits;
 

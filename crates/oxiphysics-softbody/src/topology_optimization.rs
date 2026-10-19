@@ -22,6 +22,33 @@
 //! No nalgebra dependency — all arrays are plain `f64` / `Vec`f64`.
 
 // ---------------------------------------------------------------------------
+// MMA sub-problem
+// ---------------------------------------------------------------------------
+
+/// Per-element data of the MMA sub-problem solved by
+/// [`TopOptProblem::mma_update`].
+struct MmaElement {
+    /// Lower asymptote L_e of the approximation `q_e / (ρ − L_e)`.
+    lower_asymptote: f64,
+    /// Coefficient q_e = (ρ_e − L_e)² · max(0, −∂C/∂ρ_e).
+    q_coeff: f64,
+    /// Smallest admissible new density (void, move limit, asymptote margin).
+    lower_bound: f64,
+    /// Largest admissible new density (solid, move limit).
+    upper_bound: f64,
+}
+
+impl MmaElement {
+    /// Density at which the Lagrangian of the sub-problem is stationary for the
+    /// volume multiplier `mu`, ρ* = L + √(q / μ), limited to the bounds.
+    fn stationary_density(&self, mu: f64) -> f64 {
+        (self.lower_asymptote + (self.q_coeff / mu).sqrt())
+            .max(self.lower_bound)
+            .min(self.upper_bound)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TopOptProblem
 // ---------------------------------------------------------------------------
 
@@ -258,24 +285,58 @@ impl TopOptProblem {
     }
 
     // -----------------------------------------------------------------------
-    // MMA update (simplified)
+    // MMA update
     // -----------------------------------------------------------------------
 
-    /// **Method of Moving Asymptotes** update step (simplified single-variable version).
+    /// **Method of Moving Asymptotes** update step (Svanberg, 1987) for the
+    /// minimum-compliance problem with one volume constraint.
     ///
-    /// For each element, constructs a local convex approximation:
-    ///   f̃_e(ρ) = a_e / (U_e - ρ)   with U_e = ρ_e + asymptote_move
+    /// Around the current design ρ_e the compliance is replaced by its convex
+    /// MMA approximation with the lower asymptote L_e = ρ_e − `asymptote`:
     ///
-    /// The update satisfies the volume constraint via bisection on the Lagrange
-    /// multiplier μ of the linearised sub-problem.
+    /// ```text
+    /// C̃(ρ) = const + Σ_e q_e / (ρ_e − L_e),
+    /// q_e = (ρ_e^k − L_e)² · max(0, −∂C̃/∂ρ_e).
+    /// ```
+    ///
+    /// Compliance never increases when material is added (∂C̃/∂ρ_e ≤ 0), which
+    /// is why the lower-asymptote term carries the sensitivity: the approximation
+    /// is decreasing and convex in ρ_e, steeper where the element is more
+    /// valuable. The volume constraint Σ ρ_e / n = `v_frac` is linear. With the
+    /// multiplier μ of the constraint the Lagrangian is stationary where
+    /// −q_e / (ρ_e − L_e)² + μ = 0, that is
+    ///
+    /// ```text
+    /// ρ_e*(μ) = L_e + √(q_e / μ).
+    /// ```
+    ///
+    /// An element with a larger |∂C̃/∂ρ_e| therefore always receives *more*
+    /// material. The result is clamped to the interval from
+    /// `max(ρ_min, ρ_e − move_limit, L_e + 0.1 (ρ_e − L_e))` to
+    /// `min(1, ρ_e + move_limit)`, and μ is found by bisection (in log space,
+    /// between 1e-20 and 1e20) so that the volume fraction meets `v_frac`: a
+    /// larger μ lowers every density. If the move limits make the target
+    /// unreachable the densities of the bound closest to the target are
+    /// returned.
+    ///
+    /// Elements whose sensitivity is zero (or positive) do not pay for
+    /// themselves and move to their lower bound. The asymptote has to lie
+    /// below the current density; a non-positive `asymptote` is replaced by
+    /// 1e-9.
     ///
     /// # Parameters
-    /// - `filtered_sens`: filtered sensitivities ∂C̃/∂ρ.
+    /// - `filtered_sens`: filtered sensitivities ∂C̃/∂ρ (one per element).
     /// - `v_frac`:        volume fraction target.
     /// - `move_limit`:    maximum per-element step size in a single iteration.
-    /// - `asymptote`:     MMA asymptote distance (controls convexity).
+    /// - `asymptote`:     distance of the lower asymptote below the current
+    ///   density (controls the convexity of the approximation).
     ///
     /// Returns the new density vector.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `filtered_sens` does not hold exactly one sensitivity per
+    /// element.
     pub fn mma_update(
         &self,
         filtered_sens: &[f64],
@@ -284,54 +345,58 @@ impl TopOptProblem {
         asymptote: f64,
     ) -> Vec<f64> {
         let n = self.n_elements();
-        let mut new_density = vec![0.0f64; n];
+        assert_eq!(
+            filtered_sens.len(),
+            n,
+            "one filtered sensitivity per element is required"
+        );
+        if n == 0 {
+            return Vec::new();
+        }
+        let asymptote = asymptote.max(1e-9);
 
-        // Bisect on μ (Lagrange multiplier for volume constraint)
-        let mut mu_lo = 0.0_f64;
-        let mut mu_hi = 1e6_f64;
-
-        // Pre-compute upper asymptotes
-        let upper: Vec<f64> = self.density.iter().map(|&r| r + asymptote).collect();
-        // Coefficients: p_e = max(0, -dc_e) * (U_e - rho_e)^2
-        let p_coeff: Vec<f64> = filtered_sens
-            .iter()
-            .zip(self.density.iter())
-            .zip(upper.iter())
-            .map(|((&dc, &rho), &u)| (-dc).max(0.0) * (u - rho).powi(2))
-            .collect();
-        // Coefficients for volume: q_e = (U_e - rho_e)^2
-        let q_coeff: Vec<f64> = self
+        let elements: Vec<MmaElement> = self
             .density
             .iter()
-            .zip(upper.iter())
-            .map(|(&rho, &u)| (u - rho).powi(2))
+            .zip(filtered_sens.iter())
+            .map(|(&rho, &dc)| MmaElement {
+                lower_asymptote: rho - asymptote,
+                q_coeff: asymptote * asymptote * (-dc).max(0.0),
+                lower_bound: self
+                    .rho_min
+                    .max(rho - move_limit)
+                    .max(rho - 0.9 * asymptote),
+                upper_bound: (rho + move_limit).min(1.0),
+            })
             .collect();
+        let volume_fraction_at = |mu: f64| -> f64 {
+            elements
+                .iter()
+                .map(|element| element.stationary_density(mu))
+                .sum::<f64>()
+                / n as f64
+        };
 
+        // Bisection on log10(μ): the volume fraction decreases with μ.
+        let mut log_mu_lo = -20.0_f64;
+        let mut log_mu_hi = 20.0_f64;
         for _ in 0..100 {
-            let mu_mid = 0.5 * (mu_lo + mu_hi);
-            let mut vol = 0.0f64;
-            for e in 0..n {
-                let rho = self.density[e];
-                let u = upper[e];
-                // Optimality condition: rho* = U - sqrt(p_e / (mu * q_e + 1e-30))
-                let denom = (mu_mid * q_coeff[e] + 1e-30).max(1e-30);
-                let rho_star = u - (p_coeff[e] / denom).sqrt();
-                let rho_lo = (rho - move_limit).max(self.rho_min);
-                let rho_hi = (rho + move_limit).min(1.0);
-                let rho_new = rho_star.clamp(rho_lo, rho_hi);
-                new_density[e] = rho_new;
-                vol += rho_new;
+            if log_mu_hi - log_mu_lo < 1e-10 {
+                break;
             }
-            let vf = vol / n as f64;
-            // Larger μ → larger ρ* → larger vf.
-            // To reduce vf below target, decrease μ (upper bound).
-            if vf > v_frac {
-                mu_hi = mu_mid;
+            let log_mu_mid = 0.5 * (log_mu_lo + log_mu_hi);
+            if volume_fraction_at(10.0_f64.powf(log_mu_mid)) > v_frac {
+                log_mu_lo = log_mu_mid;
             } else {
-                mu_lo = mu_mid;
+                log_mu_hi = log_mu_mid;
             }
         }
-        new_density
+        // `log_mu_hi` is the end of the bracket that satisfies the constraint.
+        let mu = 10.0_f64.powf(log_mu_hi);
+        elements
+            .iter()
+            .map(|element| element.stationary_density(mu))
+            .collect()
     }
 
     // -----------------------------------------------------------------------
@@ -1162,6 +1227,186 @@ mod tests {
             (vf - 0.4).abs() < 0.05,
             "MMA update should drive volume fraction toward 0.4, got {vf:.4}"
         );
+    }
+
+    // MMA: the more sensitive element must receive the larger density.
+    // n = 2, rho = 0.5, dc = [-10, -1], v_frac = 0.5: the old upper-asymptote
+    // model returned rho[0] < rho[1].
+    #[test]
+    fn test_mma_update_gives_more_material_to_more_sensitive_elements() {
+        let prob = TopOptProblem::new(2, 1, 0.5, 1e-3, 3.0);
+        let new_density = prob.mma_update(&[-10.0, -1.0], 0.5, 0.2, 0.5);
+        assert!(
+            new_density[0] > new_density[1],
+            "stiffer-contributing element must gain material: {new_density:?}"
+        );
+        // Both elements sit at their move limits (0.5 +/- 0.2) and meet the target.
+        assert!((new_density[0] - 0.7).abs() < 1e-9, "{new_density:?}");
+        assert!((new_density[1] - 0.3).abs() < 1e-9, "{new_density:?}");
+        let vf = new_density.iter().sum::<f64>() / 2.0;
+        assert!((vf - 0.5).abs() < 1e-9, "volume fraction {vf}");
+    }
+
+    // Without move-limit clamping the stationary densities have a closed form:
+    // L = rho - a = 0 and q_e = a^2 |dc_e| give rho_e = sqrt(q_e / mu), and the
+    // volume constraint fixes sqrt(mu) = (sqrt(2.5) + sqrt(0.25)) / (2 * 0.5).
+    #[test]
+    fn test_mma_update_matches_the_analytic_stationary_point() {
+        let prob = TopOptProblem::new(2, 1, 0.5, 1e-3, 3.0);
+        let new_density = prob.mma_update(&[-10.0, -1.0], 0.5, 0.45, 0.5);
+        let root_mu = 2.5_f64.sqrt() + 0.25_f64.sqrt();
+        let expected = [2.5_f64.sqrt() / root_mu, 0.25_f64.sqrt() / root_mu];
+        for (e, (&got, &want)) in new_density.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-8,
+                "element {e}: got {got}, analytic {want}"
+            );
+        }
+        assert!(new_density[0] > new_density[1]);
+    }
+
+    // For a uniform design with the asymptote at rho the lower asymptote is at
+    // zero, the MMA stationary point rho * sqrt(|dc| / mu) is the optimality
+    // criteria update, so both rules must agree and rank the elements by |dc|.
+    #[test]
+    fn test_mma_update_agrees_with_optimality_criteria_ranking() {
+        let prob = TopOptProblem::new(4, 1, 0.5, 1e-3, 3.0);
+        let sens = [-1.0, -4.0, -9.0, -16.0];
+        let mma = prob.mma_update(&sens, 0.5, 0.45, 0.5);
+        let oc = prob.optimality_criteria(&sens, 0.5, 0.45);
+        // sqrt(mu) = mean(sqrt|dc|) = 2.5, rho = 0.5 sqrt|dc| / 2.5.
+        let expected = [0.2, 0.4, 0.6, 0.8];
+        for e in 0..4 {
+            assert!(
+                (mma[e] - expected[e]).abs() < 1e-8,
+                "MMA element {e}: {} vs {}",
+                mma[e],
+                expected[e]
+            );
+            assert!(
+                (mma[e] - oc[e]).abs() < 1e-6,
+                "MMA and OC must agree on element {e}: {} vs {}",
+                mma[e],
+                oc[e]
+            );
+        }
+        for pair in mma.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "density must increase with |dc|: {mma:?}"
+            );
+        }
+    }
+
+    // The ordering of the densities follows the ordering of the sensitivities
+    // for a larger non-uniform problem as well (clamped elements may tie).
+    #[test]
+    fn test_mma_update_orders_densities_by_sensitivity_magnitude() {
+        let mut prob = TopOptProblem::new(5, 4, 0.5, 1e-3, 3.0);
+        let n = prob.n_elements();
+        let sens: Vec<f64> = (0..n)
+            .map(|e| -(1.0 + ((e * 7 + 3) % n) as f64) * 0.37)
+            .collect();
+        // Non-uniform current design, so that the asymptotes differ per element.
+        for (e, rho) in prob.density.iter_mut().enumerate() {
+            *rho = 0.3 + 0.4 * ((e * 5 + 1) % n) as f64 / n as f64;
+        }
+        let new_density = prob.mma_update(&sens, 0.5, 0.15, 0.4);
+        let mean = new_density.iter().sum::<f64>() / n as f64;
+        assert!((mean - 0.5).abs() < 1e-6, "volume fraction {mean}");
+        let mut strictly_ordered_pairs = 0;
+        for i in 0..n {
+            for j in 0..n {
+                // Compare the unclamped stationary values: the more sensitive
+                // element relative to its own scale gets the larger share.
+                if prob.density[i] == prob.density[j] && sens[i] < sens[j] {
+                    assert!(
+                        new_density[i] >= new_density[j] - 1e-12,
+                        "elements {i} and {j}: {} vs {}",
+                        new_density[i],
+                        new_density[j]
+                    );
+                    if new_density[i] > new_density[j] + 1e-9 {
+                        strictly_ordered_pairs += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            strictly_ordered_pairs > 0,
+            "the update must separate elements of equal density by their sensitivity"
+        );
+    }
+
+    // C~ is homogeneous in the sensitivities: scaling them rescales mu only.
+    #[test]
+    fn test_mma_update_is_invariant_to_the_scale_of_the_sensitivities() {
+        let prob = TopOptProblem::new(6, 1, 0.5, 1e-3, 3.0);
+        let sens = [-0.3, -1.1, -2.5, -0.7, -4.0, -0.05];
+        let scaled: Vec<f64> = sens.iter().map(|s| s * 1.0e4).collect();
+        let a = prob.mma_update(&sens, 0.45, 0.3, 0.5);
+        let b = prob.mma_update(&scaled, 0.45, 0.3, 0.5);
+        for (e, (&x, &y)) in a.iter().zip(b.iter()).enumerate() {
+            assert!((x - y).abs() < 1e-8, "element {e}: {x} vs {y}");
+        }
+    }
+
+    // The volume fraction of the update meets the target whenever the move
+    // limits allow it, from above and from below.
+    #[test]
+    fn test_mma_update_meets_the_volume_target_from_both_sides() {
+        let prob = TopOptProblem::new(8, 1, 0.5, 1e-3, 3.0);
+        let sens = [-5.0, -1.0, -3.0, -0.5, -2.0, -8.0, -0.2, -1.5];
+        for target in [0.35, 0.45, 0.5, 0.58, 0.65] {
+            let new_density = prob.mma_update(&sens, target, 0.3, 0.5);
+            let vf = new_density.iter().sum::<f64>() / 8.0;
+            assert!(
+                (vf - target).abs() < 1e-8,
+                "target {target}: volume fraction {vf}"
+            );
+            for &rho in &new_density {
+                assert!((0.2 - 1e-12..=0.8 + 1e-12).contains(&rho), "{rho}");
+            }
+        }
+    }
+
+    // An unreachable target returns the bound closest to it.
+    #[test]
+    fn test_mma_update_returns_the_nearest_bound_when_the_target_is_unreachable() {
+        let prob = TopOptProblem::new(4, 1, 0.5, 1e-3, 3.0);
+        let sens = [-1.0, -2.0, -3.0, -4.0];
+        let low = prob.mma_update(&sens, 0.0, 0.1, 0.5);
+        let high = prob.mma_update(&sens, 1.0, 0.1, 0.5);
+        for e in 0..4 {
+            assert!((low[e] - 0.4).abs() < 1e-12, "{low:?}");
+            assert!((high[e] - 0.6).abs() < 1e-12, "{high:?}");
+        }
+    }
+
+    // An element without compliance sensitivity is worth no material.
+    #[test]
+    fn test_mma_update_removes_material_where_the_sensitivity_vanishes() {
+        let prob = TopOptProblem::new(3, 1, 0.5, 1e-3, 3.0);
+        let new_density = prob.mma_update(&[-4.0, 0.0, 2.0], 0.5, 0.3, 0.5);
+        assert!(
+            new_density[0] > 0.5,
+            "the sensitive element gains: {new_density:?}"
+        );
+        assert!((new_density[1] - 0.2).abs() < 1e-12, "{new_density:?}");
+        assert!((new_density[2] - 0.2).abs() < 1e-12, "{new_density:?}");
+    }
+
+    #[test]
+    fn test_mma_update_handles_degenerate_arguments() {
+        let prob = TopOptProblem::new(3, 1, 0.5, 1e-3, 3.0);
+        let frozen = prob.mma_update(&[-1.0, -2.0, -3.0], 0.5, 0.2, 0.0);
+        for &rho in &frozen {
+            assert!(rho.is_finite() && (0.3..=0.7).contains(&rho), "{frozen:?}");
+        }
+        let nan_sens = prob.mma_update(&[f64::NAN, -2.0, -3.0], 0.5, 0.2, 0.5);
+        assert!(nan_sens.iter().all(|rho| rho.is_finite()), "{nan_sens:?}");
+        let empty = TopOptProblem::new(0, 0, 0.5, 1e-3, 3.0);
+        assert!(empty.mma_update(&[], 0.5, 0.2, 0.5).is_empty());
     }
 
     // 40. Density filter output is in [0, 1] for densities in [0, 1].

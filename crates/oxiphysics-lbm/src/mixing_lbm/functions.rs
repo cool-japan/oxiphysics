@@ -2,6 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use crate::error::Error;
+
 /// Compute the diffusive flux via Fick's first law.
 ///
 /// `J = -D * ∂c/∂x`
@@ -168,6 +170,198 @@ pub(super) const D2Q9_W: [f64; 9] = [
     1.0 / 36.0,
     1.0 / 36.0,
 ];
+/// Squared speed of sound `c_s² = 1/3` of the D2Q9 stencil (lattice units).
+pub const D2Q9_CS2: f64 = 1.0 / 3.0;
+
+/// Diffusivity `D = c_s² (τ − ½)` of a BGK advection–diffusion lattice with
+/// relaxation time `tau` (lattice units, `Δx = Δt = 1`).
+///
+/// Also the kinematic viscosity of a BGK fluid with relaxation time `tau`.
+pub fn lattice_diffusivity(tau: f64) -> f64 {
+    D2Q9_CS2 * (tau - 0.5)
+}
+
+/// Neighbour a node pulls population `q` from along x: `0` = itself,
+/// `1` = the node at `i − 1` (for `c_x = +1`), `2` = the node at `i + 1`
+/// (for `c_x = −1`).
+const PULL_X: [usize; 9] = [0, 1, 0, 2, 0, 1, 2, 2, 1];
+/// Neighbour a node pulls population `q` from along y (same encoding as
+/// [`PULL_X`]).
+const PULL_Y: [usize; 9] = [0, 0, 1, 0, 2, 1, 1, 2, 2];
+
+/// Periodic D2Q9 streaming of a node-major flat population array.
+///
+/// `src` and `dst` hold `nx · ny` nodes of nine populations each; the
+/// populations of node `(i, j)` start at `9 (j nx + i)`, in the direction
+/// order `c = (0,0), (1,0), (0,1), (−1,0), (0,−1), (1,1), (−1,1), (−1,−1),
+/// (1,−1)`.  Every population moves one lattice link and wraps around the
+/// domain:
+///
+/// ```text
+/// dst[node(i + c_x, j + c_y)][q] = src[node(i, j)][q]    (indices mod nx, ny)
+/// ```
+///
+/// `dst` is overwritten completely and `src` is left untouched, so the sum of
+/// every direction is conserved exactly.  An empty grid (`nx == 0` or
+/// `ny == 0`) is a no-op.
+///
+/// # Errors
+///
+/// [`Error::IncompatibleParameters`] when `src` or `dst` does not hold exactly
+/// `9 · nx · ny` values; nothing is written in that case.
+///
+/// ```
+/// use oxiphysics_lbm::mixing_lbm::stream_d2q9_periodic_flat;
+/// # fn main() -> Result<(), oxiphysics_lbm::Error> {
+/// // One population in direction (1, 0) at node (1, 0) of a 2 x 2 grid moves to node (0, 0).
+/// let mut src = vec![0.0; 36];
+/// src[9 + 1] = 1.0;
+/// let mut dst = vec![0.0; 36];
+/// stream_d2q9_periodic_flat(&src, &mut dst, 2, 2)?;
+/// assert_eq!(dst[1], 1.0);
+/// assert_eq!(dst.iter().sum::<f64>(), 1.0);
+/// # Ok(())
+/// # }
+/// ```
+pub fn stream_d2q9_periodic_flat(
+    src: &[f64],
+    dst: &mut [f64],
+    nx: usize,
+    ny: usize,
+) -> Result<(), Error> {
+    let len = 9 * nx * ny;
+    if src.len() != len || dst.len() != len {
+        return Err(Error::IncompatibleParameters {
+            message: format!(
+                "D2Q9 streaming on a {nx} x {ny} grid needs {len} populations, \
+                 got {} (source) and {} (destination)",
+                src.len(),
+                dst.len()
+            ),
+        });
+    }
+    for j in 0..ny {
+        let rows = [
+            j,
+            if j == 0 { ny - 1 } else { j - 1 },
+            if j + 1 == ny { 0 } else { j + 1 },
+        ];
+        for i in 0..nx {
+            let cols = [
+                i,
+                if i == 0 { nx - 1 } else { i - 1 },
+                if i + 1 == nx { 0 } else { i + 1 },
+            ];
+            let node = j * nx + i;
+            for (q, slot) in dst[node * 9..node * 9 + 9].iter_mut().enumerate() {
+                let from = rows[PULL_Y[q]] * nx + cols[PULL_X[q]];
+                *slot = src[from * 9 + q];
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Stream `pops` through the persistent buffer `scratch` (periodic D2Q9).
+///
+/// `scratch` is resized to `pops` on first use and its allocation is reused
+/// afterwards.  The populations are left unchanged when their length is not
+/// `9 · nx · ny` (see [`stream_d2q9_periodic_flat`]).
+pub(super) fn stream_populations(
+    pops: &mut Vec<f64>,
+    scratch: &mut Vec<f64>,
+    nx: usize,
+    ny: usize,
+) {
+    scratch.resize(pops.len(), 0.0);
+    if stream_d2q9_periodic_flat(pops, scratch, nx, ny).is_ok() {
+        std::mem::swap(pops, scratch);
+    }
+}
+
+/// Density and velocity `(ρ, u_x, u_y)` of the nine populations of one node.
+///
+/// The velocity is zero when the density is not positive.
+#[inline]
+pub(super) fn d2q9_moments(node: &[f64]) -> (f64, f64, f64) {
+    let mut rho = 0.0_f64;
+    let mut jx = 0.0_f64;
+    let mut jy = 0.0_f64;
+    for (q, &p) in node.iter().enumerate().take(9) {
+        rho += p;
+        jx += D2Q9_CX[q] * p;
+        jy += D2Q9_CY[q] * p;
+    }
+    if rho > 0.0 {
+        (rho, jx / rho, jy / rho)
+    } else {
+        (rho, 0.0, 0.0)
+    }
+}
+
+/// Second-order D2Q9 equilibrium population of direction `q`:
+/// `w_q ρ (1 + 3 c·u + 9/2 (c·u)² − 3/2 |u|²)`.
+///
+/// Its zeroth moment is `ρ`, its first moment `ρ u`, and its second moment
+/// `ρ (c_s² δ + u u)`, so a BGK lattice with this equilibrium advects with
+/// `u` and diffuses with `c_s² (τ − ½)` independently of the direction of `u`.
+#[inline]
+pub(super) fn d2q9_equilibrium(q: usize, rho: f64, ux: f64, uy: f64) -> f64 {
+    let cu = D2Q9_CX[q] * ux + D2Q9_CY[q] * uy;
+    let uu = ux * ux + uy * uy;
+    D2Q9_W[q] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * uu)
+}
+
+/// Make the zeroth moment of every node of `pops` equal to the macroscopic
+/// field `target`.
+///
+/// The (usually zero) difference between `target[k]` and the node sum is added
+/// on the populations in proportion to the lattice weights, so a field edited
+/// through its public `Vec` keeps its mass and the non-equilibrium part of the
+/// populations is left alone.
+pub(super) fn sync_populations(pops: &mut [f64], target: &[f64]) {
+    for (node, &wanted) in pops.chunks_exact_mut(9).zip(target.iter()) {
+        let missing = wanted - node.iter().sum::<f64>();
+        if missing != 0.0 {
+            for (p, &w) in node.iter_mut().zip(D2Q9_W.iter()) {
+                *p += w * missing;
+            }
+        }
+    }
+}
+
+/// Isotropic discrete Laplacian of a periodic scalar field on the D2Q9 stencil:
+///
+/// `∇²φ ≈ (2/c_s²) Σ_{q≠0} w_q (φ(x + c_q) − φ(x))`,
+///
+/// i.e. `2/3` of the four axis neighbours plus `1/6` of the four diagonal
+/// neighbours, each relative to the centre value.  Returns zeros when
+/// `field` does not hold `nx · ny` values.
+pub(super) fn laplacian_d2q9_periodic(field: &[f64], nx: usize, ny: usize) -> Vec<f64> {
+    let n = nx * ny;
+    let mut out = vec![0.0_f64; n];
+    if field.len() != n {
+        return out;
+    }
+    for j in 0..ny {
+        let jm = if j == 0 { ny - 1 } else { j - 1 };
+        let jp = if j + 1 == ny { 0 } else { j + 1 };
+        for i in 0..nx {
+            let im = if i == 0 { nx - 1 } else { i - 1 };
+            let ip = if i + 1 == nx { 0 } else { i + 1 };
+            let centre = field[j * nx + i];
+            let axis =
+                field[j * nx + im] + field[j * nx + ip] + field[jm * nx + i] + field[jp * nx + i];
+            let diagonal = field[jm * nx + im]
+                + field[jm * nx + ip]
+                + field[jp * nx + im]
+                + field[jp * nx + ip];
+            out[j * nx + i] =
+                (2.0 / 3.0) * (axis - 4.0 * centre) + (1.0 / 6.0) * (diagonal - 4.0 * centre);
+        }
+    }
+    out
+}
 #[cfg(test)]
 mod tests {
     use super::super::types::*;

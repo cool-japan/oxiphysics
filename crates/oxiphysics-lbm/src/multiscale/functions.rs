@@ -6,26 +6,46 @@ use crate::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS};
 
 /// Speed of sound squared (cs² = 1/3).
 pub(super) const CS2: f64 = 1.0 / 3.0;
-/// Convert coarse-grid D2Q9 populations to fine-grid via equilibrium rescaling.
+/// Relaxation time on a grid refined by `ratio` under acoustic scaling.
 ///
-/// The fine-grid populations are computed by rescaling the non-equilibrium
-/// part: f_fine = f_eq(ρ, u) + (τ_f / τ_c) * (f_coarse - f_eq(ρ, u)).
+/// With `dx_f = dx_c / ratio` and `dt_f = dt_c / ratio` the kinematic viscosity
+/// `cs² (τ - 1/2) dx² / dt` is identical on both grids iff
+/// `τ_f - 1/2 = ratio (τ_c - 1/2)`.
+pub fn fine_relaxation_time(tau_coarse: f64, ratio: usize) -> f64 {
+    ratio as f64 * (tau_coarse - 0.5) + 0.5
+}
+/// Dupuis-Chopard factor `τ_f / (ratio τ_c)` applied to the non-equilibrium
+/// populations when they are passed from the coarse to the fine grid.
+pub fn coarse_to_fine_scale(tau_coarse: f64, tau_fine: f64, ratio: usize) -> f64 {
+    tau_fine / (ratio as f64 * tau_coarse)
+}
+/// Dupuis-Chopard factor `ratio τ_c / τ_f` applied to the non-equilibrium
+/// populations when they are passed from the fine to the coarse grid.
+pub fn fine_to_coarse_scale(tau_coarse: f64, tau_fine: f64, ratio: usize) -> f64 {
+    ratio as f64 * tau_coarse / tau_fine
+}
+/// Convert coarse-grid D2Q9 populations to fine-grid via Dupuis-Chopard rescaling.
+///
+/// The equilibrium part is re-evaluated with the fine-grid velocity and the
+/// non-equilibrium part is rescaled:
+/// `f_fine = f_eq(ρ, u_fine) + τ_f / (ratio τ_c) * (f_coarse - f_eq(ρ, u_coarse))`.
+/// No clamping is applied, so mass and momentum are preserved exactly when
+/// `f_coarse` has the moments `(ρ, u_coarse)` and `u_fine == u_coarse`.
 pub fn coarse_to_fine_pop(
     f_coarse: &[f64; 9],
     rho: f64,
     u_coarse: [f64; 2],
     u_fine: [f64; 2],
+    tau_coarse: f64,
+    tau_fine: f64,
+    ratio: usize,
 ) -> [f64; 9] {
+    let scale = coarse_to_fine_scale(tau_coarse, tau_fine, ratio);
+    let feq_coarse = lbm_equilibrium(rho, u_coarse);
+    let feq_fine = lbm_equilibrium(rho, u_fine);
     let mut result = [0.0_f64; 9];
-    let _ = u_fine;
     for i in 0..9 {
-        let w = D2Q9_WEIGHTS[i];
-        let c = D2Q9_VELOCITIES[i];
-        let eu = c[0] as f64 * u_coarse[0] + c[1] as f64 * u_coarse[1];
-        let u2 = u_coarse[0] * u_coarse[0] + u_coarse[1] * u_coarse[1];
-        let feq = w * rho * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u2 / (2.0 * CS2));
-        result[i] = feq + 2.0 * (f_coarse[i] - feq);
-        result[i] = result[i].max(0.0);
+        result[i] = feq_fine[i] + scale * (f_coarse[i] - feq_coarse[i]);
     }
     result
 }
@@ -118,7 +138,7 @@ mod tests {
     #[test]
     fn test_adaptive_mesh_refine() {
         let mut mesh = AdaptiveMesh::new(1.0, 3, 0.01);
-        let children = mesh.refine(0);
+        let children = mesh.refine(0, 1.0);
         assert!(children.is_some());
         let ids = children.unwrap();
         assert_eq!(ids.len(), 4);
@@ -127,13 +147,13 @@ mod tests {
     #[test]
     fn test_adaptive_mesh_refine_max_level() {
         let mut mesh = AdaptiveMesh::new(1.0, 0, 0.01);
-        let result = mesh.refine(0);
+        let result = mesh.refine(0, 1.0);
         assert!(result.is_none());
     }
     #[test]
     fn test_adaptive_mesh_collide() {
         let mut mesh = AdaptiveMesh::new(1.0, 2, 0.01);
-        mesh.refine(0);
+        mesh.refine(0, 1.0);
         mesh.collide_all(1.0);
         for &idx in &mesh.leaf_indices() {
             let rho: f64 = mesh.nodes[idx].f.iter().sum();
@@ -159,23 +179,10 @@ mod tests {
         assert!(sum > 0.0);
     }
     #[test]
-    fn test_patched_grid_restrict() {
-        let mut pg = PatchedGrid::new(3, 3, 2);
-        for f in &mut pg.f_fine {
-            for v in f.iter_mut() {
-                *v = 1.0;
-            }
-        }
-        pg.restrict();
-        for f in &pg.f_coarse {
-            let rho: f64 = f.iter().sum();
-            assert!(rho > 0.0);
-        }
-    }
-    #[test]
     fn test_space_time_tau_fine() {
+        // Acoustic scaling: tau_f - 1/2 = r (tau_c - 1/2).
         let st = SpaceTimeLbm::new(10, 2, 1.0);
-        assert!((st.tau_fine - 0.75).abs() < 1e-12);
+        assert!((st.tau_fine - 1.5).abs() < 1e-12);
     }
     #[test]
     fn test_space_time_interpolation_endpoints() {
@@ -315,7 +322,7 @@ mod tests {
     #[test]
     fn test_coarse_to_fine_pop_positive() {
         let f_eq: [f64; 9] = D2Q9_WEIGHTS.map(|w| w * 1.0);
-        let result = coarse_to_fine_pop(&f_eq, 1.0, [0.0, 0.0], [0.0, 0.0]);
+        let result = coarse_to_fine_pop(&f_eq, 1.0, [0.0, 0.0], [0.0, 0.0], 1.0, 1.5, 2);
         for v in result {
             assert!(v >= 0.0);
         }
@@ -455,7 +462,7 @@ mod multiscale_extended_tests {
     fn test_gri_tau_fine_consistency() {
         let gri = GridRefinementInterface::new(4, 2, 1.0, 1);
         assert!(
-            (gri.tau_fine - 0.75).abs() < 1e-12,
+            (gri.tau_fine - 1.5).abs() < 1e-12,
             "tau_fine={}",
             gri.tau_fine
         );

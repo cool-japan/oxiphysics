@@ -24,9 +24,20 @@
 //! let available = GpuBenchHarness::available_backends();
 //! assert!(available.contains(&BackendKind::Cpu));
 //! ```
+//!
+//! # Backend labels are measured, not assumed
+//!
+//! A [`BackendKind::Cpu`] report always comes from a simulation built with
+//! [`ComputePreference::CpuOnly`], which never creates a wgpu device, so the
+//! timing really is the CPU reference even on a host with a GPU.  A
+//! [`BackendKind::Wgpu`] report is produced only from a simulation built with
+//! [`ComputePreference::GpuRequired`] whose every timed step ran on the GPU; on
+//! hosts without a usable adapter the report is simply absent.
 
 use std::time::{Duration, Instant};
 
+use crate::GpuError;
+use crate::compute_preference::ComputePreference;
 use crate::lbm_gpu::{LbmConfig, LbmSimulation};
 use crate::sph_gpu::{SphConfig, SphSimulation};
 
@@ -91,6 +102,90 @@ impl std::fmt::Display for GpuBenchReport {
     }
 }
 
+// ── Benchmark problem builders ────────────────────────────────────────────────
+
+/// SPH benchmark configuration for `n` particles in the `[-10, 10]³` box
+/// (no gravity: a pure density/pressure workload).
+fn sph_bench_config(n: usize) -> SphConfig {
+    SphConfig {
+        n_particles: n,
+        smoothing_h: 0.1,
+        rest_density: 1000.0,
+        gravity: 0.0,
+        domain_min: [-10.; 3],
+        domain_max: [10.; 3],
+        ..SphConfig::default()
+    }
+}
+
+/// Scatter the `n` particles of `sim` on the regular benchmark grid.
+fn seed_sph_grid(sim: &mut SphSimulation, n: usize) {
+    let side = (n as f64).cbrt().ceil() as usize + 1;
+    for idx in 0..n {
+        sim.state.pos_x[idx] = (idx % side) as f64 * 0.1 - 5.0;
+        sim.state.pos_y[idx] = ((idx / side) % side) as f64 * 0.1;
+        sim.state.pos_z[idx] = (idx / (side * side)) as f64 * 0.1;
+    }
+}
+
+/// SPH benchmark simulation pinned to the CPU reference.
+///
+/// The simulation is built with [`ComputePreference::CpuOnly`], so no GPU
+/// adapter is requested and every step really runs on the CPU — the reports
+/// built from it may honestly carry [`BackendKind::Cpu`].
+fn build_cpu_sph(cfg: &SphConfig, n: usize) -> SphSimulation {
+    let mut sim = SphSimulation::new(SphConfig {
+        compute: ComputePreference::CpuOnly,
+        ..cfg.clone()
+    });
+    seed_sph_grid(&mut sim, n);
+    sim
+}
+
+/// SPH benchmark simulation that must run on the GPU, or `None` when no GPU
+/// path is available (no adapter, wgpu feature off, unsupported size).
+fn build_gpu_sph(cfg: &SphConfig, n: usize) -> Option<SphSimulation> {
+    let mut sim = SphSimulation::try_new(SphConfig {
+        compute: ComputePreference::GpuRequired,
+        ..cfg.clone()
+    })
+    .ok()?;
+    seed_sph_grid(&mut sim, n);
+    Some(sim)
+}
+
+/// LBM benchmark configuration pinned to the CPU reference.
+fn lbm_bench_config(nx: usize, ny: usize, nz: usize) -> LbmConfig {
+    LbmConfig {
+        nx,
+        ny,
+        nz,
+        tau: 0.6,
+        compute: ComputePreference::CpuOnly,
+        ..LbmConfig::default()
+    }
+}
+
+/// Time `iterations` SPH steps after `warmup` untimed ones.
+///
+/// Fails with the step error when a [`ComputePreference::GpuRequired`]
+/// simulation cannot run a step on the GPU, so such a run is never reported.
+fn time_sph_steps(
+    sim: &mut SphSimulation,
+    warmup: u32,
+    iterations: u32,
+) -> Result<Duration, GpuError> {
+    let dt = 1.0 / 60.0;
+    for _ in 0..warmup {
+        sim.try_step(dt)?;
+    }
+    let t0 = Instant::now();
+    for _ in 0..iterations {
+        sim.try_step(dt)?;
+    }
+    Ok(t0.elapsed())
+}
+
 // ── GpuBenchHarness ───────────────────────────────────────────────────────────
 
 /// Timing harness for GPU/CPU backend comparison benchmarks.
@@ -121,9 +216,14 @@ impl GpuBenchHarness {
     pub fn available_backends() -> Vec<BackendKind> {
         let mut out = vec![BackendKind::Cpu];
 
-        // Try wgpu — succeeds when the GPU driver is present.
-        if crate::compute::WgpuBackend::try_new().is_ok() {
-            out.push(BackendKind::Wgpu);
+        // Try wgpu — succeeds when a real adapter and device can be created.
+        // (The `WgpuBackend` CPU-shadow type never owns a device and always
+        // reports itself unavailable, so it cannot be used for detection.)
+        #[cfg(feature = "wgpu-backend")]
+        {
+            if crate::compute::wgpu_backend::real::WgpuBackendReal::try_new().is_ok() {
+                out.push(BackendKind::Wgpu);
+            }
         }
 
         // Try CUDA — this is a stub that always reports unavailable.
@@ -141,47 +241,16 @@ impl GpuBenchHarness {
     /// Each particle's density is recomputed from scratch each call to avoid
     /// caching effects.  FLOPs estimated as 10 × N² (distance + kernel eval).
     pub fn bench_sph_density(&mut self, n: usize) -> Vec<GpuBenchReport> {
-        let cfg = SphConfig {
-            n_particles: n,
-            smoothing_h: 0.1,
-            rest_density: 1000.0,
-            gravity: 0.0, // no gravity — pure density bench
-            domain_min: [-10.; 3],
-            domain_max: [10.; 3],
-            ..SphConfig::default()
-        };
-
+        let cfg = sph_bench_config(n);
         let mut out = Vec::new();
+        // FLOPs: 10 per particle pair (distance + kernel evaluation).
+        let flops = 10.0 * n as f64 * n as f64;
 
         // ── CPU path ──────────────────────────────────────────────────────────
-        {
-            // Build a CPU-only sim (no GPU backend will be tried)
-            let mut sim = SphSimulation::new(cfg.clone());
-            // Scatter particles in a regular grid
-            let side = (n as f64).cbrt().ceil() as usize + 1;
-            for (idx, i) in (0..n).enumerate() {
-                let x = (idx % side) as f64 * 0.1 - 5.0;
-                let y = ((idx / side) % side) as f64 * 0.1;
-                let z = (idx / (side * side)) as f64 * 0.1;
-                sim.state.pos_x[i] = x;
-                sim.state.pos_y[i] = y;
-                sim.state.pos_z[i] = z;
-            }
-
-            // Warm-up
-            for _ in 0..self.warmup {
-                sim.step(1.0 / 60.0);
-            }
-
-            let t0 = Instant::now();
-            for _ in 0..self.iterations {
-                sim.step(1.0 / 60.0);
-            }
-            let total = t0.elapsed();
-
-            let flops = 10.0 * n as f64 * n as f64;
+        // Pinned to the CPU reference: no GPU backend is ever initialised.
+        let mut cpu_sim = build_cpu_sph(&cfg, n);
+        if let Ok(total) = time_sph_steps(&mut cpu_sim, self.warmup, self.iterations) {
             let mflops = flops / (total.as_secs_f64() / self.iterations as f64) / 1e6;
-
             let r = GpuBenchReport {
                 name: "sph_density".to_string(),
                 backend: BackendKind::Cpu,
@@ -195,36 +264,14 @@ impl GpuBenchHarness {
             self.reports.push(r);
         }
 
-        // ── wgpu path (if available) ──────────────────────────────────────────
-        if crate::compute::WgpuBackend::try_new().is_ok() {
-            let mut sim = SphSimulation::new(cfg.clone());
-            let side = (n as f64).cbrt().ceil() as usize + 1;
-            for (idx, i) in (0..n).enumerate() {
-                sim.state.pos_x[i] = (idx % side) as f64 * 0.1 - 5.0;
-                sim.state.pos_y[i] = ((idx / side) % side) as f64 * 0.1;
-                sim.state.pos_z[i] = (idx / (side * side)) as f64 * 0.1;
-            }
-
-            for _ in 0..self.warmup {
-                sim.step(1.0 / 60.0);
-            }
-            let t0 = Instant::now();
-            for _ in 0..self.iterations {
-                sim.step(1.0 / 60.0);
-            }
-            let total = t0.elapsed();
-
-            let backend = if sim.has_gpu() {
-                BackendKind::Wgpu
-            } else {
-                BackendKind::Cpu
-            };
-            let flops = 10.0 * n as f64 * n as f64;
+        // ── wgpu path (only when every step really ran on the GPU) ────────────
+        if let Some(mut gpu_sim) = build_gpu_sph(&cfg, n)
+            && let Ok(total) = time_sph_steps(&mut gpu_sim, self.warmup, self.iterations)
+        {
             let mflops = flops / (total.as_secs_f64() / self.iterations as f64) / 1e6;
-
             let r = GpuBenchReport {
                 name: "sph_density".to_string(),
-                backend,
+                backend: BackendKind::Wgpu,
                 n,
                 iterations: self.iterations,
                 total,
@@ -244,25 +291,16 @@ impl GpuBenchHarness {
     ///
     /// FLOPs estimated as 120 × nc (19 distribution reads + BGK + streaming).
     pub fn bench_lbm_step(&mut self, nx: usize, ny: usize, nz: usize) -> Vec<GpuBenchReport> {
-        let cfg = LbmConfig {
-            nx,
-            ny,
-            nz,
-            tau: 0.6,
-            rho0: 1.0,
-            force_x: 0.0,
-            force_y: 0.0,
-            force_z: 0.0,
-        };
+        let cfg = lbm_bench_config(nx, ny, nz);
         let nc = nx * ny * nz;
         let mut out = Vec::new();
 
         // CPU path
         {
+            // `lbm_bench_config` pins the CPU reference: this report is labelled
+            // `BackendKind::Cpu`, so the default wgpu path must not run on the
+            // GPU behind its back.
             let mut sim = LbmSimulation::new(cfg.clone());
-            // This report is labelled `BackendKind::Cpu`: pin the CPU reference
-            // so the default wgpu path does not silently run on the GPU.
-            sim.disable_gpu();
             sim.set_lid_velocity(0.1, 0.0, 0.0);
 
             for _ in 0..self.warmup {
@@ -494,39 +532,13 @@ fn main(
     /// assert!(!reports.is_empty());
     /// ```
     pub fn cpu_vs_wgpu_sph(&mut self, n: usize) -> Vec<GpuBenchReport> {
-        let cfg = SphConfig {
-            n_particles: n,
-            smoothing_h: 0.1,
-            rest_density: 1000.0,
-            gravity: 0.0,
-            domain_min: [-10.; 3],
-            domain_max: [10.; 3],
-            ..SphConfig::default()
-        };
-
+        let cfg = sph_bench_config(n);
         let mut out = Vec::new();
 
         // ── CPU path ──────────────────────────────────────────────────────────
-        {
-            let mut sim = SphSimulation::new(cfg.clone());
-            let side = (n as f64).cbrt().ceil() as usize + 1;
-            for (idx, i) in (0..n).enumerate() {
-                let x = (idx % side) as f64 * 0.1 - 5.0;
-                let y = ((idx / side) % side) as f64 * 0.1;
-                let z = (idx / (side * side)) as f64 * 0.1;
-                sim.state.pos_x[i] = x;
-                sim.state.pos_y[i] = y;
-                sim.state.pos_z[i] = z;
-            }
-            for _ in 0..self.warmup {
-                sim.step(1.0 / 60.0);
-            }
-            let t0 = Instant::now();
-            for _ in 0..self.iterations {
-                sim.step(1.0 / 60.0);
-            }
-            let total = t0.elapsed();
-
+        // Pinned to the CPU reference: no GPU backend is ever initialised.
+        let mut cpu_sim = build_cpu_sph(&cfg, n);
+        if let Ok(total) = time_sph_steps(&mut cpu_sim, self.warmup, self.iterations) {
             let r = GpuBenchReport {
                 name: "sph_density_cpu".to_string(),
                 backend: BackendKind::Cpu,
@@ -540,34 +552,13 @@ fn main(
             self.reports.push(r);
         }
 
-        // ── wgpu path (runtime-gated) ─────────────────────────────────────────
-        if crate::compute::WgpuBackend::try_new().is_ok() {
-            let mut sim = SphSimulation::new(cfg.clone());
-            let side = (n as f64).cbrt().ceil() as usize + 1;
-            for (idx, i) in (0..n).enumerate() {
-                sim.state.pos_x[i] = (idx % side) as f64 * 0.1 - 5.0;
-                sim.state.pos_y[i] = ((idx / side) % side) as f64 * 0.1;
-                sim.state.pos_z[i] = (idx / (side * side)) as f64 * 0.1;
-            }
-
-            for _ in 0..self.warmup {
-                sim.step(1.0 / 60.0);
-            }
-            let t0 = Instant::now();
-            for _ in 0..self.iterations {
-                sim.step(1.0 / 60.0);
-            }
-            let total = t0.elapsed();
-
-            let backend = if sim.has_gpu() {
-                BackendKind::Wgpu
-            } else {
-                BackendKind::Cpu
-            };
-
+        // ── wgpu path (only when every step really ran on the GPU) ────────────
+        if let Some(mut gpu_sim) = build_gpu_sph(&cfg, n)
+            && let Ok(total) = time_sph_steps(&mut gpu_sim, self.warmup, self.iterations)
+        {
             let r = GpuBenchReport {
                 name: "sph_density_wgpu".to_string(),
-                backend,
+                backend: BackendKind::Wgpu,
                 n,
                 iterations: self.iterations,
                 total,
@@ -599,38 +590,13 @@ fn main(
     /// assert!(reports[0].mean > std::time::Duration::ZERO);
     /// ```
     pub fn cpu_vs_cuda_sph(&mut self, n: usize) -> Vec<GpuBenchReport> {
-        let cfg = crate::sph_gpu::SphConfig {
-            n_particles: n,
-            smoothing_h: 0.1,
-            rest_density: 1000.0,
-            gravity: 0.0,
-            domain_min: [-10.; 3],
-            domain_max: [10.; 3],
-            ..crate::sph_gpu::SphConfig::default()
-        };
+        let cfg = sph_bench_config(n);
         let mut out = Vec::new();
 
         // ── CPU path ──────────────────────────────────────────────────────────
-        {
-            let mut sim = crate::sph_gpu::SphSimulation::new(cfg.clone());
-            let side = (n as f64).cbrt().ceil() as usize + 1;
-            for idx in 0..n {
-                let x = (idx % side) as f64 * 0.1 - 5.0;
-                let y = ((idx / side) % side) as f64 * 0.1;
-                let z = (idx / (side * side)) as f64 * 0.1;
-                sim.state.pos_x[idx] = x;
-                sim.state.pos_y[idx] = y;
-                sim.state.pos_z[idx] = z;
-            }
-            for _ in 0..self.warmup {
-                sim.step(1.0 / 60.0);
-            }
-            let t0 = Instant::now();
-            for _ in 0..self.iterations {
-                sim.step(1.0 / 60.0);
-            }
-            let total = t0.elapsed();
-
+        // Pinned to the CPU reference: no GPU backend is ever initialised.
+        let mut cpu_sim = build_cpu_sph(&cfg, n);
+        if let Ok(total) = time_sph_steps(&mut cpu_sim, self.warmup, self.iterations) {
             let r = GpuBenchReport {
                 name: "cuda_sph_density_cpu".to_string(),
                 backend: BackendKind::Cpu,
@@ -878,6 +844,20 @@ mod tests {
         assert!(b.contains(&BackendKind::Cpu));
     }
 
+    /// wgpu is listed exactly when a real adapter can be created: the old
+    /// detection went through the always-failing CPU-shadow type.
+    #[test]
+    fn test_available_backends_reports_wgpu_when_an_adapter_exists() {
+        let listed = GpuBenchHarness::available_backends().contains(&BackendKind::Wgpu);
+        #[cfg(feature = "wgpu-backend")]
+        assert_eq!(
+            listed,
+            crate::compute::wgpu_backend::real::WgpuBackendReal::try_new().is_ok()
+        );
+        #[cfg(not(feature = "wgpu-backend"))]
+        assert!(!listed);
+    }
+
     #[test]
     fn test_inclusive_scan() {
         let data = vec![1.0, 2.0, 3.0, 4.0];
@@ -937,5 +917,81 @@ mod tests {
         assert_eq!(format!("{}", BackendKind::Cpu), "CPU");
         assert_eq!(format!("{}", BackendKind::Wgpu), "wgpu");
         assert_eq!(format!("{}", BackendKind::Cuda), "CUDA");
+    }
+
+    /// The simulations behind every `BackendKind::Cpu` report must be pinned to
+    /// the CPU reference: on a host with a GPU adapter the default
+    /// configuration would silently run on the GPU.
+    #[test]
+    fn test_cpu_bench_simulations_never_touch_the_gpu() {
+        let cfg = sph_bench_config(8);
+        let mut sph = build_cpu_sph(&cfg, 8);
+        assert_eq!(sph.config.compute, ComputePreference::CpuOnly);
+        assert!(!sph.has_gpu());
+        time_sph_steps(&mut sph, 1, 2).expect("CPU steps cannot fail");
+        assert!(!sph.has_gpu());
+        assert!(sph.gpu_error().is_none(), "the GPU must not even be probed");
+
+        let mut lbm = LbmSimulation::new(lbm_bench_config(4, 4, 4));
+        lbm.set_lid_velocity(0.1, 0.0, 0.0);
+        for _ in 0..3 {
+            lbm.step();
+        }
+        assert!(!lbm.has_gpu());
+        assert!(lbm.gpu_error().is_none(), "the GPU must not even be probed");
+        assert_eq!(lbm.step_count, 3);
+    }
+
+    /// A GPU benchmark simulation either really has a GPU pipeline and runs its
+    /// steps on it, or does not exist (no CPU duplicate under a GPU label).
+    #[test]
+    fn test_gpu_bench_simulation_is_gpu_or_absent() {
+        let cfg = sph_bench_config(8);
+        if let Some(mut sim) = build_gpu_sph(&cfg, 8) {
+            assert_eq!(sim.config.compute, ComputePreference::GpuRequired);
+            assert!(sim.has_gpu());
+            time_sph_steps(&mut sim, 0, 2).expect("the GPU takes every step");
+            assert!(sim.has_gpu());
+        }
+    }
+
+    /// Every wgpu report must come from a GPU-required run, and the CPU report
+    /// always leads.
+    #[test]
+    fn test_sph_reports_label_backends_truthfully() {
+        let mut h = GpuBenchHarness {
+            warmup: 0,
+            iterations: 1,
+            reports: Vec::new(),
+        };
+        let reports = h.cpu_vs_wgpu_sph(8);
+        assert_eq!(reports[0].backend, BackendKind::Cpu);
+        assert_eq!(reports[0].name, "sph_density_cpu");
+        assert!(reports.len() <= 2);
+        if let Some(gpu) = reports.get(1) {
+            assert_eq!(gpu.backend, BackendKind::Wgpu);
+            assert_eq!(gpu.name, "sph_density_wgpu");
+            assert!(build_gpu_sph(&sph_bench_config(8), 8).is_some());
+        }
+    }
+
+    #[test]
+    fn test_seed_sph_grid_layout() {
+        let cfg = sph_bench_config(8);
+        let sim = build_cpu_sph(&cfg, 8);
+        // side = ceil(cbrt(8)) + 1 = 3: x runs fastest, then y, then z.
+        let expected = |idx: usize| {
+            [
+                (idx % 3) as f64 * 0.1 - 5.0,
+                ((idx / 3) % 3) as f64 * 0.1,
+                (idx / 9) as f64 * 0.1,
+            ]
+        };
+        for idx in 0..8 {
+            let want = expected(idx);
+            assert_eq!(sim.state.pos_x[idx], want[0]);
+            assert_eq!(sim.state.pos_y[idx], want[1]);
+            assert_eq!(sim.state.pos_z[idx], want[2]);
+        }
     }
 }

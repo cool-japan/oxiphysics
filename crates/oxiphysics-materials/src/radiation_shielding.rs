@@ -228,6 +228,13 @@ pub struct ActivationResult {
 /// Solves A(t) = N·σ·Φ·(1 − exp(−λ·t_irr)) · exp(−λ·t_cool)
 /// where N = (m/M)·N_A is the number of target atoms.
 ///
+/// The saturation activity `A_sat = N·σ·Φ` \[Bq\] is the activity reached for
+/// an irradiation much longer than the half-life of the product nuclide; it is
+/// a production *rate* (reactions per second) and therefore does not contain
+/// the decay constant λ.  The activity at the end of irradiation is
+/// `A_sat·(1 − exp(−λ·t_irr))`, so one half-life of irradiation yields
+/// `A_sat/2`.
+///
 /// # Arguments
 /// * `mass_kg` – Mass of target nuclide \[kg\].
 /// * `molar_mass` – Molar mass \[kg/mol\].
@@ -248,7 +255,7 @@ pub fn activation_analysis(
     const AVOGADRO: f64 = 6.022_140_76e23;
     let n_atoms = (mass_kg / molar_mass) * AVOGADRO;
     let lambda = LN_2 / half_life_s;
-    let saturation_activity = n_atoms * cross_section_m2 * neutron_flux * lambda;
+    let saturation_activity = n_atoms * cross_section_m2 * neutron_flux;
     // Activity at end of irradiation:
     let activity_at_eoi = saturation_activity * (1.0 - (-lambda * irradiation_time_s).exp());
     // After cooling:
@@ -529,6 +536,68 @@ mod tests {
             "Decay constant mismatch: {} vs {}",
             result.decay_constant,
             expected_lambda
+        );
+    }
+
+    // 19a. Absolute saturation activity: 1 g of Co-59 irradiated at
+    // Φ = 1e13 n/cm²/s (= 1e17 n/m²/s), σ(n,γ) = 37.2 b.  A_sat = N·σ·Φ is a
+    // production rate in Bq (≈ 3.80e12 Bq) and must not carry a factor λ.
+    #[test]
+    fn test_activation_saturation_absolute_co60() {
+        let half_life = 1.663e8; // 5.27 y in seconds
+        let r = activation_analysis(1.0e-3, 0.0589, 37.2e-28, 1.0e17, half_life, 1.0, 0.0);
+        let n_atoms = (1.0e-3 / 0.0589) * 6.022_140_76e23;
+        let expected = n_atoms * 37.2e-28 * 1.0e17;
+        assert!(
+            (r.saturation_activity - expected).abs() <= 1e-12 * expected,
+            "A_sat must equal N·σ·Φ: got {}, expected {expected}",
+            r.saturation_activity
+        );
+        assert!(
+            (r.saturation_activity - 3.80e12).abs() / 3.80e12 < 5e-3,
+            "A_sat should be ≈ 3.80e12 Bq, got {}",
+            r.saturation_activity
+        );
+    }
+
+    // 19b. One half-life of irradiation gives half of the saturation activity,
+    // and cooling for a further half-life halves it again.
+    #[test]
+    fn test_activation_one_half_life_irradiation_gives_half_saturation() {
+        let half_life = 1.663e8;
+        let r = activation_analysis(
+            1.0e-3, 0.0589, 37.2e-28, 1.0e17, half_life, half_life, half_life,
+        );
+        assert!(
+            (r.activity_at_eoi - 0.5 * r.saturation_activity).abs() < 1e-12 * r.saturation_activity,
+            "A(t_irr = T½) must be A_sat/2: eoi={}, sat={}",
+            r.activity_at_eoi,
+            r.saturation_activity
+        );
+        assert!(
+            (r.activity_after_cooling - 0.25 * r.saturation_activity).abs()
+                < 1e-12 * r.saturation_activity,
+            "after a further half-life the activity must be A_sat/4, got {}",
+            r.activity_after_cooling
+        );
+    }
+
+    // 19c. Saturation activity scales linearly with target mass and cross-section
+    // and is independent of the half-life (production rate, not decay).
+    #[test]
+    fn test_activation_saturation_independent_of_half_life() {
+        let a = activation_analysis(1.0e-3, 0.0589, 37.2e-28, 1.0e17, 1.0e3, 1.0, 0.0);
+        let b = activation_analysis(1.0e-3, 0.0589, 37.2e-28, 1.0e17, 1.0e9, 1.0, 0.0);
+        assert!(
+            (a.saturation_activity - b.saturation_activity).abs() < 1e-12 * a.saturation_activity,
+            "A_sat must not depend on the half-life: {} vs {}",
+            a.saturation_activity,
+            b.saturation_activity
+        );
+        let c = activation_analysis(2.0e-3, 0.0589, 74.4e-28, 1.0e17, 1.0e3, 1.0, 0.0);
+        assert!(
+            (c.saturation_activity / a.saturation_activity - 4.0).abs() < 1e-12,
+            "A_sat must scale with mass·σ"
         );
     }
 

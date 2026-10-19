@@ -279,7 +279,7 @@ impl ElectricVehicle {
         };
         let pack_current = p_elec / self.pack.pack_voltage().max(1.0);
         self.pack.update(pack_current, dt_s);
-        self.tms.update(&self.pack, t_ambient, dt_s);
+        self.tms.update(&self.pack, pack_current, t_ambient, dt_s);
         self.odometer_m += self.speed_ms * dt_s;
         if p_elec > 0.0 {
             self.energy_consumed_kwh += p_elec * dt_s / 3_600_000.0;
@@ -583,7 +583,17 @@ pub struct ThermalManagement {
     pub t_coolant: f64,
     /// Compressor power (W)
     pub compressor_power_w: f64,
+    /// Mass of coolant in the loop (kg); sets the thermal inertia of the loop.
+    pub coolant_mass_kg: f64,
+    /// Overall pack-to-coolant thermal conductance `UA` (W/K).
+    pub ua_pack_w_per_k: f64,
 }
+/// Cooling power requested from the chiller per kelvin that the pack average
+/// temperature exceeds `t_max` (W/K).
+const CHILLER_GAIN_W_PER_K: f64 = 5000.0;
+/// Lowest chiller COP [`ThermalManagement::update`] accepts; keeps the
+/// compressor power finite.
+const MIN_CHILLER_COP: f64 = 1e-6;
 impl ThermalManagement {
     /// Create a standard TMS.
     pub fn new() -> Self {
@@ -597,37 +607,115 @@ impl ThermalManagement {
             t_max: 35.0,
             t_coolant: 20.0,
             compressor_power_w: 0.0,
+            coolant_mass_kg: 5.0,
+            ua_pack_w_per_k: 300.0,
         }
     }
-    /// Update coolant temperature given battery pack and ambient conditions.
-    ///
-    /// Returns auxiliary power consumed (W).
-    pub fn update(&mut self, pack: &BatteryPack, t_ambient: f64, dt_s: f64) -> f64 {
-        let t_pack_avg =
-            pack.cells.iter().map(|c| c.temperature).sum::<f64>() / pack.cells.len() as f64;
-        let q_gen: f64 = pack.cells.iter().map(|c| c.heat_generation_rate(1.0)).sum();
-        let mut aux_power = 0.0;
-        if t_pack_avg > self.t_max {
-            let q_cool = (t_pack_avg - self.t_max) * 5000.0;
-            self.compressor_power_w = q_cool / self.chiller_cop;
-            aux_power += self.compressor_power_w;
-            self.t_coolant = t_ambient - 5.0;
-        } else if t_pack_avg < self.t_min {
-            aux_power += self.heater_power_w;
-            self.t_coolant = t_pack_avg + 5.0;
-            self.compressor_power_w = 0.0;
-        } else {
-            self.compressor_power_w = 0.0;
+    /// Average cell temperature of the pack (°C), `None` for a pack without cells.
+    fn average_pack_temperature(pack: &BatteryPack) -> Option<f64> {
+        if pack.cells.is_empty() {
+            return None;
         }
-        let m_dot = self.flow_rate_lpm * self.rho_coolant / 60.0;
-        let _dt_coolant = (q_gen - m_dot * self.cp_coolant * (self.t_coolant - t_ambient)) * dt_s
-            / (m_dot * self.cp_coolant + 1.0);
+        let sum: f64 = pack.cells.iter().map(|c| c.temperature).sum();
+        Some(sum / pack.cells.len() as f64)
+    }
+    /// Update the coolant temperature given the battery pack and ambient
+    /// conditions, and return the auxiliary power consumed (W).
+    ///
+    /// * `pack_current_a` – present pack current (A, sign irrelevant); the cells
+    ///   carry `pack_current_a / cells_parallel` each and dissipate `I²·R` in
+    ///   total `q_gen`.
+    /// * `t_ambient` – ambient air temperature (°C).
+    /// * `dt_s` – time step (s).
+    ///
+    /// Control: above `t_max` the chiller removes `5000 W/K · (T_pack − t_max)`
+    /// plus the pack heat load `q_gen` (feed-forward) from the coolant at the
+    /// chiller COP; below `t_min` the heater adds `heater_power_w`.
+    ///
+    /// The coolant loop is a lumped thermal mass `m·cp` with the energy balance
+    ///
+    /// `m·cp·dT/dt = UA·(T_pack − T) + Q_heater − COP·P_comp − ṁ·cp·(T − T_amb)`
+    ///
+    /// i.e. conduction from the pack through the cold plates, the heater, the
+    /// chiller and an ideal radiator that returns the coolant at ambient
+    /// temperature.  Over one step the balance is linear in `T` with constant
+    /// forcing, so it is integrated exactly (exponential response); the result
+    /// is stable and free of overshoot for any `dt_s`.
+    ///
+    /// The heat of the cells reaches the coolant through the pack temperature
+    /// `T_pack`, which the caller advances with [`BatteryPack::update`]; the
+    /// pack current enters the controller through `q_gen`.  For a pack without
+    /// cells the TMS has nothing to regulate: the state is left unchanged and
+    /// `0.0` is returned.
+    pub fn update(
+        &mut self,
+        pack: &BatteryPack,
+        pack_current_a: f64,
+        t_ambient: f64,
+        dt_s: f64,
+    ) -> f64 {
+        let Some(t_pack_avg) = Self::average_pack_temperature(pack) else {
+            self.compressor_power_w = 0.0;
+            return 0.0;
+        };
+        let cell_current = pack_current_a / pack.config.cells_parallel.max(1) as f64;
+        let q_gen: f64 = pack
+            .cells
+            .iter()
+            .map(|c| c.heat_generation_rate(cell_current))
+            .sum();
+        let mut aux_power = 0.0;
+        let mut q_chiller = 0.0;
+        let mut q_heater = 0.0;
+        self.compressor_power_w = 0.0;
+        if t_pack_avg > self.t_max {
+            q_chiller = CHILLER_GAIN_W_PER_K * (t_pack_avg - self.t_max) + q_gen;
+            self.compressor_power_w = q_chiller / self.chiller_cop.max(MIN_CHILLER_COP);
+            aux_power += self.compressor_power_w;
+        } else if t_pack_avg < self.t_min {
+            q_heater = self.heater_power_w;
+            aux_power += self.heater_power_w;
+        }
+        self.integrate_coolant(t_pack_avg, t_ambient, q_heater - q_chiller, dt_s);
         aux_power
     }
+    /// Advance the coolant temperature by `dt_s` seconds (see [`Self::update`]).
+    ///
+    /// `q_external` is the heater power minus the chiller cooling power (W).
+    fn integrate_coolant(&mut self, t_pack_avg: f64, t_ambient: f64, q_external: f64, dt_s: f64) {
+        if dt_s <= 0.0 || !dt_s.is_finite() {
+            return;
+        }
+        let cp = self.cp_coolant.max(0.0);
+        let m_dot_cp = (self.flow_rate_lpm * self.rho_coolant / 60.0).max(0.0) * cp;
+        let ua = self.ua_pack_w_per_k.max(0.0);
+        let conductance = ua + m_dot_cp;
+        let heat_capacity = self.coolant_mass_kg.max(0.0) * cp;
+        let t_forced = ua * t_pack_avg + m_dot_cp * t_ambient + q_external;
+        if heat_capacity <= 0.0 {
+            // A massless coolant follows the equilibrium of the balance at once.
+            if conductance > 0.0 {
+                self.t_coolant = t_forced / conductance;
+            }
+            return;
+        }
+        let net_heat = t_forced - conductance * self.t_coolant;
+        let x = conductance * dt_s / heat_capacity;
+        // (1 − e^−x) / x: the exact response of the linear balance over one step.
+        let response = if x < 1e-9 {
+            1.0 - 0.5 * x
+        } else {
+            -(-x).exp_m1() / x
+        };
+        self.t_coolant += net_heat * dt_s / heat_capacity * response;
+    }
     /// Check if pre-conditioning is required before charging.
+    ///
+    /// A pack without cells never needs pre-conditioning.
     pub fn needs_preconditioning(&self, pack: &BatteryPack) -> bool {
-        let t_pack_avg =
-            pack.cells.iter().map(|c| c.temperature).sum::<f64>() / pack.cells.len() as f64;
-        t_pack_avg < self.t_min || t_pack_avg > self.t_max
+        match Self::average_pack_temperature(pack) {
+            Some(t_pack_avg) => t_pack_avg < self.t_min || t_pack_avg > self.t_max,
+            None => false,
+        }
     }
 }

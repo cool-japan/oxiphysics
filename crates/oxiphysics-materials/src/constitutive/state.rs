@@ -13,11 +13,19 @@ pub struct J2State {
 }
 
 /// Internal state for a generalized-Maxwell viscoelastic chain: one history
-/// (partial) stress per Maxwell branch (each Voigt-6).
+/// (partial) stress per Maxwell branch (each Voigt-6) plus the total strain of
+/// the previous step.
+///
+/// The branch stresses evolve with the strain *increment* of the step
+/// (`ε_{n+1} − ε_n`), so the strain at the end of the previous step has to be
+/// carried along with the history stresses.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ViscoelasticState {
     /// Per-branch history stresses (length = number of Maxwell branches).
     pub branch_stress: Vec<[f64; 6]>,
+    /// Total strain at the end of the previous step, `ε_n` (Voigt-6, engineering
+    /// shear); zero for the virgin (unstrained) state.
+    pub prev_strain: [f64; 6],
 }
 
 impl ViscoelasticState {
@@ -25,6 +33,7 @@ impl ViscoelasticState {
     pub fn with_branches(n_branches: usize) -> Self {
         Self {
             branch_stress: vec![[0.0; 6]; n_branches],
+            prev_strain: [0.0; 6],
         }
     }
 }
@@ -53,5 +62,12 @@ mod tests {
         for b in &s.branch_stress {
             assert_eq!(*b, [0.0; 6]);
         }
+        assert_eq!(s.prev_strain, [0.0; 6]);
+    }
+
+    #[test]
+    fn viscoelastic_state_default_has_zero_previous_strain() {
+        let s = ViscoelasticState::default();
+        assert_eq!(s.prev_strain, [0.0; 6]);
     }
 }

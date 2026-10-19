@@ -386,8 +386,10 @@ mod tests {
     #[test]
     fn test_xu_needleman_normal_traction_at_zero() {
         let p = XuNeedlemanParams::new(500.0, 250.0, 1e-4, 1e-4);
-        let t = p.normal_traction(0.0, 0.0);
-        assert!(t.is_finite(), "should be finite, got {t}");
+        // T_n = dPhi/d(Delta_n) carries the factor Delta_n/delta_n, so an
+        // unopened interface transmits no normal traction.
+        assert_eq!(p.normal_traction(0.0, 0.0), 0.0);
+        assert_eq!(p.normal_traction(0.0, 5e-5), 0.0);
     }
     #[test]
     fn test_xu_needleman_tangential_zero_at_zero_tangential() {
@@ -639,12 +641,27 @@ mod tests {
         let peak = p.delta_n_peak();
         let t_peak = p.normal_traction(peak);
         assert!(t_peak > 0.0, "T at peak = {t_peak}");
+        // The traction at lambda_n * delta_n is the maximum sigma_max, and its
+        // neighbours on either side are smaller.
+        assert!(
+            (t_peak - p.sigma_max()).abs() <= 1e-12 * t_peak,
+            "T(peak) = {t_peak}, sigma_max = {}",
+            p.sigma_max()
+        );
+        assert!(p.normal_traction(0.9 * peak) < t_peak);
+        assert!(p.normal_traction(1.1 * peak) < t_peak);
     }
     #[test]
     fn test_ppr_mode_i_energy_positive() {
         let p = PprParams::new(500.0, 250.0, 4.0, 4.0, 1e-4, 1e-4, 0.1, 0.1);
         let energy = p.mode_i_energy_numerical();
         assert!(energy > 0.0 && energy.is_finite(), "G_I_num = {energy}");
+        // The work of separation of the PPR law is the mode-I fracture energy.
+        assert!(
+            (energy - p.gamma_n).abs() <= 1e-6 * p.gamma_n,
+            "G_I_num = {energy}, Gamma_n = {}",
+            p.gamma_n
+        );
     }
     #[test]
     fn test_ppr_normal_traction_always_nonneg() {

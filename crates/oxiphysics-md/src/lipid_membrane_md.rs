@@ -16,6 +16,18 @@ use std::hash::{Hash, Hasher};
 
 use std::f64::consts::PI;
 
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
+
+use crate::gaussian_noise::standard_normal;
+
+mod bonded;
+#[cfg(test)]
+mod langevin_tests;
+
+/// Boltzmann constant in kJ/(mol·K).
+const KB_KJ_PER_MOL_K: f64 = 8.314_462_618e-3;
+
 // ---------------------------------------------------------------------------
 // CgBead — single coarse-grained bead
 // ---------------------------------------------------------------------------
@@ -372,12 +384,61 @@ pub struct BilayerSimulation {
     pub time: f64,
     /// Simulation step counter.
     pub step: u64,
+    /// Friction coefficient γ (ps⁻¹) of the Langevin thermostat; `0` gives
+    /// microcanonical (velocity Verlet) dynamics.
+    pub friction: f64,
+    /// Random stream of the Langevin noise.  A [`SmallRng`] is used because,
+    /// unlike `StdRng`, it is `Clone`, so a cloned simulation continues with an
+    /// identical noise stream.
+    rng: SmallRng,
 }
 
 impl BilayerSimulation {
+    /// Seed of the Langevin noise stream used by
+    /// [`BilayerSimulation::new_flat_bilayer`], so that runs are reproducible.
+    pub const DEFAULT_SEED: u64 = 0x00B1_1A7E_5EED_0001;
+
+    /// Builds a simulation from an explicit list of lipids in a periodic box.
+    ///
+    /// The time step is 0.02 ps, the friction 1 ps⁻¹ and the Langevin noise is
+    /// drawn from a stream seeded with `seed`.  The lipids are used as given;
+    /// call [`BilayerSimulation::wrap_molecules`] to move them into the box.
+    pub fn from_lipids(lipids: Vec<CgLipid>, box_: SimBox, temperature: f64, seed: u64) -> Self {
+        Self {
+            lipids,
+            box_,
+            temperature,
+            dt: 0.020,
+            time: 0.0,
+            step: 0,
+            friction: 1.0,
+            rng: SmallRng::seed_from_u64(seed),
+        }
+    }
+
+    /// Restarts the Langevin noise stream from `seed`.
+    pub fn reseed(&mut self, seed: u64) {
+        self.rng = SmallRng::seed_from_u64(seed);
+    }
+
     /// Constructs a flat bilayer patch with `n_per_leaflet` lipids of the given
     /// species arranged on a square grid in each leaflet.
+    ///
+    /// The Langevin noise stream is seeded with
+    /// [`BilayerSimulation::DEFAULT_SEED`]; use
+    /// [`BilayerSimulation::new_flat_bilayer_with_seed`] for independent runs.
     pub fn new_flat_bilayer(species: LipidSpecies, n_per_leaflet: usize, temperature: f64) -> Self {
+        Self::new_flat_bilayer_with_seed(species, n_per_leaflet, temperature, Self::DEFAULT_SEED)
+    }
+
+    /// Like [`BilayerSimulation::new_flat_bilayer`] with an explicit seed for the
+    /// Langevin noise stream.
+    pub fn new_flat_bilayer_with_seed(
+        species: LipidSpecies,
+        n_per_leaflet: usize,
+        temperature: f64,
+        seed: u64,
+    ) -> Self {
         let nx = (n_per_leaflet as f64).sqrt().ceil() as usize;
         let apl = species.reference_apl();
         let spacing = apl.sqrt();
@@ -405,14 +466,7 @@ impl BilayerSimulation {
             }
         }
 
-        Self {
-            lipids,
-            box_,
-            temperature,
-            dt: 0.020,
-            time: 0.0,
-            step: 0,
-        }
+        Self::from_lipids(lipids, box_, temperature, seed)
     }
 
     /// Returns the number of lipids per leaflet.
@@ -461,8 +515,14 @@ impl BilayerSimulation {
     }
 
     /// Returns the total intramolecular energy of the system (kJ/mol).
+    ///
+    /// Bond and angle vectors use the minimum image in x and y, so molecules
+    /// that straddle the periodic boundary are not penalised.
     pub fn total_intramolecular_energy(&self) -> f64 {
-        self.lipids.iter().map(|l| l.intramolecular_energy()).sum()
+        self.lipids
+            .iter()
+            .map(|l| l.intramolecular_energy_in_box(&self.box_))
+            .sum()
     }
 
     /// Performs a simple gradient-descent energy minimisation step.
@@ -504,87 +564,103 @@ impl BilayerSimulation {
         }
     }
 
-    /// Advances the simulation by one Langevin dynamics step.
+    /// Advances the simulation by one underdamped Langevin step.
     ///
-    /// Uses an overdamped Langevin integrator (Brownian dynamics) with
-    /// friction coefficient γ = 1 ps⁻¹ and Gaussian noise from the fluctuation-
-    /// dissipation theorem.
+    /// The bonded forces of [`CgLipid::intramolecular_forces`] (harmonic bonds
+    /// and cosine angles, minimum image in x and y) drive each bead, coupled to
+    /// a heat bath at `temperature` through the friction `friction` (γ) and the
+    /// matching Gaussian noise of the fluctuation–dissipation theorem.  The
+    /// BAOAB splitting of Leimkuhler and Matthews is used:
+    ///
+    /// ```text
+    /// B  v ← v + (Δt/2) F(x)/m
+    /// A  x ← x + (Δt/2) v
+    /// O  v ← c₁ v + sqrt((1 − c₁²) k_B T / m) ξ ,   c₁ = exp(−γ Δt)
+    /// A  x ← x + (Δt/2) v
+    /// B  v ← v + (Δt/2) F(x)/m          (forces recomputed at the new x)
+    /// ```
+    ///
+    /// `ξ` is a standard normal variate drawn independently for every bead and
+    /// Cartesian component from the simulation's seeded stream.  Units are nm,
+    /// ps, amu and kJ/mol (1 amu·nm²/ps² = 1 kJ/mol), so no conversion factors
+    /// appear.  Afterwards every molecule is kept whole and its head bead is
+    /// moved into the primary cell ([`BilayerSimulation::wrap_molecules`]).
+    /// Beads with a non-positive or non-finite mass are held fixed.
     pub fn step_langevin(&mut self) {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
         let dt = self.dt;
-        let kbt = 0.008314 * self.temperature; // kJ/mol
-        let gamma = 1.0; // ps⁻¹
-        let sigma_v = (2.0 * kbt * gamma / dt).sqrt();
+        let half_dt = 0.5 * dt;
+        let kbt = KB_KJ_PER_MOL_K * self.temperature;
+        let damping = (-self.friction.max(0.0) * dt).exp();
+        let noise_energy = ((1.0 - damping * damping) * kbt).max(0.0).sqrt();
+        let box_ = self.box_.clone();
 
-        // Simple deterministic part — bond restoring forces only
         for lipid in &mut self.lipids {
-            let n = lipid.beads.len();
-            let mut forces = vec![[0.0_f64; 3]; n];
-            let bonds = lipid.bonds.clone();
-            let r0 = 0.47_f64;
-            let k = 3800.0_f64;
-            for &(i, j) in &bonds {
-                let dx = lipid.beads[j].position[0] - lipid.beads[i].position[0];
-                let dy = lipid.beads[j].position[1] - lipid.beads[i].position[1];
-                let dz = lipid.beads[j].position[2] - lipid.beads[i].position[2];
-                let r = (dx * dx + dy * dy + dz * dz).sqrt().max(1e-12);
-                let f_mag = k * (r - r0);
-                let fx = f_mag * dx / r;
-                let fy = f_mag * dy / r;
-                let fz = f_mag * dz / r;
-                forces[i][0] += fx;
-                forces[i][1] += fy;
-                forces[i][2] += fz;
-                forces[j][0] -= fx;
-                forces[j][1] -= fy;
-                forces[j][2] -= fz;
+            let forces = lipid.intramolecular_forces(&box_);
+            for (bead, force) in lipid.beads.iter_mut().zip(&forces) {
+                if !(bead.mass.is_finite() && bead.mass > 0.0) {
+                    continue;
+                }
+                let inverse_mass = 1.0 / bead.mass;
+                let noise_scale = noise_energy * inverse_mass.sqrt();
+                for ((velocity, position), &component_force) in bead
+                    .velocity
+                    .iter_mut()
+                    .zip(bead.position.iter_mut())
+                    .zip(force)
+                {
+                    *velocity += half_dt * component_force * inverse_mass;
+                    *position += half_dt * *velocity;
+                    *velocity = damping * *velocity + noise_scale * standard_normal(&mut self.rng);
+                    *position += half_dt * *velocity;
+                }
             }
-            // Simple pseudo-random noise using step counter hash
-            let mut hasher = DefaultHasher::new();
-            self.step.hash(&mut hasher);
-            let noise_seed = hasher.finish();
-
-            for (i, bead) in lipid.beads.iter_mut().enumerate() {
-                let m = bead.mass;
-                let noise_scale = sigma_v / (m.sqrt().max(1e-12));
-                // Deterministic pseudo-noise from hash (wrapping arithmetic to avoid overflow)
-                let xi = ((noise_seed.wrapping_add((i as u64).wrapping_mul(6364136223846793005)))
-                    as f64
-                    / u64::MAX as f64
-                    - 0.5)
-                    * noise_scale;
-                let yi = ((noise_seed
-                    .wrapping_add((i as u64).wrapping_add(1).wrapping_mul(2862933555777941757)))
-                    as f64
-                    / u64::MAX as f64
-                    - 0.5)
-                    * noise_scale;
-                let zi = ((noise_seed
-                    .wrapping_add((i as u64).wrapping_add(2).wrapping_mul(1442695040888963407)))
-                    as f64
-                    / u64::MAX as f64
-                    - 0.5)
-                    * noise_scale;
-
-                bead.velocity[0] =
-                    (1.0 - gamma * dt) * bead.velocity[0] + (forces[i][0] / m) * dt + xi * dt;
-                bead.velocity[1] =
-                    (1.0 - gamma * dt) * bead.velocity[1] + (forces[i][1] / m) * dt + yi * dt;
-                bead.velocity[2] =
-                    (1.0 - gamma * dt) * bead.velocity[2] + (forces[i][2] / m) * dt + zi * dt;
-
-                bead.position[0] += bead.velocity[0] * dt;
-                bead.position[1] += bead.velocity[1] * dt;
-                bead.position[2] += bead.velocity[2] * dt;
-
-                // Periodic boundary in xy
-                bead.position[0] = bead.position[0].rem_euclid(self.box_.lx);
-                bead.position[1] = bead.position[1].rem_euclid(self.box_.ly);
+            let forces = lipid.intramolecular_forces(&box_);
+            for (bead, force) in lipid.beads.iter_mut().zip(&forces) {
+                bead.force = *force;
+                if !(bead.mass.is_finite() && bead.mass > 0.0) {
+                    continue;
+                }
+                let inverse_mass = 1.0 / bead.mass;
+                for (velocity, &component_force) in bead.velocity.iter_mut().zip(force) {
+                    *velocity += half_dt * component_force * inverse_mass;
+                }
             }
         }
+        self.wrap_molecules();
         self.time += dt;
         self.step += 1;
+    }
+
+    /// Keeps every molecule whole and moves its head bead into the primary
+    /// periodic cell (see [`CgLipid::wrap_into_box`]).
+    pub fn wrap_molecules(&mut self) {
+        let box_ = self.box_.clone();
+        for lipid in &mut self.lipids {
+            lipid.wrap_into_box(&box_);
+        }
+    }
+
+    /// Total kinetic energy ½ Σ m v² (kJ/mol) of all beads.
+    pub fn kinetic_energy(&self) -> f64 {
+        self.lipids
+            .iter()
+            .flat_map(|lipid| lipid.beads.iter())
+            .map(|bead| {
+                let v = bead.velocity;
+                0.5 * bead.mass * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+            })
+            .sum()
+    }
+
+    /// Kinetic temperature `2 K / (3 N k_B)` (K) of the `N` beads.
+    ///
+    /// Returns 0 for a system without beads.
+    pub fn kinetic_temperature(&self) -> f64 {
+        let n_beads: usize = self.lipids.iter().map(|lipid| lipid.beads.len()).sum();
+        if n_beads == 0 {
+            return 0.0;
+        }
+        2.0 * self.kinetic_energy() / (3.0 * n_beads as f64 * KB_KJ_PER_MOL_K)
     }
 
     /// Counts lipids that have undergone flip-flop (changed leaflet).

@@ -18,11 +18,15 @@
 //! the device and the compiled pipelines are reused by every call, and the scratch
 //! buffers of a call are released before it returns.
 //!
+//! One dispatch dimension holds at most 65 535 tiles of 256 keys (16 776 960
+//! keys).  Longer inputs are not refused: their dispatch is folded into a 2-D
+//! grid ([`crate::compute::timestamp::dispatch_count_for`]) and the kernels
+//! linearise the tile index with `num_workgroups`.
+//!
 //! When no GPU adapter is available (or the `wgpu-backend` feature is disabled)
 //! the public entry points transparently fall back to the CPU reference sort,
-//! and so do inputs of more than 16 776 960 keys (a dispatch spans at most
-//! 65 535 tiles of 256 keys).  The public signatures never change between
-//! feature configurations.
+//! and so does any call the GPU rejects (for example buffers beyond the device
+//! limits).  The public signatures never change between feature configurations.
 
 /// GPU LSD radix sort of u32 keys (4x8-bit passes). CPU fallback when no adapter.
 pub fn radix_sort_u32_gpu(keys: &[u32]) -> Vec<u32> {
@@ -110,7 +114,7 @@ mod cpu {
 #[cfg(feature = "wgpu-backend")]
 mod gpu {
     use crate::compute::wgpu_backend::WgpuInitError;
-    use crate::gpu_primitives::shared::{Scratch, check_workgroups};
+    use crate::gpu_primitives::shared::Scratch;
     use crate::kernels_wgsl::{RADIX_HISTOGRAM_WGSL, RADIX_SCATTER_PAIRS_WGSL, RADIX_SCATTER_WGSL};
 
     const TILE: usize = 256;
@@ -123,9 +127,22 @@ mod gpu {
         wgpu::BufferBindingType::Storage { read_only: false }
     }
 
-    fn radix_params_bytes(n: u32, shift: u32, num_tiles: u32) -> Vec<u8> {
-        let p: [u32; 4] = [n, shift, num_tiles, 0];
-        bytemuck::cast_slice(&p).to_vec()
+    /// The parameter words of the radix kernels: key count, bit shift, tile count.
+    ///
+    /// Counts reach the kernels as 32-bit words; a count that does not fit is
+    /// refused instead of wrapping around.
+    fn radix_params_bytes(
+        n: usize,
+        shift: u32,
+        num_tiles: usize,
+    ) -> Result<Vec<u8>, WgpuInitError> {
+        let word = |value: usize| {
+            u32::try_from(value).map_err(|_| {
+                WgpuInitError::Validation(format!("{value} does not fit a 32-bit kernel parameter"))
+            })
+        };
+        let p: [u32; 4] = [word(n)?, shift, word(num_tiles)?, 0];
+        Ok(bytemuck::cast_slice(&p).to_vec())
     }
 
     /// Stable LSD radix sort of `keys` in four 8-bit passes.
@@ -146,8 +163,10 @@ mod gpu {
         if n == 1 {
             return Ok(keys.to_vec());
         }
+        // One workgroup per 256-key tile; more tiles than one dispatch dimension
+        // holds are folded into y (the kernels linearise the tile index).
+        let workgroups = gpu.dispatch_shape(n, TILE as u32)?;
         let num_tiles = n.div_ceil(TILE);
-        check_workgroups(num_tiles)?;
         let padded = num_tiles * TILE;
         let hist_len = 256 * num_tiles;
 
@@ -163,16 +182,13 @@ mod gpu {
 
         for pass_idx in 0u32..4 {
             let shift = pass_idx * 8;
-            gpu.queue_write_buffer_raw(
-                &params_buf,
-                &radix_params_bytes(n as u32, shift, num_tiles as u32),
-            );
+            gpu.queue_write_buffer_raw(&params_buf, &radix_params_bytes(n, shift, num_tiles)?);
 
             gpu.dispatch_wgsl(
                 RADIX_HISTOGRAM_WGSL,
                 "radix_histogram",
                 &[(buf_a, ro()), (tile_hist_buf, rw()), (params_buf, ro())],
-                [num_tiles as u32, 1, 1],
+                workgroups,
             )?;
 
             let tile_hist = gpu.read_u32(tile_hist_buf, hist_len)?;
@@ -188,7 +204,7 @@ mod gpu {
                     (base_buf, ro()),
                     (params_buf, ro()),
                 ],
-                [num_tiles as u32, 1, 1],
+                workgroups,
             )?;
 
             std::mem::swap(&mut buf_a, &mut buf_b);
@@ -213,8 +229,10 @@ mod gpu {
             let p = payload.first().copied().unwrap_or_default();
             return Ok((vec![k], vec![p]));
         }
+        // One workgroup per 256-key tile; more tiles than one dispatch dimension
+        // holds are folded into y (the kernels linearise the tile index).
+        let workgroups = gpu.dispatch_shape(n, TILE as u32)?;
         let num_tiles = n.div_ceil(TILE);
-        check_workgroups(num_tiles)?;
         let padded = num_tiles * TILE;
         let hist_len = 256 * num_tiles;
 
@@ -235,16 +253,13 @@ mod gpu {
 
         for pass_idx in 0u32..4 {
             let shift = pass_idx * 8;
-            gpu.queue_write_buffer_raw(
-                &params_buf,
-                &radix_params_bytes(n as u32, shift, num_tiles as u32),
-            );
+            gpu.queue_write_buffer_raw(&params_buf, &radix_params_bytes(n, shift, num_tiles)?);
 
             gpu.dispatch_wgsl(
                 RADIX_HISTOGRAM_WGSL,
                 "radix_histogram",
                 &[(keys_a, ro()), (tile_hist_buf, rw()), (params_buf, ro())],
-                [num_tiles as u32, 1, 1],
+                workgroups,
             )?;
 
             let tile_hist = gpu.read_u32(tile_hist_buf, hist_len)?;
@@ -262,7 +277,7 @@ mod gpu {
                     (base_buf, ro()),
                     (params_buf, ro()),
                 ],
-                [num_tiles as u32, 1, 1],
+                workgroups,
             )?;
 
             std::mem::swap(&mut keys_a, &mut keys_b);
@@ -446,6 +461,7 @@ mod tests {
     #[cfg(feature = "wgpu-backend")]
     mod device_reuse {
         use super::*;
+        use crate::compute::wgpu_backend::WgpuInitError;
         use crate::gpu_primitives::shared;
         use std::sync::PoisonError;
 
@@ -512,28 +528,95 @@ mod tests {
             );
         }
 
+        /// Run `body` in a scratch scope of the shared backend whose dispatches are
+        /// folded under `limit` workgroups per dimension.
+        ///
+        /// `None` when the host has no GPU adapter.  Unlike the public sorts this
+        /// surfaces every GPU error, so a result that comes back really was sorted
+        /// by the GPU and not by the CPU fallback.
+        fn on_gpu<T>(
+            limit: u32,
+            body: impl FnOnce(&mut shared::Scratch<'_>) -> Result<T, WgpuInitError>,
+        ) -> Option<Result<T, WgpuInitError>> {
+            let mutex = shared::shared_backend()?;
+            let mut guard = mutex.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut scratch = shared::Scratch::new(&mut guard).with_workgroup_limit(limit);
+            Some(body(&mut scratch))
+        }
+
         #[test]
-        fn sorts_wider_than_one_dispatch_dimension_are_refused_before_allocating() {
-            if shared::shared_backend().is_none() {
+        fn folded_sorts_match_the_reference_when_the_grid_is_wider_than_one_row() {
+            // A limit of 3 workgroups per dimension folds every input of 4 to 9
+            // tiles into a 2-D grid, most of them with spare workgroups behind the
+            // data, through all four radix passes.
+            for &n in &[700usize, 1000, 1100, 1280, 2000, 2304] {
+                for &modulus in &[0u32, 300] {
+                    let keys = lcg_keys(n, modulus);
+                    let payload: Vec<u32> = (0..n as u32).map(|i| i ^ 0x5A5A).collect();
+                    let outcome = on_gpu(3, |gpu| {
+                        let sorted = gpu::radix_sort_u32(gpu, &keys)?;
+                        let pairs = gpu::radix_sort_pairs(gpu, &keys, &payload)?;
+                        Ok((sorted, pairs))
+                    });
+                    let Some(outcome) = outcome else {
+                        eprintln!("SKIPPED: no GPU adapter");
+                        return;
+                    };
+                    let (sorted, pairs) = outcome
+                        .unwrap_or_else(|e| panic!("n={n}: the folded dispatch failed: {e}"));
+                    let mut expected = keys.clone();
+                    expected.sort_unstable();
+                    assert_eq!(sorted, expected, "keys n={n} mod={modulus}");
+                    assert_eq!(
+                        pairs,
+                        reference_pairs(&keys, &payload),
+                        "pairs (stability) n={n} mod={modulus}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn folded_sorts_reject_inputs_beyond_the_folded_grid_without_allocating() {
+            // 10 tiles do not fit a 3 x 3 grid.
+            let n = TILE_KEYS * 10;
+            let keys = lcg_keys(n, 0);
+            let payload: Vec<u32> = (0..n as u32).collect();
+            let refused = on_gpu(3, |gpu| {
+                let plain = gpu::radix_sort_u32(gpu, &keys).is_err();
+                let pairs = gpu::radix_sort_pairs(gpu, &keys, &payload).is_err();
+                Ok((plain, pairs, gpu.live_buffer_count()))
+            });
+            let Some(refused) = refused else {
                 eprintln!("SKIPPED: no GPU adapter");
                 return;
-            }
-            // 65 536 tiles of 256 keys: one workgroup more than a dimension allows.
-            let n = TILE_KEYS * (shared::MAX_WORKGROUPS_PER_DIMENSION + 1);
+            };
+            assert_eq!(
+                refused.expect("the closure never fails"),
+                (true, true, 0),
+                "an input the grid cannot cover must be refused before allocating anything"
+            );
+        }
+
+        #[test]
+        fn sorts_wider_than_one_dispatch_dimension_run_on_the_gpu() {
+            // 65 537 tiles of 256 keys, the last one holding a single key: the grid
+            // of the portable 65 535-wide dispatch needs a second row.
+            let n = TILE_KEYS * 65_536 + 1;
             let keys: Vec<u32> = (0..n as u32)
                 .map(|i| i.wrapping_mul(2_654_435_761))
                 .collect();
-            let payload: Vec<u32> = (0..n as u32).collect();
-            let refused = shared::run(|scratch| {
-                let plain = gpu::radix_sort_u32(scratch, &keys).is_err();
-                let pairs = gpu::radix_sort_pairs(scratch, &keys, &payload).is_err();
-                Ok((plain, pairs, scratch.live_buffer_count()))
-            });
-            assert_eq!(
-                refused,
-                Some((true, true, 0)),
-                "the oversized sorts must be refused before allocating anything"
-            );
+            let portable_limit = crate::compute::timestamp::MAX_WORKGROUPS_PER_DIMENSION;
+            let sorted = on_gpu(portable_limit, |gpu| gpu::radix_sort_u32(gpu, &keys));
+            let Some(sorted) = sorted else {
+                eprintln!("SKIPPED: no GPU adapter");
+                return;
+            };
+            let sorted = sorted.expect("the sort must run on the GPU");
+            let mut expected = keys.clone();
+            expected.sort_unstable();
+            assert_eq!(sorted.len(), n);
+            assert!(sorted == expected, "the sort of {n} keys is wrong");
         }
 
         #[test]

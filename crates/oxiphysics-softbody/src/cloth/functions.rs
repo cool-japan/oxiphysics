@@ -5,6 +5,7 @@
 use crate::particle::SoftParticle;
 use oxiphysics_core::math::Vec3;
 
+use super::dihedral::hinge_state;
 use super::self_collision::SelfCollisionGrid;
 use super::types::{ClothEdge, ClothVertex, RigidSphere};
 
@@ -411,10 +412,23 @@ mod tests {
         assert!(cloth.max_vertex_speed() >= 0.0);
     }
 }
-/// Compute the dihedral angle between two triangles sharing edge (p0, p1).
+/// Compute the signed dihedral angle of two triangles sharing the edge
+/// `(p0, p1)`.
 ///
-/// `pk` and `pl` are the "wing" vertices of each triangle.  Returns the angle
-/// in radians in \[0, π\].
+/// `pk` and `pl` are the "wing" vertices of the faces `(p0, p1, pk)` and
+/// `(p1, p0, pl)`.  The angle is the rotation about the edge that carries the
+/// normal `(p1 - p0) x (pk - p0)` of the first face onto the normal
+/// `(pl - p0) x (p1 - p0)` of the second one, in radians in `(-π, π]`:
+///
+/// * `0` for a flat hinge (both wings in one plane, on opposite sides of the
+///   edge),
+/// * negative when the wings are folded towards the side the face normals
+///   point to,
+/// * positive when they are folded away from that side.
+///
+/// The result does not depend on where the wing vertices sit along the edge,
+/// only on the planes the two faces span.  A degenerate hinge (zero-length
+/// edge, or a wing vertex on the hinge line) has no angle and yields `0.0`.
 #[inline]
 pub(super) fn compute_dihedral_angle(
     p0: [f64; 3],
@@ -422,18 +436,7 @@ pub(super) fn compute_dihedral_angle(
     pk: [f64; 3],
     pl: [f64; 3],
 ) -> f64 {
-    let e = sub(p1, p0);
-    let e_len = length(e);
-    if e_len < 1e-14 {
-        return 0.0;
-    }
-    let e_hat = scale(e, 1.0 / e_len);
-    let ek = sub(pk, p0);
-    let el = sub(pl, p0);
-    let nk = cross(e_hat, normalize(ek));
-    let nl = cross(e_hat, normalize(el));
-    let cos_theta = dot(nk, nl).clamp(-1.0, 1.0);
-    cos_theta.acos()
+    hinge_state(p0, p1, pk, pl).map_or(0.0, |state| state.angle)
 }
 #[cfg(test)]
 mod pbd_cloth_tests {

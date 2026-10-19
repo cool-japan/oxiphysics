@@ -207,12 +207,34 @@ impl BooleanResult {
     /// Determine whether the resulting mesh is topologically exact.
     ///
     /// Returns `true` when:
-    /// 1. Every edge is shared by exactly two faces (manifold, no boundary).
-    /// 2. No adjacent faces are nearly coplanar (dihedral > 1e-6 rad).
+    /// 1. Every edge is shared by exactly two faces (manifold, no boundary),
+    ///    and the two faces traverse it in opposite directions (consistent
+    ///    orientation).
+    /// 2. No two adjacent faces fold back onto each other (zero-thickness fin:
+    ///    normals within 1e-6 rad of anti-parallel). Adjacent *coplanar* faces
+    ///    with the same orientation are valid — every split face of a boolean
+    ///    result produces them.
     /// 3. No degenerate triangles (cross-product length > 1e-12).
     pub fn is_topologically_exact(&self) -> bool {
         let mesh = &self.mesh;
         if mesh.faces.is_empty() {
+            return false;
+        }
+        let n_verts = mesh.verts.len();
+        if mesh.faces.iter().flatten().any(|&i| i >= n_verts) {
+            return false;
+        }
+        let mut directed: std::collections::HashMap<(usize, usize), usize> =
+            std::collections::HashMap::new();
+        for &[a, b, c] in &mesh.faces {
+            for e in [(a, b), (b, c), (c, a)] {
+                *directed.entry(e).or_insert(0) += 1;
+            }
+        }
+        if directed
+            .iter()
+            .any(|(&(u, v), &cnt)| cnt != 1 || directed.get(&(v, u)) != Some(&1))
+        {
             return false;
         }
         let mut edge_count: std::collections::HashMap<(usize, usize), usize> =
@@ -274,7 +296,9 @@ impl BooleanResult {
                 return false;
             }
             let dot = (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]) / (l0 * l1);
-            if dot.abs().min(1.0).acos() < MIN_ANGLE {
+            // Angle between the normal of one face and the reversed normal of
+            // the other: zero for a fold-back.
+            if (-dot).clamp(-1.0, 1.0).acos() < MIN_ANGLE {
                 return false;
             }
         }
@@ -316,6 +340,54 @@ mod boolean_result_tests {
         let mesh = ProcessMesh::new(verts, vec![[0, 1, 2], [0, 3, 1]]);
         let r = BooleanResult {
             mesh,
+            is_exact: false,
+        };
+        assert!(!r.is_topologically_exact());
+    }
+
+    #[test]
+    fn test_closed_mesh_with_coplanar_neighbours_is_exact() {
+        // A square pyramid whose base is split into two coplanar triangles.
+        let verts = vec![
+            [0.0f64, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.5, 1.0],
+        ];
+        let faces = vec![
+            [0, 2, 1],
+            [0, 3, 2],
+            [0, 1, 4],
+            [1, 2, 4],
+            [2, 3, 4],
+            [3, 0, 4],
+        ];
+        let r = BooleanResult {
+            mesh: ProcessMesh::new(verts, faces),
+            is_exact: false,
+        };
+        assert!(r.is_topologically_exact());
+    }
+
+    #[test]
+    fn test_inconsistent_orientation_not_exact() {
+        let mut mesh = make_tetrahedron();
+        mesh.faces[0] = [0, 1, 2];
+        let r = BooleanResult {
+            mesh,
+            is_exact: false,
+        };
+        assert!(!r.is_topologically_exact());
+    }
+
+    #[test]
+    fn test_folded_fin_not_exact() {
+        // Two copies of one triangle with opposite orientation: closed and
+        // consistently oriented, but a zero-thickness fold.
+        let verts = vec![[0.0f64, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let r = BooleanResult {
+            mesh: ProcessMesh::new(verts, vec![[0, 1, 2], [0, 2, 1]]),
             is_exact: false,
         };
         assert!(!r.is_topologically_exact());

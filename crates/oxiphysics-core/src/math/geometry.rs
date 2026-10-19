@@ -1196,24 +1196,25 @@ pub fn spin_matrix(omega: &Vec3) -> Mat3 {
 /// Runge–Kutta 4th-order integration of a quaternion ODE.
 ///
 /// Given a unit quaternion `q` and angular velocity `omega` (body frame),
-/// integrates `q̇ = 0.5 * q ⊗ [omega, 0]` forward by `dt`.
+/// integrates `q̇ = 0.5 * q ⊗ [0, omega]` forward by `dt`.  For a constant
+/// `omega` the result approximates `q ⊗ r`, where `r` is the rotation by
+/// `|omega| · dt` radians about the body axis `omega / |omega|`.
+///
+/// The right-hand side is linear in `q`, so the four stages are evaluated on
+/// plain (unnormalised) quaternions and only the final update is renormalised.
+/// `q` is returned unchanged when `omega` is zero or `dt` is zero.
 pub fn quat_integrate_rk4(q: &Quat, omega: &Vec3, dt: Real) -> Quat {
-    let half_dt = dt * 0.5;
-    let omega_quat = |q_in: &Quat| -> Quat {
-        let ow = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-            0.0, omega.x, omega.y, omega.z,
-        ));
-        UnitQuaternion::new_normalize(q_in.as_ref() * (ow.as_ref() * 0.5))
-    };
-    let k1 = omega_quat(q);
-    let q2 = UnitQuaternion::new_normalize(q.as_ref() + k1.as_ref() * half_dt);
-    let k2 = omega_quat(&q2);
-    let q3 = UnitQuaternion::new_normalize(q.as_ref() + k2.as_ref() * half_dt);
-    let k3 = omega_quat(&q3);
-    let q4 = UnitQuaternion::new_normalize(q.as_ref() + k3.as_ref() * dt);
-    let k4 = omega_quat(&q4);
-    let sum = k1.as_ref() + k2.as_ref() * 2.0 + k3.as_ref() * 2.0 + k4.as_ref();
-    UnitQuaternion::new_normalize(q.as_ref() + sum * (dt / 6.0))
+    if dt == 0.0 || *omega == Vec3::zeros() {
+        return *q;
+    }
+    let rate = nalgebra::Quaternion::new(0.0, omega.x, omega.y, omega.z);
+    let derivative = |state: &nalgebra::Quaternion<Real>| (state * rate) * 0.5;
+    let q0 = *q.quaternion();
+    let k1 = derivative(&q0);
+    let k2 = derivative(&(q0 + k1 * (0.5 * dt)));
+    let k3 = derivative(&(q0 + k2 * (0.5 * dt)));
+    let k4 = derivative(&(q0 + k3 * dt));
+    UnitQuaternion::new_normalize(q0 + (k1 + k2 * 2.0 + k3 * 2.0 + k4) * (dt / 6.0))
 }
 /// Linear blending of two quaternions followed by renormalization (NLerp).
 pub fn quat_blend(q1: &Quat, q2: &Quat, t: Real) -> Quat {
@@ -1733,5 +1734,80 @@ mod extended_math_tests_v2 {
         let mean = mat3_weighted_mean(&[r, r], &[0.5, 0.5], 20);
         let diff = (mean - r).norm();
         assert!(diff < 1e-6, "mean of same rotation: diff={}", diff);
+    }
+
+    /// Integrates `omega` (body frame) for `total` time units in `steps` RK4 steps.
+    fn rk4_rotate(
+        q0: &crate::math::Quat,
+        omega: &Vec3,
+        total: f64,
+        steps: usize,
+    ) -> crate::math::Quat {
+        let mut q = *q0;
+        for _ in 0..steps {
+            q = crate::math::quat_integrate_rk4(&q, omega, total / steps as f64);
+        }
+        q
+    }
+
+    #[test]
+    fn test_quat_integrate_rk4_zero_rate_or_step_returns_input() {
+        let q = crate::math::quat_from_axis_angle(&Vec3::new(1.0, 2.0, 3.0), 0.8);
+        assert_eq!(crate::math::quat_integrate_rk4(&q, &Vec3::zeros(), 0.01), q);
+        let omega = Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(crate::math::quat_integrate_rk4(&q, &omega, 0.0), q);
+    }
+
+    #[test]
+    fn test_quat_integrate_rk4_constant_rate_about_z() {
+        // 5 rad/s for 1 s: a 5 rad rotation about z.
+        let omega = Vec3::new(0.0, 0.0, 5.0);
+        let q = rk4_rotate(&crate::math::Quat::identity(), &omega, 1.0, 1000);
+        let exact = nalgebra::UnitQuaternion::from_scaled_axis(Vec3::z() * 5.0);
+        assert!(
+            q.angle_to(&exact) < 1e-9,
+            "angle error {}",
+            q.angle_to(&exact)
+        );
+    }
+
+    #[test]
+    fn test_quat_integrate_rk4_rate_magnitude_is_not_clamped() {
+        // 0.5 rad/s for 2 s is a 1 rad rotation.  Normalising the derivative
+        // forced an effective rate of 2 rad/s, i.e. a 4 rad rotation.
+        let omega = Vec3::new(0.0, 0.5, 0.0);
+        let q = rk4_rotate(&crate::math::Quat::identity(), &omega, 2.0, 200);
+        assert!((q.angle() - 1.0).abs() < 1e-9, "angle {}", q.angle());
+    }
+
+    #[test]
+    fn test_quat_integrate_rk4_body_frame_off_axis_rate() {
+        let q0 = nalgebra::UnitQuaternion::from_euler_angles(0.3, -0.7, 1.1);
+        let omega = Vec3::new(1.2, -0.4, 2.1);
+        let q = rk4_rotate(&q0, &omega, 1.0, 1000);
+        let rotation = nalgebra::UnitQuaternion::from_scaled_axis(omega);
+        // The rate is expressed in the body frame: q0 followed by the rotation.
+        let body = q0 * rotation;
+        assert!(
+            q.angle_to(&body) < 1e-9,
+            "angle error {}",
+            q.angle_to(&body)
+        );
+        // The world-frame composition is a different orientation.
+        let world = rotation * q0;
+        assert!(body.angle_to(&world) > 0.1);
+        assert!(q.angle_to(&world) > 0.1);
+    }
+
+    #[test]
+    fn test_quat_integrate_rk4_stays_unit_and_handles_tiny_rates() {
+        let q = crate::math::quat_from_axis_angle(&Vec3::y(), 0.4);
+        // A rate far below the normalisation threshold neither blows up nor rotates.
+        let tiny = crate::math::quat_integrate_rk4(&q, &Vec3::new(1e-200, 0.0, 0.0), 0.1);
+        assert!(tiny.coords.iter().all(|c| c.is_finite()));
+        assert!(q.angle_to(&tiny) < 1e-12);
+        // Even a single large step returns a unit quaternion.
+        let big = crate::math::quat_integrate_rk4(&q, &Vec3::new(3.0, 1.0, -2.0), 0.5);
+        assert!((big.norm() - 1.0).abs() < 1e-14, "norm {}", big.norm());
     }
 }

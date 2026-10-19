@@ -11,6 +11,24 @@
 //! autocorrelation functions for quantum diffusion, and simple tunneling-rate
 //! estimates.
 //!
+//! # Conventions
+//!
+//! A particle of mass `m` and effective Planck constant `ℏ` is a ring of `P`
+//! beads obeying the ring-polymer Hamiltonian (Craig-Manolopoulos RPMD, i-PI)
+//!
+//! ```text
+//! H_P = Σ_p [ m |v_p|² / 2 + ½ k |r_{p+1} − r_p|² + V(r_p) ],
+//! k = m ω_P²,   ω_P = P / (β ℏ),   r_P ≡ r_0,
+//! ```
+//!
+//! i.e. the *full* physical potential `V` acts on every bead and the external
+//! force of bead `p` is `forces[i][p] = −∇V(r_ip)` (never the spring force).
+//! The classical Boltzmann distribution of `H_P` at the inverse temperature
+//! `β / P` reproduces the quantum canonical ensemble at `β`; the free ring
+//! polymer decouples into the normal modes of [`NormalModeTransform`] with the
+//! frequencies of [`normal_mode_frequencies`].  Units are those of the caller
+//! with `k_B = 1`.
+//!
 //! # Key types
 //! - [`QuantumBead`]: a single quantum particle represented as a ring polymer.
 //! - [`QuantumSystem`]: collection of quantum beads forming a full system.
@@ -28,22 +46,25 @@
 //! - [`QuantumDiagnostics`]: summary diagnostics for a PIMD simulation.
 //!
 //! # Key functions
-//! - [`ring_polymer_spring_constant`]: spring constant for the inter-bead
-//!   harmonic coupling.
+//! - [`ring_polymer_spring_constant`]: spring constant `m (P / (β ℏ))²` for the
+//!   inter-bead harmonic coupling.
 //! - [`ring_polymer_spring_force`]: force from harmonic springs along the ring.
 //! - [`centroid_position`] / [`centroid_velocity`]: classical centroid
 //!   estimators.
-//! - [`quantum_kinetic_energy`]: virial estimator for the quantum kinetic
-//!   energy.
+//! - [`quantum_kinetic_energy`]: centroid-virial estimator for the quantum
+//!   kinetic energy (needs the external forces on every bead).
 //! - [`primitive_kinetic_energy`]: primitive (thermodynamic) kinetic energy
 //!   estimator.
 //! - [`thermal_de_broglie`]: thermal de Broglie wavelength.
-//! - [`step_pimd`]: one velocity-Verlet step of the ring-polymer MD.
-//! - [`step_rpmd`]: one velocity-Verlet step with spring forces included.
+//! - [`step_pimd`]: one velocity-Verlet step of the ring-polymer MD: half-kick,
+//!   exact normal-mode propagation of the free ring polymer, force refresh,
+//!   half-kick.
+//! - [`step_rpmd`]: the same integrator under its RPMD name.
 //! - [`normal_mode_frequencies`]: compute ring-polymer normal-mode frequencies.
 //! - [`wkb_tunneling_rate`]: WKB tunneling rate through a parabolic barrier.
 //! - [`quantum_diffusion_coefficient`]: Green-Kubo integral of the VACF.
 
+use crate::MdError;
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -142,6 +163,29 @@ pub struct QuantumSystem {
     pub beta: f64,
     /// Number of atoms (= `beads.len()`).
     pub n_atoms: usize,
+    /// Normal-mode transform and mode buffers reused by [`step_pimd`]; rebuilt
+    /// whenever the number of beads changes.
+    mode_scratch: Option<ModeScratch>,
+}
+
+/// Normal-mode transform and the mode-space buffers of one ring polymer,
+/// cached in [`QuantumSystem`] so that [`step_pimd`] does not rebuild the
+/// `P × P` transform matrix or reallocate on every step.
+#[derive(Debug, Clone)]
+struct ModeScratch {
+    transform: NormalModeTransform,
+    position_modes: Vec<[f64; 3]>,
+    velocity_modes: Vec<[f64; 3]>,
+}
+
+impl ModeScratch {
+    fn new(n_beads: usize) -> Self {
+        Self {
+            transform: NormalModeTransform::new(n_beads),
+            position_modes: vec![[0.0; 3]; n_beads],
+            velocity_modes: vec![[0.0; 3]; n_beads],
+        }
+    }
 }
 
 impl QuantumSystem {
@@ -155,6 +199,7 @@ impl QuantumSystem {
             n_beads,
             beta,
             n_atoms,
+            mode_scratch: None,
         }
     }
 
@@ -236,29 +281,49 @@ impl NormalModeTransform {
     /// Apply forward transform: convert bead positions to normal-mode
     /// amplitudes.  Input and output are P 3-vectors.
     pub fn forward(&self, bead_coords: &[[f64; 3]]) -> Vec<[f64; 3]> {
+        let mut modes = vec![[0.0f64; 3]; self.n_beads];
+        self.forward_into(bead_coords, &mut modes);
+        modes
+    }
+
+    /// Forward transform into a caller-provided buffer (no allocation).
+    ///
+    /// `modes[n] = Σ_k C[k][n] · bead_coords[k]`; at most `P` entries of both
+    /// slices are used.
+    pub fn forward_into(&self, bead_coords: &[[f64; 3]], modes: &mut [[f64; 3]]) {
         let p = self.n_beads;
-        let mut modes = vec![[0.0f64; 3]; p];
-        for (n, mode_n) in modes.iter_mut().enumerate() {
+        for (n, mode_n) in modes.iter_mut().enumerate().take(p) {
+            let mut amplitude = [0.0f64; 3];
             for (k, &bc_k) in bead_coords.iter().enumerate().take(p) {
                 let c_kn = self.c_matrix[k * p + n];
-                *mode_n = v3_add(*mode_n, v3_scale(c_kn, bc_k));
+                amplitude = v3_add(amplitude, v3_scale(c_kn, bc_k));
             }
+            *mode_n = amplitude;
         }
-        modes
     }
 
     /// Apply inverse transform: convert normal-mode amplitudes back to bead
     /// positions.
     pub fn inverse(&self, mode_coords: &[[f64; 3]]) -> Vec<[f64; 3]> {
+        let mut beads = vec![[0.0f64; 3]; self.n_beads];
+        self.inverse_into(mode_coords, &mut beads);
+        beads
+    }
+
+    /// Inverse transform into a caller-provided buffer (no allocation).
+    ///
+    /// `beads[k] = Σ_n C[k][n] · mode_coords[n]`; at most `P` entries of both
+    /// slices are used.
+    pub fn inverse_into(&self, mode_coords: &[[f64; 3]], beads: &mut [[f64; 3]]) {
         let p = self.n_beads;
-        let mut beads = vec![[0.0f64; 3]; p];
-        for (k, bead_k) in beads.iter_mut().enumerate() {
+        for (k, bead_k) in beads.iter_mut().enumerate().take(p) {
+            let mut position = [0.0f64; 3];
             for (n, &mc_n) in mode_coords.iter().enumerate().take(p) {
                 let c_kn = self.c_matrix[k * p + n];
-                *bead_k = v3_add(*bead_k, v3_scale(c_kn, mc_n));
+                position = v3_add(position, v3_scale(c_kn, mc_n));
             }
+            *bead_k = position;
         }
-        beads
     }
 }
 
@@ -267,15 +332,20 @@ impl NormalModeTransform {
 ///
 /// ω_n = (2 P / (β ℏ)) sin(π n / P),   n = 0, 1, …, P-1.
 ///
-/// Mode n=0 is the centroid (ω=0).
+/// Mode n=0 is the centroid (ω=0).  The index `n` is the column index of
+/// [`NormalModeTransform`]; the sine modes (`n > P/2`) carry the frequency of
+/// their cosine partner `P − n`, which `sin(π n / P)` reproduces.
 pub fn normal_mode_frequencies(n_beads: usize, beta: f64, hbar: f64) -> Vec<f64> {
-    let p = n_beads as f64;
     (0..n_beads)
-        .map(|n| {
-            let sin_arg = PI * (n as f64) / p;
-            2.0 * p / (beta * hbar) * sin_arg.sin()
-        })
+        .map(|n| mode_frequency(n, n_beads, beta, hbar))
         .collect()
+}
+
+/// Angular frequency `ω_n = (2P / (β ℏ)) sin(π n / P)` of normal mode `n`.
+#[inline]
+fn mode_frequency(n: usize, n_beads: usize, beta: f64, hbar: f64) -> f64 {
+    let p = n_beads as f64;
+    2.0 * p / (beta * hbar) * (PI * (n as f64) / p).sin()
 }
 
 // ============================================================================
@@ -374,9 +444,11 @@ impl StagingCoords {
 /// k = m * (P / (β ℏ))²
 ///
 /// where P is the number of beads, β = 1/(k_B T), and ℏ is the (effective)
-/// reduced Planck constant.
-pub fn ring_polymer_spring_constant(mass: f64, n_beads: usize, beta: f64) -> f64 {
-    let hbar = 1.0; // internal units
+/// reduced Planck constant of the particle (`QuantumBead::hbar_eff`).  This is
+/// `k = m ω_P²` with `ω_P = P / (β ℏ)`; the springs act between neighbouring
+/// beads with the *full* weight of the physical potential on each bead (see the
+/// module-level conventions).
+pub fn ring_polymer_spring_constant(mass: f64, n_beads: usize, beta: f64, hbar: f64) -> f64 {
     let p = n_beads as f64;
     mass * (p / (beta * hbar)).powi(2)
 }
@@ -415,49 +487,108 @@ pub fn centroid_velocity(velocities: &[[f64; 3]]) -> [f64; 3] {
     centroid_position(velocities)
 }
 
-/// Quantum kinetic energy using the virial estimator.
-///
-/// T_vir = (3 N P) / (2β) − (k/2) Σ_{i,p} |r_ip − r_centroid_i|²
-///
-/// where k is the ring-polymer spring constant for each atom.
-pub fn quantum_kinetic_energy(sys: &QuantumSystem) -> f64 {
-    let n = sys.n_atoms as f64;
-    let p = sys.n_beads as f64;
-    let classical_term = 3.0 * n * p / (2.0 * sys.beta);
-    let mut spring_term = 0.0;
-    for bead in &sys.beads {
-        let k = ring_polymer_spring_constant(bead.mass, sys.n_beads, sys.beta);
-        let c = centroid_position(&bead.positions);
-        for &pos in &bead.positions {
-            let dr = v3_sub(pos, c);
-            spring_term += k * v3_dot(dr, dr);
+/// Check that `sys` is internally consistent and that `forces` has one entry per
+/// bead of every ring polymer.
+fn check_bead_forces(sys: &QuantumSystem, forces: &[Vec<[f64; 3]>]) -> Result<(), MdError> {
+    if sys.beads.len() != sys.n_atoms {
+        return Err(MdError::General(format!(
+            "QuantumSystem declares {} atoms but holds {} ring polymers",
+            sys.n_atoms,
+            sys.beads.len()
+        )));
+    }
+    if forces.len() != sys.beads.len() {
+        return Err(MdError::General(format!(
+            "bead forces given for {} atoms but the system has {}",
+            forces.len(),
+            sys.beads.len()
+        )));
+    }
+    for (i, (bead, bead_forces)) in sys.beads.iter().zip(forces.iter()).enumerate() {
+        if bead.positions.len() != sys.n_beads || bead.velocities.len() != sys.n_beads {
+            return Err(MdError::General(format!(
+                "atom {i} has {} positions and {} velocities but the system has {} beads",
+                bead.positions.len(),
+                bead.velocities.len(),
+                sys.n_beads
+            )));
+        }
+        if bead_forces.len() != sys.n_beads {
+            return Err(MdError::General(format!(
+                "atom {i} has {} bead forces but the system has {} beads",
+                bead_forces.len(),
+                sys.n_beads
+            )));
         }
     }
-    classical_term - 0.5 * spring_term
+    Ok(())
+}
+
+/// Quantum kinetic energy using the centroid-virial estimator.
+///
+/// T_cv = 3N/(2β) − (1/(2P)) Σ_{i,p} (r_ip − c_i) · F_ip
+///
+/// where `c_i` is the centroid of atom `i` and `forces[i][p] = −∇V(r_ip)` is the
+/// external (physical) force on bead `p` of atom `i`, exactly the array that is
+/// passed to [`step_pimd`].  For a harmonic potential `F = −mω²r` the correction
+/// is non-negative, so `T_cv ≥ 3N/(2β)`.  Unlike the primitive estimator its
+/// variance stays bounded as the number of beads grows.
+///
+/// For one bead the ring has no internal structure and the estimator reduces to
+/// the classical `3N/(2β)`.
+///
+/// # Errors
+/// [`MdError::General`] if `forces` does not hold one force per bead of every
+/// ring polymer.
+pub fn quantum_kinetic_energy(
+    sys: &QuantumSystem,
+    forces: &[Vec<[f64; 3]>],
+) -> Result<f64, MdError> {
+    check_bead_forces(sys, forces)?;
+    if sys.n_beads == 0 {
+        return Ok(0.0);
+    }
+    let n = sys.n_atoms as f64;
+    let p = sys.n_beads as f64;
+    let classical_term = 3.0 * n / (2.0 * sys.beta);
+    let mut virial_sum = 0.0;
+    for (bead, bead_forces) in sys.beads.iter().zip(forces.iter()) {
+        let c = centroid_position(&bead.positions);
+        for (&pos, &force) in bead.positions.iter().zip(bead_forces.iter()) {
+            virial_sum += v3_dot(v3_sub(pos, c), force);
+        }
+    }
+    Ok(classical_term - virial_sum / (2.0 * p))
 }
 
 /// Primitive (thermodynamic) kinetic energy estimator.
 ///
-/// T_prim = (3 N P) / (2β) − (k_P/2) Σ_{i,p} |r_{i,p+1} − r_{i,p}|²
+/// T_prim = (3 N P) / (2β) − Σ_{i} (k_i / (2P)) Σ_p |r_{i,p+1} − r_{i,p}|²
 ///
-/// This estimator has larger variance than the virial estimator but is
-/// straightforward to implement.
+/// with the spring constant `k_i = m_i (P / (β ℏ_i))²` of
+/// [`ring_polymer_spring_constant`] evaluated with the particle's own
+/// `hbar_eff`, i.e. `k_i / (2P) = m_i P / (2 β² ℏ_i²)` per link.  The
+/// estimator needs no forces but has a variance that grows with the number of
+/// beads (compare [`quantum_kinetic_energy`]).
 pub fn primitive_kinetic_energy(sys: &QuantumSystem) -> f64 {
     let n = sys.n_atoms as f64;
     let p_count = sys.n_beads;
+    if p_count == 0 {
+        return 0.0;
+    }
     let p = p_count as f64;
     let classical_term = 3.0 * n * p / (2.0 * sys.beta);
     let mut spring_term = 0.0;
     for bead in &sys.beads {
-        let k = ring_polymer_spring_constant(bead.mass, p_count, sys.beta);
+        let k = ring_polymer_spring_constant(bead.mass, p_count, sys.beta, bead.hbar_eff);
         for j in 0..p_count {
             let rj = bead.positions[j];
             let rj1 = bead.positions[(j + 1) % p_count];
             let dr = v3_sub(rj1, rj);
-            spring_term += k * v3_dot(dr, dr);
+            spring_term += k / (2.0 * p) * v3_dot(dr, dr);
         }
     }
-    classical_term - 0.5 * spring_term
+    classical_term - spring_term
 }
 
 /// Thermal de Broglie wavelength Λ = ℏ √(2π β / m).
@@ -481,7 +612,7 @@ pub fn quantum_correction_factor(classical_ke: f64, quantum_ke: f64) -> f64 {
 pub fn ring_polymer_spring_energy(sys: &QuantumSystem) -> f64 {
     let mut u = 0.0;
     for bead in &sys.beads {
-        let k = ring_polymer_spring_constant(bead.mass, sys.n_beads, sys.beta);
+        let k = ring_polymer_spring_constant(bead.mass, sys.n_beads, sys.beta, bead.hbar_eff);
         let p = sys.n_beads;
         for j in 0..p {
             let rj = bead.positions[j];
@@ -676,11 +807,17 @@ impl CentroidMdState {
 /// ring-polymer spring terms.  It provides an exact quantum real-time
 /// correlation function in the short-time limit and a good approximation
 /// to quantum diffusion.
+///
+/// The external forces are cached between steps (velocity Verlet): they must be
+/// valid for the current bead positions before the first call of
+/// [`RingPolymerMdState::step`], which [`RingPolymerMdState::refresh_forces`]
+/// takes care of; `step` itself refreshes them after every drift.
 #[derive(Debug, Clone)]
 pub struct RingPolymerMdState {
     /// Full ring-polymer system (P beads per atom).
     pub system: QuantumSystem,
-    /// External forces on each bead: `forces[atom][bead] = [fx, fy, fz]`.
+    /// External forces `−∇V` on each bead for the *current* positions:
+    /// `forces[atom][bead] = [fx, fy, fz]`.
     pub forces: Vec<Vec<[f64; 3]>>,
     /// Simulation time accumulated.
     pub time: f64,
@@ -698,10 +835,32 @@ impl RingPolymerMdState {
         }
     }
 
-    /// Advance by one velocity-Verlet step including spring forces.
-    pub fn step(&mut self, dt: f64) {
-        step_rpmd(&mut self.system, &self.forces, dt);
+    /// Recompute the cached external forces for the current bead positions
+    /// with `force_fn` (same contract as in [`step_pimd`]).  Call this once
+    /// after setting the initial positions: [`RingPolymerMdState::new`] starts
+    /// with zero forces.
+    pub fn refresh_forces<F>(&mut self, mut force_fn: F)
+    where
+        F: FnMut(&QuantumSystem, &mut [Vec<[f64; 3]>]),
+    {
+        force_fn(&self.system, &mut self.forces);
+    }
+
+    /// Advance by one velocity-Verlet step including the ring-polymer springs.
+    ///
+    /// `force_fn` recomputes the external forces after the drift (see
+    /// [`step_pimd`]); the cached `forces` are updated in place and the time
+    /// advances by `dt`.
+    ///
+    /// # Errors
+    /// [`MdError::General`] if the cached forces do not match the system shape.
+    pub fn step<F>(&mut self, dt: f64, force_fn: F) -> Result<(), MdError>
+    where
+        F: FnMut(&QuantumSystem, &mut [Vec<[f64; 3]>]),
+    {
+        step_rpmd(&mut self.system, &mut self.forces, dt, force_fn)?;
         self.time += dt;
+        Ok(())
     }
 
     /// Total kinetic energy of the ring polymer (all beads).
@@ -728,52 +887,139 @@ impl RingPolymerMdState {
 // Integrators
 // ============================================================================
 
-/// One velocity-Verlet step for the ring-polymer MD.
+/// Rotate one normal mode `(q, v)` of frequency `omega` exactly over `dt`:
+/// `q' = q cos ωdt + (v/ω) sin ωdt`, `v' = −ω q sin ωdt + v cos ωdt`; the
+/// centroid (`ω = 0`) drifts freely.
+#[inline]
+fn rotate_mode(q: &mut [f64; 3], v: &mut [f64; 3], omega: f64, dt: f64) {
+    if omega == 0.0 {
+        *q = v3_add(*q, v3_scale(dt, *v));
+        return;
+    }
+    let (sin_wt, cos_wt) = (omega * dt).sin_cos();
+    let q0 = *q;
+    let v0 = *v;
+    *q = v3_add(v3_scale(cos_wt, q0), v3_scale(sin_wt / omega, v0));
+    *v = v3_add(v3_scale(-omega * sin_wt, q0), v3_scale(cos_wt, v0));
+}
+
+/// Advance every ring polymer of `sys` by `dt` under its springs alone.
 ///
-/// `forces[i][p]` is the external force on atom `i`, bead `p`.
-/// Spring forces are added internally.
-/// Updates positions and velocities in place.
-pub fn step_pimd(sys: &mut QuantumSystem, forces: &[Vec<[f64; 3]>], dt: f64) {
-    let n_atoms = sys.n_atoms;
+/// The spring Hamiltonian is diagonal in the normal modes of
+/// [`NormalModeTransform`] (all of mass `m`), so each mode is propagated by the
+/// exact harmonic rotation of [`rotate_mode`] with `ω_n` from
+/// [`normal_mode_frequencies`] and the particle's own `ℏ`.  The result is exact
+/// for any `dt` (the integrator is not limited by the stiff spring frequencies)
+/// and conserves the free ring-polymer energy to rounding error.
+fn propagate_free_ring_polymers(sys: &mut QuantumSystem, dt: f64) {
     let n_beads = sys.n_beads;
-
-    let mut spring_forces: Vec<Vec<[f64; 3]>> = Vec::with_capacity(n_atoms);
-    for bead in &sys.beads {
-        let k = ring_polymer_spring_constant(bead.mass, n_beads, sys.beta);
-        spring_forces.push(ring_polymer_spring_force(&bead.positions, k));
+    if n_beads == 0 {
+        return;
     }
-
-    // Half-kick + position update
-    for (i, bead) in sys.beads.iter_mut().enumerate() {
-        let inv_m = 1.0 / bead.mass;
-        for p in 0..n_beads {
-            let f_tot = v3_add(forces[i][p], spring_forces[i][p]);
-            bead.velocities[p] = v3_add(bead.velocities[p], v3_scale(0.5 * dt * inv_m, f_tot));
-            bead.positions[p] = v3_add(bead.positions[p], v3_scale(dt, bead.velocities[p]));
+    let beta = sys.beta;
+    let mut scratch = match sys.mode_scratch.take() {
+        Some(cached) if cached.transform.n_beads == n_beads => cached,
+        _ => ModeScratch::new(n_beads),
+    };
+    for bead in sys.beads.iter_mut() {
+        scratch
+            .transform
+            .forward_into(&bead.positions, &mut scratch.position_modes);
+        scratch
+            .transform
+            .forward_into(&bead.velocities, &mut scratch.velocity_modes);
+        for (n, (q_mode, v_mode)) in scratch
+            .position_modes
+            .iter_mut()
+            .zip(scratch.velocity_modes.iter_mut())
+            .enumerate()
+        {
+            let omega = mode_frequency(n, n_beads, beta, bead.hbar_eff);
+            rotate_mode(q_mode, v_mode, omega, dt);
         }
+        scratch
+            .transform
+            .inverse_into(&scratch.position_modes, &mut bead.positions);
+        scratch
+            .transform
+            .inverse_into(&scratch.velocity_modes, &mut bead.velocities);
     }
+    sys.mode_scratch = Some(scratch);
+}
 
-    // Recompute spring forces at new positions
-    let mut spring_forces2: Vec<Vec<[f64; 3]>> = Vec::with_capacity(n_atoms);
-    for bead in &sys.beads {
-        let k = ring_polymer_spring_constant(bead.mass, n_beads, sys.beta);
-        spring_forces2.push(ring_polymer_spring_force(&bead.positions, k));
-    }
-
-    // Second half-kick
-    for (i, bead) in sys.beads.iter_mut().enumerate() {
-        let inv_m = 1.0 / bead.mass;
-        for p in 0..n_beads {
-            let f_tot = v3_add(forces[i][p], spring_forces2[i][p]);
-            bead.velocities[p] = v3_add(bead.velocities[p], v3_scale(0.5 * dt * inv_m, f_tot));
+/// Kick every bead velocity with `forces` over the time `half_dt`
+/// (`v += half_dt F / m`).
+fn kick_beads(sys: &mut QuantumSystem, forces: &[Vec<[f64; 3]>], half_dt: f64) {
+    for (bead, bead_forces) in sys.beads.iter_mut().zip(forces.iter()) {
+        let scale = half_dt / bead.mass;
+        for (velocity, &force) in bead.velocities.iter_mut().zip(bead_forces.iter()) {
+            *velocity = v3_add(*velocity, v3_scale(scale, force));
         }
     }
 }
 
+/// One velocity-Verlet step for the ring-polymer MD.
+///
+/// `forces[i][p]` is the external force `−∇V(r_ip)` on atom `i`, bead `p`, and
+/// must be valid for the bead positions on entry (the previous step leaves it in
+/// that state; [`RingPolymerMdState::refresh_forces`] initialises it).  The step
+/// is the symmetric splitting
+///
+/// 1. half-kick `v += (dt / 2m) F` with the cached forces,
+/// 2. exact propagation of the free ring polymer over `dt` in normal-mode space
+///    (harmonic rotation of every mode with `ω_n`, free drift of the centroid),
+/// 3. `force_fn(sys, forces)` recomputes the external forces at the **new**
+///    positions and stores them in `forces`,
+/// 4. half-kick with the refreshed forces.
+///
+/// The map is symplectic and time-reversible; it conserves
+/// `H_P = Σ m v²/2 + Σ_p ½ k |r_{p+1} − r_p|² + Σ_p V(r_p)` up to a bounded
+/// `O(dt²)` fluctuation and conserves the free ring-polymer energy to rounding
+/// error for any `dt`.  The previous implementation kicked the second half with
+/// the *old* external forces and only re-evaluated the springs, which is not
+/// velocity Verlet for any position-dependent potential.
+///
+/// The normal-mode transform is cached in `sys` and rebuilt only when the number
+/// of beads changes.
+///
+/// # Errors
+/// [`MdError::General`] if `forces` does not hold one force per bead of every
+/// ring polymer.  A wrongly shaped `forces` on entry leaves `sys` untouched; if
+/// `force_fn` leaves it wrongly shaped, the beads have already been advanced and
+/// the second half-kick is not applied.
+pub fn step_pimd<F>(
+    sys: &mut QuantumSystem,
+    forces: &mut [Vec<[f64; 3]>],
+    dt: f64,
+    mut force_fn: F,
+) -> Result<(), MdError>
+where
+    F: FnMut(&QuantumSystem, &mut [Vec<[f64; 3]>]),
+{
+    check_bead_forces(sys, forces)?;
+    kick_beads(sys, forces, 0.5 * dt);
+    propagate_free_ring_polymers(sys, dt);
+    force_fn(sys, forces);
+    check_bead_forces(sys, forces)?;
+    kick_beads(sys, forces, 0.5 * dt);
+    Ok(())
+}
+
 /// One velocity-Verlet step for RPMD (identical to PIMD integrator but named
 /// separately for conceptual clarity and potential future divergence).
-pub fn step_rpmd(sys: &mut QuantumSystem, forces: &[Vec<[f64; 3]>], dt: f64) {
-    step_pimd(sys, forces, dt);
+///
+/// # Errors
+/// See [`step_pimd`].
+pub fn step_rpmd<F>(
+    sys: &mut QuantumSystem,
+    forces: &mut [Vec<[f64; 3]>],
+    dt: f64,
+    force_fn: F,
+) -> Result<(), MdError>
+where
+    F: FnMut(&QuantumSystem, &mut [Vec<[f64; 3]>]),
+{
+    step_pimd(sys, forces, dt, force_fn)
 }
 
 // ============================================================================
@@ -976,10 +1222,15 @@ pub struct QuantumDiagnostics {
 }
 
 impl QuantumDiagnostics {
-    /// Compute diagnostics from a `QuantumSystem`.
-    pub fn from_system(sys: &QuantumSystem) -> Self {
+    /// Compute diagnostics from a `QuantumSystem` and the external bead forces
+    /// `forces[i][p] = −∇V(r_ip)` needed by the virial kinetic-energy estimator.
+    ///
+    /// # Errors
+    /// [`MdError::General`] if `forces` does not match the shape of `sys`
+    /// (see [`quantum_kinetic_energy`]).
+    pub fn from_system(sys: &QuantumSystem, forces: &[Vec<[f64; 3]>]) -> Result<Self, MdError> {
         let temperature = sys.temperature();
-        let quantum_ke = quantum_kinetic_energy(sys);
+        let quantum_ke = quantum_kinetic_energy(sys, forces)?;
         let classical_ke = sys.centroid_kinetic_energy();
         let spring_energy = ring_polymer_spring_energy(sys);
         let mean_spread = if sys.beads.is_empty() {
@@ -993,7 +1244,7 @@ impl QuantumDiagnostics {
         } else {
             thermal_de_broglie(sys.beads[0].mass, sys.beta, sys.beads[0].hbar_eff)
         };
-        Self {
+        Ok(Self {
             n_atoms: sys.n_atoms,
             n_beads: sys.n_beads,
             temperature,
@@ -1002,7 +1253,7 @@ impl QuantumDiagnostics {
             spring_energy,
             mean_spread,
             de_broglie,
-        }
+        })
     }
 
     /// Quantum enhancement factor: ratio of quantum to classical KE.
@@ -1099,635 +1350,7 @@ pub fn normal_mode_spring_energy(
 // ============================================================================
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod pimd_tests;
 
-    // ── QuantumBead ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_bead_new() {
-        let b = QuantumBead::new(4, 1.0, 1.0);
-        assert_eq!(b.n_beads(), 4);
-        assert_eq!(b.positions.len(), 4);
-        assert_eq!(b.velocities.len(), 4);
-    }
-
-    #[test]
-    fn test_bead_positions_zero() {
-        let b = QuantumBead::new(3, 2.0, 1.0);
-        for pos in &b.positions {
-            assert_eq!(*pos, [0.0, 0.0, 0.0]);
-        }
-    }
-
-    #[test]
-    fn test_bead_mass() {
-        let b = QuantumBead::new(2, 3.5, 1.0);
-        assert!((b.mass - 3.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_bead_ring_spread_zero_for_identical_positions() {
-        let mut b = QuantumBead::new(4, 1.0, 1.0);
-        for p in &mut b.positions {
-            *p = [1.0, 2.0, 3.0];
-        }
-        assert!(b.ring_spread_sq() < 1e-12);
-    }
-
-    #[test]
-    fn test_bead_ring_spread_positive_when_dispersed() {
-        let mut b = QuantumBead::new(2, 1.0, 1.0);
-        b.positions[0] = [0.0, 0.0, 0.0];
-        b.positions[1] = [2.0, 0.0, 0.0];
-        assert!(b.ring_spread_sq() > 0.0);
-    }
-
-    // ── QuantumSystem ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_system_new() {
-        let s = QuantumSystem::new(3, 4, 1.0, 1.0, 1.0);
-        assert_eq!(s.n_atoms, 3);
-        assert_eq!(s.n_beads, 4);
-        assert_eq!(s.beads.len(), 3);
-    }
-
-    #[test]
-    fn test_system_beta() {
-        let s = QuantumSystem::new(1, 2, 2.5, 1.0, 1.0);
-        assert!((s.beta - 2.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_system_temperature() {
-        let s = QuantumSystem::new(1, 4, 2.0, 1.0, 1.0);
-        assert!((s.temperature() - 0.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_system_centroid_ke_zero_for_zero_velocity() {
-        let s = QuantumSystem::new(2, 4, 1.0, 1.0, 1.0);
-        assert!(s.centroid_kinetic_energy() < 1e-12);
-    }
-
-    // ── ring_polymer_spring_constant ─────────────────────────────────────────
-
-    #[test]
-    fn test_spring_constant_positive() {
-        let k = ring_polymer_spring_constant(1.0, 4, 1.0);
-        assert!(k > 0.0);
-    }
-
-    #[test]
-    fn test_spring_constant_scales_with_p_squared() {
-        let k4 = ring_polymer_spring_constant(1.0, 4, 1.0);
-        let k8 = ring_polymer_spring_constant(1.0, 8, 1.0);
-        assert!((k8 - 4.0 * k4).abs() < 1e-10, "k4={k4}, k8={k8}");
-    }
-
-    #[test]
-    fn test_spring_constant_scales_with_mass() {
-        let k1 = ring_polymer_spring_constant(1.0, 4, 1.0);
-        let k2 = ring_polymer_spring_constant(2.0, 4, 1.0);
-        assert!((k2 - 2.0 * k1).abs() < 1e-10);
-    }
-
-    // ── ring_polymer_spring_force ────────────────────────────────────────────
-
-    #[test]
-    fn test_spring_force_uniform_ring_zero() {
-        let beads = vec![[1.0_f64, 2.0, 3.0]; 4];
-        let forces = ring_polymer_spring_force(&beads, 1.0);
-        for f in forces {
-            assert!(f[0].abs() < 1e-12);
-            assert!(f[1].abs() < 1e-12);
-            assert!(f[2].abs() < 1e-12);
-        }
-    }
-
-    #[test]
-    fn test_spring_force_length() {
-        let beads = vec![[0.0_f64; 3]; 5];
-        let forces = ring_polymer_spring_force(&beads, 1.0);
-        assert_eq!(forces.len(), 5);
-    }
-
-    #[test]
-    fn test_spring_force_empty() {
-        let forces = ring_polymer_spring_force(&[], 1.0);
-        assert!(forces.is_empty());
-    }
-
-    #[test]
-    fn test_spring_force_sum_zero() {
-        let beads = vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let forces = ring_polymer_spring_force(&beads, 2.0);
-        let sum_x: f64 = forces.iter().map(|f| f[0]).sum();
-        let sum_y: f64 = forces.iter().map(|f| f[1]).sum();
-        let sum_z: f64 = forces.iter().map(|f| f[2]).sum();
-        assert!(sum_x.abs() < 1e-10, "sum_x={sum_x}");
-        assert!(sum_y.abs() < 1e-10, "sum_y={sum_y}");
-        assert!(sum_z.abs() < 1e-10, "sum_z={sum_z}");
-    }
-
-    // ── centroid_position ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_centroid_empty() {
-        assert_eq!(centroid_position(&[]), [0.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn test_centroid_single() {
-        let c = centroid_position(&[[1.0, 2.0, 3.0]]);
-        assert_eq!(c, [1.0, 2.0, 3.0]);
-    }
-
-    #[test]
-    fn test_centroid_two_beads() {
-        let beads = vec![[0.0_f64, 0.0, 0.0], [2.0, 4.0, 6.0]];
-        let c = centroid_position(&beads);
-        assert!((c[0] - 1.0).abs() < 1e-12);
-        assert!((c[1] - 2.0).abs() < 1e-12);
-        assert!((c[2] - 3.0).abs() < 1e-12);
-    }
-
-    // ── centroid_velocity ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_centroid_velocity() {
-        let vels = vec![[1.0_f64, 0.0, 0.0], [-1.0, 0.0, 0.0]];
-        let cv = centroid_velocity(&vels);
-        assert!(cv[0].abs() < 1e-12);
-    }
-
-    // ── quantum_kinetic_energy ───────────────────────────────────────────────
-
-    #[test]
-    fn test_qke_positive_high_temp() {
-        let sys = QuantumSystem::new(2, 4, 0.01, 1.0, 1.0);
-        let ke = quantum_kinetic_energy(&sys);
-        assert!(ke > 0.0);
-    }
-
-    #[test]
-    fn test_qke_single_bead_is_classical() {
-        let sys = QuantumSystem::new(1, 1, 1.0, 1.0, 1.0);
-        let ke = quantum_kinetic_energy(&sys);
-        let expected = 3.0 * 1.0 * 1.0 / (2.0 * 1.0);
-        assert!((ke - expected).abs() < 1e-10);
-    }
-
-    // ── primitive_kinetic_energy ─────────────────────────────────────────────
-
-    #[test]
-    fn test_primitive_ke_positive_high_temp() {
-        let sys = QuantumSystem::new(1, 4, 0.01, 1.0, 1.0);
-        let ke = primitive_kinetic_energy(&sys);
-        assert!(ke > 0.0);
-    }
-
-    #[test]
-    fn test_primitive_ke_single_bead_matches_virial() {
-        let sys = QuantumSystem::new(1, 1, 1.0, 1.0, 1.0);
-        let prim = primitive_kinetic_energy(&sys);
-        let virial = quantum_kinetic_energy(&sys);
-        // For P=1 and all positions at origin, both estimators should agree
-        assert!((prim - virial).abs() < 1e-10);
-    }
-
-    // ── thermal_de_broglie ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_de_broglie_positive() {
-        assert!(thermal_de_broglie(1.0, 1.0, 1.0) > 0.0);
-    }
-
-    #[test]
-    fn test_de_broglie_heavier_mass_smaller() {
-        let l1 = thermal_de_broglie(1.0, 1.0, 1.0);
-        let l2 = thermal_de_broglie(4.0, 1.0, 1.0);
-        assert!(l1 > l2);
-    }
-
-    #[test]
-    fn test_de_broglie_formula() {
-        let m = 2.0;
-        let beta = 1.0;
-        let hbar = 1.0;
-        let expected = hbar * (2.0 * PI * beta / m).sqrt();
-        assert!((thermal_de_broglie(m, beta, hbar) - expected).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_de_broglie_scales_with_hbar() {
-        let l1 = thermal_de_broglie(1.0, 1.0, 1.0);
-        let l2 = thermal_de_broglie(1.0, 1.0, 2.0);
-        assert!((l2 - 2.0 * l1).abs() < 1e-12);
-    }
-
-    // ── quantum_correction_factor ────────────────────────────────────────────
-
-    #[test]
-    fn test_correction_equal() {
-        assert!((quantum_correction_factor(1.0, 1.0) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_correction_zero_classical() {
-        assert!((quantum_correction_factor(0.0, 5.0) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_correction_ratio() {
-        let qc = quantum_correction_factor(2.0, 3.0);
-        assert!((qc - 1.5).abs() < 1e-12);
-    }
-
-    // ── step_pimd ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_step_pimd_zero_force_constant_velocity() {
-        let mut sys = QuantumSystem::new(1, 2, 1.0, 1.0, 1.0);
-        sys.beads[0].velocities[0] = [1.0, 0.0, 0.0];
-        sys.beads[0].velocities[1] = [1.0, 0.0, 0.0];
-        let forces: Vec<Vec<[f64; 3]>> = vec![vec![[0.0; 3]; 2]];
-        let dt = 0.01;
-        let pos_before = sys.beads[0].positions[0];
-        step_pimd(&mut sys, &forces, dt);
-        let pos_after = sys.beads[0].positions[0];
-        assert!((pos_after[0] - pos_before[0]).abs() > 1e-12);
-    }
-
-    #[test]
-    fn test_step_pimd_momentum_change_with_force() {
-        let mut sys = QuantumSystem::new(1, 1, 1.0, 1.0, 1.0);
-        let forces: Vec<Vec<[f64; 3]>> = vec![vec![[1.0, 0.0, 0.0]]];
-        let dt = 0.1;
-        step_pimd(&mut sys, &forces, dt);
-        assert!(sys.beads[0].velocities[0][0] != 0.0);
-    }
-
-    // ── NormalModeTransform ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_normal_mode_forward_inverse_roundtrip() {
-        let p = 4;
-        let nm = NormalModeTransform::new(p);
-        let original: Vec<[f64; 3]> = (0..p)
-            .map(|i| [i as f64, (i + 1) as f64 * 0.5, 0.0])
-            .collect();
-        let modes = nm.forward(&original);
-        let recovered = nm.inverse(&modes);
-        for k in 0..p {
-            for d in 0..3 {
-                assert!(
-                    (recovered[k][d] - original[k][d]).abs() < 1e-10,
-                    "k={k} d={d}: got {} expected {}",
-                    recovered[k][d],
-                    original[k][d]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_normal_mode_centroid_is_mode_zero() {
-        // The zero-th normal mode should equal the centroid (scaled by sqrt(P))
-        let p = 4;
-        let nm = NormalModeTransform::new(p);
-        let beads: Vec<[f64; 3]> = vec![[1.0, 0.0, 0.0]; p];
-        let modes = nm.forward(&beads);
-        let centroid = centroid_position(&beads);
-        // mode[0] = centroid * sqrt(P) (from the 1/sqrt(P) prefactor in C)
-        let expected = v3_scale((p as f64).sqrt(), centroid);
-        for d in 0..3 {
-            assert!(
-                (modes[0][d] - expected[d]).abs() < 1e-10,
-                "d={d}: got {} expected {}",
-                modes[0][d],
-                expected[d]
-            );
-        }
-    }
-
-    // ── normal_mode_frequencies ──────────────────────────────────────────────
-
-    #[test]
-    fn test_normal_mode_freq_zero_for_centroid() {
-        let freqs = normal_mode_frequencies(4, 1.0, 1.0);
-        assert!(freqs[0].abs() < 1e-12, "centroid frequency should be zero");
-    }
-
-    #[test]
-    fn test_normal_mode_freq_positive_for_non_zero_modes() {
-        let freqs = normal_mode_frequencies(4, 1.0, 1.0);
-        for &f in &freqs[1..] {
-            assert!(f >= 0.0);
-        }
-    }
-
-    #[test]
-    fn test_normal_mode_freq_count() {
-        let freqs = normal_mode_frequencies(8, 1.0, 1.0);
-        assert_eq!(freqs.len(), 8);
-    }
-
-    // ── StagingCoords ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_staging_mass_bead_1_is_physical_mass() {
-        let sc = StagingCoords::new(4, 2.0);
-        assert!((sc.staging_mass(1) - 2.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_staging_mass_decreases_with_level() {
-        // staging_mass(j) = j/(j-1) * m; the ratio decreases towards 1 as j grows
-        let sc = StagingCoords::new(8, 1.0);
-        let m2 = sc.staging_mass(2); // 2/1 = 2.0
-        let m4 = sc.staging_mass(4); // 4/3 ≈ 1.333
-        assert!(m2 > m4, "m2={m2} should exceed m4={m4}");
-    }
-
-    #[test]
-    fn test_staging_mass_formula() {
-        let sc = StagingCoords::new(4, 1.0);
-        // m_s(4) = 4/3 * m
-        let expected = 4.0 / 3.0;
-        assert!((sc.staging_mass(4) - expected).abs() < 1e-12);
-    }
-
-    // ── PileThermostat ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_pile_c1_less_than_one() {
-        let pile = PileThermostat::new(4, 1.0, 1.0, 1.0, 0.01);
-        for &c in &pile.c1 {
-            assert!(c <= 1.0 && c > 0.0, "c1 should be in (0,1], got {c}");
-        }
-    }
-
-    #[test]
-    fn test_pile_c2_non_negative() {
-        let pile = PileThermostat::new(4, 1.0, 1.0, 1.0, 0.01);
-        for &c in &pile.c2 {
-            assert!(c >= 0.0, "c2 should be non-negative, got {c}");
-        }
-    }
-
-    #[test]
-    fn test_pile_apply_half_step_preserves_order() {
-        let pile = PileThermostat::new(4, 1.0, 1.0, 0.5, 0.001);
-        // With xi=0 the new velocity is just c1 * v_old (damped)
-        let v_new = pile.apply_half_step(0, 1.0, 1.0, 0.0);
-        assert!(v_new < 1.0 && v_new > 0.0, "Damped velocity: {v_new}");
-    }
-
-    #[test]
-    fn test_pile_gamma_modes_count() {
-        let pile = PileThermostat::new(6, 1.0, 1.0, 1.0, 0.01);
-        assert_eq!(pile.gamma_modes.len(), 6);
-    }
-
-    // ── CentroidMdState ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_cmd_state_creation() {
-        let state = CentroidMdState::new(3, 4, 1.0, 1.0);
-        assert_eq!(state.centroid_positions.len(), 3);
-        assert_eq!(state.centroid_velocities.len(), 3);
-    }
-
-    #[test]
-    fn test_cmd_temperature_zero_for_zero_velocities() {
-        let state = CentroidMdState::new(4, 4, 1.0, 1.0);
-        assert!(state.temperature() < 1e-12);
-    }
-
-    #[test]
-    fn test_cmd_step_moves_position() {
-        let mut state = CentroidMdState::new(1, 4, 1.0, 1.0);
-        state.centroid_velocities[0] = [1.0, 0.0, 0.0];
-        state.step(0.1);
-        assert!((state.centroid_positions[0][0] - 0.1_f64).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_cmd_kinetic_energy_formula() {
-        let mut state = CentroidMdState::new(1, 4, 1.0, 2.0);
-        state.centroid_velocities[0] = [1.0, 0.0, 0.0];
-        // KE = 0.5 * m * v^2 = 0.5 * 2 * 1 = 1.0
-        assert!((state.kinetic_energy() - 1.0).abs() < 1e-12);
-    }
-
-    // ── RingPolymerMdState ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_rpmd_creation() {
-        let state = RingPolymerMdState::new(2, 4, 1.0, 1.0, 1.0);
-        assert_eq!(state.system.n_atoms, 2);
-        assert_eq!(state.system.n_beads, 4);
-        assert!((state.time - 0.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_rpmd_step_advances_time() {
-        let mut state = RingPolymerMdState::new(1, 2, 1.0, 1.0, 1.0);
-        state.step(0.05);
-        assert!((state.time - 0.05).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_rpmd_spring_energy_zero_for_uniform_ring() {
-        let state = RingPolymerMdState::new(1, 4, 1.0, 1.0, 1.0);
-        // All beads at origin → spring energy = 0
-        assert!(state.spring_energy() < 1e-12);
-    }
-
-    // ── VacfAccumulator ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_vacf_tau_zero_is_one() {
-        let mut acc = VacfAccumulator::new(10);
-        acc.push(vec![[1.0, 0.0, 0.0]]);
-        acc.push(vec![[0.5, 0.0, 0.0]]);
-        let c0 = acc.vacf(0).unwrap();
-        assert!((c0 - 1.0).abs() < 1e-10, "VACF(0) should be 1, got {c0}");
-    }
-
-    #[test]
-    fn test_vacf_insufficient_data_returns_none() {
-        let acc = VacfAccumulator::new(10);
-        assert!(acc.vacf(5).is_none());
-    }
-
-    #[test]
-    fn test_vacf_unnorm_zero_for_empty() {
-        let acc = VacfAccumulator::new(5);
-        assert!((acc.vacf_unnorm(0) - 0.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_vacf_max_snapshots_respected() {
-        let mut acc = VacfAccumulator::new(3);
-        for i in 0..5 {
-            acc.push(vec![[i as f64, 0.0, 0.0]]);
-        }
-        assert_eq!(acc.snapshots.len(), 3);
-    }
-
-    // ── quantum_diffusion_coefficient ────────────────────────────────────────
-
-    #[test]
-    fn test_diffusion_zero_for_zero_vacf() {
-        let vacf = vec![0.0_f64; 10];
-        let d = quantum_diffusion_coefficient(&vacf, 0.01);
-        assert!(d.abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_diffusion_positive_for_positive_vacf() {
-        let vacf = vec![1.0_f64; 20];
-        let d = quantum_diffusion_coefficient(&vacf, 0.01);
-        assert!(d > 0.0);
-    }
-
-    #[test]
-    fn test_diffusion_empty_vacf() {
-        let d = quantum_diffusion_coefficient(&[], 0.01);
-        assert!((d - 0.0).abs() < 1e-12);
-    }
-
-    // ── TunnelingRate ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_wkb_transmission_above_barrier_is_one() {
-        let tr = TunnelingRate::new(1.0, 1.0, 1.0, 1.0);
-        assert!((tr.wkb_transmission(2.0) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_wkb_transmission_below_barrier_less_than_one() {
-        let tr = TunnelingRate::new(1.0, 1.0, 1.0, 1.0);
-        assert!(tr.wkb_transmission(0.5) < 1.0);
-    }
-
-    #[test]
-    fn test_wkb_transmission_positive() {
-        let tr = TunnelingRate::new(5.0, 1.0, 1.0, 1.0);
-        assert!(tr.wkb_transmission(1.0) > 0.0);
-    }
-
-    #[test]
-    fn test_instanton_rate_positive() {
-        let tr = TunnelingRate::new(1.0, 0.5, 1.0, 1.0);
-        assert!(tr.instanton_rate() > 0.0);
-    }
-
-    #[test]
-    fn test_wkb_tunneling_rate_function_positive() {
-        let rate = wkb_tunneling_rate(1.0, 1.0, 1.0, 1.0);
-        assert!(rate > 0.0);
-    }
-
-    // ── zero_point_energy ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_zpe_formula() {
-        let zpe = zero_point_energy(2.0, 1.0);
-        assert!((zpe - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_zpe_positive() {
-        assert!(zero_point_energy(1.0, 1.0) > 0.0);
-    }
-
-    // ── path_integral_partition_ratio ────────────────────────────────────────
-
-    #[test]
-    fn test_partition_ratio_approaches_one_large_p() {
-        // For large P, quantum discretisation error → 0 so ratio → 1
-        let r = path_integral_partition_ratio(1.0, 1.0, 1.0, 64);
-        assert!((r - 1.0).abs() < 0.05, "ratio={r}");
-    }
-
-    #[test]
-    fn test_partition_ratio_positive() {
-        let r = path_integral_partition_ratio(1.0, 2.0, 1.0, 8);
-        assert!(r > 0.0);
-    }
-
-    // ── ring_polymer_momentum_spread ─────────────────────────────────────────
-
-    #[test]
-    fn test_momentum_spread_positive() {
-        let sigma = ring_polymer_momentum_spread(1.0, 4, 1.0, 1.0);
-        assert!(sigma > 0.0);
-    }
-
-    #[test]
-    fn test_momentum_spread_scales_with_p() {
-        let s4 = ring_polymer_momentum_spread(1.0, 4, 1.0, 1.0);
-        let s16 = ring_polymer_momentum_spread(1.0, 16, 1.0, 1.0);
-        assert!(s16 > s4, "More beads → larger momentum spread");
-    }
-
-    // ── harmonic_kubo_correlation ────────────────────────────────────────────
-
-    #[test]
-    fn test_kubo_correlation_at_t_zero_positive() {
-        let c0 = harmonic_kubo_correlation(1.0, 0.0, 1.0, 1.0, 1.0);
-        assert!(c0 > 0.0);
-    }
-
-    #[test]
-    fn test_kubo_correlation_finite() {
-        let c = harmonic_kubo_correlation(1.0, 0.5, 1.0, 1.0, 1.0);
-        assert!(c.is_finite());
-    }
-
-    // ── QuantumDiagnostics ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_diagnostics_summary_not_empty() {
-        let sys = QuantumSystem::new(2, 4, 1.0, 1.0, 1.0);
-        let diag = QuantumDiagnostics::from_system(&sys);
-        assert!(!diag.summary().is_empty());
-    }
-
-    #[test]
-    fn test_diagnostics_de_broglie_positive() {
-        let sys = QuantumSystem::new(1, 4, 1.0, 1.0, 1.0);
-        let diag = QuantumDiagnostics::from_system(&sys);
-        assert!(diag.de_broglie > 0.0);
-    }
-
-    #[test]
-    fn test_diagnostics_temperature_matches_beta() {
-        let sys = QuantumSystem::new(1, 4, 2.0, 1.0, 1.0);
-        let diag = QuantumDiagnostics::from_system(&sys);
-        assert!((diag.temperature - 0.5).abs() < 1e-12);
-    }
-
-    // ── normal_mode_spring_energy ────────────────────────────────────────────
-
-    #[test]
-    fn test_normal_mode_spring_energy_zero_for_zero_amplitudes() {
-        let amps = vec![[0.0_f64; 3]; 4];
-        let freqs = vec![0.0, 1.0, 2.0, 1.0];
-        let e = normal_mode_spring_energy(&amps, &freqs, 1.0);
-        assert!(e.abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_normal_mode_spring_energy_positive_for_nonzero_modes() {
-        let amps = vec![[0.0_f64; 3], [1.0, 0.0, 0.0], [0.0; 3], [0.0; 3]];
-        let freqs = vec![0.0, 2.0, 3.0, 2.0];
-        let e = normal_mode_spring_energy(&amps, &freqs, 1.0);
-        // E = 0.5 * 1.0 * 4.0 * 1.0 = 2.0
-        assert!((e - 2.0).abs() < 1e-12, "energy={e}");
-    }
-}
+#[cfg(test)]
+mod tests;

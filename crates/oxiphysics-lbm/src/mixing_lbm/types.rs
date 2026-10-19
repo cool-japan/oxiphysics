@@ -2,12 +2,31 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use super::functions::{D2Q9_CX, D2Q9_CY, D2Q9_W, fick_flux};
+use super::functions::{
+    D2Q9_W, d2q9_equilibrium, d2q9_moments, fick_flux, laplacian_d2q9_periodic,
+    lattice_diffusivity, stream_populations, sync_populations,
+};
+use crate::error::{Error, Result};
 
 /// Multi-component LBM with cross-diffusion via Fick's law.
 ///
-/// Each component has its own distribution function array and relaxation time.
-/// Cross-diffusion between components is handled via explicit source terms.
+/// Every species α lives on its own periodic D2Q9 advection–diffusion lattice
+/// at rest, with relaxation time `tau[α]`; its self-diffusivity is
+/// `D_αα = c_s² (τ_α − ½)` ([`MultiComponentLbm::species_diffusivity`]).
+///
+/// Cross-diffusion between components is handled via explicit source terms:
+/// Fick's law `J_α = −Σ_β D_αβ ∇φ_β` adds `Σ_{β≠α} D_αβ ∇²φ_β` to the balance
+/// of species α, with `∇²` the isotropic D2Q9 Laplacian
+/// ([`MultiComponentLbm::add_cross_diffusion_source`]).  The diagonal of
+/// `cross_diff` is ignored — the self-diffusion belongs to `tau` — and the
+/// total of every species is conserved exactly, with or without
+/// cross-diffusion.  The explicit coupling is stable for `D_αβ` well below `1/4`.
+///
+/// [`MultiComponentLbm::step`] performs one full time step (collision,
+/// cross-diffusion source, streaming).  The fields `phi` are the zeroth
+/// moments of `g`; they may be edited directly between steps (the next
+/// collision moves the difference onto `g`) or set with
+/// [`MultiComponentLbm::set_species_field`].
 #[derive(Debug, Clone)]
 pub struct MultiComponentLbm {
     /// Number of grid nodes in x.
@@ -24,6 +43,8 @@ pub struct MultiComponentLbm {
     pub tau: Vec<f64>,
     /// Cross-diffusion matrix D_αβ (length `ncomp × ncomp`), stored row-major.
     pub cross_diff: Vec<f64>,
+    /// Persistent streaming buffer, so that streaming does not allocate.
+    scratch: Vec<f64>,
 }
 impl MultiComponentLbm {
     /// Create a new `MultiComponentLbm` with uniform initial concentrations.
@@ -57,6 +78,7 @@ impl MultiComponentLbm {
             g,
             tau,
             cross_diff,
+            scratch: Vec::new(),
         }
     }
     /// Set the cross-diffusion coefficient between species α and β.
@@ -67,20 +89,150 @@ impl MultiComponentLbm {
     pub fn cross_diff_val(&self, alpha: usize, beta: usize) -> f64 {
         self.cross_diff[alpha * self.ncomp + beta]
     }
-    /// Perform one BGK collision for all species without cross-diffusion.
-    pub fn collide_uncoupled(&mut self) {
+    /// Self-diffusivity `D_αα = c_s² (τ_α − ½)` of species `alpha`, or `None`
+    /// when there is no such species.
+    pub fn species_diffusivity(&self, alpha: usize) -> Option<f64> {
+        self.tau.get(alpha).map(|&tau| lattice_diffusivity(tau))
+    }
+    /// Set the concentration field of species `alpha` (row-major, `nx · ny`
+    /// values) and bring its populations to the matching equilibrium.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidSpeciesCount`] when `alpha >= ncomp` and
+    /// [`Error::IncompatibleParameters`] when `field.len() != nx * ny`.
+    pub fn set_species_field(&mut self, alpha: usize, field: &[f64]) -> Result<()> {
+        if alpha >= self.ncomp {
+            return Err(Error::InvalidSpeciesCount {
+                min_species: alpha + 1,
+                actual: self.ncomp,
+            });
+        }
         let n = self.nx * self.ny;
-        for alpha in 0..self.ncomp {
-            let tau_a = self.tau[alpha];
-            for k in 0..n {
-                let phi_k = self.phi[alpha][k];
-                for (q, &w) in D2Q9_W.iter().enumerate() {
-                    let feq = w * phi_k;
-                    self.g[alpha][k * 9 + q] -= (self.g[alpha][k * 9 + q] - feq) / tau_a;
+        if field.len() != n {
+            return Err(Error::IncompatibleParameters {
+                message: format!(
+                    "species field needs {n} values for a {} x {} grid, got {}",
+                    self.nx,
+                    self.ny,
+                    field.len()
+                ),
+            });
+        }
+        if let Some(phi) = self.phi.get_mut(alpha) {
+            phi.clear();
+            phi.extend_from_slice(field);
+        }
+        if let Some(g) = self.g.get_mut(alpha) {
+            g.clear();
+            g.resize(n * 9, 0.0);
+            for (node, &value) in g.chunks_exact_mut(9).zip(field.iter()) {
+                for (p, &w) in node.iter_mut().zip(D2Q9_W.iter()) {
+                    *p = w * value;
                 }
-                self.phi[alpha][k] = self.g[alpha][k * 9..k * 9 + 9].iter().sum();
             }
         }
+        Ok(())
+    }
+    /// Perform one BGK collision for all species without cross-diffusion.
+    ///
+    /// Every species relaxes toward `w_q φ_α` with its own `τ_α`; the
+    /// collision conserves each species' mass.
+    pub fn collide_uncoupled(&mut self) {
+        for ((g, phi), &tau) in self
+            .g
+            .iter_mut()
+            .zip(self.phi.iter_mut())
+            .zip(self.tau.iter())
+        {
+            sync_populations(g, phi);
+            for (node, phi_k) in g.chunks_exact_mut(9).zip(phi.iter_mut()) {
+                let density: f64 = node.iter().sum();
+                for (p, &w) in node.iter_mut().zip(D2Q9_W.iter()) {
+                    *p -= (*p - w * density) / tau;
+                }
+                *phi_k = node.iter().sum();
+            }
+        }
+    }
+    /// Whether any off-diagonal entry of `cross_diff` is non-zero, i.e. whether
+    /// [`MultiComponentLbm::add_cross_diffusion_source`] changes anything.
+    fn has_cross_coupling(&self) -> bool {
+        (0..self.ncomp).any(|alpha| {
+            (0..self.ncomp).any(|beta| {
+                beta != alpha
+                    && self
+                        .cross_diff
+                        .get(alpha * self.ncomp + beta)
+                        .is_some_and(|&d_ab| d_ab != 0.0)
+            })
+        })
+    }
+    /// Add the cross-diffusion source `Σ_{β≠α} D_αβ ∇²φ_β` to every species α.
+    ///
+    /// The source is distributed on the populations of species α with the
+    /// lattice weights, so it changes the field but not the momentum (there
+    /// is none) and the total of each species is unchanged: the periodic
+    /// Laplacian sums to zero.  All Laplacians are evaluated from the fields
+    /// before any source is added.
+    pub fn add_cross_diffusion_source(&mut self) {
+        let n = self.nx * self.ny;
+        if self.ncomp < 2 || n == 0 || !self.has_cross_coupling() {
+            return;
+        }
+        let laplacians: Vec<Vec<f64>> = self
+            .phi
+            .iter()
+            .map(|phi| laplacian_d2q9_periodic(phi, self.nx, self.ny))
+            .collect();
+        for (alpha, (g, phi)) in self.g.iter_mut().zip(self.phi.iter_mut()).enumerate() {
+            let mut source = vec![0.0_f64; n];
+            let mut driven = false;
+            for (beta, laplacian) in laplacians.iter().enumerate() {
+                if beta == alpha {
+                    continue;
+                }
+                let d_ab = self
+                    .cross_diff
+                    .get(alpha * self.ncomp + beta)
+                    .copied()
+                    .unwrap_or(0.0);
+                if d_ab == 0.0 {
+                    continue;
+                }
+                driven = true;
+                for (s, &lap) in source.iter_mut().zip(laplacian.iter()) {
+                    *s += d_ab * lap;
+                }
+            }
+            if !driven {
+                continue;
+            }
+            for ((node, phi_k), &s) in g.chunks_exact_mut(9).zip(phi.iter_mut()).zip(source.iter())
+            {
+                for (p, &w) in node.iter_mut().zip(D2Q9_W.iter()) {
+                    *p += w * s;
+                }
+                *phi_k = node.iter().sum();
+            }
+        }
+    }
+    /// Stream the populations of every species along the D2Q9 links with
+    /// periodic wrap-around and refresh the fields `phi`.
+    pub fn stream(&mut self) {
+        for (g, phi) in self.g.iter_mut().zip(self.phi.iter_mut()) {
+            stream_populations(g, &mut self.scratch, self.nx, self.ny);
+            for (p, node) in phi.iter_mut().zip(g.chunks_exact(9)) {
+                *p = node.iter().sum();
+            }
+        }
+    }
+    /// Advance all species by one time step: BGK collision, cross-diffusion
+    /// source, periodic streaming.
+    pub fn step(&mut self) {
+        self.collide_uncoupled();
+        self.add_cross_diffusion_source();
+        self.stream();
     }
     /// Total concentration of species `alpha`.
     pub fn total_concentration(&self, alpha: usize) -> f64 {
@@ -146,7 +298,14 @@ impl TurbulentMixing {
 /// Advection-diffusion of a passive scalar on a D2Q9 grid.
 ///
 /// The passive scalar `phi` does not feed back to the flow field.
-/// A BGK-LBM step evolves the scalar distribution functions `g`.
+/// A BGK-LBM step evolves the scalar distribution functions `g`: collision
+/// toward the equilibrium advected with the prescribed velocity field
+/// (`ux`, `uy`), then periodic streaming.  The scalar diffuses with
+/// `D = c_s² (τ − ½)` ([`PassiveScalarField::diffusivity`]).
+///
+/// `phi` is the zeroth moment of `g`.  It may be edited directly between
+/// steps (the next collision moves the difference onto `g`, keeping the edited
+/// mass) or set with [`PassiveScalarField::set_scalar_field`].
 #[derive(Debug, Clone)]
 pub struct PassiveScalarField {
     /// Grid width (nodes in x).
@@ -163,6 +322,8 @@ pub struct PassiveScalarField {
     pub ux: Vec<f64>,
     /// Velocity field uy (length `nx * ny`).
     pub uy: Vec<f64>,
+    /// Persistent streaming buffer, so that a step does not allocate.
+    scratch: Vec<f64>,
 }
 impl PassiveScalarField {
     /// Create a new `PassiveScalarField` with uniform scalar `phi0`.
@@ -182,33 +343,79 @@ impl PassiveScalarField {
             tau,
             ux: vec![0.0_f64; n],
             uy: vec![0.0_f64; n],
+            scratch: Vec::new(),
         }
     }
-    /// Set the velocity field (flat, row-major).
+    /// Set the velocity field (flat, row-major, `nx * ny` values each).
     pub fn set_velocity(&mut self, ux: Vec<f64>, uy: Vec<f64>) {
         self.ux = ux;
         self.uy = uy;
     }
-    /// BGK equilibrium for the scalar distribution function.
-    #[inline]
-    fn geq(&self, phi_k: f64, ux_k: f64, uy_k: f64, q: usize) -> f64 {
-        let cu = D2Q9_CX[q] * ux_k + D2Q9_CY[q] * uy_k;
-        let uu = ux_k * ux_k + uy_k * uy_k;
-        D2Q9_W[q] * phi_k * (1.0_f64 + 3.0_f64 * cu + 4.5_f64 * cu * cu - 1.5_f64 * uu)
+    /// Diffusivity `D = c_s² (τ − ½)` of the scalar.
+    pub fn diffusivity(&self) -> f64 {
+        lattice_diffusivity(self.tau)
+    }
+    /// Set the scalar field (row-major, `nx · ny` values) and bring `g` to the
+    /// equilibrium advected with the current velocity field.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IncompatibleParameters`] when `phi`, `ux` or `uy` does not have
+    /// `nx * ny` values.
+    pub fn set_scalar_field(&mut self, phi: &[f64]) -> Result<()> {
+        let n = self.nx * self.ny;
+        if phi.len() != n || self.ux.len() != n || self.uy.len() != n {
+            return Err(Error::IncompatibleParameters {
+                message: format!(
+                    "scalar and velocity fields need {n} values for a {} x {} grid, \
+                     got {}, {} and {}",
+                    self.nx,
+                    self.ny,
+                    phi.len(),
+                    self.ux.len(),
+                    self.uy.len()
+                ),
+            });
+        }
+        self.phi.clear();
+        self.phi.extend_from_slice(phi);
+        self.g.clear();
+        self.g.resize(n * 9, 0.0);
+        for (k, node) in self.g.chunks_exact_mut(9).enumerate() {
+            for (q, p) in node.iter_mut().enumerate() {
+                *p = d2q9_equilibrium(q, phi[k], self.ux[k], self.uy[k]);
+            }
+        }
+        Ok(())
     }
     /// Perform one BGK collision step (no streaming) for the scalar.
+    ///
+    /// Every node relaxes toward the second-order equilibrium advected with
+    /// its velocity; the collision conserves the scalar of each node.
     pub fn collide(&mut self) {
-        let n = self.nx * self.ny;
-        for k in 0..n {
-            let phi_k = self.phi[k];
-            let ux_k = self.ux[k];
-            let uy_k = self.uy[k];
-            for q in 0..9 {
-                let feq = self.geq(phi_k, ux_k, uy_k, q);
-                self.g[k * 9 + q] -= (self.g[k * 9 + q] - feq) / self.tau;
+        sync_populations(&mut self.g, &self.phi);
+        let tau = self.tau;
+        for (k, node) in self.g.chunks_exact_mut(9).enumerate() {
+            let density: f64 = node.iter().sum();
+            let (ux_k, uy_k) = (self.ux[k], self.uy[k]);
+            for (q, p) in node.iter_mut().enumerate() {
+                *p -= (*p - d2q9_equilibrium(q, density, ux_k, uy_k)) / tau;
             }
-            self.phi[k] = self.g[k * 9..k * 9 + 9].iter().sum();
+            self.phi[k] = node.iter().sum();
         }
+    }
+    /// Stream the scalar populations along the D2Q9 links with periodic
+    /// wrap-around and refresh `phi`.
+    pub fn stream(&mut self) {
+        stream_populations(&mut self.g, &mut self.scratch, self.nx, self.ny);
+        for (p, node) in self.phi.iter_mut().zip(self.g.chunks_exact(9)) {
+            *p = node.iter().sum();
+        }
+    }
+    /// Advance the scalar by one time step: BGK collision, then streaming.
+    pub fn step(&mut self) {
+        self.collide();
+        self.stream();
     }
     /// Total scalar (zeroth moment of g, summed over all nodes).
     pub fn total_scalar(&self) -> f64 {
@@ -479,9 +686,30 @@ impl SpeciesTransport {
 }
 /// Advection-diffusion LBM solver tracking a scalar concentration field.
 ///
-/// The scalar field `c_scalar` holds local concentrations.  Two distribution
-/// function arrays (`f_c` for the scalar, `f_u` for the velocity) are
-/// stored; each uses a D2Q9 stencil (9 populations per node).
+/// Two D2Q9 populations evolve on a fully periodic `nx × ny` lattice (lattice
+/// units, `Δx = Δt = 1`):
+///
+/// * `f_u` is the flow: a BGK fluid with relaxation time
+///   [`MixingLBM::tau_u`] whose density and velocity are the zeroth and first
+///   moment of `f_u`.  [`MixingLBM::new`] starts it at rest with unit density,
+///   so the velocity stays zero (pure diffusion) until
+///   [`MixingLBM::set_uniform_velocity`] sets a flow.
+/// * `f_c` is the passive scalar: a BGK advection–diffusion lattice with
+///   relaxation time [`MixingLBM::tau_c`].  Its equilibrium
+///   `w_q c (1 + 3 c_q·u + 9/2 (c_q·u)² − 3/2 |u|²)` is advected with the local
+///   flow velocity `u`, and the scalar diffuses with `D = c_s² (τ_c − ½)`
+///   ([`MixingLBM::scalar_diffusivity`]).
+///
+/// The relaxation times follow from the dimensionless numbers as
+/// `τ_u = ½ + 1/(6 Re)` and `τ_c = ½ + 1/(6 Pe)` (the numbers are clamped
+/// below at `1e-6`).
+///
+/// `c_scalar` is the zeroth moment of `f_c` and is refreshed by every
+/// [`MixingLBM::step`].  Set the concentration with
+/// [`MixingLBM::init_stripe_concentration`], [`MixingLBM::init_gaussian_blob`]
+/// or [`MixingLBM::set_concentration`], which write both; if `c_scalar` is
+/// edited directly, the next step moves the difference onto `f_c` so that the
+/// edited mass is kept.
 #[derive(Debug, Clone)]
 pub struct MixingLBM {
     /// Number of nodes in x.
@@ -498,13 +726,18 @@ pub struct MixingLBM {
     pub pe: f64,
     /// Reynolds number.
     pub re: f64,
+    /// Persistent streaming buffer, so that a step does not allocate.
+    scratch: Vec<f64>,
 }
 impl MixingLBM {
-    /// Create a new `MixingLBM` with zero concentration and unit equilibrium.
+    /// Create a new `MixingLBM` with zero concentration and a unit-density
+    /// fluid at rest.
     pub fn new(nx: usize, ny: usize, pe: f64, re: f64) -> Self {
         let n = nx * ny;
-        let w = 1.0 / 9.0;
-        let f_u = vec![w; n * 9];
+        let mut f_u = vec![0.0_f64; n * 9];
+        for node in f_u.chunks_exact_mut(9) {
+            node.copy_from_slice(&D2Q9_W);
+        }
         Self {
             nx,
             ny,
@@ -513,6 +746,7 @@ impl MixingLBM {
             f_u,
             pe,
             re,
+            scratch: Vec::new(),
         }
     }
     /// Row-major flat index for node (i, j).
@@ -529,6 +763,31 @@ impl MixingLBM {
     #[inline]
     pub fn fc(&self, i: usize, j: usize, q: usize) -> usize {
         (j * self.nx + i) * 9 + q
+    }
+    /// BGK relaxation time of the flow, `τ_u = ½ + 1/(6 Re)`.
+    pub fn tau_u(&self) -> f64 {
+        0.5 + 1.0 / (6.0 * self.re.max(1e-6))
+    }
+    /// BGK relaxation time of the scalar, `τ_c = ½ + 1/(6 Pe)`.
+    pub fn tau_c(&self) -> f64 {
+        0.5 + 1.0 / (6.0 * self.pe.max(1e-6))
+    }
+    /// Kinematic viscosity of the flow, `c_s² (τ_u − ½)`.
+    pub fn flow_viscosity(&self) -> f64 {
+        lattice_diffusivity(self.tau_u())
+    }
+    /// Diffusivity of the scalar, `D = c_s² (τ_c − ½)`.
+    pub fn scalar_diffusivity(&self) -> f64 {
+        lattice_diffusivity(self.tau_c())
+    }
+    /// Set the concentration of node `idx` and put `f_c` there at the
+    /// equilibrium advected with the local flow velocity.
+    fn set_node_concentration(&mut self, idx: usize, c: f64) {
+        let (_, ux, uy) = d2q9_moments(&self.f_u[idx * 9..idx * 9 + 9]);
+        self.c_scalar[idx] = c;
+        for (q, p) in self.f_c[idx * 9..idx * 9 + 9].iter_mut().enumerate() {
+            *p = d2q9_equilibrium(q, c, ux, uy);
+        }
     }
     /// Initialise the concentration field with alternating high/low stripes
     /// along the x direction.
@@ -549,7 +808,7 @@ impl MixingLBM {
                     0.0
                 };
                 let idx = self.index(i, j);
-                self.c_scalar[idx] = c;
+                self.set_node_concentration(idx, c);
             }
         }
     }
@@ -569,45 +828,114 @@ impl MixingLBM {
                 let dx = i as f64 - cx;
                 let dy = j as f64 - cy;
                 let idx = self.index(i, j);
-                self.c_scalar[idx] = c0 * (-(dx * dx + dy * dy) / (2.0 * s2)).exp();
+                self.set_node_concentration(idx, c0 * (-(dx * dx + dy * dy) / (2.0 * s2)).exp());
             }
         }
     }
-    /// Perform one LBM step for both velocity and scalar fields.
+    /// Set the whole concentration field (row-major, `nx · ny` values) and put
+    /// `f_c` at the equilibrium advected with the local flow velocity.
     ///
-    /// Applies a simple BGK-relaxation to `f_u` and a passive-scalar
-    /// relaxation to `f_c`, both using D2Q9 equilibrium distributions.
-    /// The velocity is fixed to zero (pressure-driven diffusion only).
-    pub fn step(&mut self) {
-        let tau_u = 0.5 + 1.0 / (6.0 * self.re.max(1e-6));
-        let d_eff = 1.0 / (6.0 * self.pe.max(1e-6));
-        let tau_c = 0.5 + d_eff;
+    /// # Errors
+    ///
+    /// [`Error::IncompatibleParameters`] when `field.len() != nx * ny`.
+    pub fn set_concentration(&mut self, field: &[f64]) -> Result<()> {
         let n = self.nx * self.ny;
-        let w0 = 4.0 / 9.0;
-        let ws = 1.0 / 9.0;
-        for k in 0..n {
-            for q in 0..9 {
-                let w_eq = if q == 0 { w0 } else { ws };
-                let idx = k * 9 + q;
-                self.f_u[idx] += -(self.f_u[idx] - w_eq) / tau_u;
+        if field.len() != n || self.c_scalar.len() != n || self.f_c.len() != n * 9 {
+            return Err(Error::IncompatibleParameters {
+                message: format!(
+                    "concentration field needs {n} values for a {} x {} grid, got {}",
+                    self.nx,
+                    self.ny,
+                    field.len()
+                ),
+            });
+        }
+        for (idx, &c) in field.iter().enumerate() {
+            self.set_node_concentration(idx, c);
+        }
+        Ok(())
+    }
+    /// Put the whole fluid in motion with the uniform velocity `(ux, uy)`.
+    ///
+    /// The flow populations and the scalar populations of every node are set
+    /// to the equilibrium for the current density and concentration at the new
+    /// velocity, so the state is a fixed point of the collision.
+    pub fn set_uniform_velocity(&mut self, ux: f64, uy: f64) {
+        for ((fu, fc), &c) in self
+            .f_u
+            .chunks_exact_mut(9)
+            .zip(self.f_c.chunks_exact_mut(9))
+            .zip(self.c_scalar.iter())
+        {
+            let rho: f64 = fu.iter().sum();
+            for (q, (u_q, c_q)) in fu.iter_mut().zip(fc.iter_mut()).enumerate() {
+                *u_q = d2q9_equilibrium(q, rho, ux, uy);
+                *c_q = d2q9_equilibrium(q, c, ux, uy);
             }
         }
-        let old_c = self.c_scalar.clone();
-        for (k, &c_k) in old_c.iter().enumerate() {
-            let c_eq = c_k / 9.0;
-            for q in 0..9 {
-                let idx = k * 9 + q;
-                self.f_c[idx] += -(self.f_c[idx] - c_eq) / tau_c;
+    }
+    /// Flow velocity `(u_x, u_y)` at node `(i, j)`, or `None` outside the grid.
+    pub fn velocity_at(&self, i: usize, j: usize) -> Option<(f64, f64)> {
+        if i >= self.nx || j >= self.ny {
+            return None;
+        }
+        let k = self.index(i, j);
+        let node = self.f_u.get(k * 9..k * 9 + 9)?;
+        let (_, ux, uy) = d2q9_moments(node);
+        Some((ux, uy))
+    }
+    /// Total scalar, the sum of `c_scalar` over all nodes.
+    pub fn total_scalar(&self) -> f64 {
+        self.c_scalar.iter().sum()
+    }
+    /// Advance the flow and the scalar by one time step.
+    ///
+    /// Both populations relax toward their equilibria — the scalar toward the
+    /// one advected with the local velocity of `f_u` — are streamed
+    /// periodically, and `c_scalar` is refreshed from `f_c`.  The total scalar
+    /// and the total fluid mass and momentum are conserved to rounding error.
+    pub fn step(&mut self) {
+        let tau_u = self.tau_u();
+        let tau_c = self.tau_c();
+        sync_populations(&mut self.f_c, &self.c_scalar);
+        for (fu, fc) in self
+            .f_u
+            .chunks_exact_mut(9)
+            .zip(self.f_c.chunks_exact_mut(9))
+        {
+            let (rho, ux, uy) = d2q9_moments(fu);
+            let c: f64 = fc.iter().sum();
+            for (q, (u_q, c_q)) in fu.iter_mut().zip(fc.iter_mut()).enumerate() {
+                *u_q -= (*u_q - d2q9_equilibrium(q, rho, ux, uy)) / tau_u;
+                *c_q -= (*c_q - d2q9_equilibrium(q, c, ux, uy)) / tau_c;
             }
-            self.c_scalar[k] = self.f_c[k * 9..k * 9 + 9].iter().sum();
+        }
+        stream_populations(&mut self.f_u, &mut self.scratch, self.nx, self.ny);
+        stream_populations(&mut self.f_c, &mut self.scratch, self.nx, self.ny);
+        for (c, node) in self.c_scalar.iter_mut().zip(self.f_c.chunks_exact(9)) {
+            *c = node.iter().sum();
         }
     }
 }
 /// Double distribution function (DDF): separate `f` for flow, `g` for scalar.
 ///
-/// This struct bundles two D2Q9 distribution function arrays, one for the
-/// fluid momentum (`f`) and one for the temperature/species scalar (`g`),
-/// as commonly used in thermal and reactive LBM.
+/// This struct bundles two D2Q9 distribution function arrays on a periodic
+/// `nx × ny` lattice, one for the fluid momentum (`f`) and one for the
+/// temperature/species scalar (`g`), as commonly used in thermal and reactive
+/// LBM:
+///
+/// * `f` is an isothermal BGK fluid with relaxation time `tau_f`.  It relaxes
+///   toward the second-order equilibrium of its own density and velocity, so
+///   mass and momentum are conserved and the kinematic viscosity is
+///   `ν = c_s² (τ_f − ½)` ([`DoubleDistributionFunction::viscosity`]).
+/// * `g` is a passive scalar with relaxation time `tau_g`.  It relaxes toward
+///   the equilibrium advected with the local velocity of `f` and diffuses with
+///   `D = c_s² (τ_g − ½)` ([`DoubleDistributionFunction::scalar_diffusivity`]).
+///
+/// `rho` and `phi` are the zeroth moments of `f` and `g`.  They may be edited
+/// directly between steps (the next collision moves the difference onto the
+/// populations) or set per node with [`DoubleDistributionFunction::set_flow_at`]
+/// and [`DoubleDistributionFunction::set_scalar_at`].
 #[derive(Debug, Clone)]
 pub struct DoubleDistributionFunction {
     /// Number of nodes in x.
@@ -626,9 +954,13 @@ pub struct DoubleDistributionFunction {
     pub rho: Vec<f64>,
     /// Scalar field (length `nx * ny`).
     pub phi: Vec<f64>,
+    /// Persistent streaming buffer, so that a step does not allocate.
+    scratch: Vec<f64>,
 }
 impl DoubleDistributionFunction {
     /// Create a new `DoubleDistributionFunction` with equilibrium initialisation.
+    ///
+    /// The fluid starts at rest.
     ///
     /// # Arguments
     /// * `nx`, `ny`   – Grid dimensions.
@@ -655,36 +987,111 @@ impl DoubleDistributionFunction {
             tau_g,
             rho: vec![rho0; n],
             phi: vec![phi0; n],
+            scratch: Vec::new(),
         }
     }
+    /// Kinematic viscosity of the fluid, `ν = c_s² (τ_f − ½)`.
+    pub fn viscosity(&self) -> f64 {
+        lattice_diffusivity(self.tau_f)
+    }
+    /// Diffusivity of the scalar, `D = c_s² (τ_g − ½)`.
+    pub fn scalar_diffusivity(&self) -> f64 {
+        lattice_diffusivity(self.tau_g)
+    }
+    /// Fluid velocity `(u_x, u_y)` at node `(x, y)`, or `None` outside the grid.
+    pub fn velocity_at(&self, x: usize, y: usize) -> Option<(f64, f64)> {
+        if x >= self.nx || y >= self.ny {
+            return None;
+        }
+        let k = y * self.nx + x;
+        let node = self.f.get(k * 9..k * 9 + 9)?;
+        let (_, ux, uy) = d2q9_moments(node);
+        Some((ux, uy))
+    }
+    /// Put node `(x, y)` of the fluid at the equilibrium with density `rho`
+    /// and velocity `(ux, uy)`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IndexOutOfBounds`] when the node is outside the grid.
+    pub fn set_flow_at(&mut self, x: usize, y: usize, rho: f64, ux: f64, uy: f64) -> Result<()> {
+        Error::check_index(x, y, self.nx, self.ny)?;
+        let k = y * self.nx + x;
+        for (q, p) in self.f[k * 9..k * 9 + 9].iter_mut().enumerate() {
+            *p = d2q9_equilibrium(q, rho, ux, uy);
+        }
+        self.rho[k] = rho;
+        Ok(())
+    }
+    /// Put node `(x, y)` of the scalar at the equilibrium advected with the
+    /// current fluid velocity of that node, with value `phi`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IndexOutOfBounds`] when the node is outside the grid.
+    pub fn set_scalar_at(&mut self, x: usize, y: usize, phi: f64) -> Result<()> {
+        Error::check_index(x, y, self.nx, self.ny)?;
+        let k = y * self.nx + x;
+        let (_, ux, uy) = d2q9_moments(&self.f[k * 9..k * 9 + 9]);
+        for (q, p) in self.g[k * 9..k * 9 + 9].iter_mut().enumerate() {
+            *p = d2q9_equilibrium(q, phi, ux, uy);
+        }
+        self.phi[k] = phi;
+        Ok(())
+    }
     /// BGK collision for the fluid `f`.
+    ///
+    /// Every node relaxes toward the second-order equilibrium of its own
+    /// density and velocity, which conserves its mass and momentum.
     pub fn collide_flow(&mut self) {
-        let n = self.nx * self.ny;
-        for k in 0..n {
-            let rho_k = self.rho[k];
-            for (q, &w) in D2Q9_W.iter().enumerate() {
-                let feq = w * rho_k;
-                self.f[k * 9 + q] -= (self.f[k * 9 + q] - feq) / self.tau_f;
+        sync_populations(&mut self.f, &self.rho);
+        let tau = self.tau_f;
+        for (node, rho_k) in self.f.chunks_exact_mut(9).zip(self.rho.iter_mut()) {
+            let (rho, ux, uy) = d2q9_moments(node);
+            for (q, p) in node.iter_mut().enumerate() {
+                *p -= (*p - d2q9_equilibrium(q, rho, ux, uy)) / tau;
             }
-            self.rho[k] = self.f[k * 9..k * 9 + 9].iter().sum();
+            *rho_k = node.iter().sum();
         }
     }
     /// BGK collision for the scalar `g`.
+    ///
+    /// Every node relaxes toward the equilibrium advected with the local fluid
+    /// velocity (the first moment of `f`); the scalar of each node is conserved.
     pub fn collide_scalar(&mut self) {
-        let n = self.nx * self.ny;
-        for k in 0..n {
-            let phi_k = self.phi[k];
-            for (q, &w) in D2Q9_W.iter().enumerate() {
-                let geq = w * phi_k;
-                self.g[k * 9 + q] -= (self.g[k * 9 + q] - geq) / self.tau_g;
+        sync_populations(&mut self.g, &self.phi);
+        let tau = self.tau_g;
+        for ((g_node, f_node), phi_k) in self
+            .g
+            .chunks_exact_mut(9)
+            .zip(self.f.chunks_exact(9))
+            .zip(self.phi.iter_mut())
+        {
+            let (_, ux, uy) = d2q9_moments(f_node);
+            let density: f64 = g_node.iter().sum();
+            for (q, p) in g_node.iter_mut().enumerate() {
+                *p -= (*p - d2q9_equilibrium(q, density, ux, uy)) / tau;
             }
-            self.phi[k] = self.g[k * 9..k * 9 + 9].iter().sum();
+            *phi_k = g_node.iter().sum();
         }
     }
-    /// Perform one coupled step: collide both `f` and `g`.
+    /// Stream `f` and `g` along the D2Q9 links with periodic wrap-around and
+    /// refresh `rho` and `phi`.
+    pub fn stream(&mut self) {
+        stream_populations(&mut self.f, &mut self.scratch, self.nx, self.ny);
+        stream_populations(&mut self.g, &mut self.scratch, self.nx, self.ny);
+        for (rho, node) in self.rho.iter_mut().zip(self.f.chunks_exact(9)) {
+            *rho = node.iter().sum();
+        }
+        for (phi, node) in self.phi.iter_mut().zip(self.g.chunks_exact(9)) {
+            *phi = node.iter().sum();
+        }
+    }
+    /// Perform one coupled step: collide both `f` and `g`, then stream them.
     pub fn step(&mut self) {
         self.collide_flow();
         self.collide_scalar();
+        self.stream();
     }
     /// Total fluid mass (sum of rho field).
     pub fn total_mass(&self) -> f64 {

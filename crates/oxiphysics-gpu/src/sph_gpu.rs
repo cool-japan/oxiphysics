@@ -46,9 +46,21 @@
 //! into the structure-of-arrays [`SphParticleState`] at the end of `step`.
 //!
 //! The hash grid spacing is the kernel support (2h), so the 27-cell sweep always
-//! covers every neighbor. A non-positive or NaN support (or a particle count the
-//! 1-D dispatches cannot address) makes the GPU path inapplicable; the exact CPU
-//! solve then runs instead.
+//! covers every neighbor. A non-positive or NaN support (or a particle count
+//! beyond what 32-bit indices address) makes the GPU path inapplicable; the exact
+//! CPU solve then runs instead.  Particle counts beyond one dispatch dimension
+//! (65535 workgroups of 64 threads, 4 194 240 particles) are not a limit: such
+//! dispatches are folded into a 2-D grid and the kernels linearise their
+//! indices with `num_workgroups`.
+//!
+//! ## Choosing the compute device
+//!
+//! [`SphConfig::compute`] selects the device: [`ComputePreference::Auto`] (the
+//! default) uses the GPU when an adapter exists, [`ComputePreference::CpuOnly`]
+//! skips every wgpu call (benchmarks and CPU reference runs), and
+//! [`ComputePreference::GpuRequired`] turns a missing or failing GPU into an
+//! error from [`SphSimulation::try_new`] / [`SphSimulation::try_step`] instead of
+//! a silent CPU fallback.
 //!
 //! ## Usage
 //!
@@ -73,6 +85,9 @@
 //! assert!(sim.state.pos_y[0] < 1.0 + 0.1,
 //!     "particles should fall under gravity");
 //! ```
+
+use crate::GpuError;
+use crate::compute_preference::ComputePreference;
 
 // ── SphConfig ─────────────────────────────────────────────────────────────────
 
@@ -99,6 +114,16 @@ pub struct SphConfig {
     pub domain_max: [f64; 3],
     /// Boundary restitution coefficient [0, 1].
     pub boundary_restitution: f64,
+    /// Which compute device may run the steps (default
+    /// [`ComputePreference::Auto`]).
+    ///
+    /// * `Auto` — the GPU pipeline when an adapter is available, the CPU solve
+    ///   otherwise.
+    /// * `CpuOnly` — [`SphSimulation::new`] skips every wgpu call (no adapter
+    ///   request, no buffers); the CPU solve runs every step.
+    /// * `GpuRequired` — [`SphSimulation::try_new`] fails without a usable GPU
+    ///   and [`SphSimulation::try_step`] fails instead of running on the CPU.
+    pub compute: ComputePreference,
 }
 
 impl Default for SphConfig {
@@ -115,6 +140,7 @@ impl Default for SphConfig {
             domain_min: [-1.0, 0.0, -1.0],
             domain_max: [1.0, 2.0, 1.0],
             boundary_restitution: 0.3,
+            compute: ComputePreference::Auto,
         }
     }
 }
@@ -317,6 +343,10 @@ pub struct SphSimulation {
     /// GPU pipeline state (`None` → CPU fallback).
     #[cfg(feature = "wgpu-backend")]
     gpu: Option<SphGpuState>,
+    /// Why the GPU pipeline could not be created (`None` when it was created
+    /// or never requested).
+    #[cfg(feature = "wgpu-backend")]
+    gpu_error: Option<GpuError>,
     /// Total elapsed simulation time.
     pub time: f64,
 }
@@ -333,11 +363,22 @@ impl SphSimulation {
 
         #[cfg(feature = "wgpu-backend")]
         {
-            let gpu = SphGpuState::try_init(n);
+            // `CpuOnly` must not touch wgpu at all: no adapter request, no
+            // buffers.  Otherwise the (expensive) initialisation is attempted
+            // exactly once and its failure is remembered.
+            let (gpu, gpu_error) = if config.compute.allows_gpu() {
+                match SphGpuState::try_init(n) {
+                    Ok(gpu) => (Some(gpu), None),
+                    Err(e) => (None, Some(e)),
+                }
+            } else {
+                (None, None)
+            };
             Self {
                 config,
                 state,
                 gpu,
+                gpu_error,
                 time: 0.0,
             }
         }
@@ -348,6 +389,27 @@ impl SphSimulation {
                 state,
                 time: 0.0,
             }
+        }
+    }
+
+    /// Create a new SPH simulation, failing when the configuration requires a
+    /// GPU that is not available.
+    ///
+    /// Identical to [`new`](Self::new) for [`ComputePreference::Auto`] and
+    /// [`ComputePreference::CpuOnly`].
+    ///
+    /// # Errors
+    ///
+    /// With [`ComputePreference::GpuRequired`], returns the
+    /// [`GpuError::BackendInit`] describing why the GPU pipeline could not be
+    /// created (no adapter, particle count beyond what 32-bit indices address,
+    /// or a build without the `wgpu-backend` feature).
+    pub fn try_new(config: SphConfig) -> Result<Self, GpuError> {
+        let sim = Self::new(config);
+        if sim.config.compute.allows_cpu() || sim.has_gpu() {
+            Ok(sim)
+        } else {
+            Err(sim.gpu_required_error())
         }
     }
 
@@ -363,6 +425,58 @@ impl SphSimulation {
         }
     }
 
+    /// Why the GPU pipeline could not be created, if its initialisation failed.
+    ///
+    /// `None` when the GPU pipeline is active, was never requested
+    /// ([`ComputePreference::CpuOnly`]), or the crate is built without the
+    /// `wgpu-backend` feature.
+    pub fn gpu_error(&self) -> Option<&GpuError> {
+        #[cfg(feature = "wgpu-backend")]
+        {
+            self.gpu_error.as_ref()
+        }
+        #[cfg(not(feature = "wgpu-backend"))]
+        {
+            None
+        }
+    }
+
+    /// Switch the GPU pipeline off for good: its resources are released and
+    /// every further step runs on the CPU solve.
+    ///
+    /// Sets [`config.compute`](SphConfig::compute) to
+    /// [`ComputePreference::CpuOnly`] so the configuration stays consistent.
+    pub fn disable_gpu(&mut self) {
+        self.config.compute = ComputePreference::CpuOnly;
+        #[cfg(feature = "wgpu-backend")]
+        {
+            self.gpu = None;
+            self.gpu_error = None;
+        }
+    }
+
+    /// The error reported when [`ComputePreference::GpuRequired`] cannot be
+    /// honoured: the remembered initialisation failure, or a dispatch error
+    /// when the active GPU pipeline could not take the step.
+    fn gpu_required_error(&self) -> GpuError {
+        #[cfg(feature = "wgpu-backend")]
+        {
+            if self.gpu.is_some() {
+                return GpuError::ShaderDispatch(
+                    "compute preference is GpuRequired but the SPH GPU step failed or is not \
+                     applicable to this configuration"
+                        .to_string(),
+                );
+            }
+            if let Some(e) = &self.gpu_error {
+                return e.clone();
+            }
+        }
+        GpuError::BackendInit(
+            "compute preference is GpuRequired but no GPU pipeline is available".to_string(),
+        )
+    }
+
     /// Advance the simulation by `dt` seconds.
     ///
     /// Steps:
@@ -371,19 +485,51 @@ impl SphSimulation {
     /// 3. Pressure + viscosity acceleration
     /// 4. Velocity + position integration (symplectic Euler)
     /// 5. Boundary reflection
+    ///
+    /// With [`ComputePreference::GpuRequired`] a step the GPU cannot take is
+    /// *not* replaced by a CPU step: the simulation is left unchanged (use
+    /// [`try_step`](Self::try_step) to obtain the error).
     pub fn step(&mut self, dt: f64) {
+        // `try_step` only fails for `GpuRequired`, which must not fall back to
+        // the CPU: the unchanged simulation is the documented outcome.
+        let _ = self.try_step(dt);
+    }
+
+    /// Advance the simulation by `dt` seconds, reporting a GPU that is required
+    /// but cannot run the step.
+    ///
+    /// [`ComputePreference::Auto`] takes the GPU path when it is active and
+    /// applicable and the CPU solve otherwise; [`ComputePreference::CpuOnly`]
+    /// always takes the CPU solve.
+    ///
+    /// # Errors
+    ///
+    /// With [`ComputePreference::GpuRequired`], returns the initialisation
+    /// error ([`GpuError::BackendInit`]) when the GPU pipeline does not exist
+    /// and [`GpuError::ShaderDispatch`] when it could not take the step (e.g.
+    /// a non-positive smoothing length).  Neither the particle state nor
+    /// [`time`](Self::time) is changed in that case.
+    pub fn try_step(&mut self, dt: f64) -> Result<(), GpuError> {
         let n = self.config.n_particles;
 
         #[cfg(feature = "wgpu-backend")]
         {
+            if !self.config.compute.allows_gpu() {
+                // `CpuOnly` selected after construction: release the pipeline.
+                self.gpu = None;
+            }
             if self.gpu.is_some() && self.try_step_gpu(dt) {
                 self.time += dt;
-                return;
+                return Ok(());
             }
         }
 
+        if !self.config.compute.allows_cpu() {
+            return Err(self.gpu_required_error());
+        }
         self.step_cpu(dt, n);
         self.time += dt;
+        Ok(())
     }
 
     // ── GPU step ──────────────────────────────────────────────────────────────
@@ -549,6 +695,7 @@ mod resident;
 mod gpu_pipeline {
     use super::resident::ResidentCellList;
     use super::{SphConfig, SphParticleState};
+    use crate::GpuError;
     use crate::compute::wgpu_backend::WgpuBufferHandle;
     use crate::compute::wgpu_backend::real::WgpuBackendReal;
     use crate::kernels_wgsl::{
@@ -561,10 +708,6 @@ mod gpu_pipeline {
 
     /// Threads per workgroup of the SPH kernels.
     const SPH_WORKGROUP: usize = 64;
-
-    /// Largest particle count the 1-D SPH dispatches can address (65535
-    /// workgroups per dimension); bigger problems stay on the CPU path.
-    const MAX_GPU_PARTICLES: usize = 65_535 * SPH_WORKGROUP;
 
     /// Byte size of the `SphGridParams` buffer (12 words, see [`density_params_bytes`]).
     const DENSITY_PARAM_BYTES: u64 = 12 * 4;
@@ -619,16 +762,22 @@ mod gpu_pipeline {
     impl SphGpuState {
         /// Try to construct the GPU state, allocating all resident buffers.
         ///
-        /// Returns `None` if no GPU adapter is available or the particle count is
-        /// beyond what the dispatches can address.
-        pub(super) fn try_init(n: usize) -> Option<Self> {
+        /// # Errors
+        ///
+        /// Returns [`GpuError::BackendInit`] if no GPU adapter is available or
+        /// the particle count is beyond what the dispatches can address.
+        pub(super) fn try_init(n: usize) -> Result<Self, GpuError> {
             let n_eff = n.max(1);
-            if n_eff > MAX_GPU_PARTICLES {
-                return None;
-            }
-            let mut backend = WgpuBackendReal::try_new().ok()?;
+            // A dispatch wider than one dimension is folded into a 2-D grid, so only
+            // a count that 32-bit indices cannot address is refused.
+            WgpuBackendReal::dispatch_count_for(n_eff, SPH_WORKGROUP as u32).map_err(|e| {
+                GpuError::BackendInit(format!("{n} SPH particles cannot be dispatched: {e}"))
+            })?;
+            let mut backend =
+                WgpuBackendReal::try_new().map_err(|e| GpuError::BackendInit(e.to_string()))?;
             let num_cells = n_eff.next_power_of_two().clamp(1, MAX_CELLS);
-            let cells = ResidentCellList::new(&mut backend, n_eff, num_cells).ok()?;
+            let cells = ResidentCellList::new(&mut backend, n_eff, num_cells)
+                .map_err(|e| GpuError::BackendInit(e.to_string()))?;
 
             let positions = backend.create_buffer_storage((n_eff * 3 * 4) as u64);
             let velocities = backend.create_buffer_storage((n_eff * 3 * 4) as u64);
@@ -639,7 +788,7 @@ mod gpu_pipeline {
             let integrate_params = backend.create_buffer_storage(INTEGRATE_PARAM_BYTES);
             let boundary_params = backend.create_buffer_storage(BOUNDARY_PARAM_BYTES);
 
-            Some(Self {
+            Ok(Self {
                 backend,
                 n,
                 positions,
@@ -912,7 +1061,7 @@ mod gpu_pipeline {
         domain_min: [f64; 3],
     ) -> Option<super::GpuCellList> {
         let n = positions.len() / 3;
-        if n == 0 || n > MAX_GPU_PARTICLES {
+        if n == 0 || WgpuBackendReal::dispatch_count_for(n, SPH_WORKGROUP as u32).is_err() {
             return None;
         }
         let support = 2.0 * smoothing_h as f32;
@@ -1041,6 +1190,7 @@ mod gpu_pipeline {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::compute_preference::ComputePreference;
         use crate::sph_gpu::{GpuCellList, SphSimulation};
 
         /// Deterministic LCG in `[0, 1)`.
@@ -1209,15 +1359,21 @@ mod gpu_pipeline {
                 domain_min: [-1.0, 0.0, -1.0],
                 domain_max: [1.0, 2.0, 1.0],
                 boundary_restitution: 0.2,
+                compute: ComputePreference::Auto,
             };
             let mut gpu_sim = SphSimulation::new(make_config());
             lattice_particles(&mut gpu_sim, [nx, ny, nz], spacing);
             if !gpu_sim.has_gpu() {
                 return;
             }
-            let mut cpu_sim = SphSimulation::new(make_config());
+            // The CPU reference is pinned with `CpuOnly`: it never creates a
+            // GPU pipeline of its own.
+            let mut cpu_sim = SphSimulation::new(SphConfig {
+                compute: ComputePreference::CpuOnly,
+                ..make_config()
+            });
             lattice_particles(&mut cpu_sim, [nx, ny, nz], spacing);
-            cpu_sim.gpu = None;
+            assert!(!cpu_sim.has_gpu());
 
             let dt = 1.0 / 480.0;
             gpu_sim.step(dt);
@@ -1399,5 +1555,176 @@ mod tests {
         }
         let ke = sim.kinetic_energy();
         assert!(ke > 0.0, "KE should be positive");
+    }
+
+    // ── ComputePreference ──────────────────────────────────────────────────
+
+    /// A small block of falling particles with the given device preference.
+    fn falling_block(compute: ComputePreference) -> SphConfig {
+        SphConfig {
+            n_particles: 4,
+            smoothing_h: 0.2,
+            gravity: 9.81,
+            domain_min: [-5., 0., -5.],
+            domain_max: [5., 10., 5.],
+            compute,
+            ..SphConfig::default()
+        }
+    }
+
+    /// Whether this host exposes a wgpu adapter at all.
+    fn adapter_present() -> bool {
+        #[cfg(feature = "wgpu-backend")]
+        {
+            crate::compute::wgpu_backend::real::WgpuBackendReal::try_new().is_ok()
+        }
+        #[cfg(not(feature = "wgpu-backend"))]
+        {
+            false
+        }
+    }
+
+    #[test]
+    fn test_default_config_prefers_auto() {
+        assert_eq!(SphConfig::default().compute, ComputePreference::Auto);
+    }
+
+    /// `CpuOnly` must not create any GPU resources, even on a host that has an
+    /// adapter, and must not record an initialisation failure either.
+    #[test]
+    fn test_cpu_only_simulation_never_creates_a_gpu() {
+        let mut sim = SphSimulation::new(falling_block(ComputePreference::CpuOnly));
+        assert!(!sim.has_gpu());
+        assert!(sim.gpu_error().is_none());
+        for i in 0..4 {
+            sim.state.pos_y[i] = 5.0;
+        }
+        for _ in 0..10 {
+            sim.try_step(1.0 / 60.0).expect("CpuOnly never fails");
+        }
+        assert!(!sim.has_gpu());
+        assert!(sim.gpu_error().is_none());
+        for i in 0..4 {
+            assert!(sim.state.pos_y[i] < 5.0, "particle {i} must fall");
+        }
+        assert!((sim.time - 10.0 / 60.0).abs() < 1e-12);
+    }
+
+    /// `Auto` takes the GPU whenever an adapter exists - the contrast that
+    /// gives the `CpuOnly` test above its meaning.  If the pipeline cannot be
+    /// built on a host that does have an adapter, the reason is recorded.
+    #[test]
+    fn test_auto_simulation_uses_the_gpu_when_an_adapter_exists() {
+        let sim = SphSimulation::new(falling_block(ComputePreference::Auto));
+        if sim.has_gpu() {
+            assert!(adapter_present());
+            assert!(sim.gpu_error().is_none());
+        } else if adapter_present() {
+            assert!(
+                sim.gpu_error().is_some(),
+                "an adapter exists but no GPU pipeline and no recorded reason"
+            );
+        }
+        #[cfg(not(feature = "wgpu-backend"))]
+        assert!(!sim.has_gpu());
+    }
+
+    #[test]
+    fn test_disable_gpu_switches_to_the_cpu_solve() {
+        let mut sim = SphSimulation::new(falling_block(ComputePreference::Auto));
+        sim.disable_gpu();
+        assert!(!sim.has_gpu());
+        assert!(sim.gpu_error().is_none());
+        assert_eq!(sim.config.compute, ComputePreference::CpuOnly);
+        sim.state.pos_y[0] = 5.0;
+        sim.step(0.01);
+        assert!(sim.state.pos_y[0] < 5.0);
+        assert!(!sim.has_gpu());
+    }
+
+    /// Switching `config.compute` to `CpuOnly` on a live simulation releases
+    /// the GPU pipeline at the next step.
+    #[test]
+    fn test_cpu_only_selected_after_construction_releases_the_gpu() {
+        let mut sim = SphSimulation::new(falling_block(ComputePreference::Auto));
+        sim.config.compute = ComputePreference::CpuOnly;
+        sim.step(0.01);
+        assert!(!sim.has_gpu());
+    }
+
+    /// `GpuRequired` yields a simulation with a working GPU path or a typed
+    /// init error - never a simulation that silently runs on the CPU.
+    #[test]
+    fn test_gpu_required_has_a_gpu_or_a_typed_error() {
+        match SphSimulation::try_new(falling_block(ComputePreference::GpuRequired)) {
+            Ok(mut sim) => {
+                assert!(adapter_present());
+                assert!(sim.has_gpu());
+                for i in 0..4 {
+                    sim.state.pos_y[i] = 5.0;
+                }
+                sim.try_step(0.01).expect("the GPU takes the step");
+                assert!(sim.has_gpu());
+                assert!((sim.time - 0.01).abs() < 1e-15);
+                assert!(sim.state.pos_y[0] < 5.0);
+            }
+            Err(e) => {
+                assert!(matches!(e, GpuError::BackendInit(_)), "{e:?}");
+            }
+        }
+    }
+
+    /// A required GPU that cannot run the step (non-positive smoothing length
+    /// makes the GPU path inapplicable) is an error and is *not* replaced by
+    /// a CPU step; the same configuration under `Auto` runs on the CPU.
+    #[test]
+    fn test_gpu_required_never_falls_back_to_the_cpu() {
+        let degenerate = |compute| SphConfig {
+            smoothing_h: 0.0,
+            particle_mass: 1.0,
+            ..falling_block(compute)
+        };
+
+        let mut auto = SphSimulation::new(degenerate(ComputePreference::Auto));
+        auto.state.pos_y[0] = 5.0;
+        auto.try_step(0.01).expect("Auto falls back to the CPU");
+        assert!(auto.state.pos_y[0] < 5.0);
+
+        let required = SphSimulation::try_new(degenerate(ComputePreference::GpuRequired));
+        let mut sim = match required {
+            Ok(sim) => sim,
+            Err(e) => {
+                // No adapter on this host: the failure is the init error.
+                assert!(!adapter_present(), "{e}");
+                assert!(matches!(e, GpuError::BackendInit(_)));
+                return;
+            }
+        };
+        sim.state.pos_y[0] = 5.0;
+        let err = sim
+            .try_step(0.01)
+            .expect_err("the GPU cannot take this step");
+        assert!(matches!(err, GpuError::ShaderDispatch(_)), "{err:?}");
+        assert_eq!(sim.state.pos_y[0], 5.0, "no CPU step may be taken");
+        assert_eq!(sim.state.vel_y[0], 0.0);
+        assert_eq!(sim.time, 0.0);
+        // The infallible `step` leaves the simulation unchanged as well.
+        sim.step(0.01);
+        assert_eq!(sim.state.pos_y[0], 5.0);
+        assert_eq!(sim.time, 0.0);
+    }
+
+    /// Without any GPU path (no adapter, or a build without the wgpu feature)
+    /// `GpuRequired` reports the missing backend from `try_new` and `try_step`.
+    #[test]
+    fn test_gpu_required_without_a_pipeline_reports_backend_init() {
+        let mut sim = SphSimulation::new(falling_block(ComputePreference::Auto));
+        sim.disable_gpu();
+        sim.config.compute = ComputePreference::GpuRequired;
+        sim.state.pos_y[0] = 5.0;
+        let err = sim.try_step(0.01).expect_err("no GPU pipeline exists");
+        assert!(matches!(err, GpuError::BackendInit(_)), "{err:?}");
+        assert_eq!(sim.state.pos_y[0], 5.0);
+        assert_eq!(sim.time, 0.0);
     }
 }

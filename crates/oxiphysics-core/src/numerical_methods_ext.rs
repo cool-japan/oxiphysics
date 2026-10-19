@@ -5,7 +5,9 @@
 //! Provides high-order quadrature, spline interpolation, RBF interpolation,
 //! barycentric interpolation, and Richardson-extrapolated differentiation.
 
-use std::f64::consts::FRAC_1_SQRT_2;
+use std::f64::consts::{FRAC_1_SQRT_2, PI};
+
+use crate::numerical_methods::symmetric_tridiagonal_eigenvalues;
 
 /// Gauss-Legendre quadrature rule with `n` nodes on \[-1, 1\].
 ///
@@ -258,7 +260,10 @@ pub struct GaussHermiteQuad {
 }
 
 impl GaussHermiteQuad {
-    /// Construct Gauss-Hermite rule with `n` points (up to 20).
+    /// Construct the `n`-point Gauss-Hermite rule (`n >= 1`; `n = 0` yields an empty rule).
+    ///
+    /// Closed-form tables are used for `n <= 5`; larger rules come from Newton
+    /// iteration on the Hermite polynomial and are accurate to rounding error.
     pub fn new(n: usize) -> Self {
         let (nodes, weights) = gauss_hermite_nw(n);
         Self { n, nodes, weights }
@@ -274,8 +279,8 @@ impl GaussHermiteQuad {
     }
 }
 
-/// Compute Gauss-Hermite nodes and weights using hardcoded tables for small n,
-/// and Newton iteration on Hermite polynomials for larger n.
+/// Compute Gauss-Hermite nodes and weights using hardcoded tables for `n <= 5`,
+/// and Newton iteration on Hermite polynomials for larger `n`.
 fn gauss_hermite_nw(n: usize) -> (Vec<f64>, Vec<f64>) {
     match n {
         2 => (
@@ -320,68 +325,106 @@ fn gauss_hermite_nw(n: usize) -> (Vec<f64>, Vec<f64>) {
     }
 }
 
-/// Compute Gauss-Hermite nodes/weights for n > 5 via Newton iteration on
-/// physicist's Hermite polynomials H_n(x).
-fn gauss_hermite_iter(n: usize) -> (Vec<f64>, Vec<f64>) {
+/// Magnitude above which the orthonormal Hermite recurrence is rescaled.
+const HERMITE_RESCALE_ABOVE: f64 = 1.0e100;
+/// Factor applied to both recurrence values whenever they are rescaled.
+const HERMITE_RESCALE_FACTOR: f64 = 1.0e-100;
+
+/// Evaluate the orthonormal Hermite polynomials `p_n(x)` and `p_{n-1}(x)`.
+///
+/// The `p_j` are orthonormal for the weight `e^{-x²}` (`p_0 = π^{-1/4}`,
+/// `p_j = x·√(2/j)·p_{j-1} − √((j-1)/j)·p_{j-2}`), so `p_n' = √(2n)·p_{n-1}` and
+/// the Gauss weight at a root `x_i` of `p_n` is `1 / (n·p_{n-1}(x_i)²)`.
+///
+/// The recurrence grows like `e^{x²/2}` beyond the turning point, so it is
+/// rescaled on the fly: the result is `(p_n, p_{n-1}, log_scale)` with the true
+/// values equal to `p_n·e^{log_scale}` and `p_{n-1}·e^{log_scale}`.
+fn hermite_orthonormal_pair(n: usize, x: f64) -> (f64, f64, f64) {
+    let mut p_prev = 0.0_f64;
+    let mut p_curr = PI.powf(-0.25);
+    let mut log_scale = 0.0_f64;
+    for j in 1..=n {
+        let jf = j as f64;
+        let p_next = x * (2.0 / jf).sqrt() * p_curr - ((jf - 1.0) / jf).sqrt() * p_prev;
+        p_prev = p_curr;
+        p_curr = p_next;
+        if p_curr.abs() > HERMITE_RESCALE_ABOVE {
+            p_prev *= HERMITE_RESCALE_FACTOR;
+            p_curr *= HERMITE_RESCALE_FACTOR;
+            log_scale -= HERMITE_RESCALE_FACTOR.ln();
+        }
+    }
+    (p_curr, p_prev, log_scale)
+}
+
+/// Polish a root `seed` of the `n`-th Hermite polynomial by Newton iteration and
+/// return `(root, weight)` of the Gauss-Hermite rule.
+fn polish_hermite_root(n: usize, seed: f64) -> (f64, f64) {
     let nf = n as f64;
-    let m = n.div_ceil(2);
+    let sqrt_2n = (2.0 * nf).sqrt();
+    let mut x = seed;
+    for _ in 0..50 {
+        let (p_n, p_nm1, _) = hermite_orthonormal_pair(n, x);
+        let dx = p_n / (sqrt_2n * p_nm1);
+        x -= dx;
+        if !dx.is_finite() || dx.abs() <= 1e-13 * x.abs().max(1.0) {
+            break;
+        }
+    }
+    let (_, p_nm1, log_scale) = hermite_orthonormal_pair(n, x);
+    let weight = (-2.0 * log_scale).exp() / (nf * p_nm1 * p_nm1);
+    (x, weight)
+}
+
+/// Compute Gauss-Hermite nodes/weights (ascending nodes) for general `n` by Newton
+/// iteration on the Hermite polynomial `H_n`.
+///
+/// The Newton starting values are the eigenvalues of the Golub-Welsch Jacobi
+/// matrix (zero diagonal, off-diagonal `√(j/2)`).  They already lie inside the
+/// correct root interval for every `n`, so Newton cannot jump to a neighbouring
+/// root — the classical closed-form starting guesses collapse several roots
+/// onto one for large `n`.  The non-negative half is computed and mirrored,
+/// which keeps the rule exactly symmetric.  The cost is `O(n²)`.
+fn gauss_hermite_iter(n: usize) -> (Vec<f64>, Vec<f64>) {
+    if n == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let non_negative_roots = n.div_ceil(2);
+    let odd = n % 2 == 1;
+    let diag = vec![0.0_f64; n];
+    let off_diag: Vec<f64> = (1..n).map(|j| (j as f64 / 2.0).sqrt()).collect();
+    let seeds = symmetric_tridiagonal_eigenvalues(&diag, &off_diag);
+    // Descending non-negative roots; for odd `n` the smallest one is exactly 0.
+    let positive: Vec<(f64, f64)> = seeds
+        .iter()
+        .rev()
+        .take(non_negative_roots)
+        .enumerate()
+        .map(|(index, &seed)| {
+            let is_middle_root = odd && index + 1 == non_negative_roots;
+            polish_hermite_root(n, if is_middle_root { 0.0 } else { seed })
+        })
+        .collect();
+    let mirrored = if odd {
+        non_negative_roots - 1
+    } else {
+        non_negative_roots
+    };
     let mut nodes = Vec::with_capacity(n);
     let mut weights = Vec::with_capacity(n);
-    for i in 0..m {
-        // Initial guess
-        let mut x = (2.0 * nf + 1.0).sqrt()
-            - 1.85575
-                * (2.0 * nf + 1.0_f64).powf(-1.0 / 6.0)
-                * ((i as f64 + 1.0) * std::f64::consts::PI / (nf + 0.5)).cos();
-        for _ in 0..100 {
-            let (hn, hn1) = hermite_hn_hn1(n, x);
-            let dx = -hn / (2.0 * nf * hn1);
-            x += dx;
-            if dx.abs() < 1e-14 {
-                break;
-            }
-        }
-        let (_, hn1) = hermite_hn_hn1(n, x);
-        let w = (2.0_f64.powi(n as i32 - 1) * factorial_approx(n) * std::f64::consts::PI.sqrt())
-            / (nf * nf * hn1 * hn1);
-        nodes.push(-x);
-        weights.push(w);
+    for &(root, weight) in positive.iter().take(mirrored) {
+        nodes.push(-root);
+        weights.push(weight);
     }
-    let start = if n % 2 == 1 { m - 1 } else { m };
-    let mut full_nodes = nodes.clone();
-    let mut full_weights = weights.clone();
-    for i in (0..start).rev() {
-        full_nodes.push(-nodes[i]);
-        full_weights.push(weights[i]);
+    if odd && let Some(&(_, weight)) = positive.last() {
+        nodes.push(0.0);
+        weights.push(weight);
     }
-    let mut pairs: Vec<(f64, f64)> = full_nodes.into_iter().zip(full_weights).collect();
-    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let (sorted_nodes, sorted_weights) = pairs.into_iter().unzip();
-    (sorted_nodes, sorted_weights)
-}
-
-/// Evaluate physicist's Hermite polynomial H_n(x) and H_{n-1}(x).
-fn hermite_hn_hn1(n: usize, x: f64) -> (f64, f64) {
-    let mut h0 = 1.0_f64;
-    let mut h1 = 2.0 * x;
-    if n == 0 {
-        return (h0, 0.0);
+    for &(root, weight) in positive.iter().take(mirrored).rev() {
+        nodes.push(root);
+        weights.push(weight);
     }
-    if n == 1 {
-        return (h1, h0);
-    }
-    for k in 1..n {
-        let kf = k as f64;
-        let h2 = 2.0 * x * h1 - 2.0 * kf * h0;
-        h0 = h1;
-        h1 = h2;
-    }
-    (h1, h0)
-}
-
-/// Approximate n! via Stirling for weight computation.
-fn factorial_approx(n: usize) -> f64 {
-    (1..=n).map(|k| k as f64).product()
+    (nodes, weights)
 }
 
 /// Adaptive trapezoidal rule with Richardson extrapolation.
@@ -1222,6 +1265,203 @@ mod tests {
             (result - exact).abs() < 1e-8,
             "GH x^2: {result:.6} vs {exact:.6}"
         );
+    }
+
+    /// Exact value of `∫ x^k e^{-x²} dx`: `Γ((k+1)/2)` for even `k`, `0` for odd `k`.
+    fn gaussian_moment(k: usize) -> f64 {
+        if k % 2 == 1 {
+            return 0.0;
+        }
+        let half = k / 2;
+        let double_factorial: f64 = (1..=half).map(|j| (2 * j - 1) as f64).product();
+        std::f64::consts::PI.sqrt() * double_factorial / 2.0_f64.powi(half as i32)
+    }
+
+    #[test]
+    fn test_hermite_nodes_are_distinct_and_ascending_for_every_size() {
+        // The old Newton guesses collapsed onto a single repeated root for n > 5
+        // (n = 6 gave three copies of 2.3506, n = 10 five copies of 3.4362).
+        for n in 1..=60 {
+            let gh = GaussHermiteQuad::new(n);
+            assert_eq!(gh.nodes.len(), n);
+            assert_eq!(gh.weights.len(), n);
+            for pair in gh.nodes.windows(2) {
+                assert!(
+                    pair[0] < pair[1],
+                    "n = {n}: nodes not strictly increasing: {} then {}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            assert!(
+                gh.weights.iter().all(|&w| w > 0.0 && w.is_finite()),
+                "n = {n}: weights must be positive and finite"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hermite_rules_reproduce_gaussian_moments() {
+        // An n-point rule is exact for monomials up to degree 2n - 1.
+        for n in [6usize, 7, 10, 11, 20, 21] {
+            let gh = GaussHermiteQuad::new(n);
+            let max_degree = (2 * n - 1).min(12);
+            for k in 0..=max_degree {
+                let numeric = gh.integrate(&|x| x.powi(k as i32));
+                let exact = gaussian_moment(k);
+                let tolerance = 1e-10 * exact.abs().max(1.0);
+                assert!(
+                    (numeric - exact).abs() < tolerance,
+                    "n = {n}, degree {k}: {numeric} vs {exact}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_hermite_quartic_moment_for_6_10_and_20_points() {
+        // ∫ x⁴ e^{-x²} dx = 3 sqrt(pi) / 4 and ∫ e^{-x²} dx = sqrt(pi).
+        let exact_quartic = 0.75 * std::f64::consts::PI.sqrt();
+        for n in [6usize, 10, 20] {
+            let gh = GaussHermiteQuad::new(n);
+            let sum_weights: f64 = gh.weights.iter().sum();
+            assert!(
+                (sum_weights - std::f64::consts::PI.sqrt()).abs() < 1e-10,
+                "n = {n}: sum of weights {sum_weights}"
+            );
+            let quartic = gh.integrate(&|x| x.powi(4));
+            assert!(
+                (quartic - exact_quartic).abs() < 1e-10,
+                "n = {n}: quartic moment {quartic} vs {exact_quartic}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hermite_six_and_ten_point_rules_match_published_tables() {
+        // Abramowitz & Stegun, Table 25.10 (positive half; the rule is symmetric).
+        let tables: [(usize, &[f64], &[f64]); 2] = [
+            (
+                6,
+                &[0.436077411927617, 1.335849074013697, 2.350604973674492],
+                &[0.724629595224392, 0.157067320322856, 0.004530009905509],
+            ),
+            (
+                10,
+                &[
+                    0.342901327223705,
+                    1.036610829789514,
+                    1.756683649299882,
+                    2.532_731_674_232_79,
+                    3.436159118837738,
+                ],
+                &[
+                    0.610862633735326,
+                    0.240138611082315,
+                    0.033874394455481,
+                    0.001343645746781,
+                    0.000007640432855,
+                ],
+            ),
+        ];
+        for (n, nodes, weights) in tables {
+            let gh = GaussHermiteQuad::new(n);
+            let half = n / 2;
+            for (i, (&x_ref, &w_ref)) in nodes.iter().zip(weights.iter()).enumerate() {
+                let upper = half + i;
+                assert!(
+                    (gh.nodes[upper] - x_ref).abs() < 1e-12,
+                    "n = {n}: node {upper} = {} vs {x_ref}",
+                    gh.nodes[upper]
+                );
+                assert!(
+                    (gh.weights[upper] - w_ref).abs() < 1e-14,
+                    "n = {n}: weight {upper} = {} vs {w_ref}",
+                    gh.weights[upper]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_hermite_rules_are_exactly_symmetric() {
+        for n in [6usize, 7, 12, 13, 25] {
+            let gh = GaussHermiteQuad::new(n);
+            for i in 0..n {
+                assert_eq!(gh.nodes[i], -gh.nodes[n - 1 - i], "n = {n}, node {i}");
+                assert_eq!(gh.weights[i], gh.weights[n - 1 - i], "n = {n}, weight {i}");
+            }
+            if n % 2 == 1 {
+                assert_eq!(gh.nodes[n / 2], 0.0, "odd rules contain the node 0");
+            }
+        }
+    }
+
+    #[test]
+    fn test_hermite_newton_generator_agrees_with_closed_form_tables() {
+        for n in 2..=5usize {
+            let (table_nodes, table_weights) = gauss_hermite_nw(n);
+            let (nodes, weights) = gauss_hermite_iter(n);
+            assert_eq!(nodes.len(), n);
+            for i in 0..n {
+                assert!(
+                    (nodes[i] - table_nodes[i]).abs() < 1e-13,
+                    "n = {n}: node {i} = {} vs {}",
+                    nodes[i],
+                    table_nodes[i]
+                );
+                assert!(
+                    (weights[i] - table_weights[i]).abs() < 1e-13,
+                    "n = {n}: weight {i} = {} vs {}",
+                    weights[i],
+                    table_weights[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_hermite_large_rules_stay_accurate() {
+        // Sizes far beyond the old limit of 20: the classical starting guesses
+        // fail from roughly n = 150, and the unscaled recurrence overflows
+        // from roughly n = 110 when the weights are evaluated.
+        let sqrt_pi = std::f64::consts::PI.sqrt();
+        for n in [100usize, 200, 400, 1000] {
+            let gh = GaussHermiteQuad::new(n);
+            assert_eq!(gh.nodes.len(), n);
+            assert!(gh.nodes.windows(2).all(|p| p[0] < p[1]), "n = {n}");
+            let sum_weights: f64 = gh.weights.iter().sum();
+            assert!((sum_weights - sqrt_pi).abs() < 1e-12 * sqrt_pi, "n = {n}");
+            let quadratic = gh.integrate(&|x| x * x);
+            assert!(
+                (quadratic - 0.5 * sqrt_pi).abs() < 1e-12,
+                "n = {n}: {quadratic}"
+            );
+            let quartic = gh.integrate(&|x| x.powi(4));
+            assert!(
+                (quartic - 0.75 * sqrt_pi).abs() < 1e-11,
+                "n = {n}: {quartic}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hermite_integrates_a_smooth_function_to_rounding_error() {
+        // ∫ cos(x) e^{-x²} dx = sqrt(pi) e^{-1/4}.
+        let exact = std::f64::consts::PI.sqrt() * (-0.25_f64).exp();
+        let gh = GaussHermiteQuad::new(12);
+        let numeric = gh.integrate(&|x| x.cos());
+        assert!((numeric - exact).abs() < 1e-13, "{numeric} vs {exact}");
+    }
+
+    #[test]
+    fn test_hermite_degenerate_sizes() {
+        let empty = GaussHermiteQuad::new(0);
+        assert!(empty.nodes.is_empty() && empty.weights.is_empty());
+        assert_eq!(empty.integrate(&|_x| 1.0), 0.0);
+        let single = GaussHermiteQuad::new(1);
+        assert_eq!(single.nodes, vec![0.0]);
+        assert!((single.weights[0] - std::f64::consts::PI.sqrt()).abs() < 1e-15);
     }
 
     // ── Trapezoidal tests ─────────────────────────────────────────────────

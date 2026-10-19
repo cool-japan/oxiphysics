@@ -10,14 +10,26 @@
 //!
 //! * [`OrbitalElements`] — Classical Keplerian elements, state vector conversion.
 //! * [`KeplerOrbit`] — Kepler's equation solver (Newton-Raphson).
-//! * [`NBodyGravity`] — Direct N-body + Barnes-Hut octree approximation.
+//! * [`NBodyGravity`] — Direct N-body or Barnes-Hut octree forces (monopole +
+//!   quadrupole cells) with a kick-drift-kick leapfrog integrator.
 //! * [`OrbitalManeuver`] — Hohmann, bielliptic, plane-change maneuvers.
 //! * [`J2Perturbation`] — J2 oblateness nodal precession.
-//! * [`AtmosphericDrag`] — NRLMSISE-00 approximation, drag deceleration.
+//! * [`AtmosphericDrag`] — tabulated Vallado exponential atmosphere, drag
+//!   deceleration and circular-orbit decay rate.
 //! * [`LagrangePoints`] — L1–L5 for circular restricted 3-body problem.
 //! * [`TleParser`] — TLE parsing and SGP4-like propagation.
+//! * [`HillClohessyWiltshire`] — exact relative-motion propagation and
+//!   two-impulse rendezvous targeting ([`hcw_two_impulse`]).
 
 use std::f64::consts::PI;
+
+mod hcw;
+mod nbody;
+#[cfg(test)]
+mod nbody_tests;
+
+pub use hcw::hcw_two_impulse;
+pub use nbody::{GravBody, NBodyGravity, OctreeNode};
 
 // ─── Physical constants ────────────────────────────────────────────────────────
 
@@ -42,13 +54,21 @@ pub const R_MOON: f64 = 3.844e8;
 /// Moon gravitational parameter \[m³/s²\].
 pub const MU_MOON: f64 = 4.9048695e12;
 
-/// Atmospheric reference density at 200 km \[kg/m³\].
+/// Representative thermospheric reference density at 200 km \[kg/m³\].
+///
+/// Legacy single-layer reference value kept for API compatibility;
+/// [`AtmosphericDrag::density`] uses the tabulated Vallado model instead.
 pub const RHO_REF: f64 = 2.5e-10;
 
-/// Atmospheric scale height \[m\].
+/// Legacy single-layer atmospheric scale height \[m\].
+///
+/// Not used by [`AtmosphericDrag::density`], which carries a scale height per
+/// altitude band.
 pub const SCALE_HEIGHT: f64 = 8_500.0;
 
-/// Reference altitude for drag model \[m\].
+/// Legacy reference altitude of the single-layer drag model \[m\].
+///
+/// Not used by [`AtmosphericDrag::density`].
 pub const H_REF: f64 = 200_000.0;
 
 /// Barnes-Hut opening angle theta (default).
@@ -373,195 +393,7 @@ impl KeplerOrbit {
 }
 
 // ─── NBodyGravity ─────────────────────────────────────────────────────────────
-
-/// A particle in the N-body gravitational system.
-#[derive(Debug, Clone)]
-pub struct GravBody {
-    /// Position \[m\].
-    pub pos: [f64; 3],
-    /// Velocity \[m/s\].
-    pub vel: [f64; 3],
-    /// Mass \[kg\].
-    pub mass: f64,
-}
-
-impl GravBody {
-    /// Create a new gravitational body.
-    pub fn new(pos: [f64; 3], vel: [f64; 3], mass: f64) -> Self {
-        Self { pos, vel, mass }
-    }
-}
-
-/// Direct N-body gravitational simulation with optional Barnes-Hut approximation.
-///
-/// Integrates Newton's law of gravitation between all pairs (or via BH tree)
-/// using a simple 4th-order Runge-Kutta scheme.
-pub struct NBodyGravity {
-    /// Bodies in the simulation.
-    pub bodies: Vec<GravBody>,
-    /// Softening length to avoid singularity \[m\].
-    pub epsilon: f64,
-    /// Barnes-Hut opening angle (0 = direct summation).
-    pub theta: f64,
-}
-
-impl NBodyGravity {
-    /// Create a new N-body system.
-    pub fn new(bodies: Vec<GravBody>) -> Self {
-        Self {
-            bodies,
-            epsilon: 1e3,
-            theta: 0.0,
-        }
-    }
-
-    /// Create with Barnes-Hut approximation enabled.
-    pub fn with_barnes_hut(bodies: Vec<GravBody>, theta: f64) -> Self {
-        Self {
-            bodies,
-            epsilon: 1e3,
-            theta,
-        }
-    }
-
-    /// Compute gravitational acceleration on body `i` from all other bodies.
-    fn accel_direct(&self, i: usize) -> [f64; 3] {
-        let mut acc = [0.0_f64; 3];
-        let pi = self.bodies[i].pos;
-        for (j, bj) in self.bodies.iter().enumerate() {
-            if j == i {
-                continue;
-            }
-            let dr = vec3_sub(bj.pos, pi);
-            let r2 = vec3_dot(dr, dr) + self.epsilon * self.epsilon;
-            let r3 = r2.sqrt() * r2;
-            let fac = G_CONST * bj.mass / r3;
-            acc[0] += fac * dr[0];
-            acc[1] += fac * dr[1];
-            acc[2] += fac * dr[2];
-        }
-        acc
-    }
-
-    /// Step simulation forward by `dt` \[s\] using leapfrog integration.
-    pub fn step(&mut self, dt: f64) {
-        let n = self.bodies.len();
-        // Compute accelerations
-        let accels: Vec<[f64; 3]> = (0..n).map(|i| self.accel_direct(i)).collect();
-        // Update velocities (half step) then positions
-        for (i, body) in self.bodies.iter_mut().enumerate() {
-            body.vel[0] += accels[i][0] * dt;
-            body.vel[1] += accels[i][1] * dt;
-            body.vel[2] += accels[i][2] * dt;
-            body.pos[0] += body.vel[0] * dt;
-            body.pos[1] += body.vel[1] * dt;
-            body.pos[2] += body.vel[2] * dt;
-        }
-    }
-
-    /// Compute total kinetic energy of the system \[J\].
-    pub fn kinetic_energy(&self) -> f64 {
-        self.bodies
-            .iter()
-            .map(|b| {
-                let v2 = vec3_dot(b.vel, b.vel);
-                0.5 * b.mass * v2
-            })
-            .sum()
-    }
-
-    /// Compute total gravitational potential energy of the system \[J\].
-    pub fn potential_energy(&self) -> f64 {
-        let mut e = 0.0;
-        for i in 0..self.bodies.len() {
-            for j in (i + 1)..self.bodies.len() {
-                let dr = vec3_sub(self.bodies[j].pos, self.bodies[i].pos);
-                let r = vec3_norm(dr).max(self.epsilon);
-                e -= G_CONST * self.bodies[i].mass * self.bodies[j].mass / r;
-            }
-        }
-        e
-    }
-
-    /// Compute total angular momentum of the system \[kg·m²/s\].
-    pub fn angular_momentum(&self) -> [f64; 3] {
-        let mut l = [0.0_f64; 3];
-        for b in &self.bodies {
-            let li = vec3_cross(b.pos, vec3_scale(b.vel, b.mass));
-            l = vec3_add(l, li);
-        }
-        l
-    }
-
-    /// Compute center of mass position \[m\].
-    pub fn center_of_mass(&self) -> [f64; 3] {
-        let mut total_mass = 0.0;
-        let mut com = [0.0_f64; 3];
-        for b in &self.bodies {
-            com = vec3_add(com, vec3_scale(b.pos, b.mass));
-            total_mass += b.mass;
-        }
-        vec3_scale(com, 1.0 / total_mass)
-    }
-}
-
-// ─── OctreeNode for Barnes-Hut ─────────────────────────────────────────────────
-
-/// A node in the Barnes-Hut octree.
-#[derive(Debug)]
-pub struct OctreeNode {
-    /// Centre of the cell \[m\].
-    pub center: [f64; 3],
-    /// Half-width of the cell \[m\].
-    pub half_width: f64,
-    /// Total mass in this cell \[kg\].
-    pub mass: f64,
-    /// Centre of mass of this cell \[m\].
-    pub com: [f64; 3],
-    /// Child indices (8 children) in a flat arena.
-    pub children: [Option<usize>; 8],
-    /// Body index if this is a leaf.
-    pub body_idx: Option<usize>,
-}
-
-impl OctreeNode {
-    /// Create a new empty octree node.
-    pub fn new(center: [f64; 3], half_width: f64) -> Self {
-        Self {
-            center,
-            half_width,
-            mass: 0.0,
-            com: [0.0; 3],
-            children: [None; 8],
-            body_idx: None,
-        }
-    }
-
-    /// Compute which of the 8 octants a position belongs to.
-    pub fn octant_for(&self, pos: [f64; 3]) -> usize {
-        let mut idx = 0;
-        if pos[0] >= self.center[0] {
-            idx |= 1;
-        }
-        if pos[1] >= self.center[1] {
-            idx |= 2;
-        }
-        if pos[2] >= self.center[2] {
-            idx |= 4;
-        }
-        idx
-    }
-
-    /// Child centre for a given octant index.
-    pub fn child_center(&self, oct: usize) -> [f64; 3] {
-        let h = self.half_width / 2.0;
-        [
-            self.center[0] + if oct & 1 != 0 { h } else { -h },
-            self.center[1] + if oct & 2 != 0 { h } else { -h },
-            self.center[2] + if oct & 4 != 0 { h } else { -h },
-        ]
-    }
-}
+// `GravBody`, `NBodyGravity` and `OctreeNode` live in the `nbody` submodule.
 
 // ─── OrbitalManeuver ──────────────────────────────────────────────────────────
 
@@ -762,9 +594,49 @@ impl J2Perturbation {
 
 // ─── AtmosphericDrag ──────────────────────────────────────────────────────────
 
+/// Piecewise exponential atmosphere, Vallado (2013), *Fundamentals of
+/// Astrodynamics and Applications*, 4th ed., Table 8-4.
+///
+/// Each row is `(h0 [km], rho0 [kg/m³], H [km])`: inside the band that starts
+/// at `h0` the density is `rho0 · exp(-(h - h0) / H)`.  Adjacent bands agree at
+/// their shared edge to better than 0.2 %.
+const EXPONENTIAL_ATMOSPHERE: [(f64, f64, f64); 28] = [
+    (0.0, 1.225, 7.249),
+    (25.0, 3.899e-2, 6.349),
+    (30.0, 1.774e-2, 6.682),
+    (40.0, 3.972e-3, 7.554),
+    (50.0, 1.057e-3, 8.382),
+    (60.0, 3.206e-4, 7.714),
+    (70.0, 8.770e-5, 6.549),
+    (80.0, 1.905e-5, 5.799),
+    (90.0, 3.396e-6, 5.382),
+    (100.0, 5.297e-7, 5.877),
+    (110.0, 9.661e-8, 7.263),
+    (120.0, 2.438e-8, 9.473),
+    (130.0, 8.484e-9, 12.636),
+    (140.0, 3.845e-9, 16.149),
+    (150.0, 2.070e-9, 22.523),
+    (180.0, 5.464e-10, 29.740),
+    (200.0, 2.789e-10, 37.105),
+    (250.0, 7.248e-11, 45.546),
+    (300.0, 2.418e-11, 53.628),
+    (350.0, 9.518e-12, 53.298),
+    (400.0, 3.725e-12, 58.515),
+    (450.0, 1.585e-12, 60.828),
+    (500.0, 6.967e-13, 63.822),
+    (600.0, 1.454e-13, 71.835),
+    (700.0, 3.614e-14, 88.667),
+    (800.0, 1.170e-14, 124.64),
+    (900.0, 5.245e-15, 181.05),
+    (1000.0, 3.019e-15, 268.00),
+];
+
 /// Atmospheric drag deceleration model.
 ///
-/// Uses an exponential atmosphere approximation to NRLMSISE-00.
+/// Uses the tabulated piecewise-exponential atmosphere of Vallado (2013),
+/// Table 8-4 (surface to 1000 km, extrapolated above with the topmost band).
+/// It is a mean-density fit and does not model solar-flux, geomagnetic or
+/// diurnal variations.
 pub struct AtmosphericDrag {
     /// Drag coefficient (dimensionless), typically 2.2.
     pub cd: f64,
@@ -789,21 +661,22 @@ impl AtmosphericDrag {
 
     /// Atmospheric density at altitude h \[m\] above Earth's surface \[kg/m³\].
     ///
-    /// Uses a piecewise exponential model calibrated to NRLMSISE-00.
+    /// Evaluates the Vallado (2013) Table 8-4 exponential model: inside the
+    /// band `[h0, h_next)` the density is `rho0 · exp(-(h - h0) / H)`.
+    /// Negative altitudes are clamped to the surface, altitudes above 1000 km
+    /// extend the topmost band (`H` = 268 km) and a NaN altitude yields NaN.
     pub fn density(&self, altitude: f64) -> f64 {
-        // Multi-layer exponential model
-        let (rho0, h0, h_scale) = if altitude < 100_000.0 {
-            (1.225, 0.0, 8_500.0)
-        } else if altitude < 200_000.0 {
-            (5.6e-7, 100_000.0, 7_000.0)
-        } else if altitude < 400_000.0 {
-            (2.5e-10, 200_000.0, 8_000.0)
-        } else if altitude < 600_000.0 {
-            (1.0e-11, 400_000.0, 12_000.0)
-        } else {
-            (1.0e-13, 600_000.0, 40_000.0)
-        };
-        rho0 * (-(altitude - h0) / h_scale).exp()
+        if altitude.is_nan() {
+            return f64::NAN;
+        }
+        let h_km = altitude.max(0.0) / 1_000.0;
+        let (h0_km, rho0, scale_km) = EXPONENTIAL_ATMOSPHERE
+            .iter()
+            .rev()
+            .find(|band| band.0 <= h_km)
+            .copied()
+            .unwrap_or(EXPONENTIAL_ATMOSPHERE[0]);
+        rho0 * (-(h_km - h0_km) / scale_km).exp()
     }
 
     /// Drag deceleration magnitude at altitude h with speed v \[m/s\].
@@ -826,11 +699,15 @@ impl AtmosphericDrag {
         vec3_scale(dir, -f)
     }
 
-    /// Estimate orbital decay rate da/dt \[m/s\] for a circular orbit.
+    /// Secular decay rate da/dt \[m/s\] of a circular orbit of radius `a` \[m\].
+    ///
+    /// `altitude` \[m\] is the height at which the density is evaluated.  For a
+    /// circular orbit the drag power `-½ ρ (Cd·A/m) v³` changes the orbital
+    /// energy `-μ/(2a)`, which gives `da/dt = -ρ (Cd·A/m) √(μ a)`; this is the
+    /// per-revolution loss `-2π ρ (Cd·A/m) a²` divided by the period.
     pub fn decay_rate(&self, altitude: f64, a: f64) -> f64 {
         let rho = self.density(altitude);
-        let v = (MU_EARTH / a).sqrt();
-        -2.0 * PI * rho * self.cd * self.area * a.powi(2) * v / self.mass
+        -rho * self.cd * self.area / self.mass * (MU_EARTH * a).sqrt()
     }
 }
 
@@ -1198,55 +1075,32 @@ impl HillClohessyWiltshire {
 
     /// Compute the impulsive delta-v for a two-impulse rendezvous (CW targeting).
     ///
-    /// Given initial relative state `s0` and desired final state `sf`, returns
-    /// `(dv1, dv2)` as velocity increments at t=0 and t=tf.
+    /// Given the initial relative state `s0` and the desired final state `sf`
+    /// (both `[x, y, z, xd, yd, zd]`), returns `Some((dv1, dv2))`.  `dv1` is
+    /// applied at `t = 0` and puts the chaser on the coasting arc that reaches
+    /// `sf[0..3]` at `tf`; `dv2` is applied at `tf` and turns the arrival
+    /// velocity into `sf[3..6]`.  The existing velocity `s0[3..6]` is accounted
+    /// for, and the solution is exact for the CW equations (see
+    /// [`hcw_two_impulse`]).
+    ///
+    /// Returns `None` when the transfer is singular or ill-posed: `tf <= 0`,
+    /// non-finite input, or a transfer time at which the CW position map
+    /// cannot be inverted, such as `n·tf` a multiple of `π` (a whole number of
+    /// half-periods; see [`hcw_two_impulse`] for the full list).
     pub fn two_impulse_rendezvous(
         &self,
         s0: [f64; 6],
         sf: [f64; 6],
         tf: f64,
-    ) -> ([f64; 3], [f64; 3]) {
-        // Transition matrix approach (simplified)
-        let n = self.n;
-        let (snt, cnt) = (n * tf).sin_cos();
-
-        // Compute required velocities (simple: ignore existing velocities for MVP)
-        let dx = sf[0] - s0[0];
-        let dy = sf[1] - s0[1];
-        let dz = sf[2] - s0[2];
-
-        // CW targeting: find dv1 = [dvx1, dvy1, dvz1]
-        // From CW equations inverted at t=tf given x0, y0, z0
-        let denom_xz = snt;
-        let dvx1 = if denom_xz.abs() > 1e-12 {
-            n * dx / snt - 2.0 * dy / (snt / cnt - 4.0 * snt)
-        } else {
-            0.0
-        };
-        let dvy1 = if denom_xz.abs() > 1e-12 {
-            (dy - 6.0 * (snt - n * tf) * s0[0] - s0[1]) / ((4.0 * snt - 3.0 * n * tf) / n)
-        } else {
-            dy / tf
-        };
-        let dvz1 = if denom_xz.abs() > 1e-12 {
-            (n * dz - s0[2] * n * (-n * tf).sin()) / cnt
-        } else {
-            dz / tf
-        };
-
-        // After first burn propagate to tf, then compute dv2
-        let new_s0 = [
-            s0[0],
-            s0[1],
-            s0[2],
-            s0[3] + dvx1,
-            s0[4] + dvy1,
-            s0[5] + dvz1,
-        ];
-        let sf_pred = self.propagate(new_s0, tf);
-        let dv2 = [sf[3] - sf_pred[3], sf[4] - sf_pred[4], sf[5] - sf_pred[5]];
-
-        ([dvx1, dvy1, dvz1], dv2)
+    ) -> Option<([f64; 3], [f64; 3])> {
+        hcw_two_impulse(
+            self.n,
+            [s0[0], s0[1], s0[2]],
+            [s0[3], s0[4], s0[5]],
+            [sf[0], sf[1], sf[2]],
+            [sf[3], sf[4], sf[5]],
+            tf,
+        )
     }
 }
 
@@ -1255,6 +1109,9 @@ impl HillClohessyWiltshire {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rng_util::uniform;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     const TOL: f64 = 1e-8;
 
@@ -1493,6 +1350,137 @@ mod tests {
         assert!(rho400 < rho200, "density should decrease with altitude");
     }
 
+    #[test]
+    fn test_density_matches_vallado_table_anchor_values() {
+        let drag = AtmosphericDrag::new(2.2, 1.0, 1.0);
+        // Band base values of Vallado (2013) Table 8-4.
+        let anchors = [
+            (0.0, 1.225),
+            (100_000.0, 5.297e-7),
+            (200_000.0, 2.789e-10),
+            (300_000.0, 2.418e-11),
+            (400_000.0, 3.725e-12),
+            (500_000.0, 6.967e-13),
+            (1_000_000.0, 3.019e-15),
+        ];
+        for (h, expected) in anchors {
+            let rho = drag.density(h);
+            assert!(
+                ((rho - expected) / expected).abs() < 1e-12,
+                "density at {h} m: {rho} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_density_inside_a_band_follows_the_exponential_law() {
+        let drag = AtmosphericDrag::new(2.2, 1.0, 1.0);
+        // 440 km sits 40 km into the 400 km band (H = 58.515 km).
+        let expected = 3.725e-12 * (-40.0_f64 / 58.515).exp();
+        let rho = drag.density(440_000.0);
+        assert!(((rho - expected) / expected).abs() < 1e-12, "rho = {rho}");
+    }
+
+    #[test]
+    fn test_density_is_continuous_across_every_band_edge() {
+        let drag = AtmosphericDrag::new(2.2, 1.0, 1.0);
+        for &(h0_km, _, _) in EXPONENTIAL_ATMOSPHERE.iter().skip(1) {
+            let h = h0_km * 1_000.0;
+            let below = drag.density(h - 1.0);
+            let above = drag.density(h + 1.0);
+            let jump = (below / above - 1.0).abs();
+            assert!(
+                jump < 5e-3,
+                "density jumps by {jump} across the {h0_km} km band edge"
+            );
+        }
+    }
+
+    #[test]
+    fn test_density_decreases_strictly_on_a_one_kilometre_grid() {
+        let drag = AtmosphericDrag::new(2.2, 1.0, 1.0);
+        let mut previous = drag.density(0.0);
+        for km in 1..=1_500 {
+            let rho = drag.density(f64::from(km) * 1_000.0);
+            assert!(rho > 0.0 && rho < previous, "not decreasing at {km} km");
+            previous = rho;
+        }
+    }
+
+    #[test]
+    fn test_density_at_leo_altitudes_is_physical() {
+        let drag = AtmosphericDrag::new(2.2, 1.0, 1.0);
+        let rho_400 = drag.density(400_000.0);
+        assert!(
+            (1e-12..=1e-11).contains(&rho_400),
+            "rho(400 km) = {rho_400}"
+        );
+        // The mean thermosphere at 300 km is of the order of 1e-11 kg/m^3.
+        let rho_300 = drag.density(300_000.0);
+        assert!(
+            (1e-11..=1e-10).contains(&rho_300),
+            "rho(300 km) = {rho_300}"
+        );
+        // The old layered model reported ~9e-16 here.
+        let rho_250 = drag.density(250_000.0);
+        assert!(rho_250 > 5e-11, "rho(250 km) = {rho_250}");
+    }
+
+    #[test]
+    fn test_density_clamps_below_surface_and_extends_above_the_table() {
+        let drag = AtmosphericDrag::new(2.2, 1.0, 1.0);
+        assert_eq!(drag.density(-5_000.0), drag.density(0.0));
+        assert!(drag.density(f64::NAN).is_nan());
+        let expected = 3.019e-15 * (-500.0_f64 / 268.0).exp();
+        let rho = drag.density(1_500_000.0);
+        assert!(((rho - expected) / expected).abs() < 1e-12, "rho = {rho}");
+    }
+
+    #[test]
+    fn test_decay_rate_matches_circular_orbit_closed_form() {
+        let drag = AtmosphericDrag::new(2.2, 1.0, 100.0);
+        let a = 6_778.0e3;
+        let altitude = a - R_EARTH;
+        let rate = drag.decay_rate(altitude, a);
+        let rho = drag.density(altitude);
+        // da/dt = -rho (Cd A / m) sqrt(mu a)
+        let expected = -rho * 0.022 * (MU_EARTH * a).sqrt();
+        assert!(
+            ((rate - expected) / expected).abs() < 1e-12,
+            "rate = {rate}, expected = {expected}"
+        );
+        // Equivalent form: per-revolution loss 2 pi rho (Cd A / m) a^2 over the period.
+        let period = 2.0 * PI * (a.powi(3) / MU_EARTH).sqrt();
+        let per_revolution = -2.0 * PI * rho * 0.022 * a * a;
+        assert!(
+            ((rate - per_revolution / period) / rate).abs() < 1e-12,
+            "rate = {rate}, per-revolution form = {}",
+            per_revolution / period
+        );
+        // Independent route through the drag power: dE/dt = -a_drag v, E = -mu / (2a).
+        let speed = (MU_EARTH / a).sqrt();
+        let from_energy = -2.0 * a * a / MU_EARTH * drag.drag_decel(altitude, speed) * speed;
+        assert!(
+            ((rate - from_energy) / rate).abs() < 1e-12,
+            "rate = {rate}, energy route = {from_energy}"
+        );
+    }
+
+    #[test]
+    fn test_decay_rate_is_metres_per_second_scale_in_low_earth_orbit() {
+        // A 100 kg, 1 m^2 satellite at 400 km loses a few hundred metres per day
+        // (the previous formula was off by a factor of 2 pi a, i.e. ~4e7).
+        let drag = AtmosphericDrag::new(2.2, 1.0, 100.0);
+        let a = R_EARTH + 400_000.0;
+        let rate = drag.decay_rate(400_000.0, a);
+        let per_day = rate * 86_400.0;
+        assert!(per_day < 0.0, "orbit must decay: {per_day} m/day");
+        assert!(
+            per_day.abs() > 0.1 && per_day.abs() < 1_000.0,
+            "decay per day = {per_day} m"
+        );
+    }
+
     // ── Lagrange points ───────────────────────────────────────────────────
 
     #[test]
@@ -1657,66 +1645,90 @@ mod tests {
         );
     }
 
-    // ── N-body gravity ────────────────────────────────────────────────────
-
     #[test]
-    fn test_nbody_two_body_energy_approximately_conserved() {
-        // Two equal masses in circular orbit
-        let m = 1e24_f64;
-        let d = 1e8;
-        let v = (G_CONST * m / (2.0 * d)).sqrt();
-        let bodies = vec![
-            GravBody::new([-d, 0.0, 0.0], [0.0, -v, 0.0], m),
-            GravBody::new([d, 0.0, 0.0], [0.0, v, 0.0], m),
-        ];
-        let mut sim = NBodyGravity::new(bodies);
-        let e0 = sim.kinetic_energy() + sim.potential_energy();
-        assert!(e0.is_finite(), "initial energy should be finite");
-        // Step the simulation and verify it doesn't diverge to NaN/Inf
-        for _ in 0..10 {
-            sim.step(0.01);
+    fn test_two_impulse_rendezvous_reaches_the_requested_state() {
+        let cw = HillClohessyWiltshire::new(7_000_000.0);
+        let tf = 0.3 * 2.0 * PI / cw.n;
+        let mut rng = StdRng::seed_from_u64(0x00C0_FFEE);
+        for case in 0..20 {
+            let r0: [f64; 3] = std::array::from_fn(|_| uniform(&mut rng, -2_000.0, 2_000.0));
+            let v0: [f64; 3] = std::array::from_fn(|_| uniform(&mut rng, -3.0, 3.0));
+            let rf: [f64; 3] = std::array::from_fn(|_| uniform(&mut rng, -2_000.0, 2_000.0));
+            let vf: [f64; 3] = std::array::from_fn(|_| uniform(&mut rng, -3.0, 3.0));
+            let s0 = [r0[0], r0[1], r0[2], v0[0], v0[1], v0[2]];
+            let sf = [rf[0], rf[1], rf[2], vf[0], vf[1], vf[2]];
+            let (dv1, dv2) = cw
+                .two_impulse_rendezvous(s0, sf, tf)
+                .expect("0.3 periods is a regular transfer time");
+
+            let departure = [
+                s0[0],
+                s0[1],
+                s0[2],
+                s0[3] + dv1[0],
+                s0[4] + dv1[1],
+                s0[5] + dv1[2],
+            ];
+            let arrival = cw.propagate(departure, tf);
+            for axis in 0..3 {
+                assert!(
+                    (arrival[axis] - sf[axis]).abs() < 1e-6,
+                    "case {case}: position axis {axis} misses by {}",
+                    arrival[axis] - sf[axis]
+                );
+                assert!(
+                    (arrival[3 + axis] + dv2[axis] - sf[3 + axis]).abs() < 1e-8,
+                    "case {case}: velocity axis {axis} is off by {}",
+                    arrival[3 + axis] + dv2[axis] - sf[3 + axis]
+                );
+            }
         }
-        let e1 = sim.kinetic_energy() + sim.potential_energy();
-        assert!(e1.is_finite(), "energy should remain finite after stepping");
     }
 
     #[test]
-    fn test_nbody_center_of_mass_conserved() {
-        let bodies = vec![
-            GravBody::new([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 1e24),
-            GravBody::new([1e8, 0.0, 0.0], [0.0, 1e3, 0.0], 1e22),
-        ];
-        let mut sim = NBodyGravity::new(bodies);
-        let com0 = sim.center_of_mass();
-        for _ in 0..10 {
-            sim.step(10.0);
+    fn test_two_impulse_rendezvous_needs_no_burn_on_a_natural_trajectory() {
+        // If the coasting arc from s0 already reaches sf, both impulses vanish.
+        // The previous implementation ignored the initial velocity and could
+        // not reproduce this.
+        let cw = HillClohessyWiltshire::new(6_900_000.0);
+        let tf = 1_700.0;
+        let s0 = [350.0, -1_200.0, 80.0, 0.4, -0.9, 0.15];
+        let sf = cw.propagate(s0, tf);
+        let (dv1, dv2) = cw
+            .two_impulse_rendezvous(s0, sf, tf)
+            .expect("regular transfer time");
+        for axis in 0..3 {
+            assert!(dv1[axis].abs() < 1e-9, "dv1[{axis}] = {}", dv1[axis]);
+            assert!(dv2[axis].abs() < 1e-9, "dv2[{axis}] = {}", dv2[axis]);
         }
-        let com1 = sim.center_of_mass();
-        // COM should only drift due to initial momentum (not change dramatically)
-        let drift = vec3_norm(vec3_sub(com1, com0));
-        assert!(drift < 1e8, "COM drift too large: {drift}"); // reasonable drift
     }
 
     #[test]
-    fn test_nbody_angular_momentum_approximately_conserved() {
-        let m = 1e24_f64;
-        let d = 1e8;
-        let v = (G_CONST * m / (2.0 * d)).sqrt();
-        let bodies = vec![
-            GravBody::new([-d, 0.0, 0.0], [0.0, -v, 0.0], m),
-            GravBody::new([d, 0.0, 0.0], [0.0, v, 0.0], m),
-        ];
-        let mut sim = NBodyGravity::new(bodies);
-        let l0 = sim.angular_momentum();
-        for _ in 0..50 {
-            sim.step(100.0);
-        }
-        let l1 = sim.angular_momentum();
-        let l0_n = vec3_norm(l0);
-        let l1_n = vec3_norm(l1);
-        if l0_n > 1e-10 {
-            let rel = ((l1_n - l0_n) / l0_n).abs();
-            assert!(rel < 0.05, "angular momentum relative change: {rel}");
-        }
+    fn test_two_impulse_rendezvous_rejects_singular_or_invalid_requests() {
+        let cw = HillClohessyWiltshire::new(7_000_000.0);
+        let period = 2.0 * PI / cw.n;
+        let s0 = [100.0, -50.0, 20.0, 0.1, 0.0, -0.2];
+        let sf = [0.0; 6];
+        assert!(cw.two_impulse_rendezvous(s0, sf, 0.0).is_none());
+        assert!(cw.two_impulse_rendezvous(s0, sf, -10.0).is_none());
+        assert!(cw.two_impulse_rendezvous(s0, sf, f64::NAN).is_none());
+        // n·tf = 2π and 4π: the in-plane position map is singular.
+        assert!(cw.two_impulse_rendezvous(s0, sf, period).is_none());
+        assert!(cw.two_impulse_rendezvous(s0, sf, 2.0 * period).is_none());
+        // n·tf = π: the cross-track block sin(n·tf)/n vanishes.
+        assert!(cw.two_impulse_rendezvous(s0, sf, 0.5 * period).is_none());
+        let mut bad = s0;
+        bad[1] = f64::INFINITY;
+        assert!(cw.two_impulse_rendezvous(bad, sf, 0.3 * period).is_none());
+        // The in-plane determinant 8(1 - cos φ) - 3 φ sin φ also vanishes at
+        // φ ≈ 8.8387 (about 1.41 revolutions), where tan(φ/2) = 3φ/8.
+        let first_inner_root = 8.838_742_844_152_04;
+        assert!(
+            cw.two_impulse_rendezvous(s0, sf, first_inner_root / cw.n)
+                .is_none()
+        );
+        // Away from the singular times the transfer is solvable.
+        assert!(cw.two_impulse_rendezvous(s0, sf, 0.9 * period).is_some());
+        assert!(cw.two_impulse_rendezvous(s0, sf, 0.3 * period).is_some());
     }
 }

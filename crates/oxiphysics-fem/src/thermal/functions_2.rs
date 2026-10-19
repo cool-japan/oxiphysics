@@ -490,6 +490,137 @@ mod thermal_extended_tests {
             "enthalpy update far from melting: {t_far}"
         );
     }
+    /// Specific enthalpy cp T + L f_l(T) with the linear mushy-zone model of
+    /// `enthalpy_update` (solidus/liquidus at `t_melt -/+ width`).
+    fn specific_enthalpy(t: f64, cp: f64, latent: f64, t_melt: f64, width: f64) -> f64 {
+        let fl = ((t - (t_melt - width)) / (2.0 * width)).clamp(0.0, 1.0);
+        cp * t + latent * fl
+    }
+    #[test]
+    fn test_enthalpy_update_sensible_heating_matches_q_dt_over_mass() {
+        // T = 200 K, melting far above (500 K), rho = 1000, cp = 500, V = 1e-3
+        // (mass 1 kg), q = 500 W for 1 s: dT = q dt / (m cp) = 1 K.
+        let t_new = enthalpy_update(
+            200.0, 500.0, 1000.0, 500.0, 334_000.0, 500.0, 5.0, 1.0, 1e-3,
+        );
+        assert!((t_new - 201.0).abs() < 1e-9, "t_new = {t_new}");
+    }
+    #[test]
+    fn test_enthalpy_update_does_not_divide_by_density_twice() {
+        // Same heat into the same volume: doubling rho doubles the mass, so the
+        // rise halves.  The old code divided by rho^2 and gave a quarter.
+        let rise = |rho: f64| {
+            enthalpy_update(200.0, 500.0, rho, 500.0, 334_000.0, 500.0, 5.0, 1.0, 1e-3) - 200.0
+        };
+        assert!((rise(1000.0) - 1.0).abs() < 1e-9);
+        assert!((rise(2000.0) - 0.5).abs() < 1e-9);
+        assert!((rise(500.0) - 2.0).abs() < 1e-9);
+        // Same mass (rho V) gives the same rise whatever the split.
+        let alt = enthalpy_update(
+            200.0, 500.0, 4000.0, 500.0, 334_000.0, 500.0, 5.0, 1.0, 2.5e-4,
+        );
+        assert!((alt - 201.0).abs() < 1e-9, "alt = {alt}");
+    }
+    #[test]
+    fn test_enthalpy_update_lands_inside_mushy_zone() {
+        // T_m = 500 K, half-width 1 K, cp = 500, L = 334 kJ/kg, mass 1 kg.
+        // e(400 K) = 200 000 J/kg; e(500 K) = 250 000 + 167 000 = 417 000 J/kg,
+        // so adding 217 000 J ends exactly at the middle of the mushy zone.
+        let t_new = enthalpy_update(
+            400.0, 217_000.0, 1000.0, 500.0, 334_000.0, 500.0, 1.0, 1.0, 1e-3,
+        );
+        assert!((t_new - 500.0).abs() < 1e-9, "t_new = {t_new}");
+        // Generic mushy-zone landing: the enthalpy balance must close exactly.
+        let q = 150_000.0;
+        let t_mid = enthalpy_update(400.0, q, 1000.0, 500.0, 334_000.0, 500.0, 1.0, 1.0, 1e-3);
+        assert!(t_mid > 499.0 && t_mid < 501.0, "t_mid = {t_mid}");
+        let e0 = specific_enthalpy(400.0, 500.0, 334_000.0, 500.0, 1.0);
+        let e1 = specific_enthalpy(t_mid, 500.0, 334_000.0, 500.0, 1.0);
+        // One ulp of T_new (6e-14) times the mushy-zone slope (1.7e5 J/(kg K)).
+        assert!((e1 - (e0 + q)).abs() < 1e-6, "e1 - e0 = {}", e1 - e0);
+    }
+    #[test]
+    fn test_enthalpy_update_crosses_melting_without_cycling() {
+        // Heating through the whole transition from solid to liquid in one step
+        // (the iteration used before could ping-pong across the kinks).
+        let (cp, latent, t_melt, width) = (500.0, 334_000.0, 500.0, 2.0);
+        let t0 = 300.0;
+        let e0 = specific_enthalpy(t0, cp, latent, t_melt, width);
+        // Target specific enthalpy of a fully liquid state at 700 K.
+        let e_target = specific_enthalpy(700.0, cp, latent, t_melt, width);
+        let t_new = enthalpy_update(
+            t0,
+            e_target - e0,
+            1000.0,
+            cp,
+            latent,
+            t_melt,
+            width,
+            1.0,
+            1e-3,
+        );
+        assert!((t_new - 700.0).abs() < 1e-9, "t_new = {t_new}");
+    }
+    #[test]
+    fn test_enthalpy_update_zero_heat_is_identity_in_every_regime() {
+        for t0 in [250.0, 498.5, 500.0, 500.7, 503.0, 800.0] {
+            let t_new = enthalpy_update(t0, 0.0, 1000.0, 500.0, 334_000.0, 500.0, 2.0, 0.5, 1e-3);
+            assert!((t_new - t0).abs() < 1e-9, "t0 = {t0}: t_new = {t_new}");
+        }
+    }
+    #[test]
+    fn test_enthalpy_update_heating_then_cooling_round_trips() {
+        let (cp, latent, t_melt, width) = (450.0, 250_000.0, 600.0, 3.0);
+        for t0 in [580.0, 598.5, 601.0, 640.0] {
+            for q in [1.0e4, 4.0e5, 3.0e6] {
+                let up = enthalpy_update(t0, q, 8000.0, cp, latent, t_melt, width, 1.0, 1e-3 / 8.0);
+                let back =
+                    enthalpy_update(up, -q, 8000.0, cp, latent, t_melt, width, 1.0, 1e-3 / 8.0);
+                assert!(up > t0, "t0 = {t0}, q = {q}: up = {up}");
+                assert!(
+                    (back - t0).abs() < 1e-8,
+                    "t0 = {t0}, q = {q}: back = {back}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_enthalpy_update_is_monotone_in_heat_input() {
+        let mut previous = f64::NEG_INFINITY;
+        for k in 0..60 {
+            let q = 2.0e4 * k as f64;
+            let t_new = enthalpy_update(450.0, q, 1000.0, 500.0, 334_000.0, 500.0, 1.0, 1.0, 1e-3);
+            assert!(t_new >= previous, "q = {q}: {t_new} < {previous}");
+            previous = t_new;
+        }
+        assert!(previous > 501.0);
+    }
+    #[test]
+    fn test_enthalpy_update_plateau_for_sharp_interface() {
+        // mush_width = 0: temperature holds at T_melt while latent heat is absorbed.
+        let (cp, latent, t_melt) = (500.0, 100_000.0, 300.0);
+        let on_plateau =
+            enthalpy_update(299.0, 80_000.0, 1000.0, cp, latent, t_melt, 0.0, 1.0, 1e-3);
+        assert!(
+            (on_plateau - t_melt).abs() < 1e-12,
+            "on_plateau = {on_plateau}"
+        );
+        // 500 J/kg heats 299 -> 300 K; with 100 000 J/kg more the plateau is
+        // complete, and 5000 J/kg beyond it raise the liquid by 10 K.
+        let past = enthalpy_update(
+            299.0,
+            500.0 + 100_000.0 + 5000.0,
+            1000.0,
+            cp,
+            latent,
+            t_melt,
+            0.0,
+            1.0,
+            1e-3,
+        );
+        assert!((past - 310.0).abs() < 1e-9, "past = {past}");
+        assert!(past.is_finite());
+    }
     #[test]
     fn test_biot_number_proportional_to_h() {
         let bi1 = biot_number(10.0, 0.05, 50.0);

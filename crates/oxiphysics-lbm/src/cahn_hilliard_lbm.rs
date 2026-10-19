@@ -26,6 +26,11 @@
 //! M(C) is the mobility, A is the bulk energy coefficient, and kappa controls
 //! the interface width.
 //!
+//! The mobility enters [`CahnHilliardLbm::step`] in conservative flux form,
+//! `div(M grad mu) ~ 6 sum_q w_q M_face (mu_q - mu_c)` with the face mobility
+//! `M_face = (M_c + M_q) / 2`, so the total concentration is conserved to round-off for every
+//! [`MobilityType`] (a pointwise `M(C) * laplacian(mu)` would not be).
+//!
 //! # References
 //!
 //! - Zheng, Shu, Chew (2006), *Phys. Rev. E* **73**, 056702.
@@ -64,11 +69,19 @@ const OPP: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Mobility function type for the Cahn-Hilliard equation.
+///
+/// The order parameter lives on `[-1, 1]` (the minima of the double-well potential
+/// `A/4 (C^2 - 1)^2` sit at `C = ±1`), so every concentration-dependent mobility vanishes at
+/// the pure phases `C = ±1` and is clamped to zero outside of `[-1, 1]`.
 #[derive(Debug, Clone, Copy)]
 pub enum MobilityType {
     /// Constant mobility M(C) = M0.
     Constant,
-    /// Degenerate mobility M(C) = M0 * C * (1 - C), vanishes at pure phases.
+    /// Degenerate mobility M(C) = M0 * (1 - C^2) / 4, vanishing at the pure phases C = ±1.
+    ///
+    /// This is the classical `M0 * C' * (1 - C')` written in the volume fraction
+    /// `C' = (1 + C) / 2` of the `[-1, 1]` order parameter; it peaks at `M0 / 4` in the
+    /// interface centre `C = 0`.
     Degenerate,
     /// Concentration-dependent mobility M(C) = M0 * (1 - C^2).
     ConcentrationDependent,
@@ -82,10 +95,7 @@ pub enum MobilityType {
 pub fn eval_mobility(mobility_type: MobilityType, c: f64, m0: f64) -> f64 {
     match mobility_type {
         MobilityType::Constant => m0,
-        MobilityType::Degenerate => {
-            let cc = c.clamp(0.0, 1.0);
-            m0 * cc * (1.0 - cc)
-        }
+        MobilityType::Degenerate => m0 * (1.0 - c * c).max(0.0) / 4.0,
         MobilityType::ConcentrationDependent => m0 * (1.0 - c * c).max(0.0),
         MobilityType::Polynomial => {
             let t = (1.0 - c * c).max(0.0);
@@ -570,18 +580,41 @@ impl CahnHilliardLbm {
         lap * 6.0
     }
 
-    /// D2Q9 isotropic Laplacian of the chemical potential at (i, j).
-    fn laplacian_mu(&self, i: usize, j: usize) -> f64 {
+    /// Mobility `M(C)` evaluated at every node.
+    fn mobility_field(&self) -> Vec<f64> {
+        self.concentration
+            .iter()
+            .map(|&c| eval_mobility(self.mobility_type, c, self.mobility))
+            .collect()
+    }
+
+    /// Conservative D2Q9 discretisation of `div(M(C) grad(mu))` at node (i, j), periodic in
+    /// both directions.
+    ///
+    /// `mobility` holds `M(C)` at every node (see [`mobility_field`](Self::mobility_field)).
+    /// The divergence is the sum of the fluxes through the eight links of the node,
+    ///
+    /// `6 * sum_{q=1..8} w_q * M_face * (mu_q - mu_c)`, with `M_face = (M_c + M_q) / 2`,
+    ///
+    /// which reduces to `M * laplacian(mu)` for a constant mobility. The flux through a link is
+    /// antisymmetric (the neighbour sees the same `M_face` and the opposite potential
+    /// difference), so the sum of the divergence over the periodic lattice vanishes identically
+    /// and the total concentration is conserved to round-off for any mobility function.
+    fn mobility_flux_divergence(&self, mobility: &[f64], i: usize, j: usize) -> f64 {
         let nx = self.nx;
         let ny = self.ny;
-        let mu_c = self.chemical_potential[self.idx(i, j)];
-        let mut lap = 0.0_f64;
+        let idx = self.idx(i, j);
+        let m_c = mobility[idx];
+        let mu_c = self.chemical_potential[idx];
+        let mut div = 0.0_f64;
         for q in 1..9 {
             let ni = (i as i32 + CX[q]).rem_euclid(nx as i32) as usize;
             let nj = (j as i32 + CY[q]).rem_euclid(ny as i32) as usize;
-            lap += W9[q] * (self.chemical_potential[self.idx(ni, nj)] - mu_c);
+            let nidx = self.idx(ni, nj);
+            let m_face = 0.5 * (m_c + mobility[nidx]);
+            div += W9[q] * m_face * (self.chemical_potential[nidx] - mu_c);
         }
-        lap * 6.0
+        div * 6.0
     }
 
     /// Gradient of C at (i, j) using the D2Q9 stencil.
@@ -648,7 +681,9 @@ impl CahnHilliardLbm {
     ///
     /// Steps:
     /// 1. Compute chemical potential from current concentration
-    /// 2. Update concentration via mobility-weighted Laplacian of mu
+    /// 2. Advance the concentration explicitly with the conservative face-flux divergence
+    ///    `C += div(M(C) grad(mu))`, `6 sum_q w_q M_face (mu_q - mu_c)` over the eight D2Q9
+    ///    links with `M_face = (M_c + M_q) / 2`
     /// 3. Recompute chemical potential
     /// 4. Re-initialize distributions to equilibrium
     pub fn step(&mut self) {
@@ -658,14 +693,12 @@ impl CahnHilliardLbm {
         // 1. Compute chemical potential
         self.compute_chemical_potential();
 
-        // 2. Update concentration: C += M(C) * laplacian(mu)
+        // 2. Update concentration: C += div(M(C) grad(mu)) in flux form
+        let mobility = self.mobility_field();
         let mut dc = vec![0.0_f64; nx * ny];
         for i in 0..nx {
             for j in 0..ny {
-                let idx = self.idx(i, j);
-                let c = self.concentration[idx];
-                let m = eval_mobility(self.mobility_type, c, self.mobility);
-                dc[idx] = m * self.laplacian_mu(i, j);
+                dc[self.idx(i, j)] = self.mobility_flux_divergence(&mobility, i, j);
             }
         }
         for (idx, &d) in dc.iter().enumerate() {
@@ -973,6 +1006,9 @@ pub fn coarsening_timescale(length_scale: f64, mobility: f64, kappa: f64, a_coef
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+mod mobility_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1042,10 +1078,14 @@ mod tests {
 
     #[test]
     fn test_degenerate_mobility_at_boundaries() {
-        let m0 = eval_mobility(MobilityType::Degenerate, 0.0, 1.0);
-        let m1 = eval_mobility(MobilityType::Degenerate, 1.0, 1.0);
-        assert!(m0.abs() < 1e-14);
-        assert!(m1.abs() < 1e-14);
+        // The pure phases of the [-1, 1] order parameter are immobile, the interface centre
+        // carries the maximum mobility M0 / 4.
+        let m_plus = eval_mobility(MobilityType::Degenerate, 1.0, 1.0);
+        let m_minus = eval_mobility(MobilityType::Degenerate, -1.0, 1.0);
+        let m_centre = eval_mobility(MobilityType::Degenerate, 0.0, 1.0);
+        assert!(m_plus.abs() < 1e-14);
+        assert!(m_minus.abs() < 1e-14);
+        assert!((m_centre - 0.25).abs() < 1e-14);
     }
 
     #[test]
@@ -1244,7 +1284,7 @@ mod tests {
         }
         let c1 = s.total_concentration();
         assert!(
-            (c1 - c0).abs() < 1.0,
+            (c1 - c0).abs() < 1e-10,
             "conservation violated: {} vs {}",
             c0,
             c1

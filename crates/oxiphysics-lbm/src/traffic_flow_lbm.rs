@@ -17,6 +17,7 @@
 //! - [`AccidentPropagation`]: Accident shock-wave propagation model
 //! - [`TrafficLbm`]: D1Q3 LBM solver for macroscopic traffic density/flow
 
+use crate::error::Error;
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -956,6 +957,17 @@ impl AccidentPropagation {
 /// D1Q3 Lattice Boltzmann solver for macroscopic traffic density and flow.
 ///
 /// The equilibrium distribution encodes the fundamental diagram.
+///
+/// # Lattice units
+///
+/// The lattice velocities are `-1, 0, +1` cells per step.  A physical speed
+/// `v` (m/s) enters the equilibrium as the lattice velocity
+/// `u_lat = v * dt / dx`, and the populations' lattice velocity converts back
+/// to a physical speed with `v = u_lat * dx / dt`, so that the conserved
+/// quantity `rho` (veh/m) is transported with the physical flux `rho * v`
+/// (veh/s).  The scheme stays subsonic and well behaved while the free-flow
+/// lattice velocity is below the lattice sound speed,
+/// `v_free * dt / dx <= 1 / sqrt(3)`; see [`TrafficLbm::cfl_ok`].
 #[derive(Clone, Debug)]
 pub struct TrafficLbm {
     /// Number of lattice cells.
@@ -981,7 +993,10 @@ pub struct TrafficLbm {
 }
 
 impl TrafficLbm {
-    /// Create a new `TrafficLbm`.
+    /// Create a new `TrafficLbm` without validating the parameters.
+    ///
+    /// Use [`TrafficLbm::try_new`] to reject parameter sets for which the
+    /// lattice scheme is unstable, or check [`TrafficLbm::cfl_ok`].
     pub fn new(nx: usize, dx: f64, dt: f64, tau: f64, diagram: FundamentalDiagram) -> Self {
         let mut s = Self {
             nx,
@@ -1002,13 +1017,103 @@ impl TrafficLbm {
         s
     }
 
+    /// Create a new `TrafficLbm`, rejecting parameters for which the lattice
+    /// scheme is unusable.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::InvalidGridDimensions`] if `nx == 0`.
+    /// * [`Error::ParameterOutOfBounds`] if `dx`, `dt` or the diagram's
+    ///   `rho_jam` is not a positive finite number, if `v_free` is negative or
+    ///   not finite, or if the free-flow lattice velocity `v_free * dt / dx`
+    ///   exceeds the lattice sound speed `1 / sqrt(3)` (see
+    ///   [`TrafficLbm::cfl_ok`]).
+    /// * [`Error::UnstableRelaxationTime`] if `tau <= 0.5`.
+    pub fn try_new(
+        nx: usize,
+        dx: f64,
+        dt: f64,
+        tau: f64,
+        diagram: FundamentalDiagram,
+    ) -> Result<Self, Error> {
+        if nx == 0 {
+            return Err(Error::InvalidGridDimensions { nx, ny: 1 });
+        }
+        let positive = |name: &str, value: f64| -> Result<(), Error> {
+            if value.is_finite() && value > 0.0 {
+                Ok(())
+            } else {
+                Err(Error::ParameterOutOfBounds {
+                    name: name.to_string(),
+                    value,
+                    min: f64::MIN_POSITIVE,
+                    max: f64::MAX,
+                })
+            }
+        };
+        positive("dx", dx)?;
+        positive("dt", dt)?;
+        positive("rho_jam", diagram.rho_jam)?;
+        if !diagram.v_free.is_finite() || diagram.v_free < 0.0 {
+            return Err(Error::ParameterOutOfBounds {
+                name: "v_free".to_string(),
+                value: diagram.v_free,
+                min: 0.0,
+                max: f64::MAX,
+            });
+        }
+        if tau.is_nan() || tau <= 0.5 {
+            return Err(Error::UnstableRelaxationTime { tau });
+        }
+        let solver = Self::new(nx, dx, dt, tau, diagram);
+        if !solver.cfl_ok() {
+            return Err(Error::ParameterOutOfBounds {
+                name: "v_free * dt / dx".to_string(),
+                value: solver.free_flow_lattice_velocity(),
+                min: 0.0,
+                max: Self::max_lattice_velocity(),
+            });
+        }
+        Ok(solver)
+    }
+
+    /// Largest lattice velocity (cells per step) of the subsonic regime: the
+    /// D1Q3 lattice sound speed `1 / sqrt(3)`.
+    pub fn max_lattice_velocity() -> f64 {
+        CS2_1D.sqrt()
+    }
+
+    /// Convert a physical speed (m/s) into a lattice velocity (cells per step).
+    #[inline]
+    fn lattice_velocity(&self, speed: f64) -> f64 {
+        speed * self.dt / self.dx
+    }
+
+    /// Lattice velocity (cells per step) of free-flowing traffic,
+    /// `v_free * dt / dx`.
+    pub fn free_flow_lattice_velocity(&self) -> f64 {
+        self.lattice_velocity(self.diagram.v_free)
+    }
+
+    /// Check the stability condition of the lattice scheme: positive `dx` and
+    /// `dt`, and a free-flow lattice velocity `v_free * dt / dx` that does not
+    /// exceed the lattice sound speed `1 / sqrt(3)`.
+    pub fn cfl_ok(&self) -> bool {
+        self.dx > 0.0
+            && self.dt > 0.0
+            && self.free_flow_lattice_velocity() <= Self::max_lattice_velocity()
+    }
+
     /// Initialise density field from closure.
+    ///
+    /// Every cell starts at the equilibrium of its density, i.e. with the speed
+    /// of the fundamental diagram.
     pub fn init_density<F: Fn(f64) -> f64>(&mut self, func: F) {
         for i in 0..self.nx {
             let x = (i as f64 + 0.5) * self.dx;
             let rho = func(x).clamp(0.0, self.diagram.rho_jam);
-            let v = self.diagram.speed(rho);
-            self.f[i] = feq1d(rho, v);
+            let u_lat = self.lattice_velocity(self.diagram.speed(rho));
+            self.f[i] = feq1d(rho, u_lat);
         }
     }
 
@@ -1032,15 +1137,19 @@ impl TrafficLbm {
         macroscopic1d(&self.f[i]).0
     }
 
-    /// Get velocity at cell `i`.
+    /// Get the mean vehicle speed (m/s) at cell `i`.
+    ///
+    /// The populations' lattice velocity (cells per step) is converted to
+    /// physical units with `dx / dt`.
     pub fn velocity(&self, i: usize) -> f64 {
-        macroscopic1d(&self.f[i]).1
+        macroscopic1d(&self.f[i]).1 * self.dx / self.dt
     }
 
-    /// Get flow (veh/s) at cell `i`.
+    /// Get the flow (veh/s) at cell `i`: the density times the mean speed, i.e.
+    /// the first moment of the populations in physical units.
     pub fn flow(&self, i: usize) -> f64 {
-        let (rho, _u) = macroscopic1d(&self.f[i]);
-        self.diagram.flow(rho)
+        let (rho, u_lat) = macroscopic1d(&self.f[i]);
+        rho * u_lat * self.dx / self.dt
     }
 
     /// Collision step: relax towards equilibrium.
@@ -1070,7 +1179,9 @@ impl TrafficLbm {
                 v_eq *= cap;
             }
 
-            let feq = feq1d(rho, v_eq);
+            // The equilibrium is a function of the lattice velocity (cells per
+            // step), not of the physical speed.
+            let feq = feq1d(rho, self.lattice_velocity(v_eq));
             for (f_iq, &feq_q) in self.f[i].iter_mut().zip(feq.iter()) {
                 *f_iq += (feq_q - *f_iq) / self.tau;
             }
@@ -1378,6 +1489,9 @@ pub fn sinusoidal_density(x: f64, road_length: f64, rho_mean: f64, amplitude: f6
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+mod lattice_units_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1673,7 +1787,7 @@ mod tests {
     #[test]
     fn test_lbm_init_density() {
         let fd = FundamentalDiagram::new(0.1, 20.0, DiagramModel::Greenshields);
-        let mut lbm = TrafficLbm::new(50, 1.0, 0.04, 1.0, fd);
+        let mut lbm = TrafficLbm::new(50, 1.0, 0.02, 1.0, fd);
         lbm.init_density(|_| 0.05);
         let d = lbm.density(25);
         assert!((d - 0.05).abs() < 1e-6);
@@ -1682,7 +1796,7 @@ mod tests {
     #[test]
     fn test_lbm_step_runs() {
         let fd = FundamentalDiagram::new(0.1, 20.0, DiagramModel::Greenshields);
-        let mut lbm = TrafficLbm::new(50, 1.0, 0.04, 1.0, fd);
+        let mut lbm = TrafficLbm::new(50, 1.0, 0.02, 1.0, fd);
         lbm.init_density(|_| 0.03);
         lbm.step();
         assert!(lbm.time > 0.0);
@@ -1691,7 +1805,7 @@ mod tests {
     #[test]
     fn test_lbm_total_vehicles_conserved() {
         let fd = FundamentalDiagram::new(0.1, 20.0, DiagramModel::Greenshields);
-        let mut lbm = TrafficLbm::new(100, 1.0, 0.04, 1.0, fd);
+        let mut lbm = TrafficLbm::new(100, 1.0, 0.02, 1.0, fd);
         lbm.init_density(|_| 0.04);
         let n0 = lbm.total_vehicles();
         lbm.run(20);
@@ -1702,7 +1816,7 @@ mod tests {
     #[test]
     fn test_lbm_with_signal() {
         let fd = FundamentalDiagram::new(0.1, 20.0, DiagramModel::Greenshields);
-        let mut lbm = TrafficLbm::new(50, 1.0, 0.04, 1.0, fd);
+        let mut lbm = TrafficLbm::new(50, 1.0, 0.02, 1.0, fd);
         lbm.init_density(|_| 0.03);
         let sig = TrafficSignal::new(25, 10.0, 2.0, 15.0, 0.0);
         lbm.add_signal(sig);
@@ -1713,7 +1827,7 @@ mod tests {
     #[test]
     fn test_lbm_with_accident() {
         let fd = FundamentalDiagram::new(0.1, 20.0, DiagramModel::Greenshields);
-        let mut lbm = TrafficLbm::new(50, 1.0, 0.04, 1.0, fd);
+        let mut lbm = TrafficLbm::new(50, 1.0, 0.02, 1.0, fd);
         lbm.init_density(|_| 0.03);
         let acc = AccidentPropagation::new(30, 0.3, 100.0);
         lbm.add_accident(acc);

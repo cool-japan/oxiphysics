@@ -858,4 +858,182 @@ mod tests {
         );
         assert_eq!(sap.query_pairs(), vec![(1, 2)]);
     }
+
+    // ── lazy sorting: add/update only mark the endpoint list dirty ──────────
+
+    fn brute_force_pairs(objects: &[(u64, [f64; 3], [f64; 3])]) -> Vec<(u64, u64)> {
+        let mut expected: Vec<(u64, u64)> = Vec::new();
+        for (i, a) in objects.iter().enumerate() {
+            for b in &objects[i + 1..] {
+                if (0..3).all(|k| a.1[k] <= b.2[k] && b.1[k] <= a.2[k]) {
+                    expected.push((a.0.min(b.0), a.0.max(b.0)));
+                }
+            }
+        }
+        expected.sort_unstable();
+        expected
+    }
+
+    fn endpoints_ascending(sap: &SweepAndPrune) -> bool {
+        sap.sorted_x
+            .windows(2)
+            .all(|pair| pair[0].value <= pair[1].value)
+    }
+
+    #[test]
+    fn sap_add_object_does_not_sort_on_every_call_but_the_query_sorts_once() {
+        let mut sap = SweepAndPrune::new();
+        // Descending positions: an eager per-call sort would keep the list
+        // ascending, the lazy implementation leaves it for the query.
+        for i in 0u64..6 {
+            let x = (5 - i) as f64 * 10.0;
+            sap.add_object(i, [x, 0.0, 0.0], [x + 1.0, 1.0, 1.0]);
+        }
+        assert!(
+            !endpoints_ascending(&sap),
+            "add_object must only append the endpoints"
+        );
+        assert!(sap.query_overlapping_pairs().is_empty());
+        assert!(
+            endpoints_ascending(&sap),
+            "the query sorts the endpoint list"
+        );
+        // A query on a clean list leaves it untouched and sorted.
+        let before: Vec<(u64, bool)> = sap
+            .sorted_x
+            .iter()
+            .map(|e| (e.object_id, e.is_min))
+            .collect();
+        assert!(sap.query_overlapping_pairs().is_empty());
+        let after: Vec<(u64, bool)> = sap
+            .sorted_x
+            .iter()
+            .map(|e| (e.object_id, e.is_min))
+            .collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn sap_many_updates_between_queries_match_brute_force() {
+        let mut state = 0xC0FF_EE00_1234_5678u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as f64 / (1u64 << 31) as f64
+        };
+        let mut objects: Vec<(u64, [f64; 3], [f64; 3])> = Vec::new();
+        for id in 0..40u64 {
+            let min = [next() * 30.0, next() * 30.0, next() * 30.0];
+            let size = [1.0 + next() * 3.0, 1.0 + next() * 3.0, 1.0 + next() * 3.0];
+            objects.push((
+                id,
+                min,
+                [min[0] + size[0], min[1] + size[1], min[2] + size[2]],
+            ));
+        }
+        let mut sap = SweepAndPrune::new();
+        sap.add_object_batch(&objects);
+        assert_eq!(sap.query_overlapping_pairs(), brute_force_pairs(&objects));
+        // Several frames: move every object, then query once per frame.
+        for frame in 0..5 {
+            if frame == 2 {
+                sap.reorder_axes();
+            }
+            for object in objects.iter_mut() {
+                let shift = [next() * 4.0 - 2.0, next() * 4.0 - 2.0, next() * 4.0 - 2.0];
+                for (k, delta) in shift.iter().enumerate() {
+                    object.1[k] += delta;
+                    object.2[k] += delta;
+                }
+                sap.update_object(object.0, object.1, object.2);
+            }
+            assert_eq!(
+                sap.query_overlapping_pairs(),
+                brute_force_pairs(&objects),
+                "frame {frame}"
+            );
+            assert!(endpoints_ascending(&sap), "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn sap_touching_boxes_are_reported_in_every_insertion_order() {
+        // Box 1 ends where box 2 begins on every axis.
+        let one = (1u64, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let two = (2u64, [1.0, 0.0, 0.0], [2.0, 1.0, 1.0]);
+        for order in [[one, two], [two, one]] {
+            let mut sap = SweepAndPrune::new();
+            for (id, min, max) in order {
+                sap.add_object(id, min, max);
+            }
+            assert_eq!(sap.query_overlapping_pairs(), vec![(1, 2)]);
+        }
+        // Separated by the smallest representable gap: no pair.
+        let mut sap = SweepAndPrune::new();
+        sap.add_object(1, [0.0; 3], [1.0; 3]);
+        sap.add_object(2, [1.0 + f64::EPSILON, 0.0, 0.0], [2.0, 1.0, 1.0]);
+        assert!(sap.query_overlapping_pairs().is_empty());
+    }
+
+    #[test]
+    fn sap_negative_zero_end_point_touches_a_positive_zero_start_point() {
+        // -0.0 == 0.0 in the interval test, so the boxes touch and must be paired
+        // whatever the sign of the zero.
+        for (first_max, second_min) in [(-0.0, 0.0), (0.0, -0.0)] {
+            let mut sap = SweepAndPrune::new();
+            sap.add_object(1, [-1.0, 0.0, 0.0], [first_max, 1.0, 1.0]);
+            sap.add_object(2, [second_min, 0.0, 0.0], [1.0, 1.0, 1.0]);
+            assert_eq!(
+                sap.query_overlapping_pairs(),
+                vec![(1, 2)],
+                "{first_max:?} vs {second_min:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sap_sort_axis_puts_minimum_endpoints_first_on_equal_values() {
+        let mut sap = SweepAndPrune::new();
+        sap.add_object(1, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        sap.add_object(2, [1.0, 0.0, 0.0], [2.0, 1.0, 1.0]);
+        sap.sort_axis();
+        let tie: Vec<(u64, bool)> = sap
+            .sorted_x
+            .iter()
+            .filter(|e| e.value == 1.0)
+            .map(|e| (e.object_id, e.is_min))
+            .collect();
+        assert_eq!(tie, vec![(2, true), (1, false)]);
+    }
+
+    #[test]
+    fn sap_query_repairs_a_list_edited_through_the_public_field() {
+        let mut sap = SweepAndPrune::new();
+        sap.add_object_batch(&[
+            (1, [0.0, 0.0, 0.0], [2.0, 2.0, 2.0]),
+            (2, [1.0, 0.0, 0.0], [3.0, 2.0, 2.0]),
+            (3, [10.0, 0.0, 0.0], [12.0, 2.0, 2.0]),
+        ]);
+        assert_eq!(sap.query_overlapping_pairs(), vec![(1, 2)]);
+        // Reverse the (clean) list behind the structure's back.
+        sap.sorted_x.reverse();
+        assert_eq!(sap.query_overlapping_pairs(), vec![(1, 2)]);
+        assert!(endpoints_ascending(&sap));
+    }
+
+    #[test]
+    fn sap_remove_object_keeps_the_remaining_endpoints_sweepable() {
+        let mut sap = SweepAndPrune::new();
+        for i in 0u64..4 {
+            let x = i as f64 * 0.5;
+            sap.add_object(i, [x, 0.0, 0.0], [x + 1.0, 1.0, 1.0]);
+        }
+        sap.remove_object(1);
+        let pairs = sap.query_overlapping_pairs();
+        assert!(!pairs.iter().any(|&(a, b)| a == 1 || b == 1));
+        // [0, 1] touches [1, 2] and [1, 2] overlaps [1.5, 2.5]; [0, 1] and
+        // [1.5, 2.5] are apart.
+        assert_eq!(pairs, vec![(0, 2), (2, 3)]);
+    }
 }

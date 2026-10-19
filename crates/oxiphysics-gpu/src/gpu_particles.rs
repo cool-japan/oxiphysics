@@ -1145,6 +1145,46 @@ mod tests {
         assert_pool_consistent(&pool);
     }
 
+    /// Random emit / kill / recycle cycles never corrupt the pool: after every
+    /// phase the free list has no duplicates, `free_count() + alive == capacity`
+    /// and the `in_free` flags mirror the free list.
+    #[test]
+    fn test_pool_random_emit_kill_recycle_cycles_stay_consistent() {
+        let capacity = 97;
+        let mut pool = ParticlePool::new(capacity);
+        let mut rng = Lcg::new(0xB00B5);
+        for cycle in 0..300 {
+            // Emit a random burst (it may exceed the free slots).
+            let burst = (rng.next_f32() * 40.0) as usize;
+            for _ in 0..burst {
+                let emitted = pool.emit(live_particle());
+                if let Some(idx) = emitted {
+                    assert!(pool.slots[idx].is_alive(), "cycle {cycle}: slot {idx}");
+                    assert!(!pool.in_free[idx]);
+                }
+            }
+            assert_pool_consistent(&pool);
+            // Kill a random subset of the slots (including free ones).
+            for slot in pool.slots.iter_mut() {
+                if rng.next_f32() < 0.35 {
+                    slot.life = 0.0;
+                }
+            }
+            // Recycle once or several times: the result must be identical.
+            pool.recycle_dead();
+            assert_pool_consistent(&pool);
+            let free_after_first = pool.free_count();
+            let repeats = (rng.next_f32() * 3.0) as usize;
+            for _ in 0..repeats {
+                pool.recycle_dead();
+            }
+            assert_eq!(pool.free_count(), free_after_first);
+            let alive_slots = pool.slots.iter().filter(|s| s.is_alive()).count();
+            assert_eq!(pool.alive_count(), alive_slots);
+            assert_eq!(pool.free_count() + alive_slots, capacity);
+        }
+    }
+
     /// A particle emitted already dead occupies its slot until the next sweep
     /// reclaims it; it must not leak the slot permanently.
     #[test]

@@ -32,6 +32,17 @@ pub struct FeMesh {
     pub materials: Vec<LinearElasticMaterial>,
     /// Analysis steps.
     pub steps: Vec<AnalysisStep>,
+    /// Model-level boundary conditions: `*BOUNDARY` data given outside any
+    /// `*STEP` (before the first step).
+    ///
+    /// They hold in every step.  The Abaqus reader ([`AbaqusInpIo`]) and the
+    /// CalculiX reader and writer ([`crate::calculix_format`]) keep them here,
+    /// so a file without an explicit step still yields its supports and a file
+    /// with several steps does not repeat them per step.  Code that wants every
+    /// condition acting in step `i` must therefore consider both this vector
+    /// and `steps[i].bcs`; other readers may instead attach pre-step conditions
+    /// to a default step.
+    pub global_bcs: Vec<DirichletBc>,
     /// Node set lookup: set name → list of node IDs.
     pub node_sets: HashMap<String, Vec<usize>>,
     /// Element set lookup: set name → list of element IDs.
@@ -79,7 +90,8 @@ impl FeMesh {
         Some((lo, hi))
     }
 }
-/// ANSYS MAPDL command deck (simplified subset).
+/// ANSYS MAPDL input deck: what [`MapdlDeck::parse`] reads of an APDL input
+/// file or `CDWRITE` CDB file.
 #[derive(Debug, Clone, Default)]
 pub struct MapdlDeck {
     /// Nodes parsed from `NBLOCK` sections.
@@ -98,87 +110,87 @@ impl MapdlDeck {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Parse a simplified MAPDL text input deck.
+    /// Parse the text of an ANSYS MAPDL input deck or `CDWRITE` CDB file.
     ///
-    /// Handles: `NBLOCK`, `EBLOCK`, `MP,EX`, `MP,NUXY`, `MP,DENS`, `D`, `F`.
+    /// Reads the fixed-format `NBLOCK` and `EBLOCK` (`SOLID` layout) blocks,
+    /// the `ET` element-type table and the commands `MP,EX`, `MP,NUXY`,
+    /// `MP,DENS`, `D` and `F`.
+    ///
+    /// Each block is cut into fields by the Fortran format line that follows
+    /// its command, for example `(3i9,6e21.13e3)`, so values that abut because
+    /// a negative number fills its whole field are read correctly.  An
+    /// `NBLOCK` row holds `node, entity, line location, x, y, z`; fields that a
+    /// short row leaves out are zero.  An `EBLOCK` row holds eleven attribute
+    /// fields (material, element type, ..., node count, ..., element number)
+    /// followed by the node numbers, which continue on further rows when the
+    /// element has more than eight nodes.  The element type follows from the
+    /// deck's `ET` table and the node count: solids with 4, 8, 10 or 20 nodes
+    /// become `Tet4`, `Hex8`, `Tet10` and `Hex20`, shells and beams of the
+    /// well-known ANSYS families become surface and line elements, and any
+    /// other element is kept as [`FeElementType::Unknown`] rather than being
+    /// mistaken for a solid.
+    ///
+    /// Blocks and rows that cannot be interpreted are skipped and the rest of
+    /// the deck is still read; use [`MapdlDeck::try_parse`] to be told about
+    /// them.
     pub fn parse(source: &str) -> Self {
+        Self::parse_collecting_issues(source).0
+    }
+    /// Like [`MapdlDeck::parse`], but fails instead of skipping what it
+    /// cannot interpret.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Parse`], naming the line, for a block whose
+    /// format line is missing or unsupported, for an `EBLOCK` that is not in
+    /// the `SOLID` layout, for rows with invalid numbers and for an element
+    /// whose node list is cut off.
+    pub fn try_parse(source: &str) -> crate::Result<Self> {
+        let (deck, issues) = Self::parse_collecting_issues(source);
+        if issues.is_empty() {
+            Ok(deck)
+        } else {
+            Err(crate::Error::Parse(format!(
+                "MAPDL deck: {}",
+                issues.join("; ")
+            )))
+        }
+    }
+    fn parse_collecting_issues(source: &str) -> (Self, Vec<String>) {
+        let lines: Vec<&str> = source.lines().collect();
         let mut deck = Self::new();
-        let mut in_nblock = false;
-        let mut in_eblock = false;
-        let mut _nblock_count = 0usize;
-        let mut _eblock_count = 0usize;
-        for line in source.lines() {
+        let mut issues = Vec::new();
+        let mut element_types = super::mapdl_cdb::ElementTypeTable::new();
+        let mut at = 0;
+        while let Some(&line) = lines.get(at) {
+            at += 1;
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('!') {
                 continue;
             }
-            let upper = trimmed.to_uppercase();
-            if upper.starts_with("NBLOCK") {
-                in_nblock = true;
-                in_eblock = false;
-                continue;
-            }
-            if upper.starts_with("EBLOCK") {
-                in_eblock = true;
-                in_nblock = false;
-                continue;
-            }
-            if upper.starts_with("-1") {
-                in_nblock = false;
-                in_eblock = false;
-                continue;
-            }
-            if in_nblock {
-                if let Some(n) = Self::parse_nblock_line(trimmed) {
-                    _nblock_count += 1;
-                    deck.nodes.push(n);
-                }
-                continue;
-            }
-            if in_eblock {
-                if let Some(e) = Self::parse_eblock_line(trimmed) {
-                    _eblock_count += 1;
-                    deck.elements.push(e);
-                }
-                continue;
-            }
-            if upper.starts_with("MP,") {
+            let upper = trimmed.to_ascii_uppercase();
+            if super::mapdl_cdb::is_command(&upper, "NBLOCK") {
+                at = super::mapdl_cdb::read_nblock(&lines, at, &mut deck.nodes, &mut issues);
+            } else if super::mapdl_cdb::is_command(&upper, "EBLOCK") {
+                at = super::mapdl_cdb::read_eblock(
+                    &lines,
+                    at,
+                    trimmed,
+                    &element_types,
+                    &mut deck.elements,
+                    &mut issues,
+                );
+            } else if upper.starts_with("ET,") {
+                super::mapdl_cdb::record_element_type(trimmed, &mut element_types);
+            } else if upper.starts_with("MP,") {
                 Self::apply_mp_command(trimmed, &mut deck);
-                continue;
-            }
-            if upper.starts_with("D,") {
+            } else if upper.starts_with("D,") {
                 Self::apply_d_command(trimmed, &mut deck);
-                continue;
-            }
-            if upper.starts_with("F,") {
+            } else if upper.starts_with("F,") {
                 Self::apply_f_command(trimmed, &mut deck);
-                continue;
             }
         }
-        deck
-    }
-    fn parse_nblock_line(line: &str) -> Option<FeNode> {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 4 {
-            return None;
-        }
-        let id: usize = parts[0].parse().ok()?;
-        let x: f64 = parts[1].parse().ok()?;
-        let y: f64 = parts[2].parse().ok()?;
-        let z: f64 = parts[3].parse().ok()?;
-        Some(FeNode::new(id, [x, y, z]))
-    }
-    fn parse_eblock_line(line: &str) -> Option<FeElement> {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 5 {
-            return None;
-        }
-        let id: usize = parts[4].parse().ok()?;
-        let connectivity: Vec<usize> = parts[5..]
-            .iter()
-            .filter_map(|s| s.parse::<usize>().ok())
-            .collect();
-        Some(FeElement::new(id, FeElementType::Hex8, connectivity))
+        (deck, issues)
     }
     fn apply_mp_command(line: &str, deck: &mut MapdlDeck) {
         let parts: Vec<&str> = line.split(',').collect();
@@ -316,131 +328,28 @@ impl GmshMesh {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Parse a Gmsh `.msh` ASCII file (v2 or v4).
-    pub fn parse(source: &str) -> Self {
+    /// Parse a Gmsh `.msh` ASCII file in format 2.x or 4.1.
+    ///
+    /// Nodes and elements come from `$Nodes` and `$Elements`, physical group
+    /// names from `$PhysicalNames`; every other section is skipped.  A 4.1
+    /// file is read through its entity blocks (`$Nodes`: `entityDim entityTag
+    /// parametric numNodes`, then the node tags, then the coordinates;
+    /// `$Elements`: `entityDim entityTag elementType numElements`, then
+    /// `elementTag nodeTag...`).  Gmsh element type numbers without a
+    /// [`FeElementType`] are kept as `Unknown("gmsh:<number>")`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Parse`], naming the line, for binary files
+    /// (file type 1), for format versions other than 2.x and 4.1, for a
+    /// missing `$MeshFormat`, for sections that are cut off or whose counts
+    /// disagree with their content, for malformed numbers, and for element
+    /// lines that declare more tags than they hold or list the wrong number
+    /// of nodes for their type.
+    pub fn parse(source: &str) -> Result<Self, crate::Error> {
         let mut mesh = Self::new();
-        let lines: Vec<&str> = source.lines().collect();
-        let mut i = 0;
-        while i < lines.len() {
-            let line = lines[i].trim();
-            match line {
-                "$MeshFormat" => {
-                    i += 1;
-                    if i < lines.len() {
-                        let ver_line = lines[i].trim();
-                        let parts: Vec<&str> = ver_line.split_whitespace().collect();
-                        if let Some(v) = parts.first() {
-                            if v.starts_with("4") {
-                                mesh.version = Some(GmshVersion::V4);
-                            } else {
-                                mesh.version = Some(GmshVersion::V2);
-                            }
-                        }
-                    }
-                    while i < lines.len() && lines[i].trim() != "$EndMeshFormat" {
-                        i += 1;
-                    }
-                }
-                "$PhysicalNames" => {
-                    i += 1;
-                    if i < lines.len() {
-                        let _count: usize = lines[i].trim().parse().unwrap_or(0);
-                        i += 1;
-                    }
-                    while i < lines.len() && lines[i].trim() != "$EndPhysicalNames" {
-                        let parts: Vec<&str> = lines[i].trim().splitn(3, ' ').collect();
-                        if parts.len() == 3 {
-                            let dim: i32 = parts[0].parse().unwrap_or(0);
-                            let tag: i32 = parts[1].parse().unwrap_or(0);
-                            let name = parts[2].trim_matches('"').to_string();
-                            mesh.physical_names.insert((dim, tag), name);
-                        }
-                        i += 1;
-                    }
-                }
-                "$Nodes" => {
-                    let version = mesh.version.unwrap_or(GmshVersion::V2);
-                    i += 1;
-                    match version {
-                        GmshVersion::V2 => {
-                            while i < lines.len() && lines[i].trim() != "$EndNodes" {
-                                let l = lines[i].trim();
-                                let parts: Vec<&str> = l.split_whitespace().collect();
-                                if parts.len() >= 4
-                                    && let (Ok(id), Ok(x), Ok(y), Ok(z)) = (
-                                        parts[0].parse::<usize>(),
-                                        parts[1].parse::<f64>(),
-                                        parts[2].parse::<f64>(),
-                                        parts[3].parse::<f64>(),
-                                    )
-                                {
-                                    mesh.nodes.push(FeNode::new(id, [x, y, z]));
-                                }
-                                i += 1;
-                            }
-                        }
-                        GmshVersion::V4 => {
-                            i += 1;
-                            while i < lines.len() && lines[i].trim() != "$EndNodes" {
-                                let l = lines[i].trim();
-                                let parts: Vec<&str> = l.split_whitespace().collect();
-                                if parts.len() >= 4
-                                    && let (Ok(id), Ok(x), Ok(y), Ok(z)) = (
-                                        parts[0].parse::<usize>(),
-                                        parts[1].parse::<f64>(),
-                                        parts[2].parse::<f64>(),
-                                        parts[3].parse::<f64>(),
-                                    )
-                                {
-                                    mesh.nodes.push(FeNode::new(id, [x, y, z]));
-                                }
-                                i += 1;
-                            }
-                        }
-                    }
-                }
-                "$Elements" => {
-                    i += 1;
-                    while i < lines.len() && lines[i].trim() != "$EndElements" {
-                        let l = lines[i].trim();
-                        let parts: Vec<&str> = l.split_whitespace().collect();
-                        if parts.len() >= 3
-                            && let (Ok(id), Ok(type_tag)) =
-                                (parts[0].parse::<usize>(), parts[1].parse::<usize>())
-                        {
-                            let ntags: usize = parts[2].parse().unwrap_or(0);
-                            let data_start = 3 + ntags;
-                            let elem_type = Self::gmsh_type(type_tag);
-                            let connectivity: Vec<usize> = parts[data_start..]
-                                .iter()
-                                .filter_map(|s| s.parse::<usize>().ok())
-                                .collect();
-                            if !connectivity.is_empty() {
-                                mesh.elements
-                                    .push(FeElement::new(id, elem_type, connectivity));
-                            }
-                        }
-                        i += 1;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        mesh
-    }
-    fn gmsh_type(tag: usize) -> FeElementType {
-        match tag {
-            1 => FeElementType::Line2,
-            2 => FeElementType::Tri3,
-            3 => FeElementType::Quad4,
-            4 => FeElementType::Tet4,
-            5 => FeElementType::Hex8,
-            9 => FeElementType::Tri6,
-            10 => FeElementType::Quad8,
-            11 => FeElementType::Tet10,
-            _ => FeElementType::Unknown(format!("gmsh:{}", tag)),
-        }
+        super::gmsh_msh::parse_into(&mut mesh, source)?;
+        Ok(mesh)
     }
     /// Write the mesh in Gmsh v2 ASCII format.
     pub fn write_v2(&self) -> String {
@@ -465,17 +374,7 @@ impl GmshMesh {
         out
     }
     fn fe_to_gmsh(t: &FeElementType) -> usize {
-        match t {
-            FeElementType::Line2 => 1,
-            FeElementType::Tri3 => 2,
-            FeElementType::Quad4 => 3,
-            FeElementType::Tet4 => 4,
-            FeElementType::Hex8 => 5,
-            FeElementType::Tri6 => 9,
-            FeElementType::Quad8 => 10,
-            FeElementType::Tet10 => 11,
-            _ => 0,
-        }
+        super::gmsh_msh::tag_of_element_type(t)
     }
 }
 /// A load/analysis step.
@@ -514,6 +413,21 @@ pub(super) struct AbaqusParseState {
     pub(super) elem_set_section: Option<String>,
     pub(super) material_name: Option<String>,
     pub(super) in_elastic: bool,
+    /// Inside the data of a `*BOUNDARY` keyword that prescribes displacements.
+    pub(super) in_boundary: bool,
+    /// Inside the data of a `*CLOAD` keyword.
+    pub(super) in_cload: bool,
+    /// The current `*NSET` / `*ELSET` keyword has the `GENERATE` parameter.
+    pub(super) generate: bool,
+    /// Between `*STEP` and `*END STEP`.
+    pub(super) in_step: bool,
+    /// Set named by `NSET=` on the current `*NODE` keyword.
+    pub(super) node_collect_set: Option<String>,
+    /// Set named by `ELSET=` on the current `*ELEMENT` keyword.
+    pub(super) element_collect_set: Option<String>,
+    /// Element record that continues on the next data line, with the number
+    /// of the line it started on.
+    pub(super) pending_element: Option<(usize, String)>,
 }
 /// Isotropic linear-elastic material.
 #[derive(Debug, Clone, PartialEq)]
@@ -586,89 +500,95 @@ impl NastranBulkData {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Parse NASTRAN free-field or fixed-field (8-char) Bulk Data from a string.
+    /// Parse NASTRAN Bulk Data from a string.
+    ///
+    /// Only the section between `BEGIN BULK` and `ENDDATA` is read.  Small
+    /// field (8-column), large field (`CARD*`, 16-column) and free-field
+    /// (comma separated) cards are understood, and cards that continue on
+    /// further lines (a marker such as `+C1` or `*K1`, a blank name field, or
+    /// a leading comma) are joined before they are interpreted.
+    ///
+    /// The cards `GRID`, `CTETRA` (4 or 10 nodes), `CHEXA` (8 or 20 nodes),
+    /// `MAT1`, `SPC` (one or two constraints per card) and `FORCE` are read;
+    /// a card is recognised by its exact name, so `FORCE1` and `SPC1` are not
+    /// mistaken for `FORCE` and `SPC`.
+    ///
+    /// Real numbers may be written the Nastran way without the exponent
+    /// letter (`2.1+11` is `2.1E+11`).  Blank fields take the defaults of the
+    /// card definition (`0.0` for grid coordinates and for the direction of a
+    /// `FORCE`, `0` for coordinate system ids); the elastic constants of a
+    /// `MAT1` card that are left blank are derived from the other two, with
+    /// Poisson's ratio taken as `0.3` when only one constant is given.  A card
+    /// with a field that is not a number, or one that is malformed in another
+    /// way, such as an element with a missing or surplus node, is skipped
+    /// instead of being read with invented values.
     pub fn parse(source: &str) -> Self {
-        let mut data = Self::new();
+        let mut joiner = super::nastran_bulk::CardJoiner::new();
         let mut in_bulk = false;
-        for line in source.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('$') {
+        for raw_line in source.lines() {
+            let line = super::nastran_bulk::strip_comment(raw_line);
+            if line.trim().is_empty() {
                 continue;
             }
-            let upper = trimmed.to_uppercase();
-            if upper.starts_with("BEGIN BULK") {
-                in_bulk = true;
-                continue;
+            match super::nastran_bulk::section_marker(line) {
+                Some(super::nastran_bulk::SectionMarker::BeginBulk) => in_bulk = true,
+                Some(super::nastran_bulk::SectionMarker::EndData) => break,
+                None if in_bulk => joiner.push_line(line),
+                None => {}
             }
-            if upper.starts_with("ENDDATA") {
-                break;
-            }
-            if !in_bulk
-                && !upper.starts_with("NASTRAN")
-                && !upper.starts_with("SOL")
-                && !upper.starts_with("CEND")
-                && !upper.starts_with("TITLE")
-                && !upper.starts_with("SUBTITLE")
-                && !upper.starts_with("LOAD")
-                && !upper.starts_with("SPC")
-                && !upper.starts_with("SUBCASE")
-            {
-                continue;
-            }
-            if upper.starts_with("GRID") {
-                if let Some(g) = Self::parse_grid(trimmed) {
-                    data.grids.push(g);
-                }
-            } else if upper.starts_with("CTETRA") {
-                if let Some(e) = Self::parse_ctetra(trimmed) {
-                    data.elements.push(e);
-                }
-            } else if upper.starts_with("CHEXA") {
-                if let Some(e) = Self::parse_chexa(trimmed) {
-                    data.elements.push(e);
-                }
-            } else if upper.starts_with("MAT1") {
-                if let Some(m) = Self::parse_mat1(trimmed) {
-                    data.materials.push(m);
-                }
-            } else if upper.starts_with("SPC ") || upper.starts_with("SPC,") {
-                if let Some(s) = Self::parse_spc(trimmed) {
-                    data.spcs.push(s);
-                }
-            } else if upper.starts_with("FORCE")
-                && let Some(f) = Self::parse_force(trimmed)
-            {
-                data.forces.push(f);
-            }
+        }
+        let mut data = Self::new();
+        for card in joiner.finish() {
+            data.add_card(&card);
         }
         data
     }
-    fn split_bulk(line: &str) -> Vec<String> {
-        if line.contains(',') {
-            return line.split(',').map(|s| s.trim().to_string()).collect();
+    /// Interpret one joined card (`fields[0]` is the card name).
+    fn add_card(&mut self, fields: &[String]) {
+        let name = fields
+            .first()
+            .map(|name| name.trim_end_matches('*').to_ascii_uppercase())
+            .unwrap_or_default();
+        match name.as_str() {
+            "GRID" => {
+                if let Some(g) = Self::parse_grid(fields) {
+                    self.grids.push(g);
+                }
+            }
+            "CTETRA" => {
+                if let Some(e) = Self::parse_ctetra(fields) {
+                    self.elements.push(e);
+                }
+            }
+            "CHEXA" => {
+                if let Some(e) = Self::parse_chexa(fields) {
+                    self.elements.push(e);
+                }
+            }
+            "MAT1" => {
+                if let Some(m) = Self::parse_mat1(fields) {
+                    self.materials.push(m);
+                }
+            }
+            "SPC" => self
+                .spcs
+                .extend(super::nastran_bulk::spc_constraints(fields)),
+            "FORCE" => {
+                if let Some(f) = Self::parse_force(fields) {
+                    self.forces.push(f);
+                }
+            }
+            _ => {}
         }
-        let mut fields = Vec::new();
-        let chars: Vec<char> = line.chars().collect();
-        let mut col = 0;
-        while col < chars.len() {
-            let end = (col + 8).min(chars.len());
-            let field: String = chars[col..end].iter().collect();
-            fields.push(field.trim().to_string());
-            col += 8;
-        }
-        fields
     }
-    fn parse_grid(line: &str) -> Option<NastranGrid> {
-        let f = Self::split_bulk(line);
-        if f.len() < 6 {
-            return None;
-        }
-        let id: usize = f[1].parse().ok()?;
-        let cp: usize = f[2].parse().unwrap_or(0);
-        let x: f64 = f[3].parse().ok()?;
-        let y: f64 = f[4].parse().ok()?;
-        let z: f64 = f[5].parse().ok()?;
-        let cd: usize = f.get(6).and_then(|s| s.parse().ok()).unwrap_or(0);
+    fn parse_grid(f: &[String]) -> Option<NastranGrid> {
+        use super::nastran_bulk::{optional_id, optional_real, required_id};
+        let id = required_id(f, 1)?;
+        let cp = optional_id(f, 2, 0)?;
+        let x = optional_real(f, 3, 0.0)?;
+        let y = optional_real(f, 4, 0.0)?;
+        let z = optional_real(f, 5, 0.0)?;
+        let cd = optional_id(f, 6, 0)?;
         Some(NastranGrid {
             id,
             cp,
@@ -676,85 +596,60 @@ impl NastranBulkData {
             cd,
         })
     }
-    fn parse_ctetra(line: &str) -> Option<NastranElement> {
-        let f = Self::split_bulk(line);
-        if f.len() < 7 {
-            return None;
-        }
-        let eid: usize = f[1].parse().ok()?;
-        let pid: usize = f[2].parse().ok()?;
-        let nodes: Vec<usize> = f[3..7]
-            .iter()
-            .filter_map(|s| s.parse::<usize>().ok())
-            .collect();
-        if nodes.len() < 4 {
-            return None;
-        }
+    fn parse_ctetra(f: &[String]) -> Option<NastranElement> {
+        let eid: usize = f.get(1)?.parse().ok()?;
+        let pid = super::nastran_bulk::property_id(f, eid)?;
+        let nodes = super::nastran_bulk::element_node_ids(f)?;
+        let element_type = match nodes.len() {
+            4 => FeElementType::Tet4,
+            10 => FeElementType::Tet10,
+            _ => return None,
+        };
         Some(NastranElement {
             eid,
             pid,
-            element_type: FeElementType::Tet4,
+            element_type,
             nodes,
         })
     }
-    fn parse_chexa(line: &str) -> Option<NastranElement> {
-        let f = Self::split_bulk(line);
-        if f.len() < 10 {
-            return None;
-        }
-        let eid: usize = f[1].parse().ok()?;
-        let pid: usize = f[2].parse().ok()?;
-        let nodes: Vec<usize> = f[3..11]
-            .iter()
-            .filter_map(|s| s.parse::<usize>().ok())
-            .collect();
+    fn parse_chexa(f: &[String]) -> Option<NastranElement> {
+        let eid: usize = f.get(1)?.parse().ok()?;
+        let pid = super::nastran_bulk::property_id(f, eid)?;
+        let nodes = super::nastran_bulk::element_node_ids(f)?;
+        let element_type = match nodes.len() {
+            8 => FeElementType::Hex8,
+            20 => FeElementType::Hex20,
+            _ => return None,
+        };
         Some(NastranElement {
             eid,
             pid,
-            element_type: FeElementType::Hex8,
+            element_type,
             nodes,
         })
     }
-    fn parse_mat1(line: &str) -> Option<NastranMat1> {
-        let f = Self::split_bulk(line);
-        if f.len() < 4 {
-            return None;
-        }
-        let mid: usize = f[1].parse().ok()?;
-        let e: f64 = f[2].parse().unwrap_or(0.0);
-        let g: f64 = f[3].parse().unwrap_or(0.0);
-        let nu: f64 = f.get(4).and_then(|s| s.parse().ok()).unwrap_or(0.3);
-        let rho: f64 = f.get(5).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    fn parse_mat1(f: &[String]) -> Option<NastranMat1> {
+        use super::nastran_bulk::{blank_or_real, complete_moduli, optional_real, required_id};
+        let mid = required_id(f, 1)?;
+        let (e, g, nu) = complete_moduli(
+            blank_or_real(f, 2)?,
+            blank_or_real(f, 3)?,
+            blank_or_real(f, 4)?,
+        )?;
+        let rho = optional_real(f, 5, 0.0)?;
         Some(NastranMat1 { mid, e, g, nu, rho })
     }
-    fn parse_spc(line: &str) -> Option<NastranSpc> {
-        let f = Self::split_bulk(line);
-        if f.len() < 4 {
-            return None;
-        }
-        let sid: usize = f[1].parse().ok()?;
-        let gid: usize = f[2].parse().ok()?;
-        let components = f[3].clone();
-        let value: f64 = f.get(4).and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        Some(NastranSpc {
-            sid,
-            gid,
-            components,
-            value,
-        })
-    }
-    fn parse_force(line: &str) -> Option<NastranForce> {
-        let f = Self::split_bulk(line);
-        if f.len() < 8 {
-            return None;
-        }
-        let sid: usize = f[1].parse().ok()?;
-        let gid: usize = f[2].parse().ok()?;
-        let _cid: usize = f[3].parse().unwrap_or(0);
-        let scale: f64 = f[4].parse().ok()?;
-        let nx: f64 = f[5].parse().ok()?;
-        let ny: f64 = f[6].parse().ok()?;
-        let nz: f64 = f[7].parse().ok()?;
+    fn parse_force(f: &[String]) -> Option<NastranForce> {
+        use super::nastran_bulk::{optional_id, optional_real, required_id, required_real};
+        let sid = required_id(f, 1)?;
+        let gid = required_id(f, 2)?;
+        // The coordinate system id is checked but not used: forces are kept
+        // as written, so a direction given in a local system is not rotated.
+        optional_id(f, 3, 0)?;
+        let scale = required_real(f, 4)?;
+        let nx = optional_real(f, 5, 0.0)?;
+        let ny = optional_real(f, 6, 0.0)?;
+        let nz = optional_real(f, 7, 0.0)?;
         Some(NastranForce {
             sid,
             gid,
@@ -763,6 +658,11 @@ impl NastranBulkData {
         })
     }
     /// Write bulk data in free-field comma-separated format.
+    ///
+    /// Elements are written as `CTETRA` / `CHEXA` cards whose grid points beyond
+    /// the sixth continue on `+` lines, so `parse(write(data))` returns the same
+    /// elements.  An element of a type that has no card here (or whose node count
+    /// does not fit its type) is written as a `$ unsupported element` comment.
     pub fn write(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "$ Generated by OxiPhysics finite_element_io");
@@ -773,6 +673,10 @@ impl NastranBulkData {
                 "GRID,{},{},{:.10e},{:.10e},{:.10e},{}",
                 g.id, g.cp, g.coords[0], g.coords[1], g.coords[2], g.cd
             );
+        }
+        let mut markers = 0usize;
+        for element in &self.elements {
+            super::nastran_bulk::write_element(&mut out, element, &mut markers);
         }
         for m in &self.materials {
             let _ = writeln!(
@@ -990,147 +894,39 @@ pub struct AbaqusInpIo;
 impl AbaqusInpIo {
     /// Parse an Abaqus `.inp` file from a string.
     ///
-    /// Supported keywords: `*NODE`, `*ELEMENT`, `*NSET`, `*ELSET`,
-    /// `*MATERIAL`, `*ELASTIC`, `*BOUNDARY`, `*CLOAD`, `*STEP`, `*END STEP`.
+    /// Reads `*NODE`, `*ELEMENT`, `*NSET`, `*ELSET`, `*MATERIAL`, `*ELASTIC`
+    /// (isotropic), `*DENSITY`, `*BOUNDARY`, `*CLOAD`, `*STEP` and
+    /// `*END STEP`; other keywords are skipped.  Nodes may omit trailing coordinates (two-dimensional models),
+    /// elements may continue over several lines, `*NSET` / `*ELSET` accept
+    /// `GENERATE` ranges, and `NSET=` / `ELSET=` on `*NODE` / `*ELEMENT`
+    /// collect sets.  `*BOUNDARY` (`node|set, first[, last[, value]]` or a
+    /// named constraint such as `ENCASTRE`) and `*CLOAD`
+    /// (`node|set, dof, magnitude`) become [`DirichletBc`]s and
+    /// [`NodalForce`]s, one per node and degree of freedom: inside a `*STEP`
+    /// in that step, in the model data in [`FeMesh::global_bcs`].
+    ///
+    /// Data lines that cannot be interpreted (malformed numbers, references to
+    /// undefined sets, `*CLOAD` outside a step, elements with the wrong number
+    /// of nodes) are skipped; [`AbaqusInpIo::try_parse`] reports them instead.
     pub fn parse(source: &str) -> FeMesh {
-        let mut mesh = FeMesh::new();
-        let mut state = AbaqusParseState::default();
-        for raw_line in source.lines() {
-            let line = raw_line.trim();
-            if line.is_empty() || line.starts_with("**") {
-                continue;
-            }
-            if line.starts_with('*') {
-                let kw_upper = line.to_uppercase();
-                state.node_section = false;
-                state.element_section = false;
-                state.node_set_section = None;
-                state.elem_set_section = None;
-                state.in_elastic = false;
-                if kw_upper.starts_with("*NODE") && !kw_upper.starts_with("*NSET") {
-                    state.node_section = true;
-                } else if kw_upper.starts_with("*ELEMENT") {
-                    state.element_section = true;
-                    state.current_elem_type = Self::parse_element_type(line);
-                } else if kw_upper.starts_with("*NSET") {
-                    let name = Self::parse_keyword_param(line, "NSET");
-                    state.node_set_section = Some(name);
-                } else if kw_upper.starts_with("*ELSET") {
-                    let name = Self::parse_keyword_param(line, "ELSET");
-                    state.elem_set_section = Some(name);
-                } else if kw_upper.starts_with("*MATERIAL") {
-                    let name = Self::parse_keyword_param(line, "NAME");
-                    state.material_name = Some(name);
-                } else if kw_upper.starts_with("*ELASTIC") {
-                    state.in_elastic = true;
-                } else if kw_upper.starts_with("*STEP") {
-                    let step_name = Self::parse_keyword_param(line, "NAME");
-                    mesh.steps.push(AnalysisStep::new(step_name));
-                } else if kw_upper.starts_with("*BOUNDARY") || kw_upper.starts_with("*CLOAD") {
-                }
-                continue;
-            }
-            if state.node_section {
-                if let Some(node) = Self::parse_node_line(line) {
-                    mesh.nodes.push(node);
-                }
-            } else if state.element_section {
-                if let Some(elem) = Self::parse_element_line(line, state.current_elem_type.clone())
-                {
-                    mesh.elements.push(elem);
-                }
-            } else if let Some(ref set_name) = state.node_set_section.clone() {
-                let ids: Vec<usize> = line
-                    .split(',')
-                    .filter_map(|s| s.trim().parse::<usize>().ok())
-                    .collect();
-                mesh.node_sets
-                    .entry(set_name.clone())
-                    .or_default()
-                    .extend(ids);
-            } else if let Some(ref set_name) = state.elem_set_section.clone() {
-                let ids: Vec<usize> = line
-                    .split(',')
-                    .filter_map(|s| s.trim().parse::<usize>().ok())
-                    .collect();
-                mesh.element_sets
-                    .entry(set_name.clone())
-                    .or_default()
-                    .extend(ids);
-            } else if state.in_elastic
-                && let Some(mat_name) = &state.material_name.clone()
-            {
-                if let Some(mat) = Self::parse_elastic_line(line, mat_name) {
-                    mesh.materials.push(mat);
-                }
-                state.in_elastic = false;
-            }
-        }
-        mesh
+        super::abaqus_inp::parse_inp(source).0
     }
-    fn parse_node_line(line: &str) -> Option<FeNode> {
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() < 4 {
-            return None;
-        }
-        let id: usize = parts[0].trim().parse().ok()?;
-        let x: f64 = parts[1].trim().parse().ok()?;
-        let y: f64 = parts[2].trim().parse().ok()?;
-        let z: f64 = parts[3].trim().parse().ok()?;
-        Some(FeNode::new(id, [x, y, z]))
-    }
-    fn parse_element_line(line: &str, elem_type: FeElementType) -> Option<FeElement> {
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() < 2 {
-            return None;
-        }
-        let id: usize = parts[0].trim().parse().ok()?;
-        let connectivity: Vec<usize> = parts[1..]
-            .iter()
-            .filter_map(|s| s.trim().parse::<usize>().ok())
-            .collect();
-        if connectivity.is_empty() {
-            return None;
-        }
-        Some(FeElement::new(id, elem_type, connectivity))
-    }
-    fn parse_elastic_line(line: &str, name: &str) -> Option<LinearElasticMaterial> {
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() < 2 {
-            return None;
-        }
-        let e: f64 = parts[0].trim().parse().ok()?;
-        let nu: f64 = parts[1].trim().parse().ok()?;
-        Some(LinearElasticMaterial::new(0, name, e, nu, 0.0))
-    }
-    fn parse_element_type(line: &str) -> FeElementType {
-        let up = line.to_uppercase();
-        if up.contains("C3D4") || up.contains("TET4") {
-            FeElementType::Tet4
-        } else if up.contains("C3D10") || up.contains("TET10") {
-            FeElementType::Tet10
-        } else if up.contains("C3D8") || up.contains("HEX8") {
-            FeElementType::Hex8
-        } else if up.contains("C3D20") || up.contains("HEX20") {
-            FeElementType::Hex20
-        } else if up.contains("S3") || up.contains("TRI3") {
-            FeElementType::Tri3
-        } else if up.contains("S4") || up.contains("QUAD4") {
-            FeElementType::Quad4
-        } else if up.contains("T3D2") {
-            FeElementType::Line2
+    /// Like [`AbaqusInpIo::parse`], but fails instead of skipping data lines
+    /// that cannot be interpreted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Parse`] listing every skipped line, each with
+    /// its line number.
+    pub fn try_parse(source: &str) -> crate::Result<FeMesh> {
+        let (mesh, issues) = super::abaqus_inp::parse_inp(source);
+        if issues.is_empty() {
+            Ok(mesh)
         } else {
-            FeElementType::Unknown(line.to_string())
-        }
-    }
-    fn parse_keyword_param(line: &str, param: &str) -> String {
-        let up = line.to_uppercase();
-        let search = format!("{}=", param.to_uppercase());
-        if let Some(pos) = up.find(&search) {
-            let rest = &line[pos + search.len()..];
-            rest.split(',').next().unwrap_or("").trim().to_string()
-        } else {
-            String::new()
+            Err(crate::Error::Parse(format!(
+                "Abaqus input: {}",
+                issues.join("; ")
+            )))
         }
     }
     /// Write a mesh to Abaqus `.inp` format.

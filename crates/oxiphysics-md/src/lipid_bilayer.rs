@@ -997,15 +997,31 @@ impl CgBead {
     }
 }
 
-/// Integrate a single bead with the BAOAB Langevin scheme.
+/// First half of a BAOAB Langevin step (Leimkuhler & Matthews): **B, A, O, A**.
 ///
-/// B: velocity half-kick;  A: position full-drift;
-/// O: Ornstein-Uhlenbeck friction/noise step;  A: drift;  B: velocity half-kick.
-pub fn langevin_step_baoab(bead: &mut CgBead, params: &LangevinParams, rng_noise: [f64; 3]) {
+/// `bead.force` must hold the force at the current position `bead.pos`.  With
+/// `c₁ = exp(−γ Δt)`:
+///
+/// * B: `v ← v + (Δt/2) F/m`
+/// * A: `x ← x + (Δt/2) v`
+/// * O: `v ← c₁ v + √((1 − c₁²) k_B T / m) ξ`, where `rng_noise` supplies the
+///   three independent **standard normal** variates `ξ`
+/// * A: `x ← x + (Δt/2) v`
+///
+/// The Ornstein-Uhlenbeck update leaves the Maxwell-Boltzmann velocity
+/// distribution (variance `k_B T / m` per component) invariant for every
+/// `Δt`, so the friction and noise amplitudes satisfy the
+/// fluctuation-dissipation theorem.
+///
+/// The step is only complete once the force has been re-evaluated at the new
+/// position, stored in `bead.force`, and [`baoab_post_force`] has applied the
+/// closing half kick.  For a system of many interacting beads, call this for
+/// every bead, recompute all forces, then call [`baoab_post_force`] for every
+/// bead.  [`langevin_step_baoab`] performs all three phases for a bead whose
+/// force depends only on its own position.
+pub fn baoab_pre_force(bead: &mut CgBead, params: &LangevinParams, rng_noise: [f64; 3]) {
     let dt = params.dt_ps;
-    let gamma = params.gamma;
     let kbt = KB * params.temperature_k;
-    let sigma = (2.0 * gamma * kbt / bead.mass).sqrt();
 
     // B: half velocity kick
     let a = scale3(bead.force, 1.0 / bead.mass);
@@ -1014,15 +1030,44 @@ pub fn langevin_step_baoab(bead: &mut CgBead, params: &LangevinParams, rng_noise
     // A: half drift
     bead.pos = add3(bead.pos, scale3(bead.vel, 0.5 * dt));
 
-    // O: Ornstein-Uhlenbeck
-    let c1 = (-gamma * dt).exp();
-    let c2 = ((1.0 - c1 * c1).max(0.0)).sqrt() * sigma;
+    // O: Ornstein-Uhlenbeck with stationary variance k_B T / m
+    let c1 = (-params.gamma * dt).exp();
+    let c2 = ((1.0 - c1 * c1).max(0.0) * kbt / bead.mass).sqrt();
     bead.vel = add3(scale3(bead.vel, c1), scale3(rng_noise, c2));
 
     // A: half drift
     bead.pos = add3(bead.pos, scale3(bead.vel, 0.5 * dt));
+}
 
-    // B: half kick (force must be recomputed externally before next call)
+/// Closing half kick `v ← v + (Δt/2) F/m` of a BAOAB Langevin step.
+///
+/// `bead.force` must hold the force evaluated at the position reached by
+/// [`baoab_pre_force`].
+pub fn baoab_post_force(bead: &mut CgBead, params: &LangevinParams) {
+    let a = scale3(bead.force, 1.0 / bead.mass);
+    bead.vel = add3(bead.vel, scale3(a, 0.5 * params.dt_ps));
+}
+
+/// Advance a single bead by one complete BAOAB Langevin step.
+///
+/// Runs [`baoab_pre_force`] (B, A, O, A), stores `force_at(&bead.pos)` -- the
+/// force at the new position -- in `bead.force`, and finishes with the closing
+/// B half kick of [`baoab_post_force`].  Because `force_at` sees only the bead
+/// position, this entry point suits a bead moving in an external field or
+/// harmonic trap; use the two phase functions for interacting beads.
+///
+/// `rng_noise` holds three independent standard normal variates.
+pub fn langevin_step_baoab<F>(
+    bead: &mut CgBead,
+    params: &LangevinParams,
+    rng_noise: [f64; 3],
+    force_at: F,
+) where
+    F: FnOnce(&[f64; 3]) -> [f64; 3],
+{
+    baoab_pre_force(bead, params, rng_noise);
+    bead.force = force_at(&bead.pos);
+    baoab_post_force(bead, params);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1673,10 +1718,214 @@ mod tests {
         let params = LangevinParams::default_martini();
         let noise = [0.0; 3];
         let pos_before = bead.pos;
-        langevin_step_baoab(&mut bead, &params, noise);
+        langevin_step_baoab(&mut bead, &params, noise, |_| [0.0; 3]);
         assert!(
             (bead.pos[0] - pos_before[0]).abs() > 1e-10,
             "position should change"
+        );
+    }
+
+    // ── BAOAB phases ─────────────────────────────────────────────────────────
+
+    /// Isotropic harmonic trap `F = -k x`.
+    fn trap_force(k: f64) -> impl Fn(&[f64; 3]) -> [f64; 3] {
+        move |x| [-k * x[0], -k * x[1], -k * x[2]]
+    }
+
+    fn trap_energy(bead: &CgBead, k: f64) -> f64 {
+        bead.kinetic_energy() + 0.5 * k * dot3(bead.pos, bead.pos)
+    }
+
+    #[test]
+    fn test_baoab_post_force_applies_half_kick() {
+        let params = LangevinParams {
+            gamma: 1.0,
+            temperature_k: 300.0,
+            dt_ps: 0.02,
+        };
+        let mut bead = CgBead::at_rest([0.0; 3], 4.0, 0);
+        bead.vel = [1.0, 0.0, 0.0];
+        bead.force = [8.0, -4.0, 0.0];
+        baoab_post_force(&mut bead, &params);
+        // v += (dt / 2) F / m = 0.01 * [2, -1, 0]
+        assert!((bead.vel[0] - 1.02).abs() < 1.0e-15, "{:?}", bead.vel);
+        assert!((bead.vel[1] + 0.01).abs() < 1.0e-15, "{:?}", bead.vel);
+        assert_eq!(bead.vel[2], 0.0);
+        assert_eq!(
+            bead.pos, [0.0; 3],
+            "the closing kick must not move the bead"
+        );
+    }
+
+    #[test]
+    fn test_baoab_o_step_has_the_fluctuation_dissipation_amplitude() {
+        let params = LangevinParams {
+            gamma: 1.0,
+            temperature_k: 300.0,
+            dt_ps: 0.02,
+        };
+        let mass = 72.0;
+        let mut bead = CgBead::at_rest([0.0; 3], mass, 0);
+        baoab_pre_force(&mut bead, &params, [1.0, -2.0, 0.5]);
+        // At rest and force free, only the O step acts on the velocity:
+        // v = sqrt((1 - c1^2) kT / m) xi, the update that keeps N(0, kT/m)
+        // invariant.  The old amplitude sqrt(2 gamma kT / m) was dimensionally
+        // wrong and heated the bead to twice the target temperature.
+        let c1 = (-params.gamma * params.dt_ps).exp();
+        let amplitude = ((1.0 - c1 * c1) * KB * params.temperature_k / mass).sqrt();
+        for (axis, xi) in [1.0, -2.0, 0.5].into_iter().enumerate() {
+            assert!(
+                (bead.vel[axis] - amplitude * xi).abs() < 1.0e-14,
+                "axis {axis}: {} vs {}",
+                bead.vel[axis],
+                amplitude * xi
+            );
+            // The two half drifts straddle the O step: only the second one sees v.
+            assert!(
+                (bead.pos[axis] - 0.5 * params.dt_ps * amplitude * xi).abs() < 1.0e-15,
+                "axis {axis}: position {}",
+                bead.pos[axis]
+            );
+        }
+    }
+
+    #[test]
+    fn test_baoab_complete_step_matches_phase_by_phase_integration() {
+        let params = LangevinParams::default_martini();
+        let force = trap_force(50.0);
+        let noise = [0.3, -1.2, 0.7];
+        let mut whole = CgBead::at_rest([0.2, -0.1, 0.05], 72.0, 0);
+        whole.vel = [0.1, 0.2, -0.3];
+        whole.force = force(&whole.pos);
+        let mut phased = whole.clone();
+        langevin_step_baoab(&mut whole, &params, noise, &force);
+        baoab_pre_force(&mut phased, &params, noise);
+        phased.force = force(&phased.pos);
+        baoab_post_force(&mut phased, &params);
+        assert_eq!(whole.pos, phased.pos);
+        assert_eq!(whole.vel, phased.vel);
+        assert_eq!(whole.force, phased.force);
+    }
+
+    #[test]
+    fn test_baoab_constant_force_is_integrated_exactly() {
+        // Constant acceleration a = F / m = 0.5 nm/ps^2.  Velocity Verlet is
+        // exact for it, but only if each step ends with its closing kick: a
+        // step that stopped after the A half drift (the old code) delivered
+        // half of the impulse.
+        let params = LangevinParams {
+            gamma: 0.0,
+            temperature_k: 300.0,
+            dt_ps: 0.02,
+        };
+        let mut bead = CgBead::at_rest([0.0; 3], 4.0, 0);
+        bead.force = [2.0, 0.0, 0.0];
+        for _ in 0..100 {
+            langevin_step_baoab(&mut bead, &params, [0.0; 3], |_| [2.0, 0.0, 0.0]);
+        }
+        let t = 100.0 * params.dt_ps;
+        assert!(
+            (bead.vel[0] - 0.5 * t).abs() < 1.0e-12,
+            "v = {}",
+            bead.vel[0]
+        );
+        assert!(
+            (bead.pos[0] - 0.5 * 0.5 * t * t).abs() < 1.0e-12,
+            "x = {}",
+            bead.pos[0]
+        );
+    }
+
+    /// Largest relative energy excursion of a gamma = 0 harmonic bead over
+    /// `n_periods` oscillation periods.
+    fn max_energy_excursion(dt_ps: f64, n_periods: f64) -> f64 {
+        let mass = 72.0;
+        let omega = 2.0; // ps^-1
+        let k = mass * omega * omega;
+        let params = LangevinParams {
+            gamma: 0.0,
+            temperature_k: 300.0,
+            dt_ps,
+        };
+        let force = trap_force(k);
+        let mut bead = CgBead::at_rest([0.1, -0.05, 0.02], mass, 0);
+        bead.vel = [0.0, 0.3, -0.1];
+        bead.force = force(&bead.pos);
+        let e0 = trap_energy(&bead, k);
+        let n_steps = (n_periods * 2.0 * PI / omega / dt_ps).round() as usize;
+        let mut worst = 0.0_f64;
+        for _ in 0..n_steps {
+            langevin_step_baoab(&mut bead, &params, [0.0; 3], &force);
+            worst = worst.max(((trap_energy(&bead, k) - e0) / e0).abs());
+        }
+        worst
+    }
+
+    #[test]
+    fn test_baoab_without_friction_conserves_energy_to_second_order() {
+        let coarse = max_energy_excursion(0.01, 10.0);
+        let fine = max_energy_excursion(0.005, 10.0);
+        assert!(coarse < 2.0e-4, "relative energy error {coarse}");
+        let ratio = coarse / fine;
+        assert!(
+            (3.0..5.0).contains(&ratio),
+            "halving dt should quarter the error, got ratio {ratio} ({coarse} / {fine})"
+        );
+    }
+
+    /// Time-averaged kinetic and trap energies per bead of an ensemble of
+    /// Langevin beads started at rest in the trap `F = -k x` (`k = 0`: free).
+    fn thermostat_energy_averages(k: f64, params: &LangevinParams, seed: u64) -> (f64, f64) {
+        use crate::gaussian_noise::standard_normal_vec3;
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        let mass = 72.0;
+        let (n_beads, n_steps, burn_in) = (64_usize, 20_000_usize, 1_000_usize);
+        let force = trap_force(k);
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut beads: Vec<CgBead> = (0..n_beads)
+            .map(|_| CgBead::at_rest([0.0; 3], mass, 0))
+            .collect();
+        let (mut kinetic, mut potential, mut samples) = (0.0, 0.0, 0.0);
+        for step in 0..n_steps {
+            for bead in beads.iter_mut() {
+                let noise = standard_normal_vec3(&mut rng);
+                langevin_step_baoab(bead, params, noise, &force);
+                if step >= burn_in {
+                    kinetic += bead.kinetic_energy();
+                    potential += 0.5 * k * dot3(bead.pos, bead.pos);
+                    samples += 1.0;
+                }
+            }
+        }
+        (kinetic / samples, potential / samples)
+    }
+
+    #[test]
+    fn test_baoab_free_bead_thermalises_at_the_target_temperature() {
+        let params = LangevinParams::default_martini();
+        let target = 1.5 * KB * params.temperature_k;
+        let (kinetic, _) = thermostat_energy_averages(0.0, &params, 7_001);
+        assert!(
+            (kinetic / target - 1.0).abs() < 0.03,
+            "<m v^2 / 2> = {kinetic} but 3 kT / 2 = {target}"
+        );
+    }
+
+    #[test]
+    fn test_baoab_harmonic_bead_obeys_equipartition() {
+        let params = LangevinParams::default_martini();
+        let k = 72.0 * 2.0 * 2.0; // omega = 2 ps^-1
+        let target = 1.5 * KB * params.temperature_k;
+        let (kinetic, potential) = thermostat_energy_averages(k, &params, 7_002);
+        assert!(
+            (kinetic / target - 1.0).abs() < 0.03,
+            "<KE> = {kinetic} but 3 kT / 2 = {target}"
+        );
+        assert!(
+            (potential / target - 1.0).abs() < 0.03,
+            "<k x^2 / 2> = {potential} but 3 kT / 2 = {target}"
         );
     }
 }

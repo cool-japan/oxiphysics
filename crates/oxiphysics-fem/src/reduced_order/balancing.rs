@@ -24,22 +24,22 @@
 //!    (`r × N`) with `T_l T_r = I_r`;
 //! 4. the reduced system is `A_r = T_l A T_r`, `B_r = T_l B`, `C_r = C T_r`.
 //!
-//! The reduced model is stable, is itself balanced (both of its Gramians equal
-//! `Σ_r`), and satisfies the a-priori error bound
+//! The reduced model is stable (asymptotically stable when `σ_r > σ_{r+1}`; with
+//! a repeated Hankel singular value at the truncation order poles on the
+//! imaginary axis cannot be excluded), is itself balanced (both of its Gramians
+//! equal `Σ_r`), and satisfies the a-priori error bound
 //! `‖G − G_r‖_∞ ≤ 2 (σ_{r+1} + … + σ_N)`.
 //!
-//! The Lyapunov equations are solved by [`solve_lyapunov`]: a vectorised
-//! (Kronecker) pivoted-LU solve for small systems and the squared Smith
-//! iteration on the Cayley-transformed equation for larger ones.
+//! The Lyapunov equations are solved by [`solve_lyapunov`] with the algorithm
+//! of Bartels and Stewart on the real Schur form of `A` (Hessenberg reduction,
+//! Francis QR iteration and a block back-substitution): `O(n³)` operations,
+//! backward stable, and the computed spectrum of `A` provides the check that
+//! the system is asymptotically stable.
 
+use super::schur::RealSchur;
 use super::{BalancedSystem, DenseMat, mat_mul, mat_transpose};
 use crate::analysis::FemError;
 
-/// Largest system order for which the Lyapunov equation is solved directly in
-/// its vectorised form `(I⊗A + A⊗I) vec(W) = −vec(Q)` (an `N² × N²` system).
-const KRONECKER_MAX_ORDER: usize = 40;
-/// Maximum number of squarings of the Smith iteration (`2^64` series terms).
-const SMITH_MAX_SQUARINGS: usize = 64;
 /// Relative size of a negative Gramian eigenvalue that is still treated as
 /// round-off (larger ones prove that `A` is not asymptotically stable).
 const PSD_TOLERANCE: f64 = 1.0e-8;
@@ -76,99 +76,12 @@ fn identity(n: usize) -> DenseMat {
         .collect()
 }
 
-/// Frobenius norm.
-fn frobenius(m: &[Vec<f64>]) -> f64 {
-    m.iter().flatten().map(|v| v * v).sum::<f64>().sqrt()
-}
-
 /// `(M + Mᵀ) / 2` of a square matrix.
 fn symmetrized(m: &[Vec<f64>]) -> DenseMat {
     let n = m.len();
     (0..n)
         .map(|i| (0..n).map(|j| 0.5 * (m[i][j] + m[j][i])).collect())
         .collect()
-}
-
-/// LU factorisation with partial pivoting of a row-major `n × n` matrix.
-struct LuFactors {
-    lu: Vec<f64>,
-    pivots: Vec<usize>,
-    n: usize,
-}
-
-impl LuFactors {
-    /// Factor `a`; fails with [`FemError::SingularSystem`] if a pivot is
-    /// negligible relative to the largest entry of the matrix.
-    fn new(mut a: Vec<f64>, n: usize) -> Result<Self, FemError> {
-        let scale = a.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-        let negligible = scale * n as f64 * f64::EPSILON;
-        let mut pivots = vec![0usize; n];
-        for col in 0..n {
-            let mut pivot_row = col;
-            let mut best = a[col * n + col].abs();
-            for row in (col + 1)..n {
-                let value = a[row * n + col].abs();
-                if value > best {
-                    best = value;
-                    pivot_row = row;
-                }
-            }
-            if best <= negligible {
-                return Err(FemError::SingularSystem);
-            }
-            pivots[col] = pivot_row;
-            if pivot_row != col {
-                for j in 0..n {
-                    a.swap(col * n + j, pivot_row * n + j);
-                }
-            }
-            let pivot = a[col * n + col];
-            for row in (col + 1)..n {
-                let factor = a[row * n + col] / pivot;
-                a[row * n + col] = factor;
-                if factor != 0.0 {
-                    for j in (col + 1)..n {
-                        let update = factor * a[col * n + j];
-                        a[row * n + j] -= update;
-                    }
-                }
-            }
-        }
-        Ok(Self { lu: a, pivots, n })
-    }
-
-    /// Solve `A x = b` in place.
-    fn solve_in_place(&self, b: &mut [f64]) {
-        let n = self.n;
-        for (col, &pivot_row) in self.pivots.iter().enumerate() {
-            b.swap(col, pivot_row);
-        }
-        for i in 1..n {
-            let row = &self.lu[i * n..i * n + i];
-            let sum: f64 = row.iter().zip(b[..i].iter()).map(|(l, x)| l * x).sum();
-            b[i] -= sum;
-        }
-        for i in (0..n).rev() {
-            let row = &self.lu[i * n + i + 1..(i + 1) * n];
-            let sum: f64 = row.iter().zip(b[i + 1..].iter()).map(|(u, x)| u * x).sum();
-            b[i] = (b[i] - sum) / self.lu[i * n + i];
-        }
-    }
-
-    /// Solve `A X = B` for a dense right-hand-side matrix, column by column.
-    fn solve_matrix(&self, b: &[Vec<f64>]) -> DenseMat {
-        let n = self.n;
-        let cols = b.first().map_or(0, Vec::len);
-        let mut x = vec![vec![0.0_f64; cols]; n];
-        for j in 0..cols {
-            let mut column: Vec<f64> = b.iter().map(|row| row[j]).collect();
-            self.solve_in_place(&mut column);
-            for (x_row, value) in x.iter_mut().zip(column) {
-                x_row[j] = value;
-            }
-        }
-        x
-    }
 }
 
 /// Eigen-decomposition of a symmetric matrix by cyclic Jacobi rotations.
@@ -327,20 +240,20 @@ fn svd_jacobi(m: &[Vec<f64>]) -> (DenseMat, Vec<f64>, DenseMat) {
 ///
 /// For a Hurwitz `A` and symmetric positive semi-definite `Q` the solution is
 /// the symmetric positive semi-definite matrix `W = ∫₀^∞ e^{At} Q e^{Aᵀt} dt`.
-/// Systems of order up to 40 are solved directly by pivoted LU on the
-/// vectorised equation `(I⊗A + A⊗I) vec(W) = −vec(Q)`; larger systems use the squared Smith
-/// iteration on the Cayley-transformed (Stein) equation
-/// `W = A_p W A_pᵀ + Q_p` with `A_p = (A − pI)⁻¹(A + pI)`,
-/// `Q_p = 2p (A − pI)⁻¹ Q (A − pI)⁻ᵀ`, which converges quadratically in the
-/// number of squarings whenever `A` is Hurwitz.
+/// The equation is solved with the algorithm of Bartels and Stewart: the real
+/// Schur decomposition `A = Z T Zᵀ` is computed by Hessenberg reduction and the
+/// Francis QR iteration, the quasi-triangular equation `T Y + Y Tᵀ = −Zᵀ Q Z`
+/// is solved block by block, and `W = Z Y Zᵀ`.  The cost is `O(n³)`.
 ///
 /// # Errors
 /// * [`FemError::InvalidInput`] if the shapes disagree, an entry is not finite
-///   or (for the iterative path) `A` is not asymptotically stable.
-/// * [`FemError::SingularSystem`] if two eigenvalues of `A` sum to zero (for
-///   instance an eigenvalue at the origin or a pair `±λ`), in which case the
-///   equation has no unique solution.
-/// * [`FemError::SolverNotConverged`] if the Smith iteration does not converge.
+///   or `A` is not asymptotically stable (an eigenvalue has a non-negative real
+///   part).
+/// * [`FemError::SingularSystem`] if two eigenvalues of `A` add up to zero (for
+///   instance an eigenvalue at the origin or a pair `±λ`, a pure imaginary pair
+///   included), in which case the equation has no unique solution.
+/// * [`FemError::SolverNotConverged`] if the QR iteration of the Schur
+///   decomposition does not converge.
 pub fn solve_lyapunov(a: &[Vec<f64>], q: &[Vec<f64>]) -> Result<DenseMat, FemError> {
     let n = a.len();
     check_matrix("A", a, n, n)?;
@@ -348,86 +261,7 @@ pub fn solve_lyapunov(a: &[Vec<f64>], q: &[Vec<f64>]) -> Result<DenseMat, FemErr
     if n == 0 {
         return Ok(Vec::new());
     }
-    if n <= KRONECKER_MAX_ORDER {
-        lyapunov_kronecker(a, q)
-    } else {
-        lyapunov_smith(a, q)
-    }
-}
-
-/// Direct solution of `A W + W Aᵀ = −Q` through the vectorised equation.
-fn lyapunov_kronecker(a: &[Vec<f64>], q: &[Vec<f64>]) -> Result<DenseMat, FemError> {
-    let n = a.len();
-    let size = n * n;
-    // Unknowns are ordered row-major: index (i, j) -> i * n + j.
-    let mut k = vec![0.0_f64; size * size];
-    for i in 0..n {
-        for j in 0..n {
-            let row = i * n + j;
-            for l in 0..n {
-                // (A W)_ij = Σ_l A_il W_lj
-                k[row * size + l * n + j] += a[i][l];
-                // (W Aᵀ)_ij = Σ_l W_il A_jl
-                k[row * size + i * n + l] += a[j][l];
-            }
-        }
-    }
-    let mut rhs: Vec<f64> = q.iter().flat_map(|row| row.iter().map(|v| -v)).collect();
-    LuFactors::new(k, size)?.solve_in_place(&mut rhs);
-    Ok(rhs.chunks(n).map(<[f64]>::to_vec).collect())
-}
-
-/// Squared Smith iteration on the Cayley-transformed Lyapunov equation.
-fn lyapunov_smith(a: &[Vec<f64>], q: &[Vec<f64>]) -> Result<DenseMat, FemError> {
-    let n = a.len();
-    let not_stable = || {
-        FemError::InvalidInput("A is not asymptotically stable (Smith iteration diverges)".into())
-    };
-    // Shift: the root-mean-square singular value of A.  Any positive shift
-    // converges for Hurwitz A; this one keeps the spectral radius of the
-    // Cayley transform well below one for typical spectra.
-    let shift = frobenius(a) / (n as f64).sqrt();
-    if shift <= 0.0 {
-        return Err(not_stable());
-    }
-    let mut minus: Vec<f64> = a.iter().flat_map(|row| row.iter().copied()).collect();
-    let mut plus = minus.clone();
-    for i in 0..n {
-        minus[i * n + i] -= shift;
-        plus[i * n + i] += shift;
-    }
-    let lu = LuFactors::new(minus, n)?;
-    let plus: DenseMat = plus.chunks(n).map(<[f64]>::to_vec).collect();
-    // A_p = (A − pI)⁻¹ (A + pI)
-    let mut a_p = lu.solve_matrix(&plus);
-    // Q_p = 2p (A − pI)⁻¹ Q (A − pI)⁻ᵀ = 2p ((A − pI)⁻¹ ((A − pI)⁻¹ Q)ᵀ)ᵀ
-    let y = lu.solve_matrix(q);
-    let z = lu.solve_matrix(&mat_transpose(&y));
-    let mut x: DenseMat = mat_transpose(&z)
-        .into_iter()
-        .map(|row| row.into_iter().map(|v| 2.0 * shift * v).collect())
-        .collect();
-    for _ in 0..SMITH_MAX_SQUARINGS {
-        let increment = mat_mul(&mat_mul(&a_p, &x), &mat_transpose(&a_p));
-        let increment_norm = frobenius(&increment);
-        if !increment_norm.is_finite() {
-            return Err(not_stable());
-        }
-        for (x_row, inc_row) in x.iter_mut().zip(increment.iter()) {
-            for (x_ij, inc_ij) in x_row.iter_mut().zip(inc_row.iter()) {
-                *x_ij += inc_ij;
-            }
-        }
-        if increment_norm <= 1.0e-15 * frobenius(&x) {
-            return Ok(x);
-        }
-        a_p = mat_mul(&a_p, &a_p);
-    }
-    if frobenius(&a_p) >= 1.0 {
-        Err(not_stable())
-    } else {
-        Err(FemError::SolverNotConverged)
-    }
+    RealSchur::new(a)?.solve_lyapunov(q)
 }
 
 /// Controllability Gramian `Wc` of `(A, B)`: the solution of
@@ -537,10 +371,12 @@ impl BalancingTransform {
 ///
 /// # Errors
 /// * [`FemError::InvalidInput`] if the shapes disagree or `A` is not
-///   asymptotically stable (a Gramian is not positive semi-definite).
+///   asymptotically stable (an eigenvalue has a non-negative real part).
 /// * [`FemError::SingularSystem`] if the Lyapunov equations have no unique
-///   solution (eigenvalues of `A` on the imaginary axis).
-/// * [`FemError::SolverNotConverged`] if the iterative Lyapunov solver fails.
+///   solution (two eigenvalues of `A` add up to zero, for instance eigenvalues
+///   on the imaginary axis).
+/// * [`FemError::SolverNotConverged`] if the QR iteration of the Schur
+///   decomposition does not converge.
 pub fn balancing_transform(
     a: &[Vec<f64>],
     b: &[Vec<f64>],
@@ -605,7 +441,8 @@ pub fn balancing_transform(
 /// to (at most) `n_reduced` states.
 ///
 /// Returns the reduced matrices `(A_r, B_r, C_r)`.  The reduced model is
-/// stable and balanced, and its transfer function deviates from the full one by
+/// stable (asymptotically stable when `σ_r > σ_{r+1}`) and balanced, and its
+/// transfer function deviates from the full one by
 /// at most `2 (σ_{r+1} + … + σ_N)` in the `H∞` norm (see
 /// [`BalancingTransform::error_bound`]).  Empty input, or `n_reduced == 0`,
 /// yields empty matrices.
@@ -644,6 +481,117 @@ pub fn hankel_singular_values(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Frobenius norm.
+    fn frobenius(m: &[Vec<f64>]) -> f64 {
+        m.iter().flatten().map(|v| v * v).sum::<f64>().sqrt()
+    }
+
+    /// LU factorisation with partial pivoting of a row-major `n × n` matrix.
+    struct LuFactors {
+        lu: Vec<f64>,
+        pivots: Vec<usize>,
+        n: usize,
+    }
+
+    impl LuFactors {
+        /// Factor `a`; fails with [`FemError::SingularSystem`] if a pivot is
+        /// negligible relative to the largest entry of the matrix.
+        fn new(mut a: Vec<f64>, n: usize) -> Result<Self, FemError> {
+            let scale = a.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            let negligible = scale * n as f64 * f64::EPSILON;
+            let mut pivots = vec![0usize; n];
+            for col in 0..n {
+                let mut pivot_row = col;
+                let mut best = a[col * n + col].abs();
+                for row in (col + 1)..n {
+                    let value = a[row * n + col].abs();
+                    if value > best {
+                        best = value;
+                        pivot_row = row;
+                    }
+                }
+                if best <= negligible {
+                    return Err(FemError::SingularSystem);
+                }
+                pivots[col] = pivot_row;
+                if pivot_row != col {
+                    for j in 0..n {
+                        a.swap(col * n + j, pivot_row * n + j);
+                    }
+                }
+                let pivot = a[col * n + col];
+                for row in (col + 1)..n {
+                    let factor = a[row * n + col] / pivot;
+                    a[row * n + col] = factor;
+                    if factor != 0.0 {
+                        for j in (col + 1)..n {
+                            let update = factor * a[col * n + j];
+                            a[row * n + j] -= update;
+                        }
+                    }
+                }
+            }
+            Ok(Self { lu: a, pivots, n })
+        }
+
+        /// Solve `A x = b` in place.
+        fn solve_in_place(&self, b: &mut [f64]) {
+            let n = self.n;
+            for (col, &pivot_row) in self.pivots.iter().enumerate() {
+                b.swap(col, pivot_row);
+            }
+            for i in 1..n {
+                let row = &self.lu[i * n..i * n + i];
+                let sum: f64 = row.iter().zip(b[..i].iter()).map(|(l, x)| l * x).sum();
+                b[i] -= sum;
+            }
+            for i in (0..n).rev() {
+                let row = &self.lu[i * n + i + 1..(i + 1) * n];
+                let sum: f64 = row.iter().zip(b[i + 1..].iter()).map(|(u, x)| u * x).sum();
+                b[i] = (b[i] - sum) / self.lu[i * n + i];
+            }
+        }
+
+        /// Solve `A X = B` for a dense right-hand-side matrix, column by column.
+        fn solve_matrix(&self, b: &[Vec<f64>]) -> DenseMat {
+            let n = self.n;
+            let cols = b.first().map_or(0, Vec::len);
+            let mut x = vec![vec![0.0_f64; cols]; n];
+            for j in 0..cols {
+                let mut column: Vec<f64> = b.iter().map(|row| row[j]).collect();
+                self.solve_in_place(&mut column);
+                for (x_row, value) in x.iter_mut().zip(column) {
+                    x_row[j] = value;
+                }
+            }
+            x
+        }
+    }
+
+    /// Reference solution of `A W + W Aᵀ + Q = 0` through the vectorised equation
+    /// `(I⊗A + A⊗I) vec(W) = −vec(Q)`, an `n² × n²` pivoted LU solve: exact but
+    /// `O(n⁶)`, so it is only used to check the Schur-based solver on small systems.
+    fn lyapunov_vectorised(a: &[Vec<f64>], q: &[Vec<f64>]) -> Result<DenseMat, FemError> {
+        let n = a.len();
+        let size = n * n;
+        // Unknowns are ordered row-major: index (i, j) -> i * n + j.
+        let mut k = vec![0.0_f64; size * size];
+        for i in 0..n {
+            for j in 0..n {
+                let row = i * n + j;
+                for l in 0..n {
+                    // (A W)_ij = Σ_l A_il W_lj
+                    k[row * size + l * n + j] += a[i][l];
+                    // (W Aᵀ)_ij = Σ_l W_il A_jl
+                    k[row * size + i * n + l] += a[j][l];
+                }
+            }
+        }
+        let mut rhs: Vec<f64> = q.iter().flat_map(|row| row.iter().map(|v| -v)).collect();
+        LuFactors::new(k, size)?.solve_in_place(&mut rhs);
+        Ok(rhs.chunks(n).map(<[f64]>::to_vec).collect())
+    }
 
     /// Deterministic pseudo-random value in (-1, 1).
     fn lcg_unit(state: &mut u64) -> f64 {
@@ -864,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn lyapunov_kronecker_solution_satisfies_the_equation() {
+    fn lyapunov_solution_satisfies_the_equation_for_random_stable_matrices() {
         let n = 7;
         let a = random_stable(n, 3, 0.4);
         let r = random_matrix(n, n, 4);
@@ -888,28 +836,49 @@ mod tests {
     }
 
     #[test]
-    fn lyapunov_smith_agrees_with_the_direct_solution() {
-        let n = 9;
-        let a = random_stable(n, 31, 0.3);
-        let r = random_matrix(n, n, 32);
-        let q = mat_mul(&r, &mat_transpose(&r));
-        let direct = lyapunov_kronecker(&a, &q).expect("direct solve");
-        let iterative = lyapunov_smith(&a, &q).expect("Smith iteration");
-        let diff: DenseMat = direct
-            .iter()
-            .zip(iterative.iter())
-            .map(|(d, s)| d.iter().zip(s.iter()).map(|(x, y)| x - y).collect())
-            .collect();
-        assert!(
-            frobenius(&diff) < 1e-10 * frobenius(&direct),
-            "relative difference {}",
-            frobenius(&diff) / frobenius(&direct)
-        );
+    fn bartels_stewart_agrees_with_the_vectorised_reference_solution() {
+        // Random stable matrices have real and complex eigenvalues; the right-hand
+        // sides are symmetric positive semi-definite for even and general for odd
+        // seeds.
+        for (index, n) in [1usize, 2, 3, 4, 5, 7, 9, 12].into_iter().enumerate() {
+            let a = random_stable(n, 31 + index as u64, 0.3);
+            let r = random_matrix(n, n, 131 + index as u64);
+            let q = if index % 2 == 0 {
+                mat_mul(&r, &mat_transpose(&r))
+            } else {
+                r
+            };
+            let reference = lyapunov_vectorised(&a, &q).expect("reference solve");
+            let w = solve_lyapunov(&a, &q).expect("Bartels-Stewart solve");
+            let difference: DenseMat = reference
+                .iter()
+                .zip(w.iter())
+                .map(|(d, s)| d.iter().zip(s.iter()).map(|(x, y)| x - y).collect())
+                .collect();
+            assert!(
+                frobenius(&difference) < 1e-10 * frobenius(&reference),
+                "n = {n}: relative difference {}",
+                frobenius(&difference) / frobenius(&reference)
+            );
+        }
     }
 
     #[test]
-    fn lyapunov_large_system_uses_the_iteration_and_satisfies_the_equation() {
-        let n = KRONECKER_MAX_ORDER + 8;
+    fn complex_pair_has_the_closed_form_solution() {
+        // A = [[-a, w], [-w, -a]] has A + Aᵀ = -2a I, hence W = I / (2a) solves
+        // A W + W Aᵀ + I = 0 for the eigenvalues -a ± i w.
+        let (decay, omega) = (0.3, 5.0);
+        let a = vec![vec![-decay, omega], vec![-omega, -decay]];
+        let w = solve_lyapunov(&a, &identity(2)).expect("stable oscillator");
+        let expected = 1.0 / (2.0 * decay);
+        assert!((w[0][0] - expected).abs() < 1e-13 * expected);
+        assert!((w[1][1] - expected).abs() < 1e-13 * expected);
+        assert!(w[0][1].abs() < 1e-13 * expected && w[1][0].abs() < 1e-13 * expected);
+    }
+
+    #[test]
+    fn lyapunov_large_system_satisfies_the_equation_and_is_positive_semi_definite() {
+        let n = 90;
         let a = random_stable(n, 41, 0.3);
         let r = random_matrix(n, 3, 42);
         let q = mat_mul(&r, &mat_transpose(&r));
@@ -943,17 +912,40 @@ mod tests {
             solve_lyapunov(&rotation, &q),
             Err(FemError::SingularSystem)
         ));
+        // 1 ± 2i and -1 ± 2i: (1 + 2i) + (-1 - 2i) = 0, although no eigenvalue is real
+        let mut mirrored = vec![vec![0.0; 4]; 4];
+        for (start, real) in [(0, 1.0), (2, -1.0)] {
+            mirrored[start][start] = real;
+            mirrored[start][start + 1] = 2.0;
+            mirrored[start + 1][start] = -2.0;
+            mirrored[start + 1][start + 1] = real;
+        }
+        assert!(matches!(
+            solve_lyapunov(&mirrored, &identity(4)),
+            Err(FemError::SingularSystem)
+        ));
     }
 
     #[test]
-    fn lyapunov_iteration_rejects_unstable_matrices() {
-        let n = KRONECKER_MAX_ORDER + 10;
-        let growth: Vec<f64> = (1..=n).map(|i| i as f64).collect();
-        let result = solve_lyapunov(&diagonal(&growth), &identity(n));
-        assert!(
-            matches!(result, Err(FemError::InvalidInput(_))),
-            "unstable A must be rejected, got {result:?}"
-        );
+    fn lyapunov_rejects_unstable_matrices_of_every_size() {
+        for n in [2usize, 7, 50] {
+            let growth: Vec<f64> = (1..=n).map(|i| i as f64).collect();
+            let result = solve_lyapunov(&diagonal(&growth), &identity(n));
+            assert!(
+                matches!(result, Err(FemError::InvalidInput(_))),
+                "n = {n}: unstable A must be rejected, got {result:?}"
+            );
+        }
+        // A single unstable complex pair among stable poles.
+        let a = vec![
+            vec![-1.0, 0.0, 0.0],
+            vec![0.0, 0.2, 3.0],
+            vec![0.0, -3.0, 0.2],
+        ];
+        assert!(matches!(
+            solve_lyapunov(&a, &identity(3)),
+            Err(FemError::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -1016,6 +1008,31 @@ mod tests {
         );
         assert!((hsv[0] - 0.7310).abs() < 1e-4);
         assert!((hsv[1] - 0.0190).abs() < 1e-4);
+    }
+
+    #[test]
+    fn scalar_system_has_the_closed_form_hankel_singular_value() {
+        // x' = -2 x + u, y = 3 x:  Wc = b^2 / (2|a|) = 1/4, Wo = c^2 / (2|a|) = 9/4,
+        // sigma = sqrt(Wc Wo) = 3/4.  The fabricated Gramians of the earlier
+        // implementation (a fixed decay factor of 1/2) did not satisfy this.
+        let a = vec![vec![-2.0]];
+        let b = vec![vec![1.0]];
+        let c = vec![vec![3.0]];
+        let wc = controllability_gramian(&a, &b).expect("stable");
+        let wo = observability_gramian(&a, &c).expect("stable");
+        assert!((wc[0][0] - 0.25).abs() < 1e-15);
+        assert!((wo[0][0] - 2.25).abs() < 1e-15);
+        let hsv = hankel_singular_values(&a, &b, &c).expect("stable");
+        assert_eq!(hsv.len(), 1);
+        assert!((hsv[0] - 0.75).abs() < 1e-14, "sigma = {}", hsv[0]);
+        // Full-order truncation keeps the pole and the gain, and balances B and C.
+        let (a_r, b_r, c_r) = balanced_truncation(&a, &b, &c, 1).expect("stable");
+        assert!((a_r[0][0] + 2.0).abs() < 1e-13);
+        assert!((b_r[0][0] - c_r[0][0]).abs() < 1e-13);
+        assert!((b_r[0][0] * c_r[0][0] - 3.0).abs() < 1e-13);
+        // The reduced Gramians equal sigma (balanced realisation).
+        let wc_r = controllability_gramian(&a_r, &b_r).expect("stable");
+        assert!((wc_r[0][0] - 0.75).abs() < 1e-13);
     }
 
     #[test]
@@ -1219,8 +1236,8 @@ mod tests {
     }
 
     #[test]
-    fn large_system_is_reduced_through_the_iterative_lyapunov_solver() {
-        let n = KRONECKER_MAX_ORDER + 5;
+    fn large_system_is_reduced_within_the_error_bound() {
+        let n = 45;
         let poles: Vec<f64> = (0..n).map(|i| -(0.2 + 0.35 * i as f64)).collect();
         let a = diagonal(&poles);
         let b = random_matrix(n, 1, 121);
@@ -1307,5 +1324,110 @@ mod tests {
             balanced_truncation(&[vec![-1.0, 0.0]], &b, &c, 1),
             Err(FemError::InvalidInput(_))
         ));
+    }
+
+    /// State matrix `[[0, I], [-K, -C]]` of a chain of `m` unit masses with
+    /// `K = stiffness · tridiag(-1, 2, -1)` and `C = damping · K`.
+    fn damped_chain(m: usize, stiffness: f64, damping: f64) -> DenseMat {
+        let mut a = vec![vec![0.0; 2 * m]; 2 * m];
+        for i in 0..m {
+            a[i][m + i] = 1.0;
+            let couplings = [
+                (i.wrapping_sub(1), -stiffness),
+                (i, 2.0 * stiffness),
+                (i + 1, -stiffness),
+            ];
+            for (j, k) in couplings {
+                if j < m {
+                    a[m + i][j] = -k;
+                    a[m + i][m + j] = -damping * k;
+                }
+            }
+        }
+        a
+    }
+
+    #[test]
+    fn lightly_damped_structure_is_reduced_within_the_error_bound() {
+        // Complex poles with damping ratios below 1 %: the Gramians are large and
+        // the transfer function has sharp resonance peaks.
+        let (m, stiffness, damping) = (10, 100.0, 2.0e-3);
+        let n = 2 * m;
+        let a = damped_chain(m, stiffness, damping);
+        let mut b = vec![vec![0.0]; n];
+        b[m][0] = 1.0;
+        let mut c = vec![vec![0.0; n]];
+        c[0][m - 1] = 1.0;
+        let full = (a, b, c);
+        // Frequencies: a logarithmic sweep plus a fine grid around every resonance.
+        let mut frequencies: Vec<f64> = (0..200)
+            .map(|k| 10f64.powf(-1.0 + 2.5 * k as f64 / 199.0))
+            .collect();
+        for j in 1..=m {
+            let kappa = stiffness
+                * (2.0 - 2.0 * (j as f64 * std::f64::consts::PI / (m as f64 + 1.0)).cos());
+            let resonance = (kappa * (1.0 - 0.25 * damping * damping * kappa)).sqrt();
+            for offset in [-4.0e-3, -1.0e-3, 0.0, 1.0e-3, 4.0e-3] {
+                frequencies.push(resonance * (1.0 + offset));
+            }
+        }
+        for r in [2usize, 4, 6, 10] {
+            let transform = balancing_transform(&full.0, &full.1, &full.2, r).expect("stable");
+            assert_eq!(transform.reduced_dim(), r);
+            let reduced = transform.reduce(&full.0, &full.1, &full.2);
+            let bound = transform.error_bound();
+            let worst = frequencies
+                .iter()
+                .map(|&omega| response_error(&full, &reduced, omega))
+                .fold(0.0_f64, f64::max);
+            assert!(
+                worst <= bound * (1.0 + 1e-6),
+                "r = {r}: error {worst} exceeds the bound {bound}"
+            );
+            assert!(worst > 0.0 && bound.is_finite());
+        }
+        // The reduced models stay asymptotically stable (their Gramians exist).
+        let (a_r, b_r, _) = balanced_truncation(&full.0, &full.1, &full.2, 6).expect("stable");
+        assert!(controllability_gramian(&a_r, &b_r).is_ok());
+    }
+
+    #[test]
+    fn gramian_of_a_lightly_damped_structure_is_positive_semi_definite() {
+        let m = 25;
+        let a = damped_chain(m, 400.0, 1.0e-3);
+        let n = 2 * m;
+        let mut b = vec![vec![0.0]; n];
+        b[m + 3][0] = 1.0;
+        let wc = controllability_gramian(&a, &b).expect("stable");
+        let bbt = mat_mul(&b, &mat_transpose(&b));
+        assert!(lyapunov_residual(&a, &wc, &bbt) < 1e-11 * frobenius(&wc) * frobenius(&a));
+        assert!(max_asymmetry(&wc) <= 1e-12 * frobenius(&wc));
+        let (eigenvalues, _) = symmetric_eigen(&wc);
+        assert!(eigenvalues[0] > 0.0);
+        assert!(
+            eigenvalues[n - 1] >= -1e-10 * eigenvalues[0],
+            "smallest eigenvalue {}",
+            eigenvalues[n - 1]
+        );
+    }
+
+    #[test]
+    fn large_dense_system_is_solved_in_cubic_time() {
+        // A vectorised (Kronecker) solve would need an n² × n² = 22 500 × 22 500
+        // matrix here; the Schur-based solution is accurate and fast.
+        let n = 150;
+        let a = random_stable(n, 201, 0.2);
+        let r = random_matrix(n, 2, 202);
+        let q = mat_mul(&r, &mat_transpose(&r));
+        let started = std::time::Instant::now();
+        let w = solve_lyapunov(&a, &q).expect("stable system");
+        let elapsed = started.elapsed();
+        assert!(
+            lyapunov_residual(&a, &w, &q) < 1e-10 * (frobenius(&q) + frobenius(&a) * frobenius(&w))
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "solve took {elapsed:?}"
+        );
     }
 }

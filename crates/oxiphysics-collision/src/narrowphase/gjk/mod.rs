@@ -1,5 +1,6 @@
 //! Auto-generated module structure
 
+pub(crate) mod distance;
 mod functions;
 mod functions_2;
 pub mod gjksolver_traits;

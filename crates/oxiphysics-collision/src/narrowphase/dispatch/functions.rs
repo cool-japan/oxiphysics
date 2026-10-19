@@ -3,7 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use crate::narrowphase::epa::Epa;
-use crate::narrowphase::gjk::{Gjk, GjkResult};
+use crate::narrowphase::gjk::Gjk;
 use crate::narrowphase::specialized;
 use crate::types::{CollisionPair, Contact, ContactManifold};
 use oxiphysics_core::Transform;
@@ -249,17 +249,6 @@ pub fn dispatch_compound(
         NarrowPhaseResult::contact(manifold)
     }
 }
-/// Re-express a contact whose normal points from A toward B in the crate-wide
-/// [`Contact`] convention (normal FROM B TOWARD A).
-///
-/// [`specialized::sphere_sphere`] and [`specialized::capsule_capsule`] return
-/// the A -> B centre-line direction; every contact leaving the dispatcher must
-/// carry a B -> A normal so that callers can apply `+normal` impulses to body A.
-/// The witness points (`point_a` on A, `point_b` on B) are already correct.
-pub(super) fn normal_from_b_to_a(mut contact: Contact) -> Contact {
-    contact.normal = -contact.normal;
-    contact
-}
 /// Attempt to use a specialized collision test.
 ///
 /// Returns a single contact whose normal points from `shape_b` toward `shape_a`.
@@ -275,7 +264,7 @@ pub(super) fn try_specialized(
         ("Sphere", "Sphere") => {
             let s1 = as_sphere(shape_a)?;
             let s2 = as_sphere(shape_b)?;
-            specialized::sphere_sphere(s1, transform_a, s2, transform_b).map(normal_from_b_to_a)
+            specialized::sphere_sphere(s1, transform_a, s2, transform_b)
         }
         ("Sphere", "BoxShape") => {
             let s = as_sphere(shape_a)?;
@@ -298,7 +287,7 @@ pub(super) fn try_specialized(
         ("Capsule", "Capsule") => {
             let c1 = as_capsule(shape_a)?;
             let c2 = as_capsule(shape_b)?;
-            specialized::capsule_capsule(c1, transform_a, c2, transform_b).map(normal_from_b_to_a)
+            specialized::capsule_capsule(c1, transform_a, c2, transform_b)
         }
         _ => None,
     }
@@ -310,31 +299,18 @@ pub(super) fn gjk_epa(
     transform_b: &Transform,
     pair: CollisionPair,
 ) -> Option<ContactManifold> {
-    let result = Gjk::query(shape_a, transform_a, shape_b, transform_b);
-    match result {
-        GjkResult::Intersecting(simplex) => {
-            let contact = match Epa::penetration_depth(
-                shape_a,
-                transform_a,
-                shape_b,
-                transform_b,
-                &simplex,
-            ) {
-                Some(c) => c,
-                // EPA failed on a degenerate simplex — fall back to MPR (XenoCollide).
-                None => crate::narrowphase::gjk::mpr_contact(
-                    shape_a,
-                    transform_a,
-                    shape_b,
-                    transform_b,
-                )?,
-            };
-            let mut manifold = ContactManifold::new(pair);
-            manifold.add_contact(contact);
-            Some(manifold)
-        }
-        GjkResult::Separated { .. } => None,
-    }
+    // Only overlapping pairs produce a contact, so skip the distance refinement
+    // that `Gjk::query` spends on separated pairs.
+    let simplex = Gjk::overlap_simplex(shape_a, transform_a, shape_b, transform_b)?;
+    let contact = match Epa::penetration_depth(shape_a, transform_a, shape_b, transform_b, &simplex)
+    {
+        Some(c) => c,
+        // EPA failed on a degenerate simplex — fall back to MPR (XenoCollide).
+        None => crate::narrowphase::gjk::mpr_contact(shape_a, transform_a, shape_b, transform_b)?,
+    };
+    let mut manifold = ContactManifold::new(pair);
+    manifold.add_contact(contact);
+    Some(manifold)
 }
 /// Extract type name from Debug output.
 pub(super) fn type_name(shape: &dyn Shape) -> &'static str {

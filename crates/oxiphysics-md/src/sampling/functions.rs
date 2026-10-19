@@ -629,4 +629,132 @@ mod tests_new_sampling {
         );
         assert!(muca.weight(-1.0).abs() < 1e-10, "out-of-range → weight = 0");
     }
+
+    // -----------------------------------------------------------------------
+    // sampling::ReplicaExchange: Metropolis exchange criterion
+    // -----------------------------------------------------------------------
+
+    /// Boltzmann constant (J/K) used by `ReplicaExchange::new`.
+    const KB_JOULE: f64 = 1.380_649e-23;
+
+    /// xorshift64* uniform deviate in \[0, 1).
+    fn xorshift_uniform(state: &mut u64) -> f64 {
+        *state ^= *state >> 12;
+        *state ^= *state << 25;
+        *state ^= *state >> 27;
+        let bits = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
+        (bits >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    #[test]
+    fn test_pt_swap_unfavourable_exchange_is_rejected() {
+        // The cold replica holds the LOW energy and the hot replica the HIGH one:
+        // exchanging the configurations would put the high energy on the cold
+        // replica, so the Metropolis probability is exp(-12.1) ~ 6e-6.
+        let mut re = ReplicaExchange::new(vec![300.0, 400.0]);
+        re.set_energy(0, -1e-19);
+        re.set_energy(1, 1e-19);
+        let p = re.swap_probability(0, 1).expect("valid replica pair");
+        assert!(p < 1e-5, "unfavourable swap probability = {p}");
+        assert!(!re.try_swap(0, 1, 0.999), "unfavourable swap was accepted");
+        assert_eq!(re.attempted, 1);
+        assert_eq!(re.accepted, 0);
+        assert_eq!(re.energies, vec![-1e-19, 1e-19], "energies must not move");
+    }
+
+    #[test]
+    fn test_pt_swap_favourable_exchange_is_always_accepted() {
+        // High energy on the cold replica: moving it to the hot replica lowers the
+        // total Boltzmann penalty, so the probability is exactly one.
+        let mut re = ReplicaExchange::new(vec![300.0, 400.0]);
+        re.set_energy(0, 1e-19);
+        re.set_energy(1, -1e-19);
+        assert_eq!(re.swap_probability(0, 1), Some(1.0));
+        assert!(re.try_swap(0, 1, 1.0 - f64::EPSILON));
+        assert_eq!(re.accepted, 1);
+        assert_eq!(re.energies, vec![-1e-19, 1e-19], "accepted swap exchanges");
+    }
+
+    #[test]
+    fn test_pt_swap_probability_is_the_boltzmann_weight_ratio() {
+        let (t0, t1) = (300.0_f64, 450.0_f64);
+        let (e0, e1) = (-2.0e-20_f64, 0.5e-20_f64);
+        let mut re = ReplicaExchange::new(vec![t0, t1]);
+        re.set_energy(0, e0);
+        re.set_energy(1, e1);
+        // Weights written out independently of the implementation.
+        let w_before = (-e0 / (KB_JOULE * t0) - e1 / (KB_JOULE * t1)).exp();
+        let w_after = (-e1 / (KB_JOULE * t0) - e0 / (KB_JOULE * t1)).exp();
+        let expected = w_after / w_before;
+        assert!(expected < 1.0, "scenario must be unfavourable: {expected}");
+        let p = re.swap_probability(0, 1).expect("valid replica pair");
+        assert!(
+            (p - expected).abs() < 1e-12 * expected,
+            "p = {p}, weight ratio = {expected}"
+        );
+        // Detailed balance: P(a->b) w(a) = P(b->a) w(b) with the reverse move
+        // (energies exchanged) accepted with probability one.
+        re.set_energy(0, e1);
+        re.set_energy(1, e0);
+        assert_eq!(re.swap_probability(0, 1), Some(1.0));
+    }
+
+    #[test]
+    fn test_pt_swap_acceptance_rate_equals_the_probability() {
+        let mut re = ReplicaExchange::new(vec![300.0, 400.0]);
+        // Choose E1 - E0 so that exp((b0 - b1)(E0 - E1)) = 0.3.
+        let b0 = 1.0 / (KB_JOULE * 300.0);
+        let b1 = 1.0 / (KB_JOULE * 400.0);
+        let e_low = 0.0_f64;
+        let e_high = (1.0_f64 / 0.3).ln() / (b0 - b1);
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let trials = 40_000_usize;
+        let mut accepted = 0_usize;
+        for _ in 0..trials {
+            re.set_energy(0, e_low);
+            re.set_energy(1, e_high);
+            if re.try_swap(0, 1, xorshift_uniform(&mut state)) {
+                accepted += 1;
+            }
+        }
+        let rate = accepted as f64 / trials as f64;
+        let sigma = (0.3 * 0.7 / trials as f64).sqrt();
+        assert!(
+            (rate - 0.3).abs() < 4.0 * sigma,
+            "acceptance rate {rate} differs from 0.3 by more than 4 sigma ({sigma})"
+        );
+        assert_eq!(re.attempted, trials);
+        assert_eq!(re.accepted, accepted);
+        assert!((re.acceptance_rate() - rate).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_pt_swap_with_kj_per_mol_boltzmann_constant() {
+        let k_b = 8.314_462_618e-3_f64; // kJ/(mol K)
+        let mut re = ReplicaExchange::with_boltzmann_constant(vec![300.0, 400.0], k_b);
+        re.set_energy(0, -10.0);
+        re.set_energy(1, 10.0);
+        let exponent = (1.0 / (k_b * 300.0) - 1.0 / (k_b * 400.0)) * (-10.0 - 10.0);
+        let p = re.swap_probability(0, 1).expect("valid replica pair");
+        assert!((p - exponent.exp()).abs() < 1e-15, "p = {p}");
+        assert!(p > 0.0 && p < 1.0, "p = {p} must be a genuine probability");
+        assert!(!re.try_swap(0, 1, 0.999));
+        assert!(re.try_swap(0, 1, 0.0));
+    }
+
+    #[test]
+    fn test_pt_swap_invalid_attempt_is_neither_counted_nor_accepted() {
+        let mut out_of_range = ReplicaExchange::new(vec![300.0, 400.0]);
+        assert!(!out_of_range.try_swap(0, 5, 0.0));
+        assert_eq!((out_of_range.attempted, out_of_range.accepted), (0, 0));
+
+        let mut zero_temperature = ReplicaExchange::new(vec![0.0, 400.0]);
+        assert_eq!(zero_temperature.swap_probability(0, 1), None);
+        assert!(!zero_temperature.try_swap(0, 1, 0.0));
+        assert_eq!(zero_temperature.attempted, 0);
+
+        let mut bad_constant = ReplicaExchange::with_boltzmann_constant(vec![300.0, 400.0], 0.0);
+        assert!(!bad_constant.try_swap(0, 1, 0.0));
+        assert_eq!(bad_constant.attempted, 0);
+    }
 }

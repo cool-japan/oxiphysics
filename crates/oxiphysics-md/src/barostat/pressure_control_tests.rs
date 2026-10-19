@@ -5,7 +5,9 @@
 //! of the barostats and the Monte Carlo volume acceptance criterion.
 
 use super::functions::{Barostat, compute_virial, virial_pressure};
-use super::types::{BerendsenBarostat, MonteCarloBarostat, ParrinelloRahmanBarostat};
+use super::types::{
+    BerendsenBarostat, McBarostatRng, MonteCarloBarostat, ParrinelloRahmanBarostat,
+};
 use crate::atom::AtomSet;
 use crate::forcefield::{ForceField, PairForceField};
 use crate::integrator::VelocityVerlet;
@@ -574,7 +576,7 @@ fn mc_barostat_samples_the_ideal_gas_volume_distribution() {
 
 #[test]
 fn mc_rng_barostat_samples_the_ideal_gas_volume_distribution() {
-    use super::types::McBarostatRng;
+    // Ideal gas: Delta U = 0 for every trial volume.
     let n_atoms = 20_usize;
     let (kb, temp, pressure) = (1.0, 1.0, 0.05);
     let mut mc = McBarostatRng::with_seed(pressure, 0.4, 7);
@@ -582,7 +584,7 @@ fn mc_rng_barostat_samples_the_ideal_gas_volume_distribution() {
     let mut sum = 0.0;
     let mut count = 0_u32;
     for step in 0..300_000_u32 {
-        if let Some(accepted) = mc.try_volume_move(volume, 0.0, n_atoms, temp, kb) {
+        if let Some(accepted) = mc.try_volume_move(volume, |_| 0.0, n_atoms, temp, kb) {
             volume = accepted;
         }
         if step >= 5_000 {
@@ -596,4 +598,207 @@ fn mc_rng_barostat_samples_the_ideal_gas_volume_distribution() {
         (mean - expected).abs() <= 0.02 * expected,
         "<V> = {mean}, expected {expected}"
     );
+}
+
+#[test]
+fn mc_rng_propose_volume_is_uniform_in_log_volume() {
+    let mut mc = McBarostatRng::with_seed(1.0, 0.4, 3);
+    let v0 = 250.0_f64;
+    let draws = 50_000_u32;
+    let mut sum_log = 0.0;
+    let (mut min_log, mut max_log) = (f64::INFINITY, f64::NEG_INFINITY);
+    for _ in 0..draws {
+        let trial = mc.propose_volume(v0);
+        let log_ratio = (trial / v0).ln();
+        sum_log += log_ratio;
+        min_log = min_log.min(log_ratio);
+        max_log = max_log.max(log_ratio);
+    }
+    // delta ln V is uniform in [-0.2, +0.2): mean 0 (standard error 5e-4),
+    // and the extremes approach the window edges without leaving them.
+    assert!((sum_log / f64::from(draws)).abs() < 3e-3, "mean {sum_log}");
+    assert!(min_log >= -0.2 - 1e-12 && max_log < 0.2 + 1e-12);
+    assert!(min_log < -0.19 && max_log > 0.19, "{min_log} {max_log}");
+    // Only `accept` counts attempts; proposing alone leaves the statistics alone.
+    assert_eq!(mc.n_attempted, 0);
+}
+
+#[test]
+fn mc_rng_energy_change_is_evaluated_at_the_proposed_volume() {
+    let mut reference = McBarostatRng::with_seed(1.0, 0.2, 5);
+    let mut driver = reference.clone();
+    let mut seen = Vec::new();
+    let _ = driver.try_volume_move(
+        500.0,
+        |trial| {
+            seen.push(trial);
+            0.0
+        },
+        10,
+        1.0,
+        1.0,
+    );
+    let proposed = reference.propose_volume(500.0);
+    assert_eq!(
+        seen,
+        vec![proposed],
+        "closure sees exactly the trial volume"
+    );
+    assert_eq!(driver.n_attempted, 1);
+}
+
+#[test]
+fn mc_rng_try_volume_move_is_propose_then_accept() {
+    // A volume-dependent energy, so a wrongly timed evaluation would matter.
+    let energy = |v: f64| 0.002 * (v - 100.0).powi(2);
+    let (n_atoms, temp, kb) = (12_usize, 1.5_f64, 0.8_f64);
+    let mut manual = McBarostatRng::with_seed(0.5, 0.1, 21);
+    let mut wrapped = manual.clone();
+    let mut v_manual = 100.0;
+    let mut v_wrapped = 100.0;
+    for _ in 0..500 {
+        let trial = manual.propose_volume(v_manual);
+        let delta = energy(trial) - energy(v_manual);
+        if manual.accept(v_manual, trial, delta, n_atoms, kb * temp) {
+            v_manual = trial;
+        }
+        let current = v_wrapped;
+        let result = wrapped.try_volume_move(
+            current,
+            |trial| energy(trial) - energy(current),
+            n_atoms,
+            temp,
+            kb,
+        );
+        if let Some(accepted) = result {
+            v_wrapped = accepted;
+        }
+        assert_eq!(v_manual, v_wrapped);
+    }
+    assert_eq!(manual.n_attempted, 500);
+    assert_eq!(wrapped.n_attempted, 500);
+    assert_eq!(manual.n_accepted, wrapped.n_accepted);
+    assert!(manual.n_accepted > 50 && manual.n_accepted < 500);
+}
+
+#[test]
+fn mc_rng_accept_follows_the_hand_computed_probability() {
+    // P0 = 0, V 1000 -> 1010, N = 100, kt = 1, Delta U = 2:
+    // ln(acc) = -2 + 101 ln(1.01) = -0.995017  =>  p = 0.369717.
+    let mut mc = McBarostatRng::with_seed(0.0, 0.01, 17);
+    let p = (-2.0 + 101.0 * 1.01_f64.ln()).exp();
+    assert!((p - 0.369_717).abs() < 1e-6, "p = {p}");
+    let trials = 20_000_u32;
+    let accepted = (0..trials)
+        .filter(|_| mc.accept(1000.0, 1010.0, 2.0, 100, 1.0))
+        .count();
+    let frequency = accepted as f64 / f64::from(trials);
+    assert!(
+        (frequency - p).abs() < 0.015,
+        "frequency {frequency} vs p {p}"
+    );
+    assert_eq!(mc.n_attempted, u64::from(trials));
+    assert_eq!(mc.n_accepted, accepted as u64);
+
+    // ln(acc) >= 0 is always accepted: dU = -50 at kt = 1.
+    let mut mc = McBarostatRng::with_seed(0.0, 0.01, 18);
+    assert!((0..50).all(|_| mc.accept(1000.0, 1010.0, -50.0, 100, 1.0)));
+}
+
+#[test]
+fn mc_rng_accept_rejects_invalid_moves() {
+    let mut mc = McBarostatRng::with_seed(1.0, 0.01, 19);
+    for _ in 0..20 {
+        assert!(!mc.accept(1000.0, 1010.0, f64::NAN, 100, 1.0), "NaN energy");
+        assert!(!mc.accept(0.0, 10.0, 0.0, 10, 1.0), "zero old volume");
+        assert!(!mc.accept(10.0, -1.0, 0.0, 10, 1.0), "negative new volume");
+        assert!(!mc.accept(10.0, f64::NAN, 0.0, 10, 1.0), "NaN new volume");
+        assert!(!mc.accept(10.0, 11.0, 0.0, 10, 0.0), "zero thermal energy");
+        assert!(!mc.accept(10.0, 11.0, 1e30, 10, 1.0), "huge energy penalty");
+    }
+    assert_eq!(mc.n_attempted, 120);
+    assert_eq!(mc.n_accepted, 0);
+}
+
+#[test]
+fn mc_rng_try_volume_move_skips_the_energy_for_unusable_volumes() {
+    let mut mc = McBarostatRng::with_seed(1.0, 0.1, 23);
+    for current in [0.0, -5.0, f64::NAN, f64::INFINITY] {
+        let mut calls = 0_u32;
+        let result = mc.try_volume_move(
+            current,
+            |_| {
+                calls += 1;
+                0.0
+            },
+            10,
+            1.0,
+            1.0,
+        );
+        assert_eq!(result, None, "volume {current}");
+        assert_eq!(calls, 0, "volume {current}: energy must not be evaluated");
+    }
+    assert_eq!(mc.n_attempted, 4);
+    assert_eq!(mc.n_accepted, 0);
+}
+
+#[test]
+fn mc_rng_samples_a_volume_dependent_energy_at_the_trial_volume() {
+    // Ideal gas in a harmonic volume well, U(V) = k (V - V0)^2 / 2, with
+    // k_B T = 1 (temp = 2, k_B = 0.5), N = 10 and P0 = 0.05.  The stationary
+    // density is p(V) ~ V^N exp(-beta [P0 V + U(V)]); its mean follows from
+    // quadrature, independently of the sampler.  An energy change evaluated
+    // anywhere but at the trial volume shifts the sampled mean by far more
+    // than the tolerance (the free ideal-gas mean would be 220).
+    let (n_atoms, temp, kb, pressure) = (10_usize, 2.0_f64, 0.5_f64, 0.05_f64);
+    let (spring, v_center) = (0.01_f64, 300.0_f64);
+    let potential = |v: f64| 0.5 * spring * (v - v_center).powi(2);
+    let kt = kb * temp;
+    let ln_weight = |v: f64| n_atoms as f64 * v.ln() - (pressure * v + potential(v)) / kt;
+
+    let (lo, hi, steps) = (100.0_f64, 500.0_f64, 40_000_u32);
+    let h = (hi - lo) / f64::from(steps);
+    let ln_max = (0..=steps)
+        .map(|i| ln_weight(lo + h * f64::from(i)))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let (mut z, mut zv) = (0.0, 0.0);
+    for i in 0..=steps {
+        let v = lo + h * f64::from(i);
+        let w = (ln_weight(v) - ln_max).exp();
+        z += w;
+        zv += w * v;
+    }
+    let expected = zv / z;
+    assert!(
+        expected > 290.0 && expected < 305.0,
+        "reference mean {expected}"
+    );
+
+    let mut mc = McBarostatRng::with_seed(pressure, 0.08, 11);
+    let mut volume = v_center;
+    let mut sum = 0.0;
+    let mut count = 0_u32;
+    for step in 0..300_000_u32 {
+        let current = volume;
+        let result = mc.try_volume_move(
+            current,
+            |trial| potential(trial) - potential(current),
+            n_atoms,
+            temp,
+            kb,
+        );
+        if let Some(accepted) = result {
+            volume = accepted;
+        }
+        if step >= 5_000 {
+            sum += volume;
+            count += 1;
+        }
+    }
+    let mean = sum / f64::from(count);
+    assert!(
+        (mean - expected).abs() <= 0.01 * expected,
+        "<V> = {mean}, quadrature {expected}"
+    );
+    assert!(mc.acceptance_rate() > 0.2 && mc.acceptance_rate() < 0.95);
 }

@@ -327,8 +327,203 @@ mod tests {
     fn test_thermal_management_no_panic() {
         let mut tms = ThermalManagement::new();
         let pack = BatteryPack::new(PackConfig::standard_400v_nmc());
-        let aux = tms.update(&pack, 35.0, 1.0);
+        let aux = tms.update(&pack, 0.0, 35.0, 1.0);
         assert!(aux >= 0.0);
+    }
+    /// A standard pack whose cells all sit at `temp_c`.
+    fn uniform_pack(temp_c: f64) -> BatteryPack {
+        let mut pack = BatteryPack::new(PackConfig::standard_400v_nmc());
+        for cell in &mut pack.cells {
+            cell.temperature = temp_c;
+        }
+        pack
+    }
+    /// Equilibrium temperature and time constant of the coolant balance
+    /// `m·cp·dT/dt = UA·(T_pack − T) + Q − ṁ·cp·(T − T_amb)` for constant forcing.
+    fn coolant_equilibrium(
+        tms: &ThermalManagement,
+        t_pack: f64,
+        t_amb: f64,
+        q_external: f64,
+    ) -> (f64, f64) {
+        let m_dot_cp = tms.flow_rate_lpm * tms.rho_coolant / 60.0 * tms.cp_coolant;
+        let conductance = tms.ua_pack_w_per_k + m_dot_cp;
+        let t_eq = (tms.ua_pack_w_per_k * t_pack + m_dot_cp * t_amb + q_external) / conductance;
+        let tau = tms.coolant_mass_kg * tms.cp_coolant / conductance;
+        (t_eq, tau)
+    }
+    #[test]
+    fn test_thermal_management_defaults_describe_the_coolant_loop() {
+        let tms = ThermalManagement::new();
+        assert!((tms.coolant_mass_kg - 5.0).abs() < 1e-12);
+        assert!((tms.ua_pack_w_per_k - 300.0).abs() < 1e-12);
+    }
+    #[test]
+    fn test_thermal_management_empty_pack_is_left_alone() {
+        let config = PackConfig {
+            cells_series: 0,
+            cells_parallel: 0,
+            ..PackConfig::standard_400v_nmc()
+        };
+        let pack = BatteryPack::new(config);
+        assert!(pack.cells.is_empty());
+        let mut tms = ThermalManagement::new();
+        let before = tms.t_coolant;
+        let aux = tms.update(&pack, 150.0, 30.0, 1.0);
+        assert_eq!(aux, 0.0, "nothing to regulate, nothing to pay for");
+        assert_eq!(tms.t_coolant, before, "state must not become NaN");
+        assert_eq!(tms.compressor_power_w, 0.0);
+        assert!(!tms.needs_preconditioning(&pack));
+    }
+    #[test]
+    fn test_thermal_management_coolant_follows_the_exact_exponential_response() {
+        // pack and ambient at 25 °C, coolant starting at 20 °C: pure relaxation
+        let pack = uniform_pack(25.0);
+        let mut tms = ThermalManagement::new();
+        let (t_eq, tau) = coolant_equilibrium(&tms, 25.0, 25.0, 0.0);
+        assert!((t_eq - 25.0).abs() < 1e-12);
+        for _ in 0..60 {
+            tms.update(&pack, 0.0, 25.0, 1.0);
+        }
+        let expected = t_eq + (20.0 - t_eq) * (-60.0 / tau).exp();
+        assert!(
+            (tms.t_coolant - expected).abs() < 1e-9,
+            "t_coolant = {}, analytic {expected}",
+            tms.t_coolant
+        );
+        // the same relaxation in a single, coarse step
+        let mut coarse = ThermalManagement::new();
+        coarse.update(&pack, 0.0, 25.0, 60.0);
+        assert!((coarse.t_coolant - expected).abs() < 1e-9);
+    }
+    #[test]
+    fn test_thermal_management_is_stable_for_huge_time_steps() {
+        let pack = uniform_pack(25.0);
+        for dt in [1.0e3, 1.0e6, 1.0e12] {
+            let mut tms = ThermalManagement::new();
+            tms.update(&pack, 0.0, 25.0, dt);
+            assert!(
+                (tms.t_coolant - 25.0).abs() < 1e-9,
+                "dt = {dt} s gave t_coolant = {}",
+                tms.t_coolant
+            );
+        }
+    }
+    #[test]
+    fn test_thermal_management_ignores_non_positive_time_steps() {
+        let pack = uniform_pack(25.0);
+        let mut tms = ThermalManagement::new();
+        for dt in [0.0, -5.0, f64::NAN] {
+            tms.update(&pack, 0.0, 25.0, dt);
+            assert_eq!(tms.t_coolant, 20.0, "dt = {dt} must not move the coolant");
+        }
+    }
+    #[test]
+    fn test_thermal_management_chiller_pulls_the_coolant_below_ambient() {
+        // pack 5 K above t_max: 5000 W/K * 5 K = 25 kW of cooling at COP 3
+        let pack = uniform_pack(40.0);
+        let mut tms = ThermalManagement::new();
+        tms.t_coolant = 40.0;
+        let aux = tms.update(&pack, 0.0, 40.0, 1.0e6);
+        let expected_compressor = 25_000.0 / 3.0;
+        assert!((aux - expected_compressor).abs() < 1e-9, "aux = {aux} W");
+        assert!((tms.compressor_power_w - expected_compressor).abs() < 1e-9);
+        let (t_eq, _) = coolant_equilibrium(&tms, 40.0, 40.0, -25_000.0);
+        assert!((tms.t_coolant - t_eq).abs() < 1e-9, "{}", tms.t_coolant);
+        assert!(t_eq < 20.0, "chiller must pull far below ambient: {t_eq}");
+    }
+    #[test]
+    fn test_thermal_management_heater_warms_the_coolant_above_the_pack() {
+        // pack 5 K below t_min: the heater adds heater_power_w to the loop
+        let pack = uniform_pack(10.0);
+        let mut tms = ThermalManagement::new();
+        tms.t_coolant = 10.0;
+        let aux = tms.update(&pack, 0.0, 10.0, 1.0e6);
+        assert!((aux - 4000.0).abs() < 1e-9, "aux = {aux} W");
+        assert_eq!(tms.compressor_power_w, 0.0);
+        let (t_eq, _) = coolant_equilibrium(&tms, 10.0, 10.0, 4000.0);
+        assert!((tms.t_coolant - t_eq).abs() < 1e-9, "{}", tms.t_coolant);
+        assert!((t_eq - (10.0 + 4000.0 / 995.5)).abs() < 0.01, "{t_eq}");
+    }
+    #[test]
+    fn test_thermal_management_inside_the_window_runs_neither_heater_nor_chiller() {
+        let pack = uniform_pack(25.0);
+        let mut tms = ThermalManagement::new();
+        tms.compressor_power_w = 123.0;
+        let aux = tms.update(&pack, 200.0, 25.0, 1.0);
+        assert_eq!(aux, 0.0);
+        assert_eq!(tms.compressor_power_w, 0.0);
+    }
+    #[test]
+    fn test_thermal_management_heat_load_follows_the_pack_current() {
+        // 45 °C pack: the chiller covers 5000 W/K * 10 K plus the cell heat q_gen.
+        let pack = uniform_pack(45.0);
+        let n_cells = pack.cells.len() as f64;
+        let r_cell = pack.cells[0].r_internal;
+        let parallel = pack.config.cells_parallel as f64;
+        let aux_at = |current: f64| {
+            let mut tms = ThermalManagement::new();
+            tms.update(&pack, current, 45.0, 1.0)
+        };
+        let idle = aux_at(0.0);
+        assert!((idle - 50_000.0 / 3.0).abs() < 1e-9, "idle aux = {idle} W");
+        // 200 A over 4 parallel strings: 50 A per cell, 5 W per cell, 1920 W in total
+        let q_gen_200 = n_cells * (200.0 / parallel).powi(2) * r_cell;
+        assert!((q_gen_200 - 1920.0).abs() < 1e-9, "q_gen = {q_gen_200} W");
+        let extra_200 = aux_at(200.0) - idle;
+        assert!((extra_200 - q_gen_200 / 3.0).abs() < 1e-9, "{extra_200}");
+        // I² law, not the old fixed 1 A: halving the current quarters the heat
+        let extra_100 = aux_at(100.0) - idle;
+        assert!((extra_200 / extra_100 - 4.0).abs() < 1e-9);
+        // the direction of the current does not matter
+        assert!((aux_at(-200.0) - aux_at(200.0)).abs() < 1e-12);
+    }
+    #[test]
+    fn test_thermal_management_coolant_warms_monotonically_under_load() {
+        // Cells and coolant start at the 20 °C coolant temperature of the pack;
+        // a weakly cooled pack (2 K/W per cell) heats up under 200 A and warms
+        // the coolant, while the unloaded pack leaves it exactly at 20 °C.
+        let config = PackConfig {
+            thermal_resistance: 2.0,
+            ..PackConfig::standard_400v_nmc()
+        };
+        let run = |current: f64| -> Vec<f64> {
+            let mut pack = BatteryPack::new(config.clone());
+            for cell in &mut pack.cells {
+                cell.temperature = 20.0;
+            }
+            let mut tms = ThermalManagement::new();
+            let mut history = Vec::new();
+            for _ in 0..600 {
+                pack.update(current, 1.0);
+                tms.update(&pack, current, 20.0, 1.0);
+                history.push(tms.t_coolant);
+            }
+            history
+        };
+        let loaded = run(200.0);
+        assert!(
+            loaded.windows(2).all(|w| w[1] >= w[0]),
+            "coolant temperature must rise monotonically under load"
+        );
+        let end = loaded[loaded.len() - 1];
+        assert!(end > 20.5, "coolant ended at {end} °C");
+        assert!(end < 25.0, "coolant ended at {end} °C");
+        let idle = run(0.0);
+        for t in idle {
+            assert!((t - 20.0).abs() < 1e-9, "idle coolant drifted to {t} °C");
+        }
+    }
+    #[test]
+    fn test_ev_step_runs_the_coolant_loop() {
+        let mut ev = ElectricVehicle::new_75kwh();
+        ev.speed_ms = 30.0;
+        for _ in 0..100 {
+            ev.step(100.0, 0.01, 35.0);
+        }
+        // 15 K below ambient to start with, the loop relaxes towards the air
+        assert!(ev.tms.t_coolant.is_finite());
+        assert!(ev.tms.t_coolant > 20.1, "t_coolant = {}", ev.tms.t_coolant);
     }
     #[test]
     fn test_ev_creation() {
@@ -1030,36 +1225,74 @@ pub fn battery_voltage(bat: &Battery) -> f64 {
 ///
 /// Solves `V_oc·I − R·I² = P_w` for the smaller (physical) root.
 /// Positive power = discharge; negative = charge.
+///
+/// The root is evaluated as `2·P / (V_oc + √(V_oc² − 4·R·P))`, which equals
+/// `(V_oc − √D) / (2·R)` but does not cancel catastrophically for small `R`.  A
+/// pack without internal resistance (`R < 1e-12 Ω`) is an ideal source and
+/// supplies `I = P / V_oc`.  When the demand exceeds the maximum power the pack
+/// can deliver, `V_oc² / (4·R)`, the current saturates at the maximum-power
+/// point `V_oc / (2·R)`.
 pub fn battery_current(bat: &Battery, power_w: f64) -> f64 {
-    let v_oc = battery_voltage(bat);
-    let r = bat.internal_resistance;
+    let v_oc = battery_voltage(bat).max(1e-9);
+    let r = bat.internal_resistance.max(0.0);
+    if r < 1e-12 {
+        return power_w / v_oc;
+    }
     let discriminant = v_oc * v_oc - 4.0 * r * power_w;
     if discriminant < 0.0 {
         return v_oc / (2.0 * r);
     }
-    let sqrt_d = discriminant.sqrt();
-    (v_oc - sqrt_d) / (2.0 * r)
+    2.0 * power_w / (v_oc + discriminant.sqrt())
 }
 /// Compute ohmic heat generation rate (W) = I²R.
 pub fn battery_heat(bat: &Battery, current: f64) -> f64 {
     current * current * bat.internal_resistance
 }
+/// Lowest discharge efficiency [`step_battery`] accepts; it keeps `1/η_d` finite.
+const MIN_DISCHARGE_EFFICIENCY: f64 = 1e-6;
+
 /// Advance the battery state by `dt` seconds under `power_w` watts.
+///
+/// Positive `power_w` discharges the pack, negative charges it.  `V_oc · I`
+/// (with `I` from [`battery_current`]) is the power at the internal EMF, i.e.
+/// the terminal power plus the ohmic loss `I²R`.
+///
+/// * Discharge: the cell chemistry has to release `V_oc · I / η_d` — more than
+///   the EMF power, because only the fraction `η_d` of the released energy
+///   shows up as EMF power — so `soc` falls by `V_oc · I · dt / (η_d · E_cap)`.
+/// * Charge: only the fraction `η_c` of the EMF power `V_oc · |I|` is stored,
+///   so `soc` rises by `η_c · V_oc · |I| · dt / E_cap`.
+///
+/// Energy that is neither delivered nor stored is released as heat, so the
+/// temperature rises with `I²R` plus the efficiency loss, minus the constant
+/// `cooling_power`.  A battery without capacity keeps its `soc`, a pack without
+/// thermal capacity keeps its temperature.
 ///
 /// Updates `soc` and `temp_celsius`.
 pub fn step_battery(bat: &mut Battery, power_w: f64, params: &BatteryParams, dt: f64) {
     let current = battery_current(bat, power_w);
-    let heat = battery_heat(bat, current);
+    let ohmic_heat = battery_heat(bat, current);
     let capacity_ws = bat.capacity_kwh * 3_600_000.0;
-    let eta = if power_w >= 0.0 {
-        params.discharge_efficiency
+    let emf_power = current * battery_voltage(bat);
+    // (net chemical power flowing into the cell, efficiency loss), both in W.
+    let (stored_power, efficiency_loss) = if power_w >= 0.0 {
+        let eta_discharge = params
+            .discharge_efficiency
+            .clamp(MIN_DISCHARGE_EFFICIENCY, 1.0);
+        let chemical_power = emf_power / eta_discharge;
+        (-chemical_power, chemical_power - emf_power)
     } else {
-        params.charge_efficiency
+        let eta_charge = params.charge_efficiency.clamp(0.0, 1.0);
+        let stored = -emf_power * eta_charge;
+        (stored, -emf_power - stored)
     };
-    bat.soc -= eta * current * battery_voltage(bat) * dt / capacity_ws;
-    bat.soc = bat.soc.clamp(0.0, 1.0);
-    let net_heat = heat - params.cooling_power;
-    bat.temp_celsius += (net_heat * dt) / params.thermal_capacity;
+    if capacity_ws > 0.0 {
+        bat.soc = (bat.soc + stored_power * dt / capacity_ws).clamp(0.0, 1.0);
+    }
+    if params.thermal_capacity > 0.0 {
+        let net_heat = ohmic_heat + efficiency_loss - params.cooling_power;
+        bat.temp_celsius += (net_heat * dt) / params.thermal_capacity;
+    }
 }
 /// Look up motor efficiency for a given operating point via bilinear interpolation.
 ///
@@ -1233,6 +1466,175 @@ mod ev_powertrain_tests {
         p.cooling_power = 0.0;
         step_battery(&mut b, 100_000.0, &p, 10.0);
         assert!(b.temp_celsius > 25.0, "temperature should rise");
+    }
+    /// A 100 kWh pack with the given internal resistance, full, at 25 °C.
+    fn pack_100kwh(internal_resistance: f64) -> Battery {
+        Battery {
+            capacity_kwh: 100.0,
+            soc: 1.0,
+            voltage_nominal: 400.0,
+            internal_resistance,
+            temp_celsius: 25.0,
+        }
+    }
+    /// Battery parameters with the given efficiencies and no cooling.
+    fn adiabatic_params(charge_efficiency: f64, discharge_efficiency: f64) -> BatteryParams {
+        BatteryParams {
+            charge_efficiency,
+            discharge_efficiency,
+            thermal_capacity: 50_000.0,
+            cooling_power: 0.0,
+        }
+    }
+    #[test]
+    fn battery_current_of_ideal_source_is_power_over_voltage() {
+        let b = pack_100kwh(0.0);
+        let v_oc = battery_voltage(&b);
+        for power in [-30_000.0, -1.0, 0.0, 1.0, 10_000.0, 250_000.0] {
+            let i = battery_current(&b, power);
+            assert!(i.is_finite(), "P = {power} W gave a non-finite current {i}");
+            assert!(
+                (i - power / v_oc).abs() < 1e-9 * (1.0 + (power / v_oc).abs()),
+                "P = {power} W: I = {i} A, expected {} A",
+                power / v_oc
+            );
+        }
+    }
+    #[test]
+    fn battery_current_is_stable_for_vanishing_resistance() {
+        // (V_oc - sqrt(D)) / (2R) loses all its digits here; the stable form does not.
+        let b = pack_100kwh(1e-10);
+        let v_oc = battery_voltage(&b);
+        let i = battery_current(&b, 10_000.0);
+        let ideal = 10_000.0 / v_oc;
+        assert!(
+            ((i - ideal) / ideal).abs() < 1e-6,
+            "I = {i} A, ideal-source current {ideal} A"
+        );
+    }
+    #[test]
+    fn battery_current_balances_terminal_power() {
+        let b = bat();
+        let v_oc = battery_voltage(&b);
+        for power in [-80_000.0, -5_000.0, 5_000.0, 50_000.0, 200_000.0] {
+            let i = battery_current(&b, power);
+            let delivered = v_oc * i - b.internal_resistance * i * i;
+            assert!(
+                (delivered - power).abs() < 1e-6 * power.abs(),
+                "P = {power} W but V_oc*I - R*I^2 = {delivered} W"
+            );
+        }
+    }
+    #[test]
+    fn battery_current_saturates_at_the_maximum_power_point() {
+        let b = bat();
+        let v_oc = battery_voltage(&b);
+        let r = b.internal_resistance;
+        let p_max = v_oc * v_oc / (4.0 * r);
+        let i = battery_current(&b, 2.0 * p_max);
+        assert!((i - v_oc / (2.0 * r)).abs() < 1e-9, "I = {i} A");
+        // right at the limit the two branches agree
+        let at_limit = battery_current(&b, p_max);
+        assert!(
+            (at_limit - v_oc / (2.0 * r)).abs() < 1e-3,
+            "I = {at_limit} A"
+        );
+    }
+    #[test]
+    fn step_battery_discharge_draws_more_chemical_energy_than_delivered() {
+        // 10 kW for one hour out of 100 kWh at eta_d = 0.95 costs 10 / 0.95 kWh.
+        let mut b = pack_100kwh(0.0);
+        step_battery(&mut b, 10_000.0, &adiabatic_params(0.95, 0.95), 3600.0);
+        assert!(b.soc.is_finite(), "soc must never be NaN");
+        let drop = 1.0 - b.soc;
+        assert!(
+            (drop - 0.105_26).abs() < 1e-4,
+            "soc dropped by {drop}, expected 0.10526"
+        );
+        assert!(drop > 0.1, "losses must make the soc fall faster than 10 %");
+    }
+    #[test]
+    fn step_battery_discharge_energy_is_independent_of_the_step_size() {
+        // With R = 0 the EMF power equals the terminal power at every soc.
+        let mut b = pack_100kwh(0.0);
+        let p = adiabatic_params(0.95, 0.95);
+        for _ in 0..36 {
+            step_battery(&mut b, 10_000.0, &p, 100.0);
+        }
+        let drop = 1.0 - b.soc;
+        assert!(
+            (drop - 0.105_263_157_9).abs() < 1e-9,
+            "soc dropped by {drop}, expected 10/0.95 kWh of 100 kWh"
+        );
+    }
+    #[test]
+    fn step_battery_charge_stores_the_charge_efficiency_fraction() {
+        let mut b = pack_100kwh(0.0);
+        b.soc = 0.2;
+        step_battery(&mut b, -10_000.0, &adiabatic_params(0.9, 0.97), 3600.0);
+        assert!(
+            (b.soc - (0.2 + 0.09)).abs() < 1e-9,
+            "soc = {}, expected 0.29",
+            b.soc
+        );
+    }
+    #[test]
+    fn step_battery_conserves_energy_on_discharge() {
+        // chemical energy released = delivered energy + heat
+        let mut b = bat();
+        let p = adiabatic_params(0.95, 0.9);
+        let (soc0, temp0) = (b.soc, b.temp_celsius);
+        let power = 60_000.0;
+        let dt = 30.0;
+        step_battery(&mut b, power, &p, dt);
+        let released = (soc0 - b.soc) * b.capacity_kwh * 3_600_000.0;
+        let heat = (b.temp_celsius - temp0) * p.thermal_capacity;
+        let delivered = power * dt;
+        assert!(
+            (released - (delivered + heat)).abs() < 1e-9 * released,
+            "released {released} J, delivered {delivered} J, heat {heat} J"
+        );
+        assert!(
+            heat > battery_heat(&bat(), battery_current(&bat(), power)) * dt,
+            "the efficiency loss must be released as heat as well"
+        );
+    }
+    #[test]
+    fn step_battery_conserves_energy_on_charge() {
+        // electrical energy in = energy stored + heat
+        let mut b = bat();
+        b.soc = 0.3;
+        let p = adiabatic_params(0.9, 0.97);
+        let (soc0, temp0) = (b.soc, b.temp_celsius);
+        let power = -40_000.0;
+        let dt = 45.0;
+        step_battery(&mut b, power, &p, dt);
+        let stored = (b.soc - soc0) * b.capacity_kwh * 3_600_000.0;
+        let heat = (b.temp_celsius - temp0) * p.thermal_capacity;
+        let supplied = -power * dt;
+        assert!(stored > 0.0);
+        assert!(
+            (supplied - (stored + heat)).abs() < 1e-9 * supplied,
+            "supplied {supplied} J, stored {stored} J, heat {heat} J"
+        );
+    }
+    #[test]
+    fn step_battery_tolerates_degenerate_parameters() {
+        let mut b = pack_100kwh(0.0);
+        // a zero discharge efficiency at zero power must not produce 0/0
+        step_battery(&mut b, 0.0, &adiabatic_params(0.0, 0.0), 10.0);
+        assert!((b.soc - 1.0).abs() < 1e-15, "soc = {}", b.soc);
+        // a battery without capacity keeps its state of charge
+        let mut empty = pack_100kwh(0.05);
+        empty.capacity_kwh = 0.0;
+        step_battery(&mut empty, 5_000.0, &adiabatic_params(0.95, 0.95), 10.0);
+        assert!((empty.soc - 1.0).abs() < 1e-15 && empty.temp_celsius.is_finite());
+        // a pack without thermal capacity keeps its temperature
+        let mut stiff = pack_100kwh(0.05);
+        let mut p = adiabatic_params(0.95, 0.95);
+        p.thermal_capacity = 0.0;
+        step_battery(&mut stiff, 5_000.0, &p, 10.0);
+        assert!((stiff.temp_celsius - 25.0).abs() < 1e-15);
     }
     #[test]
     fn motor_efficiency_in_range() {

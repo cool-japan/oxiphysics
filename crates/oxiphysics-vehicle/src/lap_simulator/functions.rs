@@ -40,19 +40,18 @@ pub fn simulate_lap(
                 } else {
                     config.perf.v_max * 0.92
                 };
-                let t = opt.straight_time(*length, v_current, v_lim);
-                v_current = v_lim.min(config.perf.v_max);
+                // A short straight ends before the limit speed is reached: the
+                // next segment is entered at the speed actually attained.
+                let (t, v_exit) = opt.straight_time_and_exit_speed(*length, v_current, v_lim);
+                v_current = v_exit;
                 max_speed = max_speed.max(v_current);
                 t
             }
             TrackSegment::Corner { radius, angle, .. } => {
                 let v_c = opt.v_corner(*radius).max(config.min_speed);
-                let d_brake = opt.braking_distance(v_current, v_c);
-                let t_brake = if d_brake > 1e-3 && v_current > v_c {
-                    (v_current - v_c) / opt.perf.brake_g_at(v_current).max(1e-3)
-                } else {
-                    0.0
-                };
+                // The braking zone is the last stretch before the corner and was
+                // already timed at the approach speed.
+                let t_brake = opt.braking_time_loss(v_current, v_c);
                 let arc = radius * angle.abs();
                 let t_corner = arc / v_c.max(1.0);
                 v_current = v_c;
@@ -63,11 +62,7 @@ pub fn simulate_lap(
                 for (r, a) in radii.iter().zip(angles.iter()) {
                     let v_c = opt.v_corner(*r).max(config.min_speed);
                     let arc = r * a.abs();
-                    let t_brake = if v_current > v_c {
-                        (v_current - v_c) / opt.perf.brake_g_at(v_current).max(1e-3)
-                    } else {
-                        0.0
-                    };
+                    let t_brake = opt.braking_time_loss(v_current, v_c);
                     t_chicane += t_brake + arc / v_c.max(1.0);
                     v_current = v_c;
                 }
@@ -466,6 +461,223 @@ mod tests {
         let mut config = LapSimConfig::default_f1();
         let result = simulate_lap(&track, &mut config, 1);
         assert!(result.fuel_consumption > 0.0);
+    }
+    #[test]
+    fn straight_time_cruises_at_the_limit_after_accelerating() {
+        let opt = OptimalLap::new_f1();
+        let (length, v_entry, v_lim) = (1000.0, 30.0, 90.0);
+        let a = opt.perf.traction_g_at(v_entry);
+        let d_accel = (v_lim * v_lim - v_entry * v_entry) / (2.0 * a);
+        assert!(d_accel < length, "the limit must be reachable");
+        let expected = (v_lim - v_entry) / a + (length - d_accel) / v_lim;
+        let (t, v_exit) = opt.straight_time_and_exit_speed(length, v_entry, v_lim);
+        assert!(
+            (t - expected).abs() < 1e-9,
+            "t = {t} s, expected {expected} s"
+        );
+        assert!((v_exit - v_lim).abs() < 1e-12, "v_exit = {v_exit}");
+        // the cruise phase runs at the limit, not at the mean of entry and limit speed
+        let average_speed_time =
+            (v_lim - v_entry) / a + (length - d_accel) / ((v_entry + v_lim) / 2.0);
+        assert!(
+            t < average_speed_time - 1.0,
+            "t = {t} s vs {average_speed_time} s"
+        );
+        assert!((opt.straight_time(length, v_entry, v_lim) - t).abs() < 1e-15);
+    }
+    #[test]
+    fn short_straight_ends_before_the_limit_speed_is_reached() {
+        let opt = OptimalLap::new_f1();
+        let (length, v_entry) = (10.0, 30.0);
+        let a = opt.perf.traction_g_at(v_entry);
+        let (t, v_exit) = opt.straight_time_and_exit_speed(length, v_entry, 95.0);
+        let expected_exit = (v_entry * v_entry + 2.0 * a * length).sqrt();
+        assert!((v_exit - expected_exit).abs() < 1e-12, "v_exit = {v_exit}");
+        assert!(v_exit > v_entry && v_exit < opt.perf.v_max - 1.0);
+        // constant acceleration over exactly the length of the straight
+        assert!((t * (v_entry + v_exit) / 2.0 - length).abs() < 1e-9);
+        assert!((v_exit - (v_entry + a * t)).abs() < 1e-9);
+        // the time to reach the limit speed must not be charged for 10 m
+        let full_time = (opt.perf.v_max - v_entry) / a;
+        assert!(
+            t < 0.1 * full_time,
+            "t = {t} s, full acceleration {full_time} s"
+        );
+    }
+    #[test]
+    fn straight_entered_at_the_limit_takes_length_over_limit() {
+        let opt = OptimalLap::new_f1();
+        let (t, v_exit) = opt.straight_time_and_exit_speed(800.0, 80.0, 80.0);
+        assert!((t - 10.0).abs() < 1e-12, "t = {t} s");
+        assert!((v_exit - 80.0).abs() < 1e-12);
+    }
+    #[test]
+    fn straight_entered_above_the_limit_brakes_down_to_it() {
+        let opt = OptimalLap::new_f1();
+        let (v_entry, v_lim) = (95.0, 0.92 * 95.0);
+        // long enough: brake to the limit, then cruise
+        let (t, v_exit) = opt.straight_time_and_exit_speed(600.0, v_entry, v_lim);
+        assert!(t.is_finite() && t > 0.0, "t = {t} s");
+        assert!((v_exit - v_lim).abs() < 1e-12);
+        assert!(
+            t >= 600.0 / v_entry - 1e-12,
+            "faster than the entry speed: {t}"
+        );
+        assert!(t <= 600.0 / v_lim + 1e-12, "slower than the limit: {t}");
+        // too short for the braking zone: the exit speed stays above the limit
+        let (t_short, v_short) = opt.straight_time_and_exit_speed(3.0, v_entry, v_lim);
+        assert!(v_short > v_lim && v_short < v_entry, "v_exit = {v_short}");
+        assert!(t_short > 0.0 && t_short.is_finite());
+        assert!((t_short * (v_entry + v_short) / 2.0 - 3.0).abs() < 1e-9);
+    }
+    #[test]
+    fn straight_time_handles_degenerate_inputs() {
+        let opt = OptimalLap::new_f1();
+        assert_eq!(
+            opt.straight_time_and_exit_speed(0.0, 42.0, 90.0),
+            (0.0, 42.0)
+        );
+        assert_eq!(
+            opt.straight_time_and_exit_speed(-5.0, 42.0, 90.0),
+            (0.0, 42.0)
+        );
+        // a standing start accelerates
+        let (t0, v0) = opt.straight_time_and_exit_speed(300.0, 0.0, 90.0);
+        assert!(t0.is_finite() && t0 > 0.0 && v0 > 0.0, "t = {t0}, v = {v0}");
+        // no speed to drive at
+        let (t_inf, _) = opt.straight_time_and_exit_speed(100.0, 0.0, 0.0);
+        assert!(t_inf.is_infinite());
+        // without traction the car keeps rolling at its entry speed
+        let mut dead = OptimalLap::new_f1();
+        dead.perf.max_traction_g = vec![0.0; dead.perf.speed_points.len()];
+        let (t, v) = dead.straight_time_and_exit_speed(200.0, 40.0, 90.0);
+        assert!((t - 5.0).abs() < 1e-12 && (v - 40.0).abs() < 1e-12);
+        // never negative or NaN
+        for v_entry in [0.0, 5.0, 29.0, 60.0, 95.0, 120.0] {
+            for v_lim in [0.0, 10.0, 60.0, 87.4, 95.0, 200.0] {
+                for length in [0.5, 10.0, 150.0, 1500.0] {
+                    let (t, v_exit) = opt.straight_time_and_exit_speed(length, v_entry, v_lim);
+                    assert!(
+                        !t.is_nan() && t >= 0.0 && !v_exit.is_nan() && v_exit >= 0.0,
+                        "L = {length}, v_in = {v_entry}, v_lim = {v_lim}: t = {t}, v_out = {v_exit}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn braking_time_loss_is_the_excess_of_braking_over_cruising() {
+        let opt = OptimalLap::new_f1();
+        for (v, v_c) in [(95.0, 51.0), (80.0, 40.0), (60.0, 59.0), (30.0, 10.0)] {
+            let a = opt.perf.brake_g_at(v);
+            let loss = opt.braking_time_loss(v, v_c);
+            let closed_form = (v - v_c).powi(2) / (2.0 * a * v);
+            assert!(loss >= 0.0);
+            assert!(
+                (loss - closed_form).abs() < 1e-12,
+                "{loss} vs {closed_form}"
+            );
+            // braking time minus the time to cross the braking zone at the entry speed
+            let t_brake = (v - v_c) / a;
+            let d_brake = opt.braking_distance(v, v_c);
+            assert!((loss - (t_brake - d_brake / v)).abs() < 1e-12);
+        }
+        assert_eq!(opt.braking_time_loss(40.0, 50.0), 0.0);
+        assert_eq!(opt.braking_time_loss(50.0, 50.0), 0.0);
+        assert_eq!(opt.braking_time_loss(0.0, 0.0), 0.0);
+    }
+    /// An [`OptimalLap`] built like the one inside [`simulate_lap`].
+    fn lap_optimiser(config: &LapSimConfig) -> OptimalLap {
+        OptimalLap {
+            perf: config.perf.clone(),
+            driver: config.driver.clone(),
+        }
+    }
+    #[test]
+    fn simulate_lap_does_not_assume_a_short_straight_reaches_the_limit() {
+        let track = TrackLayout::new(vec![TrackSegment::Straight {
+            length: 10.0,
+            drs_available: true,
+        }]);
+        let mut config = LapSimConfig::default_f1();
+        let opt = lap_optimiser(&config);
+        let (t_expected, v_exit) = opt.straight_time_and_exit_speed(10.0, 30.0, config.perf.v_max);
+        let v_max = config.perf.v_max;
+        let result = simulate_lap(&track, &mut config, 1);
+        assert!(
+            result.max_speed < v_max - 1.0,
+            "10 m cannot take the car to {} m/s",
+            result.max_speed
+        );
+        assert!((result.max_speed - v_exit).abs() < 1e-9);
+        let segment_time: f64 = result.sector_times.iter().sum();
+        assert!((segment_time - t_expected).abs() < 1e-9, "{segment_time} s");
+        assert!(t_expected < 1.0);
+    }
+    #[test]
+    fn simulate_lap_charges_braking_only_for_what_exceeds_cruising() {
+        let track = TrackLayout::new(vec![
+            TrackSegment::Straight {
+                length: 600.0,
+                drs_available: true,
+            },
+            TrackSegment::Corner {
+                radius: 50.0,
+                angle: std::f64::consts::FRAC_PI_2,
+                direction: 1.0,
+            },
+        ]);
+        let mut config = LapSimConfig::default_f1();
+        let opt = lap_optimiser(&config);
+        let (t_straight, v_exit) = opt.straight_time_and_exit_speed(600.0, 30.0, config.perf.v_max);
+        let v_c = opt.v_corner(50.0).max(config.min_speed);
+        assert!(v_exit > v_c, "the car has to brake for the corner");
+        let d_brake = opt.braking_distance(v_exit, v_c);
+        let t_brake = (v_exit - v_c) / opt.perf.brake_g_at(v_exit);
+        let t_corner = 50.0 * std::f64::consts::FRAC_PI_2 / v_c;
+        let expected = t_straight + (t_brake - d_brake / v_exit) + t_corner;
+        let result = simulate_lap(&track, &mut config, 1);
+        let segment_time: f64 = result.sector_times.iter().sum();
+        assert!(
+            (segment_time - expected).abs() < 1e-9,
+            "{segment_time} s vs {expected} s"
+        );
+        // adding the whole braking time on top of the straight counts the braking
+        // zone twice
+        let double_counted = t_straight + t_brake + t_corner;
+        assert!(
+            (double_counted - segment_time - d_brake / v_exit).abs() < 1e-9,
+            "the double count is the time to cross the braking zone"
+        );
+    }
+    #[test]
+    fn simulate_lap_applies_the_braking_correction_inside_a_chicane() {
+        let quarter_turn = std::f64::consts::FRAC_PI_4;
+        let track = TrackLayout::new(vec![
+            TrackSegment::Straight {
+                length: 400.0,
+                drs_available: true,
+            },
+            TrackSegment::Chicane {
+                radii: vec![30.0, 20.0],
+                angles: vec![quarter_turn; 2],
+            },
+        ]);
+        let mut config = LapSimConfig::default_f1();
+        let opt = lap_optimiser(&config);
+        let (t_straight, mut v) = opt.straight_time_and_exit_speed(400.0, 30.0, config.perf.v_max);
+        let mut expected = t_straight;
+        for radius in [30.0, 20.0] {
+            let v_c = opt.v_corner(radius).max(config.min_speed);
+            expected += opt.braking_time_loss(v, v_c) + radius * quarter_turn / v_c.max(1.0);
+            v = v_c;
+        }
+        let result = simulate_lap(&track, &mut config, 1);
+        let segment_time: f64 = result.sector_times.iter().sum();
+        assert!(
+            (segment_time - expected).abs() < 1e-9,
+            "{segment_time} s vs {expected} s"
+        );
     }
     #[test]
     fn corner_apex_detect_finds_corners() {

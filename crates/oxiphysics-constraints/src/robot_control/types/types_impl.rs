@@ -2,6 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use crate::dense_linalg::singular_values;
+
 use super::super::functions::*;
 
 use super::types_2::{
@@ -130,8 +132,51 @@ impl RobotSafetyMonitor {
             reason: String::new(),
         }
     }
+    /// Describe the first non-finite value among the supplied samples, if any.
+    ///
+    /// Every limit comparison against NaN is false, so a corrupted sample would
+    /// pass all of the range checks and be reported as `Normal`; it has to be
+    /// rejected before any comparison is made.
+    fn non_finite_reason(q: &[f64], q_dot: &[f64], torques: &[f64]) -> Option<String> {
+        let channels: [(&str, &[f64]); 3] =
+            [("position", q), ("velocity", q_dot), ("torque", torques)];
+        for (name, values) in channels {
+            if let Some((joint, value)) = values
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, value)| !value.is_finite())
+            {
+                return Some(format!("non-finite state: joint {joint} {name} is {value}"));
+            }
+        }
+        None
+    }
     /// Check current robot state, update and return safety level.
+    ///
+    /// Every call assesses the sample it is given from scratch:
+    ///
+    /// * a non-finite position, velocity or torque (NaN or infinity) is an
+    ///   emergency stop, because all limit comparisons with NaN are false and a
+    ///   corrupted sample would otherwise be reported as normal;
+    /// * a position, velocity or torque beyond its limit is an emergency stop;
+    /// * a position inside the outer `1 - warning_fraction` band of its range,
+    ///   or a velocity or torque above `warning_fraction` of its limit, is a
+    ///   warning; the reasons of all warnings are joined with `"; "`;
+    /// * otherwise the level is `Normal` and the reason is cleared, so a warning
+    ///   never outlives the sample that caused it.
+    ///
+    /// An emergency stop is latched: once raised, the level stays
+    /// `EmergencyStop` until [`reset`](Self::reset) is called, even when later
+    /// samples are normal.  Only joints that have a configured limit are range
+    /// checked; non-finite values are detected for every supplied joint.
     pub fn check(&mut self, q: &[f64], q_dot: &[f64], torques: &[f64]) -> &SafetyLevel {
+        if let Some(reason) = Self::non_finite_reason(q, q_dot, torques) {
+            self.level = SafetyLevel::EmergencyStop;
+            self.reason = reason;
+            return &self.level;
+        }
+        let mut warnings: Vec<String> = Vec::new();
         for (i, (&qi, lims)) in q.iter().zip(self.pos_limits.iter()).enumerate() {
             if qi < lims[0] || qi > lims[1] {
                 self.level = SafetyLevel::EmergencyStop;
@@ -141,12 +186,9 @@ impl RobotSafetyMonitor {
                 );
                 return &self.level;
             }
-            let range = lims[1] - lims[0];
-            let warn_lo = lims[0] + range * (1.0 - self.warning_fraction);
-            let warn_hi = lims[1] - range * (1.0 - self.warning_fraction);
-            if (qi < warn_lo || qi > warn_hi) && self.level != SafetyLevel::EmergencyStop {
-                self.level = SafetyLevel::Warning;
-                self.reason = format!("Joint {i} near position limit");
+            let band = (lims[1] - lims[0]) * (1.0 - self.warning_fraction);
+            if qi < lims[0] + band || qi > lims[1] - band {
+                warnings.push(format!("Joint {i} near position limit"));
             }
         }
         for (i, (&vi, &lim)) in q_dot.iter().zip(self.vel_limits.iter()).enumerate() {
@@ -155,9 +197,8 @@ impl RobotSafetyMonitor {
                 self.reason = format!("Joint {i} velocity {vi:.3} exceeds limit {lim:.3}");
                 return &self.level;
             }
-            if vi.abs() > lim * self.warning_fraction && self.level != SafetyLevel::EmergencyStop {
-                self.level = SafetyLevel::Warning;
-                self.reason = format!("Joint {i} near velocity limit");
+            if vi.abs() > lim * self.warning_fraction {
+                warnings.push(format!("Joint {i} near velocity limit"));
             }
         }
         for (i, (&ti, &lim)) in torques.iter().zip(self.torque_limits.iter()).enumerate() {
@@ -166,10 +207,18 @@ impl RobotSafetyMonitor {
                 self.reason = format!("Joint {i} torque {ti:.3} exceeds limit {lim:.3}");
                 return &self.level;
             }
+            if ti.abs() > lim * self.warning_fraction {
+                warnings.push(format!("Joint {i} near torque limit"));
+            }
         }
         if self.level != SafetyLevel::EmergencyStop {
-            self.level = SafetyLevel::Normal;
-            self.reason.clear();
+            if warnings.is_empty() {
+                self.level = SafetyLevel::Normal;
+                self.reason.clear();
+            } else {
+                self.level = SafetyLevel::Warning;
+                self.reason = warnings.join("; ");
+            }
         }
         &self.level
     }
@@ -369,29 +418,28 @@ impl Jacobian {
             j,
         }
     }
-    /// Manipulability index: `sqrt(det(J * J^T))`.
+    /// Yoshikawa manipulability index `w = sqrt(det(J * J^T))`.
     ///
-    /// A value near zero indicates a near-singular configuration.
+    /// The index is evaluated as the product of the singular values of the
+    /// `6 x n` Jacobian, which equals `sqrt(det(J J^T))` for `n >= 6` and keeps
+    /// full relative accuracy for the tiny singular values of a nearly singular
+    /// arm (a determinant of `J J^T` would square the condition number and lose
+    /// them in rounding).  For fewer than six joints `J J^T` is rank deficient
+    /// (its determinant is identically zero), so the index is the volume of the
+    /// `n` non-trivial singular values, `w = sqrt(det(J^T J))`.
+    ///
+    /// A value near zero indicates a near-singular configuration; a chain with
+    /// no joints, a Jacobian of the wrong size or a Jacobian with non-finite
+    /// entries reports `0.0` (singular) rather than a misleading number.
     pub fn manipulability(&self) -> f64 {
         let n = self.joint_angles.len();
-        if n == 0 {
+        if n == 0 || self.j.len() != 6 * n || self.j.iter().any(|v| !v.is_finite()) {
             return 0.0;
         }
-        let mut jjt = vec![0.0f64; 36];
-        for r in 0..6 {
-            for c in 0..6 {
-                let mut s = 0.0;
-                for k in 0..n {
-                    s += self.j[r * n + k] * self.j[c * n + k];
-                }
-                jjt[r * 6 + c] = s;
-            }
-        }
-        let mut det = 1.0;
-        for i in 0..6 {
-            det *= jjt[i * 6 + i];
-        }
-        det.abs().sqrt()
+        // For a redundant arm (n >= 6) the six singular values of J are the
+        // ones that matter, for n < 6 the n non-trivial ones: in both cases the
+        // `min(6, n)` values returned for the 6 x n matrix.
+        singular_values(&self.j, 6, n).iter().product::<f64>()
     }
     /// Compute the pseudoinverse `J^+` of the 6×n Jacobian using the damped least-squares method.
     ///

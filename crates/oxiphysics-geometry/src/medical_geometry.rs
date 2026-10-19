@@ -9,6 +9,10 @@
 //!
 //! All computations use plain `f64` / `[f64; 3]` — no nalgebra dependency.
 
+use crate::mc_tables::{
+    MC_CORNER_OFFSETS, MC_EDGE_ASCENDING, MC_EDGE_ORIGIN_AXIS, MC_EDGE_TABLE, case_triangles,
+};
+use std::collections::HashMap;
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -424,21 +428,13 @@ impl VesselCenterline {
     /// Tortuosity index: arc_length / straight-line distance between endpoints.
     /// Returns `1.0` when fewer than two points exist.
     pub fn tortuosity(&self) -> f64 {
+        let (Some(first), Some(last)) = (self.points.first(), self.points.last()) else {
+            return 1.0;
+        };
         if self.points.len() < 2 {
             return 1.0;
         }
-        let chord = self
-            .points
-            .first()
-            .expect("operation should succeed")
-            .position
-            .distance_to(
-                &self
-                    .points
-                    .last()
-                    .expect("collection should not be empty")
-                    .position,
-            );
+        let chord = first.position.distance_to(&last.position);
         if chord < 1e-9 {
             return 1.0;
         }
@@ -808,132 +804,117 @@ impl IsoSurface {
     }
 }
 
-/// Marching-cubes edge table: for each cube configuration (0..255) the
-/// bitmask of which edges are intersected.
+/// Point where the linear interpolant between two voxel centres reaches `iso`.
 ///
-/// Full 256-entry table (standard MC lookup).
-const EDGE_TABLE: [u16; 256] = [
-    0x000, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c, 0x80c, 0x905, 0xa0f, 0xb06, 0xc0a,
-    0xd03, 0xe09, 0xf00, 0x190, 0x099, 0x393, 0x29a, 0x596, 0x49f, 0x795, 0x69c, 0x99c, 0x895,
-    0xb9f, 0xa96, 0xd9a, 0xc93, 0xf99, 0xe90, 0x230, 0x339, 0x033, 0x13a, 0x636, 0x73f, 0x435,
-    0x53c, 0xa3c, 0xb35, 0x83f, 0x936, 0xe3a, 0xf33, 0xc39, 0xd30, 0x3a0, 0x2a9, 0x1a3, 0x0aa,
-    0x7a6, 0x6af, 0x5a5, 0x4ac, 0xbac, 0xaa5, 0x9af, 0x8a6, 0xfaa, 0xea3, 0xda9, 0xca0, 0x460,
-    0x569, 0x663, 0x76a, 0x066, 0x16f, 0x265, 0x36c, 0xc6c, 0xd65, 0xe6f, 0xf66, 0x86a, 0x963,
-    0xa69, 0xb60, 0x5f0, 0x4f9, 0x7f3, 0x6fa, 0x1f6, 0x0ff, 0x3f5, 0x2fc, 0xdfc, 0xcf5, 0xfff,
-    0xef6, 0x9fa, 0x8f3, 0xbf9, 0xaf0, 0x650, 0x759, 0x453, 0x55a, 0x256, 0x35f, 0x055, 0x15c,
-    0xe5c, 0xf55, 0xc5f, 0xd56, 0xa5a, 0xb53, 0x859, 0x950, 0x7c0, 0x6c9, 0x5c3, 0x4ca, 0x3c6,
-    0x2cf, 0x1c5, 0x0cc, 0xfcc, 0xec5, 0xdcf, 0xcc6, 0xbca, 0xac3, 0x9c9, 0x8c0, 0x8c0, 0x9c9,
-    0xac3, 0xbca, 0xcc6, 0xdcf, 0xec5, 0xfcc, 0x0cc, 0x1c5, 0x2cf, 0x3c6, 0x4ca, 0x5c3, 0x6c9,
-    0x7c0, 0x950, 0x859, 0xb53, 0xa5a, 0xd56, 0xc5f, 0xf55, 0xe5c, 0x15c, 0x055, 0x35f, 0x256,
-    0x55a, 0x453, 0x759, 0x650, 0xaf0, 0xbf9, 0x8f3, 0x9fa, 0xef6, 0xfff, 0xcf5, 0xdfc, 0x2fc,
-    0x3f5, 0x0ff, 0x1f6, 0x6fa, 0x7f3, 0x4f9, 0x5f0, 0xb60, 0xa69, 0x963, 0x86a, 0xf66, 0xe6f,
-    0xd65, 0xc6c, 0x36c, 0x265, 0x16f, 0x066, 0x76a, 0x663, 0x569, 0x460, 0xca0, 0xda9, 0xea3,
-    0xfaa, 0x8a6, 0x9af, 0xaa5, 0xbac, 0x4ac, 0x5a5, 0x6af, 0x7a6, 0x0aa, 0x1a3, 0x2a9, 0x3a0,
-    0xd30, 0xc39, 0xf33, 0xe3a, 0x936, 0x835, 0xb3f, 0xa36, 0x53c, 0x435, 0x73f, 0x636, 0x13a,
-    0x033, 0x339, 0x230, 0xe90, 0xf99, 0xc93, 0xd9a, 0xa96, 0xb9f, 0x895, 0x99c, 0x69c, 0x795,
-    0x49f, 0x596, 0x29a, 0x393, 0x099, 0x190, 0xf00, 0xe09, 0xd03, 0xc0a, 0xb06, 0xa0f, 0x905,
-    0x80c, 0x70c, 0x605, 0x50f, 0x406, 0x30a, 0x203, 0x109, 0x000,
-];
+/// An edge that the surface crosses has `v0` and `v1` on opposite sides of
+/// `iso`, so the parameter lies in `[0, 1]` up to rounding; a non-finite
+/// parameter (NaN or infinite voxel values) falls back to the edge midpoint.
+fn interpolate_crossing(p0: Vec3, v0: f64, p1: Vec3, v1: f64, iso: f64) -> Vec3 {
+    let t = (iso - v0) / (v1 - v0);
+    let t = if t.is_finite() {
+        t.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    p0.add(&p1.sub(&p0).scale(t))
+}
 
 /// Extract an iso-surface from a [`ScalarVolume`] at the given `iso_value`
-/// using the marching-cubes algorithm.
+/// using the marching-cubes algorithm (Lorensen & Cline, full 256-case table).
 ///
-/// This implementation uses linear interpolation along each edge.  The result
-/// is suitable for visualisation and surface measurements; run
+/// A voxel is *inside* the structure when its value is at least `iso_value`
+/// (for example bone above a Hounsfield threshold); NaN voxels count as outside.
+/// Every grid edge crossed by the surface yields exactly one vertex, linearly
+/// interpolated between the two voxel centres and shared by all triangles around
+/// that edge.  The result is therefore a welded, indexed mesh: a structure that
+/// does not touch the boundary of the volume gives a closed surface in which
+/// every mesh edge belongs to exactly two triangles.  Where the structure reaches
+/// the boundary of the volume the surface stays open (no cap is added).
+///
+/// Triangles are wound counter-clockwise when seen from outside, i.e. their
+/// normals point towards decreasing voxel values, so the signed volume of a
+/// closed result is positive.  Vertex positions are in mm (`origin + index *
+/// voxel_size` per axis).  A volume with fewer than two voxels along an axis, or
+/// whose `data` is shorter than `nx * ny * nz`, yields an empty mesh.
+///
+/// The result is suitable for visualisation and surface measurements; run
 /// [`smooth_medical_mesh`] afterwards for clinical use.
 pub fn marching_cubes(volume: &ScalarVolume, iso_value: f64) -> IsoSurface {
-    let nx = volume.nx;
-    let ny = volume.ny;
-    let nz = volume.nz;
-    let [dx, dy, dz] = volume.voxel_size;
-
+    let (nx, ny, nz) = (volume.nx, volume.ny, volume.nz);
+    let voxel_count = nx.checked_mul(ny).and_then(|v| v.checked_mul(nz));
+    let usable = voxel_count.is_some_and(|count| count <= volume.data.len());
     let mut vertices: Vec<Vec3> = Vec::new();
     let mut triangles: Vec<[usize; 3]> = Vec::new();
-
-    // Edge vertex helper: interpolate between two corner positions
-    let interp = |p0: Vec3, v0: f64, p1: Vec3, v1: f64| -> Vec3 {
-        if (v1 - v0).abs() < 1e-10 {
-            return p0.add(&p1).scale(0.5);
-        }
-        let t = (iso_value - v0) / (v1 - v0);
-        p0.add(&p1.sub(&p0).scale(t))
+    if !usable || nx < 2 || ny < 2 || nz < 2 {
+        return IsoSurface {
+            vertices,
+            triangles,
+        };
+    }
+    let [dx, dy, dz] = volume.voxel_size;
+    let voxel_position = |ix: usize, iy: usize, iz: usize| -> Vec3 {
+        Vec3::new(
+            volume.origin.x + ix as f64 * dx,
+            volume.origin.y + iy as f64 * dy,
+            volume.origin.z + iz as f64 * dz,
+        )
     };
+    // Dense lattice edge id (three per voxel: its +x, +y and +z edges) -> vertex.
+    let mut edge_vertex: HashMap<u64, usize> = HashMap::new();
 
-    for iz in 0..nz.saturating_sub(1) {
-        for iy in 0..ny.saturating_sub(1) {
-            for ix in 0..nx.saturating_sub(1) {
-                // 8 corners of the cube
-                let corners_idx = [
-                    (ix, iy, iz),
-                    (ix + 1, iy, iz),
-                    (ix + 1, iy + 1, iz),
-                    (ix, iy + 1, iz),
-                    (ix, iy, iz + 1),
-                    (ix + 1, iy, iz + 1),
-                    (ix + 1, iy + 1, iz + 1),
-                    (ix, iy + 1, iz + 1),
-                ];
-                let corners_pos: Vec<Vec3> = corners_idx
-                    .iter()
-                    .map(|&(cx, cy, cz)| {
-                        Vec3::new(
-                            volume.origin.x + cx as f64 * dx,
-                            volume.origin.y + cy as f64 * dy,
-                            volume.origin.z + cz as f64 * dz,
-                        )
-                    })
-                    .collect();
-                let vals: Vec<f64> = corners_idx
-                    .iter()
-                    .map(|&(cx, cy, cz)| volume.get(cx, cy, cz).unwrap_or(0.0))
-                    .collect();
-
-                // Cube index
-                let mut cube_idx: usize = 0;
-                for (i, &v) in vals.iter().enumerate() {
-                    if v >= iso_value {
-                        cube_idx |= 1 << i;
+    for iz in 0..nz - 1 {
+        for iy in 0..ny - 1 {
+            for ix in 0..nx - 1 {
+                let values: [f64; 8] = std::array::from_fn(|corner| {
+                    let [di, dj, dk] = MC_CORNER_OFFSETS[corner];
+                    volume.data[volume.index(ix + di, iy + dj, iz + dk)]
+                });
+                let mut case = 0usize;
+                for (corner, &value) in values.iter().enumerate() {
+                    if value >= iso_value {
+                        case |= 1 << corner;
                     }
                 }
-
-                if cube_idx == 0 || cube_idx == 255 {
+                if case == 0 || case == 255 {
                     continue;
                 }
 
-                let _edge_bits = EDGE_TABLE[cube_idx];
-
-                // Compute the 12 edge mid-points (interpolated)
-                let edge_verts: Vec<Vec3> = [
-                    (0, 1),
-                    (1, 2),
-                    (2, 3),
-                    (3, 0),
-                    (4, 5),
-                    (5, 6),
-                    (6, 7),
-                    (7, 4),
-                    (0, 4),
-                    (1, 5),
-                    (2, 6),
-                    (3, 7),
-                ]
-                .iter()
-                .map(|&(a, b)| interp(corners_pos[a], vals[a], corners_pos[b], vals[b]))
-                .collect();
-
-                // Build triangles using a simple fan approach from active edges
-                // (simplified – full MC requires a tri_table; this emits the
-                // correct vertex positions for topology testing)
-                let active: Vec<usize> = (0..12)
-                    .filter(|&e| (EDGE_TABLE[cube_idx] >> e) & 1 == 1)
-                    .collect();
-                let base = vertices.len();
-                for &e in &active {
-                    vertices.push(edge_verts[e]);
+                // Vertex of every crossed edge of this cell, created on first use.
+                let crossed = MC_EDGE_TABLE[case];
+                let mut cell_vertex = [0usize; 12];
+                for (edge, &(origin, axis)) in MC_EDGE_ORIGIN_AXIS.iter().enumerate() {
+                    if crossed & (1 << edge) == 0 {
+                        continue;
+                    }
+                    let node = volume.index(ix + origin[0], iy + origin[1], iz + origin[2]);
+                    let key = 3 * (node as u64) + axis as u64;
+                    cell_vertex[edge] = match edge_vertex.get(&key) {
+                        Some(&index) => index,
+                        None => {
+                            // Interpolate from the lower to the upper lattice end so
+                            // that every cell sharing the edge computes the same point.
+                            let [lo, hi] = MC_EDGE_ASCENDING[edge];
+                            let [lo_i, lo_j, lo_k] = MC_CORNER_OFFSETS[lo];
+                            let [hi_i, hi_j, hi_k] = MC_CORNER_OFFSETS[hi];
+                            let vertex = interpolate_crossing(
+                                voxel_position(ix + lo_i, iy + lo_j, iz + lo_k),
+                                values[lo],
+                                voxel_position(ix + hi_i, iy + hi_j, iz + hi_k),
+                                values[hi],
+                                iso_value,
+                            );
+                            let index = vertices.len();
+                            vertices.push(vertex);
+                            edge_vertex.insert(key, index);
+                            index
+                        }
+                    };
                 }
-                let n = active.len();
-                for i in 1..n.saturating_sub(1) {
-                    triangles.push([base, base + i, base + i + 1]);
+
+                for [a, b, c] in case_triangles(case) {
+                    // The table winds towards the set (inside) corners; swap two
+                    // vertices so that the triangle faces out of the structure.
+                    triangles.push([cell_vertex[a], cell_vertex[c], cell_vertex[b]]);
                 }
             }
         }
@@ -1277,6 +1258,9 @@ pub fn femoral_neck_shaft_angle_deg(head_centre: Vec3, neck_centre: Vec3, shaft_
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod mc_tests;
 
 #[cfg(test)]
 mod tests {

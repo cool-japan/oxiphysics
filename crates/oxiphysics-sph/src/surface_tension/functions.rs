@@ -347,28 +347,54 @@ pub fn spreading_coefficient(gamma_sg: f64, gamma_sl: f64, gamma_lg: f64) -> f64
 }
 /// Compute Marangoni forces due to surface tension gradients.
 ///
-/// The Marangoni force arises from surface tension gradients (typically
-/// temperature-driven). The force per unit volume is:
-/// `f_Marangoni = -dsigma/dT * grad(T)` (approximately)
+/// A temperature-dependent surface tension `σ(T)` exerts a *tangential* stress on
+/// the interface, `τ_M = ∇_s σ = (dσ/dT) ∇_s T`, where
+/// `∇_s T = ∇T − n̂ (n̂·∇T)` is the surface gradient.  As a continuum surface force
+/// (Brackbill et al. 1992) the stress is spread over the interface with the delta
+/// function `δ_s ≈ |∇c|` of the colour field `c`:
 ///
-/// Here we compute it via SPH as:
-/// `f_i = -dsigma_dT * sum_j (m_j/rho_j) * (T_j - T_i) * grad_W(r_ij)`
+/// ```text
+/// f_i = (dσ/dT) [∇T_i − n̂_i (n̂_i·∇T_i)] |∇c_i|,     n̂_i = ∇c_i/|∇c_i|
+/// ∇T_i = Σ_j (m_j/ρ_j) (T_j − T_i) ∇_iW_ij          (SPH gradient)
+/// ```
+///
+/// in N/m³.  For `dσ/dT < 0` (most liquids) the force points along `−∇_s T`, towards
+/// the cold side.  Particles that do not sit on an interface, `|∇c_i| ≤ 10⁻³/h`,
+/// feel no Marangoni force: the effect is a pure interface stress, not a bulk force.
+///
+/// * `color_grad` — colour-field gradient `∇c_i` (1/m) of every particle, e.g. from
+///   [`compute_multiphase_color_gradient`]; only its direction and magnitude are
+///   used, so either sign convention works
+/// * `h` — smoothing length of the cubic-spline kernel used for `∇T`
+/// * `dsigma_dt` — temperature coefficient `dσ/dT` of the surface tension (N/(m·K))
 pub fn marangoni_forces(
     positions: &[Vec3],
     masses: &[f64],
     densities: &[f64],
     temperatures: &[f64],
+    color_grad: &[Vec3],
     neighbors: &[Vec<usize>],
     h: f64,
     dsigma_dt: f64,
 ) -> Vec<Vec3> {
     let kernel = crate::kernel::CubicSplineKernel;
     let n = positions.len();
+    assert_eq!(
+        color_grad.len(),
+        n,
+        "marangoni_forces needs one colour gradient per particle"
+    );
+    let interface_threshold = 1.0e-3 / h;
     let mut forces = vec![Vec3::zeros(); n];
     for i in 0..n {
         if densities[i] < 1e-14 {
             continue;
         }
+        let delta_s = color_grad[i].norm();
+        if delta_s.is_nan() || delta_s <= interface_threshold {
+            continue;
+        }
+        let normal = color_grad[i] / delta_s;
         let mut grad_t = Vec3::zeros();
         for &j in &neighbors[i] {
             let rhoj = densities[j];
@@ -384,7 +410,8 @@ pub fn marangoni_forces(
             let rhat = rij / r;
             grad_t += masses[j] / rhoj * (temperatures[j] - temperatures[i]) * gw * rhat;
         }
-        forces[i] = -dsigma_dt * grad_t;
+        let tangential = grad_t - normal * normal.dot(&grad_t);
+        forces[i] = dsigma_dt * delta_s * tangential;
     }
     forces
 }
@@ -958,11 +985,14 @@ mod tests {
         let h = spacing * 1.3;
         let neighbors = SpatialHash::find_all_neighbors(&positions, 2.0 * h);
         let temperatures = vec![300.0; positions.len()];
+        // Even on an (assumed) interface everywhere, a uniform temperature gives no force.
+        let color_grad = vec![Vec3::new(0.0, 10.0, 0.0); positions.len()];
         let forces = marangoni_forces(
             &positions,
             &masses,
             &densities,
             &temperatures,
+            &color_grad,
             &neighbors,
             h,
             -0.0001,
@@ -996,11 +1026,14 @@ mod tests {
         let kernel = CubicSplineKernel;
         let neighbors = SpatialHash::find_all_neighbors(&ps.positions, 2.0 * h);
         compute_density(&mut ps, &neighbors, &kernel, h);
+        // Interface normal along y: the x-gradient of T is tangential to it.
+        let color_grad = vec![Vec3::new(0.0, 10.0, 0.0); ps.positions.len()];
         let forces = marangoni_forces(
             &ps.positions,
             &ps.masses,
             &ps.densities,
             &temperatures,
+            &color_grad,
             &neighbors,
             h,
             -0.0001,

@@ -677,25 +677,25 @@ Last Updated: 2026-06-11 — version 0.1.3
 |---|---|---|---|---|---|---|---|
 | oxiphysics | 65 | 3 | 18 | 27 | 17 | 10 | 14 |
 | oxiphysics-articulated | 39 | 3 | 7 | 15 | 14 | 10 | 2 |
-| oxiphysics-collision | 225 | 1 | 85 | 107 | 32 | 29 | 20 |
-| oxiphysics-constraints | 182 | 2 | 46 | 101 | 33 | 16 | 30 |
-| oxiphysics-core | 432 | 2 | 118 | 242 | 70 | 64 | 70 |
-| oxiphysics-fem | 363 | 8 | 122 | 177 | 56 | 23 | 57 |
-| oxiphysics-geometry | 263 | 3 | 86 | 150 | 24 | 9 | 42 |
-| oxiphysics-gpu | 195 | 6 | 44 | 98 | 47 | 21 | 36 |
-| oxiphysics-io | 387 | 0 | 109 | 224 | 54 | 23 | 61 |
-| oxiphysics-lbm | 330 | 4 | 124 | 151 | 51 | 17 | 48 |
-| oxiphysics-materials | 232 | 1 | 82 | 119 | 30 | 11 | 65 |
-| oxiphysics-md | 429 | 13 | 124 | 218 | 74 | 19 | 66 |
+| oxiphysics-collision | 225 | 1 | 85 | 107 | 32 | 54 | 20 |
+| oxiphysics-constraints | 182 | 2 | 46 | 101 | 33 | 40 | 30 |
+| oxiphysics-core | 432 | 2 | 118 | 242 | 70 | 90 | 70 |
+| oxiphysics-fem | 363 | 8 | 122 | 177 | 56 | 84 | 57 |
+| oxiphysics-geometry | 263 | 3 | 86 | 150 | 24 | 45 | 42 |
+| oxiphysics-gpu | 195 | 6 | 44 | 98 | 47 | 44 | 36 |
+| oxiphysics-io | 387 | 0 | 109 | 224 | 54 | 71 | 61 |
+| oxiphysics-lbm | 330 | 4 | 124 | 151 | 51 | 93 | 48 |
+| oxiphysics-materials | 232 | 1 | 82 | 119 | 30 | 42 | 65 |
+| oxiphysics-md | 429 | 13 | 124 | 218 | 74 | 76 | 66 |
 | oxiphysics-python | 111 | 4 | 27 | 59 | 21 | 0 | 21 |
-| oxiphysics-rigid | 269 | 10 | 70 | 148 | 41 | 13 | 32 |
-| oxiphysics-softbody | 294 | 5 | 100 | 150 | 39 | 5 | 61 |
-| oxiphysics-sph | 333 | 11 | 116 | 169 | 37 | 41 | 33 |
-| oxiphysics-vehicle | 178 | 2 | 38 | 107 | 31 | 11 | 29 |
-| oxiphysics-viz | 246 | 2 | 49 | 138 | 57 | 0 | 89 |
+| oxiphysics-rigid | 269 | 10 | 70 | 148 | 41 | 42 | 32 |
+| oxiphysics-softbody | 294 | 5 | 100 | 150 | 39 | 32 | 61 |
+| oxiphysics-sph | 333 | 11 | 116 | 169 | 37 | 62 | 33 |
+| oxiphysics-vehicle | 178 | 2 | 38 | 107 | 31 | 19 | 29 |
+| oxiphysics-viz | 246 | 2 | 49 | 138 | 57 | 10 | 89 |
 | oxiphysics-wasm | 107 | 4 | 21 | 61 | 21 | 17 | 26 |
 | workspace | 17 | 0 | 2 | 8 | 7 | 0 | 0 |
-| **total** | **4697** | **84** | **1388** | **2469** | **756** | **339** | **802** |
+| **total** | **4697** | **84** | **1388** | **2469** | **756** | **841** | **802** |
 
 ### 32.A Workspace / release-readiness items (verified)
 - [ ] **F0002** (high, bug, easy/trivial) `.github/workflows/pypi-publish.yml:136` — PyPI workflow ignores publish_target=none and version_tag
@@ -724,30 +724,30 @@ Last Updated: 2026-06-11 — version 0.1.3
 - [x] **F0045** (critical, bug, medium/small) `model.rs:38` — Gravity applied as +g root acceleration; bodies fall upward
 - [x] **F0056** (critical, bug, hard/medium) `spatial.rs:350` — Plücker transforms use rot untransposed; dynamics inconsistent with kinematics
 - [x] **F0198** (critical, bug, medium/small) `narrowphase/specialized/functions.rs:177` — specialized::box_box_sat: A→B normal, centre-based points, unnormalized edge depth
-- [ ] **F0381** (critical, bug, medium/small) `joints/fixedjoint_traits.rs:136` — Joint orientation correction has inverted sign and wrong units
-- [ ] **F0481** (critical, bug, easy/small) `six_dof_constraint.rs:610` — SixDof solve_position correction has wrong sign, amplifies error
+- [x] **F0381** (critical, bug, medium/small) `joints/fixedjoint_traits.rs:136` — Joint orientation correction has inverted sign and wrong units
+- [x] **F0481** (critical, bug, easy/small) `six_dof_constraint.rs:610` — SixDof solve_position correction has wrong sign, amplifies error
 - [x] **F0775** (critical, bug, medium/small) `numerics/functions_2.rs:446` — boys_fn Taylor series diverges for x>8, corrupting md integrals
 - [x] **F0885** (critical, bug, medium/small) `sparse/functions.rs:615` — minres_solve wrong recurrence; reports converged with large residual
 - [x] **F1037** (critical, bug, easy/small) `analysis.rs:724` — Newmark-beta solves displacement-form K_eff but treats result as acceleration
 - [x] **F1038** (critical, bug, medium/small) `analysis.rs:788` — Wilson-theta solves displacement system, uses result as acceleration
-- [ ] **F1140** (critical, bug, medium/small) `dynamics.rs:151` — HHT-α parameters sign-flipped (γ<½, energy growth), not HHT
-- [ ] **F1142** (critical, bug, medium/medium) `dynamics.rs:193` — NewmarkIntegrator::step is explicit yet claims unconditional stability
-- [ ] **F1152** (critical, bug, medium/medium) `eigenvalue.rs:382` — solve_smallest/ModalAnalysis return k-step Lanczos Ritz values, not smallest modes
-- [ ] **F1174** (critical, bug, medium/small) `explicit_fem/types.rs:135` — 3D node-to-segment gap is unsigned, so contact force is always zero
+- [x] **F1140** (critical, bug, medium/small) `dynamics.rs:151` — HHT-α parameters sign-flipped (γ<½, energy growth), not HHT
+- [x] **F1142** (critical, bug, medium/medium) `dynamics.rs:193` — NewmarkIntegrator::step is explicit yet claims unconditional stability
+- [x] **F1152** (critical, bug, medium/medium) `eigenvalue.rs:382` — solve_smallest/ModalAnalysis return k-step Lanczos Ritz values, not smallest modes
+- [x] **F1174** (critical, bug, medium/small) `explicit_fem/types.rs:135` — 3D node-to-segment gap is unsigned, so contact force is always zero
 - [x] **F1346** (critical, bug, medium/medium) `solvers/functions.rs:378` — MINRES recurrence wrong; returns garbage flagged converged=true
 - [ ] **F1378** (critical, bug, easy/small) `thermal_fem.rs:163` — Tet shape gradients use J^-T rows; fails linear patch test
-- [ ] **F1546** (critical, fabrication, easy/small) `implicit_geometry/functions.rs:202` — extract_isosurface uses garbage edge table and fan triangulation
-- [ ] **F1555** (critical, stub, easy/small) `level_set/functions.rs:123` — Level-set MC tri table truncated (223/256 cases empty); edge table corrupt
+- [x] **F1546** (critical, fabrication, easy/small) `implicit_geometry/functions.rs:202` — extract_isosurface uses garbage edge table and fan triangulation
+- [x] **F1555** (critical, stub, easy/small) `level_set/functions.rs:123` — Level-set MC tri table truncated (223/256 cases empty); edge table corrupt
 - [ ] **F1723** (critical, bug, medium/small) `torus.rs:620` — Torus quartic solver mixes Ferrari conventions; ray casts wrong/miss
-- [ ] **F1794** (critical, fabrication, medium/medium) `fluid_gpu.rs:499` — LBMGpuKernels: fake velocities, no-op streaming, identity bounce-back
-- [ ] **F1799** (critical, fabrication, medium/medium) `fluid_sim_gpu/functions.rs:402` — FLIP G2P: x-only transfer, zero FLIP delta, advects by dx
-- [ ] **F1831** (critical, bug, easy/trivial) `gpu_md_solver.rs:167` — LJ pair force sign inverted: repulsion becomes attraction
+- [x] **F1794** (critical, fabrication, medium/medium) `fluid_gpu.rs:499` — LBMGpuKernels: fake velocities, no-op streaming, identity bounce-back
+- [x] **F1799** (critical, fabrication, medium/medium) `fluid_sim_gpu/functions.rs:402` — FLIP G2P: x-only transfer, zero FLIP delta, advects by dx
+- [x] **F1831** (critical, bug, easy/trivial) `gpu_md_solver.rs:167` — LJ pair force sign inverted: repulsion becomes attraction
 - [x] **F1882** (critical, fabrication, hard/medium) `lbm_gpu.rs:192` — LBM GPU kernel ignores body force, solid walls and lid velocity
 - [x] **F1883** (critical, bug, hard/large) `lbm_gpu.rs:376` — Default GPU LBM step drops walls, body force and lid
 - [x] **F1885** (critical, bug, hard/medium) `lbm_gpu.rs:423` — LbmSimulation GPU path ignores walls, Guo forcing and lid velocity
 - [x] **F2480** (critical, bug, easy/small) `d3q19_full.rs:49` — D3Q19_OPP maps edge directions to non-opposites
 - [ ] **F2601** (critical, fabrication, hard/medium) `magnetohydrodynamics_lbm.rs:1064` — MhdLbm shrinks B threefold per step and has no Lorentz coupling
-- [ ] **F2612** (critical, fabrication, hard/medium) `mrt.rs:1339` — CascadedCollision2D::collide reverses momentum; fake back-transform
+- [x] **F2612** (critical, fabrication, hard/medium) `mrt.rs:1339` — CascadedCollision2D::collide reverses momentum; fake back-transform
 - [ ] **F2785** (critical, bug, easy/small) `wall_model.rs:387` — u_tau_newton Jacobian wrong: u_tau collapses to 1e-15 in log layer
 - [ ] **F2963** (critical, bug, easy/small) `hyperelastic/functions.rs:86` — principal_stretches uses wrong acos sign, returns reflected eigenvalues
 - [ ] **F3151** (critical, bug, easy/trivial) `charmm.rs:644` — CHARMM angle forces have inverted sign (anti-restoring)
@@ -759,26 +759,26 @@ Last Updated: 2026-06-11 — version 0.1.3
 - [ ] **F3239** (critical, bug, medium/small) `fep.rs:313` — Bar::delta_f_estimate uses wrong BAR iteration (sign, missing +C, units)
 - [ ] **F3247** (critical, bug, easy/trivial) `forcefield/angleforcefield_traits.rs:43` — AngleForceField forces have reversed sign (equal +∇E)
 - [ ] **F3248** (critical, bug, easy/small) `forcefield/dihedralforcefield_traits.rs:49` — Dihedral forces have wrong sign on i/l and a wrong fj projection
-- [ ] **F3253** (critical, bug, medium/small) `free_energy/functions.rs:65` — fep_bar solves the wrong BAR equation (ΔF=0 for a constant shift)
-- [ ] **F3307** (critical, bug, easy/trivial) `metal_alloy_md/types.rs:165` — EAM compute_forces returns +∇E (force sign flipped)
+- [x] **F3253** (critical, bug, medium/small) `free_energy/functions.rs:65` — fep_bar solves the wrong BAR equation (ΔF=0 for a constant shift)
+- [x] **F3307** (critical, bug, easy/trivial) `metal_alloy_md/types.rs:165` — EAM compute_forces returns +∇E (force sign flipped)
 - [x] **F3387** (critical, bug, easy/trivial) `polymer_sim.rs:269` — Kremer-Grest FENE bond force has wrong sign (bonds repel)
-- [ ] **F3543** (critical, bug, medium/small) `thermostat/types.rs:236` — SvrThermostat::rescale_factor misimplements Bussi; equilibrates near T/2
+- [x] **F3543** (critical, bug, medium/small) `thermostat/types.rs:236` — SvrThermostat::rescale_factor misimplements Bussi; equilibrates near T/2
 - [ ] **F3634** (critical, bug, easy/trivial) `lbm_api.rs:832` — Python 3D LBM bounce-back uses wrong D3Q19 opposite table
 - [ ] **F3672** (critical, fabrication, medium/medium) `vehicle_api.rs:1190` — Vehicle step never writes slip_ratio; throttle gives zero traction
 - [ ] **F3703** (critical, fabrication, medium/medium) `world_api/mod.rs:768` — PhysicsWorld: spheres only, inverted impulse sign, no friction
 - [ ] **F3705** (critical, bug, easy/small) `world_api/mod.rs:846` — Contact impulse gate inverted: approaching spheres get no impulse
 - [ ] **F3833** (critical, bug, easy/small) `granular_media.rs:189` — GranularPacking normal spring is attractive; tangential sign reversed
 - [ ] **F3838** (critical, bug, easy/trivial) `granular_rigid.rs:525` — Hertz-Mindlin force_j breaks Newton's third law (-3x tangential)
-- [ ] **F3862** (critical, bug, easy/trivial) `impulse/types.rs:601` — Sequential-impulse friction (t1/t2) pushes sliding faster
-- [ ] **F3898** (critical, bug, easy/trivial) `multibody_dynamics.rs:435` — gravity_torques omits joint position and has inverted sign
+- [x] **F3862** (critical, bug, easy/trivial) `impulse/types.rs:601` — Sequential-impulse friction (t1/t2) pushes sliding faster
+- [x] **F3898** (critical, bug, easy/trivial) `multibody_dynamics.rs:435` — gravity_torques omits joint position and has inverted sign
 - [ ] **F3914** (critical, bug, hard/medium) `orbital_mechanics.rs:654` — lambert_problem uses wrong λ, ρ and T(x); test vacuous
-- [ ] **F3941** (critical, bug, easy/trivial) `satellite_dynamics.rs:565` — AttitudeControl::pd_controller torque sign drives attitude away from target
+- [x] **F3941** (critical, bug, easy/trivial) `satellite_dynamics.rs:565` — AttitudeControl::pd_controller torque sign drives attitude away from target
 - [x] **F4017** (critical, fabrication, hard/large) `world/types.rs:969` — PhysicsWorld ignores colliders; mass-cbrt spheres and sign-inverted contact solve
 - [x] **F4018** (critical, fabrication, hard/large) `world/types.rs:979` — PhysicsWorld ignores Collider shapes; contact radius fabricated from mass
 - [x] **F4019** (critical, fabrication, hard/large) `world/types.rs:1007` — PhysicsWorld collision ignores colliders, uses mass-cube-root spheres
 - [x] **F4021** (critical, bug, medium/medium) `world/types.rs:1094` — Default PhysicsWorld solver skips approaching contacts and attracts separating ones
-- [ ] **F4071** (critical, fabrication, hard/medium) `constraint/neohookeanconstraint_traits.rs:66` — Neo-Hookean XPBD projection fabricated: y-shift, radial push, inverted alpha
-- [ ] **F4078** (critical, bug, easy/small) `cosserat_rods.rs:555` — Cosserat rod internal force sign flipped; stretch and shear self-amplify
+- [x] **F4071** (critical, fabrication, hard/medium) `constraint/neohookeanconstraint_traits.rs:66` — Neo-Hookean XPBD projection fabricated: y-shift, radial push, inverted alpha
+- [x] **F4078** (critical, bug, easy/small) `cosserat_rods.rs:555` — Cosserat rod internal force sign flipped; stretch and shear self-amplify
 - [ ] **F4175** (critical, fabrication, medium/medium) `material_point/functions.rs:185` — mat3_svd is not an SVD; snow/sand plasticity squares stretch
 - [ ] **F4198** (critical, bug, easy/small) `metamorphic_mesh.rs:209` — polar_decomp_r iterates (R+R^-1)/2, collapsing rotations to identity
 - [ ] **F4273** (critical, bug, easy/small) `pbd_system/types.rs:471` — Tet volume-constraint gradients negated; projection diverges

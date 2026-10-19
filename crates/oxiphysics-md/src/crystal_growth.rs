@@ -519,104 +519,11 @@ impl CrystalGrowthModel {
 // PhaseFieldCrystal
 // ---------------------------------------------------------------------------
 
-/// Phase-field crystal (PFC) model on a 2D regular grid.
-#[derive(Debug, Clone)]
-pub struct PhaseFieldCrystal {
-    /// Order parameter field (row-major, size `nx * ny`).
-    pub phi: Vec<f64>,
-    /// Number of grid points in x.
-    pub nx: usize,
-    /// Number of grid points in y.
-    pub ny: usize,
-    /// Grid spacing.
-    pub dx: f64,
-}
+mod pfc;
+#[cfg(test)]
+mod pfc_tests;
 
-impl PhaseFieldCrystal {
-    /// Create a new `PhaseFieldCrystal` initialised to `phi_0` everywhere.
-    pub fn new(nx: usize, ny: usize, dx: f64, phi_0: f64) -> Self {
-        Self {
-            phi: vec![phi_0; nx * ny],
-            nx,
-            ny,
-            dx,
-        }
-    }
-
-    /// Linear index from 2D grid coordinates.
-    fn idx(&self, i: usize, j: usize) -> usize {
-        i * self.ny + j
-    }
-
-    /// Periodic neighbour in x.
-    fn wrap_x(&self, i: i64) -> usize {
-        i.rem_euclid(self.nx as i64) as usize
-    }
-
-    /// Periodic neighbour in y.
-    fn wrap_y(&self, j: i64) -> usize {
-        j.rem_euclid(self.ny as i64) as usize
-    }
-
-    /// Compute the 5-point discrete Laplacian at grid point `(i, j)`.
-    pub fn laplacian(&self, i: usize, j: usize) -> f64 {
-        let dx2 = self.dx * self.dx;
-        let center = self.phi[self.idx(i, j)];
-        let ip = self.phi[self.idx(self.wrap_x(i as i64 + 1), j)];
-        let im = self.phi[self.idx(self.wrap_x(i as i64 - 1), j)];
-        let jp = self.phi[self.idx(i, self.wrap_y(j as i64 + 1))];
-        let jm = self.phi[self.idx(i, self.wrap_y(j as i64 - 1))];
-        (ip + im + jp + jm - 4.0 * center) / dx2
-    }
-
-    /// Compute the total free energy of the current state.
-    pub fn energy(&self) -> f64 {
-        let mut e = 0.0;
-        for i in 0..self.nx {
-            for j in 0..self.ny {
-                let phi = self.phi[self.idx(i, j)];
-                let lap = self.laplacian(i, j);
-                e += 0.5 * phi * phi + 0.25 * phi.powi(4);
-                e -= 0.5 * phi * lap;
-            }
-        }
-        e * self.dx * self.dx
-    }
-
-    /// Advance the PFC order parameter by one time step using explicit Euler.
-    ///
-    /// # Arguments
-    /// * `dt`         - time step
-    /// * `mobility`   - kinetic mobility M
-    /// * `temp_noise` - noise amplitude (set to 0 for deterministic evolution)
-    pub fn step(&mut self, dt: f64, mobility: f64, temp_noise: f64) {
-        let n = self.nx * self.ny;
-        let mut dphi = vec![0.0f64; n];
-        for i in 0..self.nx {
-            for j in 0..self.ny {
-                let idx = self.idx(i, j);
-                let phi = self.phi[idx];
-                let lap = self.laplacian(i, j);
-                let mu = phi + phi.powi(3) - lap;
-                dphi[idx] = mobility * (-mu + lap);
-            }
-        }
-        for (idx, (phi_val, dphi_val)) in self.phi.iter_mut().zip(dphi.iter()).enumerate().take(n) {
-            let noise = if temp_noise > 0.0 {
-                let phase = (idx as f64 * 1.618033988749895).fract();
-                temp_noise * (2.0 * phase - 1.0)
-            } else {
-                0.0
-            };
-            *phi_val += dt * (dphi_val + noise);
-        }
-    }
-
-    /// Return the mean order parameter over the grid.
-    pub fn mean_phi(&self) -> f64 {
-        self.phi.iter().sum::<f64>() / self.phi.len() as f64
-    }
-}
+pub use pfc::{DEFAULT_PFC_R, DEFAULT_PFC_SEED, PhaseFieldCrystal};
 
 // ---------------------------------------------------------------------------
 // Dendrite tip velocity
@@ -1787,18 +1694,6 @@ mod tests_extended {
     fn test_pfc_mean_phi_initial() {
         let pfc = PhaseFieldCrystal::new(8, 8, 0.5, 0.5);
         assert!((pfc.mean_phi() - 0.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_pfc_step_changes_phi() {
-        let mut pfc = PhaseFieldCrystal::new(4, 4, 1.0, 0.0);
-        // Perturb one cell
-        pfc.phi[0] = 0.1;
-        let mean_before = pfc.mean_phi();
-        pfc.step(0.001, 1.0, 0.0);
-        let mean_after = pfc.mean_phi();
-        // Mean should have changed due to non-zero driving force
-        assert!((mean_after - mean_before).abs() > 0.0);
     }
 
     // --- CrystalGrowthModel (extended) ---

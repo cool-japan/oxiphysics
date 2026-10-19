@@ -202,7 +202,9 @@ fn epa_expander_reports_depth_and_axis_for_overlapping_cubes() {
     let simplex = tetrahedron_of(&mds);
     let mut polytope = ExpandingPolytope::from_simplex(&simplex);
     let expander = EpaExpander::new(64, 1e-9);
-    let result = expander.expand(&mut polytope, |d| mds.support(d));
+    let result = expander
+        .expand(&mut polytope, |d| mds.support(d))
+        .expect("the seed polytope has faces");
     assert!((result.depth - 0.3).abs() < TOL, "depth {}", result.depth);
     assert!(
         (result.normal[0].abs() - 1.0).abs() < TOL,
@@ -219,7 +221,9 @@ fn epa_expander_finds_the_shallowest_axis() {
     let mds = MinkowskiDiffSupport::new(cube([0.0; 3], 0.5), cube([0.05, 0.8, -0.05], 0.5));
     let simplex = tetrahedron_of(&mds);
     let mut polytope = ExpandingPolytope::from_simplex(&simplex);
-    let result = EpaExpander::new(64, 1e-9).expand(&mut polytope, |d| mds.support(d));
+    let result = EpaExpander::new(64, 1e-9)
+        .expand(&mut polytope, |d| mds.support(d))
+        .expect("the seed polytope has faces");
     assert!((result.depth - 0.2).abs() < TOL, "depth {}", result.depth);
     assert!(
         (result.normal[1].abs() - 1.0).abs() < TOL,
@@ -966,7 +970,9 @@ fn epa_matches_the_exact_penetration_depth_of_random_convex_polyhedra() {
         if polytope.closest_face().is_none_or(|face| face.dist < 1e-3) {
             continue;
         }
-        let result = EpaExpander::new(256, 1e-10).expand(&mut polytope, |d| mds.support(d));
+        let result = EpaExpander::new(256, 1e-10)
+            .expand(&mut polytope, |d| mds.support(d))
+            .expect("the seed polytope has faces");
         assert!(
             (result.depth + gap).abs() < 1e-6,
             "case {case}: depth {} vs exact {}",

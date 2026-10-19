@@ -252,6 +252,36 @@ fn test_lbm_guo_forcing_momentum_exact() {
     );
 }
 
+/// Guo forcing adds exactly `F` of momentum per cell and step: in a fully
+/// periodic box the summed lattice momentum `Σ_cells Σ_i f_i e_i` equals
+/// `steps · F · cells` (the previous velocity-shift-only forcing injected
+/// `ωF/2` per step instead).
+#[test]
+fn test_lbm_guo_forcing_adds_exactly_f_momentum_per_cell_and_step() {
+    let mut config = cfg(4, 4, 4, 0.8);
+    config.force_x = 1e-5;
+    let mut sim = cpu_sim(config);
+    sim.set_solid_mask(vec![false; 64]).expect("mask length");
+    let steps = 25;
+    for _ in 0..steps {
+        sim.step();
+    }
+    let mut momentum = [0.0_f64; 3];
+    for (i, dir) in sim.populations().iter().enumerate() {
+        let total: f64 = dir.iter().sum();
+        momentum[0] += D3Q19_EX[i] as f64 * total;
+        momentum[1] += D3Q19_EY[i] as f64 * total;
+        momentum[2] += D3Q19_EZ[i] as f64 * total;
+    }
+    let expected = steps as f64 * 1e-5 * 64.0;
+    assert!(
+        (momentum[0] - expected).abs() < 1e-12,
+        "x momentum {} expected {expected}",
+        momentum[0]
+    );
+    assert!(momentum[1].abs() < 1e-12 && momentum[2].abs() < 1e-12);
+}
+
 #[test]
 fn test_lbm_body_force_accelerates_flow() {
     let mut config = cfg(4, 6, 6, 0.55);
@@ -594,7 +624,212 @@ fn test_lbm_gpu_unrecoverable_failure_reports_readback() {
     assert!(gpu.populations().iter().flatten().all(|v| v.is_finite()));
 }
 
+// ── ComputePreference ─────────────────────────────────────────────────────────
+
+/// Whether this host exposes a wgpu adapter at all.
+fn adapter_present() -> bool {
+    #[cfg(feature = "wgpu-backend")]
+    {
+        WgpuBackendReal::try_new().is_ok()
+    }
+    #[cfg(not(feature = "wgpu-backend"))]
+    {
+        false
+    }
+}
+
+#[test]
+fn test_lbm_config_defaults_to_auto_preference() {
+    assert_eq!(LbmConfig::default().compute, ComputePreference::Auto);
+}
+
+/// `CpuOnly` in the configuration never initialises the GPU - not even on a
+/// host that has an adapter - and runs the exact CPU reference.
+#[test]
+fn test_lbm_cpu_only_config_never_initialises_the_gpu() {
+    let mut config = cfg(6, 6, 6, 0.7);
+    config.force_x = 1e-5;
+    config.compute = ComputePreference::CpuOnly;
+    let mut sim = LbmSimulation::new(config.clone());
+    assert!(!sim.ensure_gpu());
+    sim.set_lid_velocity(0.03, 0.0, 0.0);
+    let mut reference = cpu_sim(config);
+    reference.set_lid_velocity(0.03, 0.0, 0.0);
+    for _ in 0..30 {
+        sim.step();
+        reference.step();
+    }
+    assert!(!sim.has_gpu());
+    assert!(sim.gpu_error().is_none());
+    #[cfg(feature = "wgpu-backend")]
+    assert_eq!(sim.gpu_init_attempts, 0);
+    assert_eq!(sim.step_count, 30);
+    assert_eq!(sim.f, reference.f, "CpuOnly must be the CPU reference");
+}
+
+/// `CpuOnly` selected on a live simulation switches the GPU off at the next
+/// step, before any initialisation is attempted.
+#[test]
+fn test_lbm_cpu_only_selected_after_construction() {
+    let mut sim = LbmSimulation::new(cfg(4, 4, 4, 0.6));
+    sim.config.compute = ComputePreference::CpuOnly;
+    for _ in 0..10 {
+        sim.step();
+    }
+    assert!(!sim.has_gpu());
+    assert!(sim.gpu_error().is_none());
+    #[cfg(feature = "wgpu-backend")]
+    assert_eq!(sim.gpu_init_attempts, 0);
+    assert_eq!(sim.step_count, 10);
+}
+
+#[test]
+fn test_lbm_disable_gpu_sets_the_cpu_only_preference() {
+    let mut sim = LbmSimulation::new(cfg(4, 4, 4, 0.6));
+    assert_eq!(sim.config.compute, ComputePreference::Auto);
+    sim.disable_gpu();
+    assert_eq!(sim.config.compute, ComputePreference::CpuOnly);
+    assert!(!sim.has_gpu());
+}
+
+/// `GpuRequired` either takes the step on the GPU or reports a typed init
+/// error and leaves the simulation untouched - never a silent CPU step.
+#[test]
+fn test_lbm_gpu_required_runs_on_the_gpu_or_reports_an_error() {
+    let mut config = cfg(6, 6, 6, 0.7);
+    config.compute = ComputePreference::GpuRequired;
+    let mut sim = LbmSimulation::new(config);
+    let before = sim.f.clone();
+    match sim.try_step() {
+        Ok(()) => {
+            assert!(adapter_present());
+            assert!(sim.has_gpu());
+            assert_eq!(sim.step_count, 1);
+        }
+        Err(err) => {
+            assert!(matches!(err, GpuError::BackendInit(_)), "{err:?}");
+            assert_eq!(sim.step_count, 0);
+            assert_eq!(sim.f, before, "no CPU step may be taken");
+            sim.step();
+            assert_eq!(
+                sim.step_count, 0,
+                "the infallible step must not fall back either"
+            );
+            assert_eq!(sim.f, before);
+        }
+    }
+}
+
+/// A required GPU that is disabled explicitly cannot take steps: the
+/// contradiction is reported, not resolved by running on the CPU.
+#[cfg(feature = "wgpu-backend")]
+#[test]
+fn test_lbm_gpu_required_with_disabled_gpu_is_an_error() {
+    let mut sim = cpu_sim(cfg(4, 4, 4, 0.6));
+    sim.config.compute = ComputePreference::GpuRequired;
+    let before = sim.f.clone();
+    let err = sim.try_step().expect_err("GPU required but disabled");
+    assert!(matches!(err, GpuError::BackendInit(_)), "{err:?}");
+    assert_eq!(sim.step_count, 0);
+    sim.step();
+    assert_eq!(sim.step_count, 0);
+    assert_eq!(sim.f, before);
+}
+
+/// A dispatch failure of a required GPU is reported with its original error;
+/// the populations are recovered but no CPU step replaces the failed one.
+#[cfg(feature = "wgpu-backend")]
+#[test]
+fn test_lbm_gpu_required_dispatch_failure_is_not_hidden() {
+    let mut config = cfg(8, 8, 8, 0.7);
+    config.force_x = 1e-5;
+    config.compute = ComputePreference::GpuRequired;
+    let mut sim = LbmSimulation::new(config);
+    if !sim.ensure_gpu() {
+        eprintln!("SKIPPED: no GPU adapter ({:?})", sim.gpu_error());
+        return;
+    }
+    for _ in 0..5 {
+        sim.try_step().expect("healthy GPU step");
+    }
+    sabotage_gpu(&mut sim, false);
+    let err = sim
+        .try_step()
+        .expect_err("the sabotaged dispatch must fail");
+    assert!(matches!(err, GpuError::ShaderDispatch(_)), "{err:?}");
+    assert_eq!(sim.step_count, 5, "the failed step must not be counted");
+    assert!(!sim.has_gpu());
+    // The recovered populations are the valid state after five GPU steps.
+    assert!(sim.populations().iter().flatten().all(|v| v.is_finite()));
+    let (ux, _, _) = sim.mean_velocity();
+    assert!(
+        ux > 1e-5,
+        "the five healthy steps must be preserved, ux={ux}"
+    );
+    // Neither entry point falls back to the CPU afterwards.
+    assert!(sim.try_step().is_err());
+    sim.step();
+    assert_eq!(sim.step_count, 5);
+}
+
 // ── LbmGpuSolver ──────────────────────────────────────────────────────────────
+
+/// The CPU variant must observe the state it steps: with a body force the
+/// velocity read back through the solver grows (on a GPU host the old variant
+/// stepped on the GPU but read the stale CPU copy forever).
+#[test]
+fn test_lbm_gpu_solver_cpu_variant_reads_fresh_state() {
+    let mut solver = LbmGpuSolver::new_cpu(6, 8, 6, 1.5);
+    assert!(!solver.is_gpu());
+    assert!(solver.gpu_error().is_none());
+    solver.simulation_mut().config.force_x = 1e-4;
+    let cell = 2 + 6 * (3 + 8 * 3);
+    let rest = solver.read_velocity()[cell];
+    for _ in 0..50 {
+        solver.step().expect("CPU step");
+    }
+    let moved = solver.read_velocity()[cell];
+    assert!(
+        moved[0] > 1e-3,
+        "interior velocity must grow under the body force, got {moved:?}"
+    );
+    assert!(moved[0] > 10.0 * rest[0].abs().max(1e-6));
+    assert!(moved[1].abs() < 1e-6 && moved[2].abs() < 1e-6);
+    let again = solver.read_velocity()[cell];
+    assert_eq!(moved, again, "repeated reads observe the same state");
+    assert!(!solver.is_gpu());
+    assert_eq!(
+        solver.simulation().config.compute,
+        ComputePreference::CpuOnly
+    );
+}
+
+/// `LbmGpuSolver::new` keeps the `Auto` preference while it runs on a GPU and
+/// pins `CpuOnly` when no GPU can be initialised (the reason stays available),
+/// so the configuration always states the device that actually runs.
+#[test]
+fn test_lbm_gpu_solver_new_pins_cpu_only_when_no_gpu_is_available() {
+    let mut solver = LbmGpuSolver::new(4, 4, 4, 1.5);
+    if solver.is_gpu() {
+        assert_eq!(solver.simulation().config.compute, ComputePreference::Auto);
+        assert!(solver.gpu_error().is_none());
+    } else {
+        assert_eq!(
+            solver.simulation().config.compute,
+            ComputePreference::CpuOnly
+        );
+        #[cfg(feature = "wgpu-backend")]
+        assert!(
+            solver.gpu_error().is_some(),
+            "the initialisation failure must stay observable"
+        );
+        #[cfg(not(feature = "wgpu-backend"))]
+        assert!(solver.gpu_error().is_none());
+    }
+    // Either way the solver steps and reports a consistent field.
+    solver.step().expect("step");
+    assert_eq!(solver.read_density().len(), 64);
+}
 
 #[test]
 fn test_lbm_gpu_solver_construction() {
@@ -617,16 +852,37 @@ fn test_lbm_gpu_solver_density_init() {
     }
 }
 
+/// Mass conservation on the CPU variant under a moving lid and a body force.
+///
+/// A fluid at rest conserves mass trivially (and so would a solver that only
+/// ever returns its stale initial state), so the flow must demonstrably develop
+/// while the total mass stays constant.
 #[test]
 fn test_lbm_gpu_solver_step_conserves_mass_cpu() {
     let mut solver = LbmGpuSolver::new_cpu(8, 8, 8, 1.5);
-    let rho_before: f32 = solver.read_density().iter().sum();
+    solver.set_lid_velocity(0.1, 0.0, 0.0);
+    solver.simulation_mut().config.force_x = 1e-4;
+    let total_mass = |rho: &[f32]| rho.iter().map(|&r| f64::from(r)).sum::<f64>();
+    let peak_speed = |vel: &[[f32; 3]]| {
+        vel.iter()
+            .map(|u| f64::from(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt())
+            .fold(0.0_f64, f64::max)
+    };
+    let mass_before = total_mass(&solver.read_density());
+    // At rest apart from the Guo half-force correction F / 2.
+    let speed_before = peak_speed(&solver.read_velocity());
     for _ in 0..10 {
         solver.step().expect("step failed");
     }
     assert_eq!(solver.step_count, 10);
-    let rho_after: f32 = solver.read_density().iter().sum();
-    let rel_err = (rho_before - rho_after).abs() / rho_before;
+    let speed_after = peak_speed(&solver.read_velocity());
+    assert!(
+        speed_after > 1e-3 && speed_after > 10.0 * speed_before,
+        "the lid and the body force must set the fluid in motion: \
+         peak speed {speed_before} -> {speed_after}"
+    );
+    let mass_after = total_mass(&solver.read_density());
+    let rel_err = (mass_before - mass_after).abs() / mass_before;
     assert!(rel_err < 1e-5, "mass not conserved: rel_err={rel_err:e}");
 }
 

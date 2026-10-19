@@ -6,9 +6,20 @@
 //! Provides writers and readers for full physics scenes (bodies, joints,
 //! materials), multi-body trajectories, contact force logs, energy logs,
 //! simulation checkpoints, VTK time-series output, and XDMF wrappers.
+//!
+//! Scenes and checkpoints are JSON documents read and written with `serde`;
+//! every field of [`BodyDesc`], [`JointDesc`] and [`MaterialDesc`] survives a
+//! write/read cycle bit-exactly, and non-finite floats are encoded as the
+//! strings `"NaN"`, `"Infinity"` and `"-Infinity"` (see the `json` helper
+//! module). Trajectories use a small binary format described on
+//! [`TrajectoryWriter::write_binary`].
 
 use std::io::{BufWriter, Write};
 use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+mod json;
 
 // ---------------------------------------------------------------------------
 // Helper free functions
@@ -89,22 +100,51 @@ fn extract_attr<'a>(s: &'a str, attr: &str) -> Option<&'a str> {
 // Body / scene types
 // ---------------------------------------------------------------------------
 
+/// Orientation of a body that has not been rotated.
+fn identity_quaternion() -> [f64; 4] {
+    [1.0, 0.0, 0.0, 0.0]
+}
+
+/// Mass assumed for a body descriptor that does not specify one.
+fn unit_mass() -> f64 {
+    1.0
+}
+
+/// Shape tag assumed for a body descriptor that does not specify one.
+fn default_shape_tag() -> String {
+    "sphere".to_string()
+}
+
 /// A rigid body descriptor for scene serialization.
-#[derive(Debug, Clone)]
+///
+/// The JSON keys are `id`, `pos`, `quat`, `linvel`, `angvel`, `mass` and
+/// `shape`. When reading, every key except `id` and `pos` may be omitted and
+/// then takes the value [`BodyDesc::new`] would give it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BodyDesc {
     /// Unique body identifier.
     pub id: u64,
     /// World-space position.
+    #[serde(rename = "pos", with = "json::f64_array")]
     pub position: [f64; 3],
     /// Orientation as quaternion (w, x, y, z).
+    #[serde(
+        rename = "quat",
+        default = "identity_quaternion",
+        with = "json::f64_array"
+    )]
     pub orientation: [f64; 4],
     /// Linear velocity.
+    #[serde(rename = "linvel", default, with = "json::f64_array")]
     pub linear_velocity: [f64; 3],
     /// Angular velocity.
+    #[serde(rename = "angvel", default, with = "json::f64_array")]
     pub angular_velocity: [f64; 3],
     /// Mass (kg).
+    #[serde(default = "unit_mass", with = "json::f64_value")]
     pub mass: f64,
     /// Shape type tag.
+    #[serde(rename = "shape", default = "default_shape_tag")]
     pub shape_tag: String,
 }
 
@@ -114,52 +154,49 @@ impl BodyDesc {
         BodyDesc {
             id,
             position,
-            orientation: [1.0, 0.0, 0.0, 0.0],
+            orientation: identity_quaternion(),
             linear_velocity: [0.0; 3],
             angular_velocity: [0.0; 3],
-            mass: 1.0,
-            shape_tag: "sphere".to_string(),
+            mass: unit_mass(),
+            shape_tag: default_shape_tag(),
         }
     }
 
-    /// Serialize to a simple JSON object string.
-    pub fn to_json(&self) -> String {
-        format!(
-            r#"{{"id":{id},"pos":[{px},{py},{pz}],"quat":[{qw},{qx},{qy},{qz}],"linvel":[{lvx},{lvy},{lvz}],"angvel":[{avx},{avy},{avz}],"mass":{m},"shape":"{s}"}}"#,
-            id = self.id,
-            px = self.position[0],
-            py = self.position[1],
-            pz = self.position[2],
-            qw = self.orientation[0],
-            qx = self.orientation[1],
-            qy = self.orientation[2],
-            qz = self.orientation[3],
-            lvx = self.linear_velocity[0],
-            lvy = self.linear_velocity[1],
-            lvz = self.linear_velocity[2],
-            avx = self.angular_velocity[0],
-            avy = self.angular_velocity[1],
-            avz = self.angular_velocity[2],
-            m = self.mass,
-            s = self.shape_tag,
-        )
+    /// Serialize to a compact JSON object string.
+    ///
+    /// Strings are escaped and floats are written so that they parse back to
+    /// the identical value; see the module documentation for non-finite
+    /// values.
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::Io`] if the encoder fails.
+    pub fn to_json(&self) -> crate::Result<String> {
+        Ok(json::encode(self)?)
     }
 }
 
 /// A joint descriptor.
-#[derive(Debug, Clone)]
+///
+/// The JSON keys are `id`, `bodyA`, `bodyB`, `type`, `anchorA` and `anchorB`;
+/// the anchors may be omitted when reading (they default to the origin).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JointDesc {
     /// Unique joint id.
     pub id: u64,
     /// Body A id.
+    #[serde(rename = "bodyA")]
     pub body_a: u64,
     /// Body B id.
+    #[serde(rename = "bodyB")]
     pub body_b: u64,
     /// Joint type.
+    #[serde(rename = "type")]
     pub joint_type: String,
     /// Anchor point on body A (local space).
+    #[serde(rename = "anchorA", default, with = "json::f64_array")]
     pub anchor_a: [f64; 3],
     /// Anchor point on body B (local space).
+    #[serde(rename = "anchorB", default, with = "json::f64_array")]
     pub anchor_b: [f64; 3],
 }
 
@@ -178,15 +215,18 @@ impl JointDesc {
 }
 
 /// A physics material descriptor.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MaterialDesc {
     /// Material id.
     pub id: u64,
     /// Restitution coefficient.
+    #[serde(with = "json::f64_value")]
     pub restitution: f64,
     /// Dynamic friction coefficient.
+    #[serde(with = "json::f64_value")]
     pub friction: f64,
     /// Density (kg/m³).
+    #[serde(with = "json::f64_value")]
     pub density: f64,
 }
 
@@ -242,44 +282,14 @@ impl PhysicsSceneWriter {
     }
 
     /// Serialize the scene to JSON and write to `writer`.
+    ///
+    /// The document has the members `bodies`, `joints` and `materials`, one
+    /// element per line; read it back with [`PhysicsSceneReader::read_json`].
     pub fn write_json<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
         writeln!(writer, "{{")?;
-        writeln!(writer, "  \"bodies\": [")?;
-        for (i, b) in self.bodies.iter().enumerate() {
-            let comma = if i + 1 < self.bodies.len() { "," } else { "" };
-            writeln!(writer, "    {}{}", b.to_json(), comma)?;
-        }
-        writeln!(writer, "  ],")?;
-        writeln!(writer, "  \"joints\": [")?;
-        for (i, j) in self.joints.iter().enumerate() {
-            let comma = if i + 1 < self.joints.len() { "," } else { "" };
-            writeln!(
-                writer,
-                r#"    {{"id":{id},"bodyA":{ba},"bodyB":{bb},"type":"{jt}"}}{comma}"#,
-                id = j.id,
-                ba = j.body_a,
-                bb = j.body_b,
-                jt = j.joint_type
-            )?;
-        }
-        writeln!(writer, "  ],")?;
-        writeln!(writer, "  \"materials\": [")?;
-        for (i, m) in self.materials.iter().enumerate() {
-            let comma = if i + 1 < self.materials.len() {
-                ","
-            } else {
-                ""
-            };
-            writeln!(
-                writer,
-                r#"    {{"id":{id},"restitution":{r},"friction":{f},"density":{d}}}{comma}"#,
-                id = m.id,
-                r = m.restitution,
-                f = m.friction,
-                d = m.density
-            )?;
-        }
-        writeln!(writer, "  ]")?;
+        write_json_array(writer, "bodies", &self.bodies, true)?;
+        write_json_array(writer, "joints", &self.joints, true)?;
+        write_json_array(writer, "materials", &self.materials, false)?;
         writeln!(writer, "}}")?;
         Ok(())
     }
@@ -304,45 +314,51 @@ impl Default for PhysicsSceneWriter {
 // PhysicsSceneReader
 // ---------------------------------------------------------------------------
 
-/// Read a physics scene from JSON, validate it, and reconstruct a body list.
+/// Write `"name": [ ... ]` with one compact JSON element per line.
+fn write_json_array<W: Write, T: Serialize>(
+    writer: &mut W,
+    name: &str,
+    items: &[T],
+    trailing_comma: bool,
+) -> std::io::Result<()> {
+    writeln!(writer, "  \"{name}\": [")?;
+    for (i, item) in items.iter().enumerate() {
+        let comma = if i + 1 < items.len() { "," } else { "" };
+        writeln!(writer, "    {}{}", json::encode(item)?, comma)?;
+    }
+    writeln!(writer, "  ]{}", if trailing_comma { "," } else { "" })
+}
+
+/// A complete scene: everything [`PhysicsSceneWriter`] writes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneDesc {
+    /// Bodies in the scene.
+    #[serde(default)]
+    pub bodies: Vec<BodyDesc>,
+    /// Joints in the scene.
+    #[serde(default)]
+    pub joints: Vec<JointDesc>,
+    /// Materials in the scene.
+    #[serde(default)]
+    pub materials: Vec<MaterialDesc>,
+}
+
+/// Read a physics scene from JSON, validate it, and reconstruct the bodies,
+/// joints and materials.
 pub struct PhysicsSceneReader;
 
 impl PhysicsSceneReader {
-    /// Parse a JSON scene string and return body descriptors.
-    /// This is a simplified parser for the format produced by [`PhysicsSceneWriter`].
-    pub fn read_json(json: &str) -> Vec<BodyDesc> {
-        let mut bodies = Vec::new();
-        // Very simple line-by-line parser looking for id fields
-        let mut in_bodies = false;
-        let mut cur_id: Option<u64> = None;
-        let mut cur_pos = [0.0f64; 3];
-        for line in json.lines() {
-            let line = line.trim();
-            if line.contains("\"bodies\"") {
-                in_bodies = true;
-            }
-            if line.contains("\"joints\"") {
-                in_bodies = false;
-            }
-            if !in_bodies {
-                continue;
-            }
-            if let Some(id) = parse_u64_field(line, "id") {
-                cur_id = Some(id);
-            }
-            if let Some(pos) = parse_float3_field(line, "pos") {
-                cur_pos = pos;
-            }
-            if line.contains('}') && cur_id.is_some() {
-                bodies.push(BodyDesc::new(
-                    cur_id.expect("value should be present"),
-                    cur_pos,
-                ));
-                cur_id = None;
-                cur_pos = [0.0; 3];
-            }
-        }
-        bodies
+    /// Parse a JSON scene document as produced by [`PhysicsSceneWriter`].
+    ///
+    /// Bodies, joints and materials are restored with all their fields.
+    /// Members that are absent are read as empty lists, and unknown members
+    /// are ignored.
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::Parse`] if the text is not valid JSON or an
+    /// element has a missing or mistyped field.
+    pub fn read_json(json: &str) -> crate::Result<SceneDesc> {
+        serde_json::from_str(json).map_err(|e| crate::Error::Parse(format!("scene JSON: {e}")))
     }
 
     /// Validate a list of body descriptors (checks for duplicate IDs).
@@ -350,35 +366,6 @@ impl PhysicsSceneReader {
         let mut ids = std::collections::HashSet::new();
         bodies.iter().all(|b| ids.insert(b.id))
     }
-}
-
-fn parse_u64_field(s: &str, field: &str) -> Option<u64> {
-    let pat = format!("\"{field}\":");
-    let idx = s.find(pat.as_str())? + pat.len();
-    let rest = s[idx..].trim_start();
-    rest.split([',', '}', ' ', '\t'])
-        .next()?
-        .trim()
-        .parse()
-        .ok()
-}
-
-fn parse_float3_field(s: &str, field: &str) -> Option<[f64; 3]> {
-    let pat = format!("\"{field}\":");
-    let idx = s.find(pat.as_str())? + pat.len();
-    let rest = s[idx..].trim_start();
-    if rest.starts_with('[') {
-        let end = rest.find(']')?;
-        let inner = &rest[1..end];
-        let vals: Vec<f64> = inner
-            .split(',')
-            .filter_map(|v| v.trim().parse().ok())
-            .collect();
-        if vals.len() == 3 {
-            return Some([vals[0], vals[1], vals[2]]);
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -433,17 +420,56 @@ impl TrajectoryWriter {
     }
 
     /// Write trajectory to a binary file.
-    /// Format: header "TRAJ\0" + n_frames (u64 LE) + per-frame data.
+    ///
+    /// Format (all integers and floats little-endian):
+    ///
+    /// ```text
+    /// "TRAJ" 0x01            5-byte magic, the last byte is the format version
+    /// n_frames               u64
+    /// repeated n_frames times:
+    ///   time                 f64
+    ///   n_pos, n_vel, n_quat u64 each
+    ///   positions            n_pos  x 3 f32
+    ///   velocities           n_vel  x 3 f32
+    ///   quaternions (w,x,y,z) n_quat x 4 f32
+    /// ```
+    ///
+    /// Positions, velocities and quaternions are stored as `f32`. A frame may
+    /// leave velocities and/or quaternions out (the count is then 0), but
+    /// otherwise they must have one entry per position.
+    ///
+    /// # Errors
+    /// Returns an [`InvalidInput`](std::io::ErrorKind::InvalidInput) error,
+    /// before anything is written, if a frame has a velocity or quaternion
+    /// count that is neither 0 nor the number of positions; such a frame would
+    /// shift every later value in the file. Other errors come from `w`.
     pub fn write_binary<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
-        w.write_all(b"TRAJ\0")?;
+        for (index, f) in self.frames.iter().enumerate() {
+            let n_pos = f.positions.len();
+            for (what, count) in [
+                ("velocities", f.velocities.len()),
+                ("quaternions", f.quaternions.len()),
+            ] {
+                if count != 0 && count != n_pos {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "trajectory frame {index} has {count} {what} for {n_pos} positions \
+                             (expected 0 or {n_pos})"
+                        ),
+                    ));
+                }
+            }
+        }
+        w.write_all(TRAJ_MAGIC)?;
         w.write_all(&(self.frames.len() as u64).to_le_bytes())?;
         for f in &self.frames {
             w.write_all(&f.time.to_le_bytes())?;
             w.write_all(&(f.positions.len() as u64).to_le_bytes())?;
-            let pos_bytes = pack_float3_array(&f.positions);
-            w.write_all(&pos_bytes)?;
-            let vel_bytes = pack_float3_array(&f.velocities);
-            w.write_all(&vel_bytes)?;
+            w.write_all(&(f.velocities.len() as u64).to_le_bytes())?;
+            w.write_all(&(f.quaternions.len() as u64).to_le_bytes())?;
+            w.write_all(&pack_float3_array(&f.positions))?;
+            w.write_all(&pack_float3_array(&f.velocities))?;
             for &q in &f.quaternions {
                 let bytes = encode_quaternion_f32(q[0], q[1], q[2], q[3]);
                 w.write_all(&bytes)?;
@@ -486,6 +512,80 @@ impl Default for TrajectoryWriter {
 // TrajectoryReader
 // ---------------------------------------------------------------------------
 
+/// Magic bytes of the binary trajectory format: `"TRAJ"` and format version 1.
+const TRAJ_MAGIC: &[u8; 5] = b"TRAJ\x01";
+
+/// Magic bytes of the retired version-0 layout (`"TRAJ"` and a zero byte).
+///
+/// That layout wrote one count per frame but then velocities and quaternions
+/// of whatever length, so it cannot be decoded reliably.
+const TRAJ_LEGACY_MAGIC: &[u8; 5] = b"TRAJ\0";
+
+/// Bounds-checked little-endian reader over a byte slice.
+struct ByteCursor<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> ByteCursor<'a> {
+    fn new(data: &'a [u8], pos: usize) -> Self {
+        Self { data, pos }
+    }
+
+    fn remaining(&self) -> usize {
+        self.data.len() - self.pos
+    }
+
+    /// Take the next `len` bytes, or fail if fewer remain.
+    fn take(&mut self, len: usize) -> crate::Result<&'a [u8]> {
+        let end = self
+            .pos
+            .checked_add(len)
+            .filter(|&end| end <= self.data.len())
+            .ok_or_else(|| {
+                crate::Error::Parse(format!(
+                    "TRAJ data truncated: {len} bytes needed at byte {} but only {} remain",
+                    self.pos,
+                    self.remaining()
+                ))
+            })?;
+        let bytes = &self.data[self.pos..end];
+        self.pos = end;
+        Ok(bytes)
+    }
+
+    fn read_u64(&mut self) -> crate::Result<u64> {
+        let bytes = self.take(8)?;
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(bytes);
+        Ok(u64::from_le_bytes(buf))
+    }
+
+    fn read_f64(&mut self) -> crate::Result<f64> {
+        let bytes = self.take(8)?;
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(bytes);
+        Ok(f64::from_le_bytes(buf))
+    }
+
+    /// Read a `u64` element count that must fit in `usize`.
+    fn read_count(&mut self, what: &str) -> crate::Result<usize> {
+        let value = self.read_u64()?;
+        usize::try_from(value).map_err(|_| {
+            crate::Error::Parse(format!("TRAJ {what} count {value} does not fit in memory"))
+        })
+    }
+}
+
+/// Decode `f32` little-endian values from a chunk of exactly `4 * N` bytes.
+fn f32_group<const N: usize>(chunk: &[u8]) -> [f64; N] {
+    let mut out = [0.0f64; N];
+    for (slot, bytes) in out.iter_mut().zip(chunk.chunks_exact(4)) {
+        *slot = f64::from(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+    }
+    out
+}
+
 /// Reader for binary trajectory files produced by [`TrajectoryWriter`].
 pub struct TrajectoryReader {
     frames: Vec<TrajectoryFrame>,
@@ -494,59 +594,89 @@ pub struct TrajectoryReader {
 
 impl TrajectoryReader {
     /// Read from a byte buffer.
-    pub fn from_bytes(data: &[u8]) -> Option<Self> {
-        if data.len() < 13 || &data[0..5] != b"TRAJ\0" {
-            return None;
+    ///
+    /// Every count in the file is checked against the number of bytes that
+    /// actually follow before anything is allocated, so a corrupt header
+    /// cannot trigger a huge allocation or an arithmetic overflow.
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::Parse`] if the magic is wrong (including the
+    /// retired version-0 layout), the data is truncated, a frame has a
+    /// velocity or quaternion count other than 0 or the number of positions,
+    /// or bytes remain after the last frame.
+    pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
+        let Some(magic) = data.get(..TRAJ_MAGIC.len()) else {
+            return Err(crate::Error::Parse(format!(
+                "TRAJ data too short for a header: {} bytes",
+                data.len()
+            )));
+        };
+        if magic == TRAJ_LEGACY_MAGIC.as_slice() {
+            return Err(crate::Error::Parse(
+                "unsupported legacy TRAJ file (version 0); rewrite it with TrajectoryWriter"
+                    .to_string(),
+            ));
         }
-        let n_frames = u64::from_le_bytes(data[5..13].try_into().ok()?) as usize;
+        if magic != TRAJ_MAGIC.as_slice() {
+            return Err(crate::Error::Parse(
+                "not a TRAJ file: bad magic".to_string(),
+            ));
+        }
+        let mut cur = ByteCursor::new(data, TRAJ_MAGIC.len());
+        let n_frames = cur.read_count("frame")?;
+        // A frame is at least its time and three counts: 32 bytes.
+        if n_frames > cur.remaining() / 32 {
+            return Err(crate::Error::Parse(format!(
+                "TRAJ header declares {n_frames} frames but only {} bytes follow",
+                cur.remaining()
+            )));
+        }
         let mut frames = Vec::with_capacity(n_frames);
-        let mut pos = 13;
-        for _ in 0..n_frames {
-            if pos + 16 > data.len() {
-                break;
+        for index in 0..n_frames {
+            let time = cur.read_f64()?;
+            let n_pos = cur.read_count("position")?;
+            let n_vel = cur.read_count("velocity")?;
+            let n_quat = cur.read_count("quaternion")?;
+            if (n_vel != 0 && n_vel != n_pos) || (n_quat != 0 && n_quat != n_pos) {
+                return Err(crate::Error::Parse(format!(
+                    "TRAJ frame {index} has {n_vel} velocities and {n_quat} quaternions \
+                     for {n_pos} positions (expected 0 or {n_pos})"
+                )));
             }
-            let time = f64::from_le_bytes(data[pos..pos + 8].try_into().ok()?);
-            pos += 8;
-            let nb = u64::from_le_bytes(data[pos..pos + 8].try_into().ok()?) as usize;
-            pos += 8;
+            let sizes = (
+                n_pos.checked_mul(12),
+                n_vel.checked_mul(12),
+                n_quat.checked_mul(16),
+            );
+            let (Some(pos_len), Some(vel_len), Some(quat_len)) = sizes else {
+                return Err(crate::Error::Parse(format!(
+                    "TRAJ frame {index}: element counts overflow the address space"
+                )));
+            };
+            let total = pos_len
+                .checked_add(vel_len)
+                .and_then(|sum| sum.checked_add(quat_len))
+                .ok_or_else(|| {
+                    crate::Error::Parse(format!(
+                        "TRAJ frame {index}: element counts overflow the address space"
+                    ))
+                })?;
+            let body = cur.take(total)?;
+            let (pos_bytes, rest) = body.split_at(pos_len);
+            let (vel_bytes, quat_bytes) = rest.split_at(vel_len);
             let mut frame = TrajectoryFrame::new(time);
-            // positions (nb * 12 bytes f32)
-            for _ in 0..nb {
-                if pos + 12 > data.len() {
-                    break;
-                }
-                let x = f32::from_le_bytes(data[pos..pos + 4].try_into().ok()?) as f64;
-                let y = f32::from_le_bytes(data[pos + 4..pos + 8].try_into().ok()?) as f64;
-                let z = f32::from_le_bytes(data[pos + 8..pos + 12].try_into().ok()?) as f64;
-                frame.positions.push([x, y, z]);
-                pos += 12;
-            }
-            // velocities
-            for _ in 0..nb {
-                if pos + 12 > data.len() {
-                    break;
-                }
-                let x = f32::from_le_bytes(data[pos..pos + 4].try_into().ok()?) as f64;
-                let y = f32::from_le_bytes(data[pos + 4..pos + 8].try_into().ok()?) as f64;
-                let z = f32::from_le_bytes(data[pos + 8..pos + 12].try_into().ok()?) as f64;
-                frame.velocities.push([x, y, z]);
-                pos += 12;
-            }
-            // quaternions
-            for _ in 0..nb {
-                if pos + 16 > data.len() {
-                    break;
-                }
-                let w = f32::from_le_bytes(data[pos..pos + 4].try_into().ok()?) as f64;
-                let x = f32::from_le_bytes(data[pos + 4..pos + 8].try_into().ok()?) as f64;
-                let y = f32::from_le_bytes(data[pos + 8..pos + 12].try_into().ok()?) as f64;
-                let z = f32::from_le_bytes(data[pos + 12..pos + 16].try_into().ok()?) as f64;
-                frame.quaternions.push([w, x, y, z]);
-                pos += 16;
-            }
+            frame.positions = pos_bytes.chunks_exact(12).map(f32_group::<3>).collect();
+            frame.velocities = vel_bytes.chunks_exact(12).map(f32_group::<3>).collect();
+            frame.quaternions = quat_bytes.chunks_exact(16).map(f32_group::<4>).collect();
             frames.push(frame);
         }
-        Some(TrajectoryReader { frames, cursor: 0 })
+        if cur.remaining() != 0 {
+            return Err(crate::Error::Parse(format!(
+                "TRAJ data has {} unexpected bytes after the last frame",
+                cur.remaining()
+            )));
+        }
+        Ok(TrajectoryReader { frames, cursor: 0 })
     }
 
     /// Seek to a given frame index.
@@ -779,22 +909,25 @@ impl CheckpointWriter {
     }
 
     /// Write checkpoint as JSON.
+    ///
+    /// The document has the members `sim_time`, `step`, `metadata` (an object
+    /// whose entries keep their insertion order; keys and values are escaped)
+    /// and `bodies`, one body per line. Read it back with
+    /// [`CheckpointReader::read_json`].
     pub fn write_json<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
         writeln!(w, "{{")?;
-        writeln!(w, "  \"sim_time\": {},", self.sim_time)?;
+        writeln!(
+            w,
+            "  \"sim_time\": {},",
+            json::encode(&json::SpecialF64(self.sim_time))?
+        )?;
         writeln!(w, "  \"step\": {},", self.step)?;
-        writeln!(w, "  \"metadata\": {{")?;
-        for (i, (k, v)) in self.metadata.iter().enumerate() {
-            let comma = if i + 1 < self.metadata.len() { "," } else { "" };
-            writeln!(w, "    \"{k}\": \"{v}\"{comma}")?;
-        }
-        writeln!(w, "  }},")?;
-        writeln!(w, "  \"bodies\": [")?;
-        for (i, b) in self.bodies.iter().enumerate() {
-            let comma = if i + 1 < self.bodies.len() { "," } else { "" };
-            writeln!(w, "    {}{}", b.to_json(), comma)?;
-        }
-        writeln!(w, "  ]")?;
+        writeln!(
+            w,
+            "  \"metadata\": {},",
+            json::encode(&json::MetadataRef(&self.metadata))?
+        )?;
+        write_json_array(w, "bodies", &self.bodies, false)?;
         writeln!(w, "}}")?;
         Ok(())
     }
@@ -804,43 +937,38 @@ impl CheckpointWriter {
 // CheckpointReader
 // ---------------------------------------------------------------------------
 
+/// A simulation checkpoint as restored by [`CheckpointReader`].
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct CheckpointData {
+    /// Simulation time.
+    #[serde(with = "json::f64_value")]
+    pub sim_time: f64,
+    /// Simulation step count.
+    pub step: u64,
+    /// Metadata key-value pairs in file order.
+    #[serde(default, with = "json::ordered_string_map")]
+    pub metadata: Vec<(String, String)>,
+    /// Bodies in the checkpoint, with their full dynamic state.
+    #[serde(default)]
+    pub bodies: Vec<BodyDesc>,
+}
+
 /// Read a checkpoint and restore simulation state.
 pub struct CheckpointReader;
 
 impl CheckpointReader {
-    /// Parse a JSON checkpoint and return (sim_time, step, bodies).
-    pub fn read_json(json: &str) -> (f64, u64, Vec<BodyDesc>) {
-        let sim_time = parse_f64_line(json, "sim_time").unwrap_or(0.0);
-        let step = parse_u64_line(json, "step").unwrap_or(0);
-        let bodies = PhysicsSceneReader::read_json(json);
-        (sim_time, step, bodies)
+    /// Parse a JSON checkpoint produced by [`CheckpointWriter`].
+    ///
+    /// Time, step count, metadata and every body (pose, velocities, mass and
+    /// shape) are restored; `metadata` and `bodies` may be absent, unknown
+    /// members are ignored.
+    ///
+    /// # Errors
+    /// Returns [`crate::Error::Parse`] if the text is not valid JSON, if
+    /// `sim_time` or `step` is missing, or if a member has the wrong type.
+    pub fn read_json(json: &str) -> crate::Result<CheckpointData> {
+        serde_json::from_str(json).map_err(|e| crate::Error::Parse(format!("checkpoint JSON: {e}")))
     }
-}
-
-fn parse_f64_line(s: &str, field: &str) -> Option<f64> {
-    let pat = format!("\"{field}\":");
-    for line in s.lines() {
-        let line = line.trim();
-        if line.starts_with(pat.as_str()) {
-            let rest = &line[pat.len()..];
-            let val_str = rest.trim().trim_end_matches(',');
-            return val_str.parse().ok();
-        }
-    }
-    None
-}
-
-fn parse_u64_line(s: &str, field: &str) -> Option<u64> {
-    let pat = format!("\"{field}\":");
-    for line in s.lines() {
-        let line = line.trim();
-        if line.starts_with(pat.as_str()) {
-            let rest = &line[pat.len()..];
-            let val_str = rest.trim().trim_end_matches(',');
-            return val_str.parse().ok();
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -983,6 +1111,9 @@ impl ParaviewXdmf {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod serde_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1063,14 +1194,14 @@ mod tests {
     #[test]
     fn body_desc_to_json_contains_id() {
         let b = BodyDesc::new(42, [1.0, 2.0, 3.0]);
-        let j = b.to_json();
+        let j = b.to_json().unwrap();
         assert!(j.contains("\"id\":42"), "json={j}");
     }
 
     #[test]
     fn body_desc_to_json_contains_pos() {
         let b = BodyDesc::new(1, [1.5, 2.5, 3.5]);
-        let j = b.to_json();
+        let j = b.to_json().unwrap();
         assert!(j.contains("1.5"), "json={j}");
     }
 
@@ -1094,8 +1225,8 @@ mod tests {
         let mut buf = Vec::new();
         w.write_json(&mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
-        let bodies = PhysicsSceneReader::read_json(&s);
-        assert!(!bodies.is_empty(), "should find bodies");
+        let scene = PhysicsSceneReader::read_json(&s).unwrap();
+        assert_eq!(scene.bodies, vec![BodyDesc::new(7, [1.0, 2.0, 3.0])]);
     }
 
     #[test]
@@ -1255,9 +1386,18 @@ mod tests {
         let mut buf = Vec::new();
         cw.write_json(&mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
-        let (t, step, _bodies) = CheckpointReader::read_json(&s);
-        assert!((t - 1.5).abs() < 1e-9, "t={t}");
-        assert_eq!(step, 10);
+        let checkpoint = CheckpointReader::read_json(&s).unwrap();
+        assert!(
+            (checkpoint.sim_time - 1.5).abs() < 1e-9,
+            "t={}",
+            checkpoint.sim_time
+        );
+        assert_eq!(checkpoint.step, 10);
+        assert_eq!(checkpoint.bodies, vec![BodyDesc::new(1, [0.0, 1.0, 0.0])]);
+        assert_eq!(
+            checkpoint.metadata,
+            vec![("solver".to_string(), "PGS".to_string())]
+        );
     }
 
     #[test]

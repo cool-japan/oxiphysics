@@ -21,8 +21,7 @@ impl ManipulabilityEllipsoid {
     pub fn compute(jac: &Jacobian) -> Self {
         let n = jac.n_joints;
         let mut jjt = [[0.0f64; 3]; 3];
-        for j in 0..n {
-            let col = &jac.columns[j];
+        for col in jac.columns.iter().take(n) {
             for (r, jjt_row) in jjt.iter_mut().enumerate() {
                 for (c, cell) in jjt_row.iter_mut().enumerate() {
                     *cell += col[r] * col[c];
@@ -408,8 +407,7 @@ impl Jacobian {
     /// Compute the JJᵀ matrix (6×6) for manipulability analysis.
     pub fn jjt(&self) -> [[f64; 6]; 6] {
         let mut m = [[0.0f64; 6]; 6];
-        for j in 0..self.n_joints {
-            let col = &self.columns[j];
+        for col in self.columns.iter().take(self.n_joints) {
             for (r, m_row) in m.iter_mut().enumerate() {
                 for (c, cell) in m_row.iter_mut().enumerate() {
                     *cell += col[r] * col[c];
@@ -418,31 +416,125 @@ impl Jacobian {
         }
         m
     }
-    /// Yoshikawa manipulability measure: w = sqrt(det(J·Jᵀ)).
-    ///
-    /// Uses the n×n positional sub-Jacobian (first `n_joints` rows × `n_joints` columns)
-    /// to avoid singularity when fewer joints than 3 spatial dimensions are active.
-    pub fn manipulability(&self) -> f64 {
-        let n = self.n_joints;
-        if n == 0 {
-            return 0.0;
+    /// The Jacobian columns when the public `columns` and `n_joints` fields
+    /// agree and every entry is finite; `None` for a malformed Jacobian.
+    fn valid_columns(&self) -> Option<&[[f64; 6]]> {
+        let finite = self
+            .columns
+            .iter()
+            .all(|col| col.iter().all(|v| v.is_finite()));
+        if self.columns.len() == self.n_joints && finite {
+            Some(&self.columns)
+        } else {
+            None
         }
-        let mut g = vec![vec![0.0f64; n]; n];
-        for j in 0..n {
-            let col = &self.columns[j];
-            for (r, g_row) in g.iter_mut().enumerate() {
-                for (c, cell) in g_row.iter_mut().enumerate() {
-                    *cell += col[r] * col[c];
-                }
-            }
-        }
-        let det = mat_det_lu(&g);
-        det.abs().sqrt()
     }
-    /// Check if the manipulator is near a singularity.
+    /// Yoshikawa manipulability measure `w = sqrt(det(J·Jᵀ))`.
+    ///
+    /// * `n_joints >= 6`: evaluated on the full 6 × n Jacobian,
+    ///   `w = sqrt(det(J·Jᵀ))` (for `n = 6` this is `|det J|`), so singularities
+    ///   of the angular rows (e.g. aligned wrist axes of a 6-axis arm) are
+    ///   detected.  See [`Jacobian::manipulability_full`].
+    /// * `n_joints < 6`: `J·Jᵀ` of such an arm is always singular, so the
+    ///   measure is evaluated on the translational (linear-velocity) rows only,
+    ///   see [`Jacobian::translational_manipulability`].  The angular rows never
+    ///   enter, so linear and angular units are not mixed.
+    ///
+    /// Returns `0.0` for an empty Jacobian, for non-finite entries, and when
+    /// `columns.len() != n_joints`.
+    pub fn manipulability(&self) -> f64 {
+        if self.n_joints >= 6 {
+            self.manipulability_full()
+        } else {
+            self.translational_manipulability()
+        }
+    }
+    /// Yoshikawa measure of the translational part `J_v` (rows 0..3) only.
+    ///
+    /// * `n <= 3`: `w = sqrt(det(J_vᵀ·J_v))`, the n-dimensional volume spanned
+    ///   by the columns of `J_v` (for a planar 2R arm this is
+    ///   `l1·l2·|sin q2|`).
+    /// * `n > 3`: `w = sqrt(det(J_v·J_vᵀ))` of the 3 × 3 matrix.
+    ///
+    /// The volume is evaluated by Gram–Schmidt (the product of the residual
+    /// norms) rather than through the determinant of the squared Gram matrix,
+    /// so it vanishes to machine precision at a singularity instead of to
+    /// `sqrt(eps)`.  Returns `0.0` for a malformed Jacobian (see
+    /// [`Jacobian::manipulability`]).
+    pub fn translational_manipulability(&self) -> f64 {
+        match self.valid_columns() {
+            Some(columns) => task_space_volume(columns, 3),
+            None => 0.0,
+        }
+    }
+    /// Yoshikawa measure on all six task-space rows.
+    ///
+    /// * `n <= 6`: `w = sqrt(det(Jᵀ·J))`, the n-dimensional volume spanned by
+    ///   the columns (for `n = 6` this is `|det J|`).
+    /// * `n > 6`: `w = sqrt(det(J·Jᵀ))` of the 6 × 6 matrix.
+    ///
+    /// The linear rows (m per rad) and angular rows (dimensionless) are
+    /// combined without weighting, so the value is only meaningful as a
+    /// singularity indicator, not as a physical volume.  Returns `0.0` for a
+    /// malformed Jacobian (see [`Jacobian::manipulability`]).
+    pub fn manipulability_full(&self) -> f64 {
+        match self.valid_columns() {
+            Some(columns) => task_space_volume(columns, 6),
+            None => 0.0,
+        }
+    }
+    /// Check if the manipulator is near a singularity: `manipulability() < tol`.
     pub fn is_singular(&self, tol: f64) -> bool {
         self.manipulability() < tol
     }
+}
+/// `sqrt(det(M·Mᵀ))` / `sqrt(det(Mᵀ·M))` of the task-space matrix `M` made of
+/// the first `rows` entries of every Jacobian column (the product of the
+/// singular values of `M`).
+///
+/// With `n` columns, the n column vectors (each of length `rows`) span the
+/// volume when `n <= rows`; otherwise the `rows` row vectors (each of length
+/// `n`) do.  The volume is the product of Gram–Schmidt residual norms.
+fn task_space_volume(columns: &[[f64; 6]], rows: usize) -> f64 {
+    let n = columns.len();
+    if n == 0 || rows == 0 {
+        return 0.0;
+    }
+    let vectors: Vec<Vec<f64>> = if n <= rows {
+        columns.iter().map(|col| col[..rows].to_vec()).collect()
+    } else {
+        (0..rows)
+            .map(|r| columns.iter().map(|col| col[r]).collect())
+            .collect()
+    };
+    parallelotope_volume(vectors)
+}
+/// Volume of the parallelotope spanned by `vectors`: the product of the
+/// Gram–Schmidt residual norms (zero as soon as one vector is dependent on
+/// its predecessors).
+fn parallelotope_volume(vectors: Vec<Vec<f64>>) -> f64 {
+    let mut orthonormal: Vec<Vec<f64>> = Vec::with_capacity(vectors.len());
+    let mut volume = 1.0;
+    for mut v in vectors {
+        for _ in 0..2 {
+            for u in &orthonormal {
+                let coefficient: f64 = u.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
+                for (value, component) in v.iter_mut().zip(u.iter()) {
+                    *value -= coefficient * component;
+                }
+            }
+        }
+        let norm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm.is_nan() || norm <= 1e-300 {
+            return 0.0;
+        }
+        volume *= norm;
+        for value in v.iter_mut() {
+            *value /= norm;
+        }
+        orthonormal.push(v);
+    }
+    volume
 }
 /// Screw axis $\hat{\mathcal{S}} = (\hat{\omega}, \mathbf{v})$ in body/space frame.
 #[derive(Debug, Clone)]

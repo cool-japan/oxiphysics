@@ -1,11 +1,42 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-//! Granular sand simulation (MPM-inspired).
+//! Granular sand simulation (MLS-MPM with Drucker-Prager plasticity).
 //!
-//! Provides particle-based sand dynamics with Drucker-Prager plasticity,
-//! avalanche detection, angle-of-repose pile geometry, and granular
-//! temperature / packing-fraction utilities.
+//! [`SandSimulation`] is a Material Point Method solver for dry, cohesionless
+//! sand: moving-least-squares MPM with quadratic B-spline weights and APIC
+//! affine velocities (Hu et al., 2018), Hencky elasticity, and the
+//! Drucker-Prager return mapping in logarithmic-strain space of Klár et al.
+//! (2016, "Drucker-Prager elastoplasticity for sand animation"). The
+//! background grid is sparse (unbounded domain, memory proportional to the
+//! number of particles) and a rough floor plane `y = 0` closes the domain.
+//! See the private `mpm` submodule for the scheme in formulas.
+//!
+//! What is modelled: gravity, elastic compression, frictional shear failure
+//! (a larger friction angle gives steeper stable heaps and a shorter runout
+//! when a column collapses), tension cut-off (grains do not stick), and contact
+//! with the floor with Coulomb friction. What is not: cohesion, Klár's volume
+//! correction (the dilation of loosened sand is only accumulated in
+//! [`SandParticle::plastic_strain_vol`]), pore fluid, and colliders other than
+//! the floor plane.
+//!
+//! The friction angle `φ` calibrates the Drucker-Prager cone to the
+//! Mohr-Coulomb criterion in **triaxial compression**, i.e. for the stress
+//! states of a 3-D heap. In plane strain (see
+//! [`SandSimulation::plane_strain_z`]) that cone is more permissive: a heap of
+//! `φ = 30°` sand stands up to roughly 45° there, and for `φ ≳ 42°` the
+//! idealised plane-strain stress state (`σ₂ = (σ₁ + σ₃)/2`) never reaches the
+//! cone, so such sand does not fail in plane strain.
+//!
+//! The module also provides avalanche detection, angle-of-repose pile
+//! geometry, the stand-alone stress-space [`DruckerPragerPlasticity`] helper
+//! (not used by the simulation, which applies the return mapping in
+//! logarithmic-strain space), and granular temperature / packing-fraction
+//! utilities.
+
+mod mpm;
+
+use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // Small math helpers
@@ -36,6 +67,13 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// A single sand (MPM) particle.
+///
+/// All state the integrator needs lives in this struct (the simulation keeps no
+/// hidden per-particle data), so particles may be added, removed, copied or
+/// edited between steps. A particle with a non-finite state, a non-positive
+/// mass or volume, or a position more than about a million cells from the origin
+/// is *inert*: it is never modified and does not influence the others.
+#[derive(Debug, Clone, PartialEq)]
 pub struct SandParticle {
     /// World-space position \[m\].
     pub position: [f64; 3],
@@ -43,12 +81,18 @@ pub struct SandParticle {
     pub velocity: [f64; 3],
     /// Mass \[kg\].
     pub mass: f64,
-    /// Reference volume \[m³\].
+    /// Reference volume \[m³\]; `mass / volume` is the bulk density of the sand.
     pub volume: f64,
-    /// Deformation gradient F stored column-major as a flat 3×3 array.
+    /// Elastic deformation gradient F^E stored column-major as a flat 3×3
+    /// array (identity when stress free). The plastic part is discarded by the
+    /// return mapping, so F^E measures the strain the grains are carrying.
     pub deformation_gradient: [f64; 9],
-    /// Accumulated volumetric plastic strain (scalar).
+    /// Accumulated volumetric plastic strain: the dilation (`tr ε ≥ 0`) that the
+    /// tension cut-off removed from the elastic strain; never decreases.
     pub plastic_strain_vol: f64,
+    /// APIC affine velocity matrix C \[1/s\] (the local velocity gradient the
+    /// particle carries), column-major; zero for a particle at rest.
+    pub affine_velocity: [f64; 9],
 }
 
 impl SandParticle {
@@ -68,6 +112,7 @@ impl SandParticle {
             volume,
             deformation_gradient: identity,
             plastic_strain_vol: 0.0,
+            affine_velocity: [0.0; 9],
         }
     }
 
@@ -174,7 +219,30 @@ impl DruckerPragerPlasticity {
 // SandSimulation
 // ---------------------------------------------------------------------------
 
-/// Simple MPM-inspired sand simulation.
+/// Young's modulus of a new simulation \[Pa\] (the sand of Klár et al. 2016).
+const DEFAULT_YOUNGS_MODULUS_PA: f64 = 3.537e5;
+/// Poisson's ratio of a new simulation.
+const DEFAULT_POISSON_RATIO: f64 = 0.3;
+/// Friction angle of a new simulation \[degrees\].
+const DEFAULT_FRICTION_ANGLE_DEG: f64 = 30.0;
+/// Floor friction coefficient of a new simulation.
+const DEFAULT_FLOOR_FRICTION: f64 = 1.0;
+/// CFL number of a new simulation.
+const DEFAULT_CFL: f64 = 0.3;
+/// Largest particle count [`SandSimulation::fill_box`] creates in one call.
+const MAX_FILL_PARTICLES: usize = 50_000_000;
+
+/// Upper bound on the number of explicit sub-steps that one
+/// [`SandSimulation::try_step`] call takes before it gives up.
+pub const MAX_SUBSTEPS_PER_STEP: usize = 20_000;
+
+/// MLS-MPM sand simulation: APIC particle-grid transfers, Hencky elasticity and
+/// a Drucker-Prager return mapping (see the module documentation).
+///
+/// The grid is sparse and built from the particles every sub-step, so there is
+/// no domain to size; the floor plane `y = 0` is the only boundary. A good
+/// resolution has about two particles per cell edge: `grid_size ≈ 2 · spacing`.
+#[derive(Debug, Clone)]
 pub struct SandSimulation {
     /// Particle list.
     pub particles: Vec<SandParticle>,
@@ -182,15 +250,46 @@ pub struct SandSimulation {
     pub grid_size: f64,
     /// Gravity vector \[m/s²\].
     pub gravity: [f64; 3],
+    /// Young's modulus E of the elastic response \[Pa\] (default `3.537e5`).
+    pub youngs_modulus_pa: f64,
+    /// Poisson's ratio ν, `0 ≤ ν < 0.5` (default `0.3`).
+    pub poisson_ratio: f64,
+    /// Friction angle φ of the sand in degrees, `0 ≤ φ < 90` (default `30`).
+    ///
+    /// The Drucker-Prager cone is calibrated to the Mohr-Coulomb friction angle
+    /// in triaxial compression, `α = √(2/3) · 2 sin φ / (3 − sin φ)`.
+    pub friction_angle_deg: f64,
+    /// Coulomb friction coefficient µ ≥ 0 between the sand and the floor plane
+    /// (default `1`); `f64::INFINITY` makes the floor sticky.
+    pub floor_friction: f64,
+    /// CFL number of the sub-step control, `0 < cfl ≤ 1` (default `0.3`).
+    pub cfl: f64,
+    /// Optional plane-strain slab `[z_min, z_max]` in metres (default `None`:
+    /// a full 3-D simulation).
+    ///
+    /// The planes `z = z_min` and `z = z_max` are symmetry planes: grid nodes on
+    /// or beyond them get zero `z` velocity and particles are kept inside. A slab
+    /// one or two cells thick (`z_max − z_min ≈ grid_size`) filled symmetrically
+    /// gives an exact two-dimensional (plane-strain) simulation at a fraction of
+    /// the 3-D cost; align the planes with grid planes (multiples of
+    /// `grid_size`).
+    pub plane_strain_z: Option<[f64; 2]>,
 }
 
 impl SandSimulation {
-    /// Create a new `SandSimulation`.
+    /// Create a new `SandSimulation` with the default sand (`E = 3.537e5 Pa`,
+    /// `ν = 0.3`, `φ = 30°`), a rough floor (`µ = 1`) and `cfl = 0.3`.
     pub fn new(grid_size: f64, gravity: [f64; 3]) -> Self {
         Self {
             particles: Vec::new(),
             grid_size,
             gravity,
+            youngs_modulus_pa: DEFAULT_YOUNGS_MODULUS_PA,
+            poisson_ratio: DEFAULT_POISSON_RATIO,
+            friction_angle_deg: DEFAULT_FRICTION_ANGLE_DEG,
+            floor_friction: DEFAULT_FLOOR_FRICTION,
+            cfl: DEFAULT_CFL,
+            plane_strain_z: None,
         }
     }
 
@@ -199,24 +298,222 @@ impl SandSimulation {
         self.particles.push(p);
     }
 
-    /// Advance the simulation by one time step `dt` \[s\].
+    /// Fill the axis-aligned box `[min, max]` with particles on a regular
+    /// lattice of cell centres and return how many were added.
     ///
-    /// This simplified integrator applies gravity and integrates positions
-    /// with a symplectic Euler scheme. A ground plane at y = 0 is enforced.
-    pub fn step(&mut self, dt: f64) {
-        for p in &mut self.particles {
-            // Gravity acceleration
-            let a = self.gravity;
-            p.velocity = add3(p.velocity, scale3(a, dt));
-            p.position = add3(p.position, scale3(p.velocity, dt));
-            // Ground plane
-            if p.position[1] < 0.0 {
-                p.position[1] = 0.0;
-                if p.velocity[1] < 0.0 {
-                    p.velocity[1] = 0.0;
+    /// Each axis is divided into `round((max − min) / spacing)` equal cells (so
+    /// the lattice fills the box exactly); every particle owns one cell, with
+    /// `volume = cell volume` and `mass = density · volume`. An axis shorter than
+    /// half a `spacing` yields no particles.
+    ///
+    /// # Errors
+    /// [`Error::InvalidParameter`] if a bound is not finite, `min ≥ max` on an
+    /// axis, `spacing` or `density` is not positive and finite, or the box would
+    /// hold more than 50 million particles. Nothing is added then.
+    pub fn fill_box(
+        &mut self,
+        min: [f64; 3],
+        max: [f64; 3],
+        spacing: f64,
+        density: f64,
+    ) -> Result<usize> {
+        let bounds_ok = min.iter().chain(max.iter()).all(|b| b.is_finite())
+            && min.iter().zip(&max).all(|(lo, hi)| lo < hi);
+        if !bounds_ok {
+            return Err(Error::InvalidParameter(format!(
+                "fill_box needs finite bounds with min < max, got {min:?} .. {max:?}"
+            )));
+        }
+        if !(spacing.is_finite() && spacing > 0.0 && density.is_finite() && density > 0.0) {
+            return Err(Error::InvalidParameter(format!(
+                "fill_box needs positive finite spacing and density, got {spacing} and {density}"
+            )));
+        }
+        let counts: [usize; 3] =
+            std::array::from_fn(|d| ((max[d] - min[d]) / spacing).round() as usize);
+        let total = counts[0]
+            .checked_mul(counts[1])
+            .and_then(|n| n.checked_mul(counts[2]))
+            .filter(|&n| n <= MAX_FILL_PARTICLES)
+            .ok_or_else(|| {
+                Error::InvalidParameter(format!(
+                    "fill_box would create more than {MAX_FILL_PARTICLES} particles"
+                ))
+            })?;
+        if total == 0 {
+            return Ok(0);
+        }
+        let cell: [f64; 3] = std::array::from_fn(|d| (max[d] - min[d]) / counts[d] as f64);
+        let volume = cell[0] * cell[1] * cell[2];
+        let mass = density * volume;
+        self.particles.reserve(total);
+        for i in 0..counts[0] {
+            for j in 0..counts[1] {
+                for k in 0..counts[2] {
+                    let position = [
+                        min[0] + (i as f64 + 0.5) * cell[0],
+                        min[1] + (j as f64 + 0.5) * cell[1],
+                        min[2] + (k as f64 + 0.5) * cell[2],
+                    ];
+                    self.particles
+                        .push(SandParticle::new(position, mass, volume));
                 }
             }
         }
+        Ok(total)
+    }
+
+    /// Validate the parameters and derive the constitutive constants.
+    fn material(&self) -> Result<mpm::Material> {
+        let h = self.grid_size;
+        if !(h.is_finite() && h > 0.0 && (1.0 / h).is_finite()) {
+            return Err(Error::InvalidParameter(format!(
+                "grid_size must be positive and finite, got {h}"
+            )));
+        }
+        if !self.gravity.iter().all(|g| g.is_finite()) {
+            return Err(Error::InvalidParameter(format!(
+                "gravity must be finite, got {:?}",
+                self.gravity
+            )));
+        }
+        if self.floor_friction.is_nan() || self.floor_friction < 0.0 {
+            return Err(Error::InvalidParameter(format!(
+                "floor_friction must be non-negative, got {}",
+                self.floor_friction
+            )));
+        }
+        if let Some([z_min, z_max]) = self.plane_strain_z
+            && !(z_min.is_finite() && z_max.is_finite() && z_min < z_max)
+        {
+            return Err(Error::InvalidParameter(format!(
+                "plane_strain_z needs finite z_min < z_max, got [{z_min}, {z_max}]"
+            )));
+        }
+        if !(self.cfl.is_finite() && self.cfl > 0.0 && self.cfl <= 1.0) {
+            return Err(Error::InvalidParameter(format!(
+                "cfl must be in (0, 1], got {}",
+                self.cfl
+            )));
+        }
+        mpm::Material::new(self.youngs_modulus_pa, self.poisson_ratio, self.friction_angle_deg).ok_or_else(|| {
+            Error::InvalidParameter(format!(
+                "sand material out of range: youngs_modulus_pa = {} (> 0), poisson_ratio = {} (0 <= nu < 0.5), \
+                 friction_angle_deg = {} (0 <= phi < 90)",
+                self.youngs_modulus_pa, self.poisson_ratio, self.friction_angle_deg
+            ))
+        })
+    }
+
+    /// Largest stable explicit time step \[s\] of the current state:
+    /// `cfl · h / (c + v_max)` with the P-wave speed `c = √((λ + 2µ) / ρ_min)` of
+    /// the least dense particle and the largest particle speed `v_max`.
+    /// `f64::INFINITY` if there is no active particle.
+    ///
+    /// # Errors
+    /// [`Error::InvalidParameter`] if the grid size, gravity, material
+    /// constants, floor friction or CFL number are invalid.
+    pub fn stable_time_step(&self) -> Result<f64> {
+        let material = self.material()?;
+        Ok(mpm::stable_time_step(
+            &self.particles,
+            self.grid_size,
+            self.cfl,
+            &material,
+        ))
+    }
+
+    /// Advance the simulation by `dt` \[s\], taking as many explicit MLS-MPM
+    /// sub-steps as the stability limit [`SandSimulation::stable_time_step`]
+    /// requires (recomputed from the current velocities before every
+    /// sub-step), so any `dt` is safe.
+    ///
+    /// Particles that were placed below the floor (or outside the plane-strain
+    /// slab) are first moved onto it. Inert particles (see [`SandParticle`]) are skipped.
+    ///
+    /// # Errors
+    /// [`Error::InvalidParameter`] for an invalid `dt` (negative or not finite)
+    /// or simulation parameter, in which case nothing changes; also if more
+    /// than [`MAX_SUBSTEPS_PER_STEP`] sub-steps would be needed, in which case
+    /// the sub-steps already taken stay applied.
+    pub fn try_step(&mut self, dt: f64) -> Result<()> {
+        let material = self.material()?;
+        if !dt.is_finite() || dt < 0.0 {
+            return Err(Error::InvalidParameter(format!(
+                "time step must be finite and non-negative, got {dt}"
+            )));
+        }
+        if dt == 0.0 {
+            return Ok(());
+        }
+        let h = self.grid_size;
+        let inv_h = 1.0 / h;
+        for p in self
+            .particles
+            .iter_mut()
+            .filter(|p| mpm::is_active(p, inv_h))
+        {
+            mpm::confine_to_domain(p, self.plane_strain_z);
+        }
+        let mut constants = mpm::StepConstants {
+            h,
+            dt,
+            gravity: self.gravity,
+            material,
+            floor_friction: self.floor_friction,
+            plane_strain_z: self.plane_strain_z,
+        };
+        let mut remaining = dt;
+        let mut substeps = 0usize;
+        while remaining > 0.0 {
+            if substeps >= MAX_SUBSTEPS_PER_STEP {
+                return Err(Error::InvalidParameter(format!(
+                    "time step {dt} s needs more than {MAX_SUBSTEPS_PER_STEP} stability-limited sub-steps"
+                )));
+            }
+            let stable = mpm::stable_time_step(&self.particles, h, self.cfl, &material);
+            if stable.is_nan() || stable <= 0.0 {
+                return Err(Error::InvalidParameter(format!(
+                    "no stable time step exists for the current state ({stable})"
+                )));
+            }
+            let pieces = (remaining / stable).ceil().max(1.0);
+            constants.dt = remaining / pieces;
+            mpm::substep(&mut self.particles, &constants);
+            remaining -= constants.dt;
+            substeps += 1;
+        }
+        Ok(())
+    }
+
+    /// Advance the simulation by `dt` \[s\] (see [`SandSimulation::try_step`]).
+    ///
+    /// This is the infallible convenience form: an invalid `dt` or invalid
+    /// simulation parameters leave the particles unchanged. Use
+    /// [`SandSimulation::try_step`] to learn why a step was refused.
+    pub fn step(&mut self, dt: f64) {
+        // The error carries no state the caller could use beyond what `try_step` reports.
+        let _ = self.try_step(dt);
+    }
+
+    /// Total mass of all particles \[kg\].
+    pub fn total_mass(&self) -> f64 {
+        self.particles.iter().map(|p| p.mass).sum()
+    }
+
+    /// Total linear momentum `Σ m v` \[kg·m/s\].
+    pub fn total_momentum(&self) -> [f64; 3] {
+        self.particles
+            .iter()
+            .fold([0.0; 3], |acc, p| add3(acc, scale3(p.velocity, p.mass)))
+    }
+
+    /// Total kinetic energy `Σ ½ m |v|²` \[J\] (of the particle velocities).
+    pub fn kinetic_energy(&self) -> f64 {
+        self.particles
+            .iter()
+            .map(SandParticle::kinetic_energy)
+            .sum()
     }
 }
 
@@ -707,3 +1004,12 @@ mod tests {
         assert!((phi1 - phi2).abs() < EPS);
     }
 }
+
+#[cfg(test)]
+mod mpm_tests;
+#[cfg(test)]
+mod physics_tests;
+#[cfg(test)]
+mod sim_tests;
+#[cfg(test)]
+mod test_support;

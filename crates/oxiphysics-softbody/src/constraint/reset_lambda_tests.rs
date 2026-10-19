@@ -248,11 +248,16 @@ fn reset_isometric_bending_constraint_v2() {
 }
 
 #[test]
-fn reset_balloon_pressure_constraint() {
-    let start = particles_at(&[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
-    probe(
-        || soft::BalloonPressureConstraint::new([0, 1, 2], 1.0, 1.0, 1.0e-2),
-        &start,
+fn reset_balloon_volume_constraint() {
+    // A closed tetrahedron inflated to 150 % of its volume violates the
+    // constraint, so the compliant multiplier is really exercised.
+    let rest = rest_tet();
+    probe_sensitive(
+        || {
+            soft::BalloonVolumeConstraint::from_particles(tet_faces(), &rest, 1.5, 1.0e-2)
+                .expect("the tetrahedron surface references existing particles")
+        },
+        &rest_tet(),
     );
 }
 

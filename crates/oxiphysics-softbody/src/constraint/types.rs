@@ -4,7 +4,7 @@
 
 use super::functions::*;
 use crate::particle::SoftParticle;
-use oxiphysics_core::math::{Real, Vec3};
+use oxiphysics_core::math::{Mat3, Real, Vec3};
 
 /// Collision constraint that prevents a particle from penetrating a plane.
 #[derive(Debug, Clone)]
@@ -131,10 +131,29 @@ impl SurfaceTensionConstraint {
         self.gamma * (area - self.rest_area)
     }
 }
+/// Stand-in mass of a pinned particle (inverse mass zero) in the weighted
+/// averages of [`ShapeMatchingConstraint`]: large, so that a pinned particle
+/// dominates the centre of mass and the orientation of its group, yet finite.
+const PINNED_PARTICLE_MASS: Real = 1.0e6;
+
 /// Shape matching constraint (Müller et al. 2005).
 ///
 /// Preserves the shape of a group of particles by computing the optimal
 /// rotation from the rest shape to the current configuration.
+///
+/// With the offsets `p_i = x_i - c` of the particles from their current centre
+/// of mass `c` and the rest offsets `q_i`, the optimal rotation is the rotation
+/// factor `R` of the polar decomposition `A = R S` of the mass-weighted
+/// cross-covariance matrix `A = sum_i m_i p_i q_i^T`.  It is computed with a
+/// singular value decomposition rather than an orthogonalisation of the columns
+/// of `A`, so a resting group is not rotated (`A` is then the symmetric rest
+/// covariance matrix, whose rotation factor is the identity) and groups whose
+/// particles lie in a plane, such as a cloth patch (`A` has rank 2), keep a well
+/// defined orientation.  The rotation of a collinear group (rank 1) is only
+/// determined up to a twist about its line, which moves no goal position.
+/// `project` moves every unpinned particle by `stiffness` times the vector to its
+/// goal position `R q_i + c`; without pinned particles the mass-weighted
+/// centroid is unchanged.
 #[derive(Debug, Clone)]
 pub struct ShapeMatchingConstraint {
     /// Indices of the particles in this shape.
@@ -162,26 +181,15 @@ impl ShapeMatchingConstraint {
                 stiffness,
             };
         }
-        let total_inv_mass: Real = indices
+        let total_mass: Real = indices
             .iter()
-            .map(|&i| {
-                if particles[i].inverse_mass > 0.0 {
-                    1.0 / particles[i].inverse_mass
-                } else {
-                    1e6
-                }
-            })
+            .map(|&i| Self::particle_mass(&particles[i]))
             .sum();
         let mut com = Vec3::zeros();
         for &i in &indices {
-            let mass = if particles[i].inverse_mass > 0.0 {
-                1.0 / particles[i].inverse_mass
-            } else {
-                1e6
-            };
-            com += particles[i].position * mass;
+            com += particles[i].position * Self::particle_mass(&particles[i]);
         }
-        com /= total_inv_mass;
+        com /= total_mass;
         let rest_relative: Vec<Vec3> = indices
             .iter()
             .map(|&i| particles[i].position - com)
@@ -193,78 +201,94 @@ impl ShapeMatchingConstraint {
             stiffness,
         }
     }
+    /// Mass of a particle as used by the weighted averages of the constraint:
+    /// `1 / inverse_mass`, or [`PINNED_PARTICLE_MASS`] for a pinned particle.
+    fn particle_mass(particle: &SoftParticle) -> Real {
+        if particle.inverse_mass > 0.0 {
+            1.0 / particle.inverse_mass
+        } else {
+            PINNED_PARTICLE_MASS
+        }
+    }
     /// Compute current center of mass.
     pub(super) fn current_com(&self, particles: &[SoftParticle]) -> Vec3 {
-        let n = self.indices.len();
-        if n == 0 {
-            return Vec3::zeros();
-        }
         let mut total_mass = 0.0_f64;
         let mut com = Vec3::zeros();
         for &i in &self.indices {
-            let mass = if particles[i].inverse_mass > 0.0 {
-                1.0 / particles[i].inverse_mass
-            } else {
-                1e6
-            };
+            let mass = Self::particle_mass(&particles[i]);
             com += particles[i].position * mass;
             total_mass += mass;
         }
-        if total_mass > 1e-14 {
+        if total_mass > 0.0 {
             com / total_mass
         } else {
             Vec3::zeros()
         }
     }
-    /// Compute the optimal rotation using the polar decomposition
-    /// via cross-covariance matrix.
+    /// Rotation `R` of the polar decomposition `A = R S` of the mass-weighted
+    /// cross-covariance matrix `A = sum_i m_i (x_i - com) q_i^T`, where `com` is
+    /// the current centre of mass (see [`current_com`](Self::current_com)) and
+    /// `q_i` the rest offsets.
     ///
-    /// Returns the rotation matrix as a 3x3 array (row-major).
-    pub(super) fn compute_rotation(&self, particles: &[SoftParticle]) -> [Real; 9] {
-        let com = self.current_com(particles);
-        let mut a = [0.0_f64; 9];
-        for (k, &idx) in self.indices.iter().enumerate() {
-            let mass = if particles[idx].inverse_mass > 0.0 {
-                1.0 / particles[idx].inverse_mass
-            } else {
-                1e6
-            };
-            let p = particles[idx].position - com;
-            let q = &self.rest_relative[k];
-            a[0] += mass * p.x * q.x;
-            a[1] += mass * p.x * q.y;
-            a[2] += mass * p.x * q.z;
-            a[3] += mass * p.y * q.x;
-            a[4] += mass * p.y * q.y;
-            a[5] += mass * p.y * q.z;
-            a[6] += mass * p.z * q.x;
-            a[7] += mass * p.z * q.y;
-            a[8] += mass * p.z * q.z;
+    /// `R` is the proper rotation that maps the rest offsets onto the current
+    /// ones as closely as a rotation can: `x_i - com ~ R q_i`.  It is the
+    /// identity for a group at rest and when the group carries no orientation (a
+    /// single particle, coincident particles, non-finite positions); for a
+    /// collinear group it is fixed only up to a twist about the line.
+    pub(super) fn compute_rotation(&self, particles: &[SoftParticle], com: &Vec3) -> Mat3 {
+        let mut covariance = Mat3::zeros();
+        for (&idx, q) in self.indices.iter().zip(&self.rest_relative) {
+            let particle = &particles[idx];
+            let p = particle.position - com;
+            covariance += (p * q.transpose()) * Self::particle_mass(particle);
         }
-        let col0 = Vec3::new(a[0], a[3], a[6]);
-        let col1_raw = Vec3::new(a[1], a[4], a[7]);
-        let col2_raw = Vec3::new(a[2], a[5], a[8]);
-        let len0 = col0.norm();
-        if len0 < 1e-14 {
-            return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        }
-        let e0 = col0 / len0;
-        let proj1 = col1_raw - e0 * e0.dot(&col1_raw);
-        let len1 = proj1.norm();
-        if len1 < 1e-14 {
-            return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        }
-        let e1 = proj1 / len1;
-        let e2_raw = col2_raw - e0 * e0.dot(&col2_raw) - e1 * e1.dot(&col2_raw);
-        let len2 = e2_raw.norm();
-        if len2 < 1e-14 {
-            return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        }
-        let e2 = e2_raw / len2;
-        let det_sign = e0.dot(&e1.cross(&e2));
-        let e2 = if det_sign < 0.0 { -e2 } else { e2 };
-        [e0.x, e1.x, e2.x, e0.y, e1.y, e2.y, e0.z, e1.z, e2.z]
+        polar_rotation(&covariance)
     }
+}
+/// Rotation factor `R` of the polar decomposition `a = R S` (`S` symmetric
+/// positive semi-definite): the proper rotation (`R^T R = I`, `det R = +1`) that
+/// is closest to `a` in the Frobenius norm.
+///
+/// With the singular value decomposition `a = U diag(s) V^T` the rotation is
+/// `U V^T`.  If that product has determinant `-1` (the matrix mirrors the
+/// shape), the closest proper rotation is obtained by negating the column of `U`
+/// that belongs to the smallest singular value.  No inverse of `a` is needed, so
+/// the factor is also defined for a matrix of rank 2, which is what a planar
+/// group has (all `p_i` and `q_i` lie in a plane): the smallest singular value is
+/// then zero and the sign choice yields the unique proper rotation that agrees
+/// with `a` on the plane, including its orientation when the plane is turned
+/// over.
+///
+/// `a` is normalised by its largest entry first, so the result does not depend
+/// on the scale of the masses and extents.  The identity is returned for the
+/// zero matrix and for a matrix with a non-finite entry: neither carries an
+/// orientation to extract.
+pub(super) fn polar_rotation(a: &Mat3) -> Mat3 {
+    if a.iter().any(|entry| !entry.is_finite()) {
+        return Mat3::identity();
+    }
+    let scale = a
+        .iter()
+        .fold(0.0_f64, |largest, entry| largest.max(entry.abs()));
+    if scale <= 0.0 {
+        return Mat3::identity();
+    }
+    let svd = (a / scale).svd(true, true);
+    let (Some(mut u), Some(v_t)) = (svd.u, svd.v_t) else {
+        return Mat3::identity();
+    };
+    let rotation = u * v_t;
+    if rotation.determinant() >= 0.0 {
+        return rotation;
+    }
+    let smallest = svd
+        .singular_values
+        .iter()
+        .enumerate()
+        .min_by(|(_, first), (_, second)| first.total_cmp(second))
+        .map_or(2, |(index, _)| index);
+    u.column_mut(smallest).neg_mut();
+    u * v_t
 }
 /// Strain limiting constraint for a triangle element.
 ///
@@ -914,57 +938,6 @@ impl IsometricBendingConstraintV2 {
     /// [`IsometricBendingConstraint`] uses, so a flat hinge has zero energy.
     fn build_q(p0: &Vec3, p1: &Vec3, p2: &Vec3, p3: &Vec3) -> [Real; 16] {
         IsometricBendingConstraint::compute_q_matrix(p0, p1, p2, p3)
-    }
-}
-/// Per-triangle balloon pressure constraint (legacy, deprecated).
-///
-/// **Deprecated:** use
-/// [`BalloonVolumeConstraint`](super::balloon_volume::BalloonVolumeConstraint),
-/// which enforces the volume enclosed by the *whole* closed surface.
-///
-/// A balloon's volume is a property of the entire surface, but this constraint
-/// is attached to a single triangle (i0, i1, i2).  It compares that one
-/// triangle's volume term `p0 . (p1 x p2) / 6` (which depends on the origin)
-/// with `rest_volume`, the volume of the whole balloon, and moves the three
-/// vertices along the triangle normal instead of along the volume gradient, so
-/// it does not drive the enclosed volume to the target.  It is kept only for
-/// source compatibility.
-#[derive(Debug, Clone)]
-pub struct BalloonPressureConstraint {
-    /// Surface triangle indices.
-    pub indices: [usize; 3],
-    /// Target pressure (multiplied by current volume deviation).
-    pub pressure: Real,
-    /// Rest volume reference (of the entire balloon).
-    pub rest_volume: Real,
-    /// Compliance.
-    pub compliance: Real,
-    /// Accumulated Lagrange multiplier.
-    pub(super) lambda: Real,
-}
-impl BalloonPressureConstraint {
-    /// Create a new balloon pressure constraint.
-    pub fn new(indices: [usize; 3], pressure: Real, rest_volume: Real, compliance: Real) -> Self {
-        Self {
-            indices,
-            pressure,
-            rest_volume,
-            compliance,
-            lambda: 0.0,
-        }
-    }
-    /// Reset Lagrange multiplier.
-    pub fn reset_lambda(&mut self) {
-        self.lambda = 0.0;
-    }
-    /// Compute signed triangle area contribution to enclosed volume.
-    /// Divergence theorem: V = (1/6) * sum over faces of (p0 · (p1 × p2)).
-    pub fn triangle_volume_contribution(p0: &Vec3, p1: &Vec3, p2: &Vec3) -> Real {
-        p0.dot(&p1.cross(p2)) / 6.0
-    }
-    /// Outward normal of the triangle (unnormalized, magnitude = area).
-    pub(super) fn triangle_normal_area(p0: &Vec3, p1: &Vec3, p2: &Vec3) -> Vec3 {
-        (p1 - p0).cross(&(p2 - p0))
     }
 }
 /// Dihedral-angle bending constraint for two triangles sharing an edge.

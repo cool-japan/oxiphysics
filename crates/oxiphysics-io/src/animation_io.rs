@@ -10,6 +10,10 @@
 
 use std::collections::HashMap;
 
+mod bvh;
+
+pub use bvh::{BvhData, bvh_frame_to_pose, bvh_to_clip, export_bvh, parse_bvh};
+
 // ── Tiny math helpers ──────────────────────────────────────────────────────
 
 /// Add two 3-vectors.
@@ -68,44 +72,6 @@ fn quat_conjugate(q: [f64; 4]) -> [f64; 4] {
     [-q[0], -q[1], -q[2], q[3]]
 }
 
-/// Euler XYZ (degrees) to quaternion `[x, y, z, w]`.
-fn euler_xyz_to_quat(euler_deg: [f64; 3]) -> [f64; 4] {
-    let to_rad = std::f64::consts::PI / 180.0;
-    let (hx, hy, hz) = (
-        euler_deg[0] * to_rad * 0.5,
-        euler_deg[1] * to_rad * 0.5,
-        euler_deg[2] * to_rad * 0.5,
-    );
-    let (sx, cx) = (hx.sin(), hx.cos());
-    let (sy, cy) = (hy.sin(), hy.cos());
-    let (sz, cz) = (hz.sin(), hz.cos());
-    quat_normalize([
-        sx * cy * cz + cx * sy * sz,
-        cx * sy * cz - sx * cy * sz,
-        cx * cy * sz + sx * sy * cz,
-        cx * cy * cz - sx * sy * sz,
-    ])
-}
-
-/// Quaternion to Euler XYZ (degrees).
-fn quat_to_euler_xyz(q: [f64; 4]) -> [f64; 3] {
-    let [x, y, z, w] = q;
-    let to_deg = 180.0 / std::f64::consts::PI;
-    let sinr_cosp = 2.0 * (w * x + y * z);
-    let cosr_cosp = 1.0 - 2.0 * (x * x + y * y);
-    let rx = sinr_cosp.atan2(cosr_cosp);
-    let sinp = 2.0 * (w * y - z * x);
-    let ry = if sinp.abs() >= 1.0 {
-        std::f64::consts::FRAC_PI_2.copysign(sinp)
-    } else {
-        sinp.asin()
-    };
-    let siny_cosp = 2.0 * (w * z + x * y);
-    let cosy_cosp = 1.0 - 2.0 * (y * y + z * z);
-    let rz = siny_cosp.atan2(cosy_cosp);
-    [rx * to_deg, ry * to_deg, rz * to_deg]
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // SLERP – Spherical Linear Interpolation
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -161,6 +127,10 @@ pub struct Joint {
     pub offset: [f64; 3],
     /// Channel names (e.g. "Xposition", "Yposition", "Zrotation").
     pub channels: Vec<String>,
+    /// `true` for a BVH `End Site`: a leaf that only marks the end of a bone
+    /// chain.  It has no channels and no children, and its `offset` is the
+    /// position of the chain's tip relative to its parent.
+    pub is_end_site: bool,
 }
 
 /// A full skeleton definition.
@@ -190,7 +160,22 @@ impl Skeleton {
             parent,
             offset,
             channels: Vec::new(),
+            is_end_site: false,
         });
+        idx
+    }
+
+    /// Add a BVH `End Site` leaf below `parent` and return its index.
+    ///
+    /// The joint is named `EndSite_<index>` and flagged
+    /// [`Joint::is_end_site`]; the exporter writes it back as an `End Site`
+    /// block instead of a `JOINT`.
+    pub fn add_end_site(&mut self, parent: Option<usize>, offset: [f64; 3]) -> usize {
+        let name = format!("EndSite_{}", self.joints.len());
+        let idx = self.add_joint(&name, parent, offset);
+        if let Some(joint) = self.joints.get_mut(idx) {
+            joint.is_end_site = true;
+        }
         idx
     }
 
@@ -370,256 +355,6 @@ impl AnimationClip {
         };
         Some(self.frames[i0].lerp(&self.frames[i1], t))
     }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// BVH motion capture parser
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Parsed BVH motion capture data.
-#[derive(Debug, Clone)]
-pub struct BvhData {
-    /// Skeleton hierarchy.
-    pub skeleton: Skeleton,
-    /// Frame rate (seconds per frame).
-    pub frame_time: f64,
-    /// Motion data: outer = frames, inner = channel values.
-    pub motion: Vec<Vec<f64>>,
-}
-
-/// Parse BVH format text into a `BvhData` structure.
-pub fn parse_bvh(input: &str) -> Result<BvhData, String> {
-    let mut skeleton = Skeleton::new();
-    let lines = input.lines().map(|l| l.trim()).peekable();
-    let mut parent_stack: Vec<Option<usize>> = vec![None];
-    let mut frame_time = 1.0 / 30.0;
-    let mut motion: Vec<Vec<f64>> = Vec::new();
-    let mut in_motion = false;
-    let mut _num_frames: usize = 0;
-
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        if in_motion {
-            let vals: Result<Vec<f64>, _> =
-                line.split_whitespace().map(|s| s.parse::<f64>()).collect();
-            match vals {
-                Ok(v) if !v.is_empty() => motion.push(v),
-                _ => {}
-            }
-            continue;
-        }
-
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        if tokens.is_empty() {
-            continue;
-        }
-
-        match tokens[0] {
-            "HIERARCHY" => {}
-            "ROOT" | "JOINT" => {
-                let name = if tokens.len() > 1 {
-                    tokens[1]
-                } else {
-                    "unnamed"
-                };
-                let parent = *parent_stack.last().unwrap_or(&None);
-                let idx = skeleton.add_joint(name, parent, [0.0; 3]);
-                parent_stack.push(Some(idx));
-            }
-            "End" => {
-                // End site – add as a leaf
-                let parent = *parent_stack.last().unwrap_or(&None);
-                let name = format!("EndSite_{}", skeleton.num_joints());
-                let idx = skeleton.add_joint(&name, parent, [0.0; 3]);
-                parent_stack.push(Some(idx));
-            }
-            "OFFSET"
-                if tokens.len() >= 4 => {
-                    let ox: f64 = tokens[1].parse().unwrap_or(0.0);
-                    let oy: f64 = tokens[2].parse().unwrap_or(0.0);
-                    let oz: f64 = tokens[3].parse().unwrap_or(0.0);
-                    if let Some(&Some(idx)) = parent_stack.last()
-                        && let Some(j) = skeleton.joints.get_mut(idx) {
-                            j.offset = [ox, oy, oz];
-                        }
-                }
-            "CHANNELS"
-                if tokens.len() >= 2 => {
-                    let _n: usize = tokens[1].parse().unwrap_or(0);
-                    let channels: Vec<String> = tokens[2..].iter().map(|s| s.to_string()).collect();
-                    if let Some(&Some(idx)) = parent_stack.last() {
-                        skeleton.set_channels(idx, channels);
-                    }
-                }
-            "{" => {}
-            "}" => {
-                parent_stack.pop();
-            }
-            "MOTION" => {
-                in_motion = true;
-            }
-            "Frames:"
-                if tokens.len() >= 2 => {
-                    _num_frames = tokens[1].parse().unwrap_or(0);
-                }
-            "Frame"
-                // "Frame Time: 0.033333"
-                if tokens.len() >= 3 => {
-                    frame_time = tokens[2].parse().unwrap_or(1.0 / 30.0);
-                }
-            _ => {}
-        }
-    }
-
-    Ok(BvhData {
-        skeleton,
-        frame_time,
-        motion,
-    })
-}
-
-/// Convert BVH channel data for one frame to a `SkeletonPose`.
-pub fn bvh_frame_to_pose(skeleton: &Skeleton, channels: &[f64]) -> SkeletonPose {
-    let mut pose = SkeletonPose::default_for(skeleton);
-    let mut ch_idx = 0;
-
-    for (j_idx, joint) in skeleton.joints.iter().enumerate() {
-        let mut trans = joint.offset;
-        let mut euler = [0.0; 3];
-
-        for ch_name in &joint.channels {
-            if ch_idx >= channels.len() {
-                break;
-            }
-            let val = channels[ch_idx];
-            ch_idx += 1;
-            match ch_name.as_str() {
-                "Xposition" => trans[0] += val,
-                "Yposition" => trans[1] += val,
-                "Zposition" => trans[2] += val,
-                "Xrotation" => euler[0] = val,
-                "Yrotation" => euler[1] = val,
-                "Zrotation" => euler[2] = val,
-                _ => {}
-            }
-        }
-
-        let rot = euler_xyz_to_quat(euler);
-        pose.joint_poses[j_idx] = JointPose {
-            translation: trans,
-            rotation: rot,
-            scale: [1.0, 1.0, 1.0],
-        };
-    }
-
-    pose
-}
-
-/// Convert BVH data to an `AnimationClip`.
-pub fn bvh_to_clip(bvh: &BvhData) -> AnimationClip {
-    let fps = if bvh.frame_time > 1e-15 {
-        1.0 / bvh.frame_time
-    } else {
-        30.0
-    };
-    let mut clip = AnimationClip::new("bvh_clip", fps);
-    for (i, frame_data) in bvh.motion.iter().enumerate() {
-        let time = i as f64 * bvh.frame_time;
-        let pose = bvh_frame_to_pose(&bvh.skeleton, frame_data);
-        clip.add_frame(time, pose);
-    }
-    clip
-}
-
-/// Export BVH data to string.
-pub fn export_bvh(skeleton: &Skeleton, clip: &AnimationClip) -> String {
-    let mut out = String::new();
-    out.push_str("HIERARCHY\n");
-
-    fn write_joint(out: &mut String, skeleton: &Skeleton, idx: usize, indent: usize) {
-        let joint = &skeleton.joints[idx];
-        let prefix = " ".repeat(indent);
-        let keyword = if joint.parent.is_none() {
-            "ROOT"
-        } else {
-            "JOINT"
-        };
-        out.push_str(&format!("{}{} {}\n", prefix, keyword, joint.name));
-        out.push_str(&format!("{}{{\n", prefix));
-        out.push_str(&format!(
-            "{}  OFFSET {:.6} {:.6} {:.6}\n",
-            prefix, joint.offset[0], joint.offset[1], joint.offset[2]
-        ));
-        if !joint.channels.is_empty() {
-            out.push_str(&format!(
-                "{}  CHANNELS {} {}\n",
-                prefix,
-                joint.channels.len(),
-                joint.channels.join(" ")
-            ));
-        }
-        let children = skeleton.children(idx);
-        if children.is_empty() {
-            out.push_str(&format!("{}  End Site\n", prefix));
-            out.push_str(&format!("{}  {{\n", prefix));
-            out.push_str(&format!(
-                "{}    OFFSET 0.000000 0.000000 0.000000\n",
-                prefix
-            ));
-            out.push_str(&format!("{}  }}\n", prefix));
-        } else {
-            for &child in &children {
-                write_joint(out, skeleton, child, indent + 2);
-            }
-        }
-        out.push_str(&format!("{}}}\n", prefix));
-    }
-
-    // Find roots (joints with no parent)
-    for (i, j) in skeleton.joints.iter().enumerate() {
-        if j.parent.is_none() {
-            write_joint(&mut out, skeleton, i, 0);
-        }
-    }
-
-    out.push_str("MOTION\n");
-    out.push_str(&format!("Frames: {}\n", clip.num_frames()));
-    let frame_time = if clip.fps > 0.0 {
-        1.0 / clip.fps
-    } else {
-        1.0 / 30.0
-    };
-    out.push_str(&format!("Frame Time: {:.6}\n", frame_time));
-
-    for frame in &clip.frames {
-        let mut vals = Vec::new();
-        for (j_idx, joint) in skeleton.joints.iter().enumerate() {
-            let pose = &frame.joint_poses[j_idx];
-            for ch in &joint.channels {
-                match ch.as_str() {
-                    "Xposition" => vals.push(pose.translation[0]),
-                    "Yposition" => vals.push(pose.translation[1]),
-                    "Zposition" => vals.push(pose.translation[2]),
-                    "Xrotation" | "Yrotation" | "Zrotation" => {
-                        let euler = quat_to_euler_xyz(pose.rotation);
-                        match ch.as_str() {
-                            "Xrotation" => vals.push(euler[0]),
-                            "Yrotation" => vals.push(euler[1]),
-                            _ => vals.push(euler[2]),
-                        }
-                    }
-                    _ => vals.push(0.0),
-                }
-            }
-        }
-        let line: Vec<String> = vals.iter().map(|v| format!("{:.6}", v)).collect();
-        out.push_str(&line.join(" "));
-        out.push('\n');
-    }
-
-    out
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1490,75 +1225,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bvh_basic() {
-        let bvh_text = "\
-HIERARCHY
-ROOT Hips
-{
-  OFFSET 0.0 0.0 0.0
-  CHANNELS 6 Xposition Yposition Zposition Xrotation Yrotation Zrotation
-  JOINT Spine
-  {
-    OFFSET 0.0 5.0 0.0
-    CHANNELS 3 Xrotation Yrotation Zrotation
-    End Site
-    {
-      OFFSET 0.0 3.0 0.0
-    }
-  }
-}
-MOTION
-Frames: 2
-Frame Time: 0.033333
-0.0 0.0 0.0 0.0 0.0 0.0 10.0 20.0 30.0
-1.0 2.0 3.0 5.0 10.0 15.0 20.0 25.0 30.0";
-
-        let bvh = parse_bvh(bvh_text).unwrap();
-        assert!(bvh.skeleton.num_joints() >= 2);
-        assert_eq!(bvh.motion.len(), 2);
-        assert!((bvh.frame_time - 0.033333).abs() < 1e-4);
-    }
-
-    #[test]
-    fn test_bvh_to_clip() {
-        let bvh_text = "\
-HIERARCHY
-ROOT Root
-{
-  OFFSET 0.0 0.0 0.0
-  CHANNELS 3 Xposition Yposition Zposition
-}
-MOTION
-Frames: 2
-Frame Time: 0.033333
-1.0 2.0 3.0
-4.0 5.0 6.0";
-
-        let bvh = parse_bvh(bvh_text).unwrap();
-        let clip = bvh_to_clip(&bvh);
-        assert_eq!(clip.num_frames(), 2);
-    }
-
-    #[test]
-    fn test_export_bvh_roundtrip() {
-        let mut skel = Skeleton::new();
-        let root = skel.add_joint("Root", None, [0.0; 3]);
-        skel.set_channels(
-            root,
-            vec!["Xposition".into(), "Yposition".into(), "Zposition".into()],
-        );
-
-        let mut clip = AnimationClip::new("test", 30.0);
-        let mut pose = SkeletonPose::default_for(&skel);
-        pose.joint_poses[0].translation = [1.0, 2.0, 3.0];
-        clip.add_frame(0.0, pose);
-
-        let exported = export_bvh(&skel, &clip);
-        assert!(exported.contains("ROOT Root"));
-        assert!(exported.contains("MOTION"));
-    }
-
-    #[test]
     fn test_fbx_node_ascii() {
         let mut node = FbxNode::new("Objects");
         node.add_property("\"Test\"");
@@ -1747,30 +1413,6 @@ Objects: {
             (result.joint_poses[0].translation[0] - 6.0).abs() < 1e-10,
             "tx = {:.6}",
             result.joint_poses[0].translation[0]
-        );
-    }
-
-    #[test]
-    fn test_euler_quat_roundtrip() {
-        // Single-axis rotation avoids convention mixing
-        let euler = [15.0, 0.0, 0.0];
-        let q = euler_xyz_to_quat(euler);
-        let euler_back = quat_to_euler_xyz(q);
-        assert!(
-            (euler[0] - euler_back[0]).abs() < 0.1,
-            "euler[0] = {:.6}, got {:.6}",
-            euler[0],
-            euler_back[0]
-        );
-        // Test a Y-only rotation
-        let euler_y = [0.0, 25.0, 0.0];
-        let qy = euler_xyz_to_quat(euler_y);
-        let ey_back = quat_to_euler_xyz(qy);
-        assert!(
-            (euler_y[1] - ey_back[1]).abs() < 0.1,
-            "euler_y[1] = {:.6}, got {:.6}",
-            euler_y[1],
-            ey_back[1]
         );
     }
 

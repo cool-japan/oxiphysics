@@ -361,6 +361,16 @@ mod tests {
     }
 
     #[test]
+    fn four_over_cubic_lag_has_the_textbook_margins() {
+        // 4/(s+1)³ is the classic example: gain margin 20 log10(8/4) = 6.02 dB and
+        // phase margin 27.15° (at w = 1.2328 rad/s).  The wrapped-phase test gave
+        // a NaN gain margin for this loop.
+        let (gm, pm) = cubic_lag(4.0).margins(0.01, 100.0, 400);
+        assert!((gm - 6.02).abs() < 0.05, "gm = {gm}");
+        assert!((pm - 27.15).abs() < 0.1, "pm = {pm}");
+    }
+
+    #[test]
     fn unstable_loop_has_negative_margins() {
         // K = 16: GM = 20 log10(8/16) = -6.0206 dB, PM = 180 - 3 atan(w_gc) < 0.
         let (gm, pm) = cubic_lag(16.0).margins(0.01, 100.0, 400);

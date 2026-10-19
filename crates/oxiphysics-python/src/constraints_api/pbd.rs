@@ -267,20 +267,15 @@ impl PyPbdSolver {
         }
     }
 
-    /// Add a stretch constraint between two particles.
-    pub fn add_stretch(&mut self, i: usize, j: usize, compliance: f64) {
-        let dx = self.positions[3 * i] - self.positions[3 * j];
-        let dy = self.positions[3 * i + 1] - self.positions[3 * j + 1];
-        let dz = self.positions[3 * i + 2] - self.positions[3 * j + 2];
-        let rest = (dx * dx + dy * dy + dz * dz).sqrt();
-        self.constraints.push(PbdConstraint {
-            particles: vec![i, j],
-            kind: PbdConstraintType::Stretch {
-                rest_length: rest,
-                compliance,
-            },
-            lambda: 0.0,
-        });
+    /// Add a stretch (distance) constraint between particles `i` and `j`.
+    ///
+    /// The rest length is the distance the two particles have in the
+    /// *current* particle positions.
+    ///
+    /// Raises `IndexError` when an index is not a valid particle and
+    /// `ValueError` when both indices name the same particle.
+    pub fn add_stretch(&mut self, i: usize, j: usize, compliance: f64) -> PyResult<()> {
+        Ok(self.try_add_stretch(i, j, compliance)?)
     }
 
     /// Add a volume conservation constraint for the tetrahedron `(i, j, k, l)`.
@@ -303,30 +298,36 @@ impl PyPbdSolver {
     }
 
     /// Perform one substep of XPBD simulation.
+    ///
+    /// Particles that lack a previous position or an inverse mass (the
+    /// arrays were resized from Python) are left where they are.
     pub fn substep(&mut self, dt: f64) {
-        let h = dt / self.substeps as f64;
-        let np = self.positions.len() / 3;
-        // Apply gravity and predict positions
-        for i in 0..np {
-            if self.inv_masses[i] > 0.0 {
-                let vx = self.positions[3 * i] - self.prev_positions[3 * i];
-                let vy = self.positions[3 * i + 1] - self.prev_positions[3 * i + 1];
-                let vz = self.positions[3 * i + 2] - self.prev_positions[3 * i + 2];
-                self.prev_positions[3 * i] = self.positions[3 * i];
-                self.prev_positions[3 * i + 1] = self.positions[3 * i + 1];
-                self.prev_positions[3 * i + 2] = self.positions[3 * i + 2];
-                self.positions[3 * i] += vx + self.gravity[0] * h * h;
-                self.positions[3 * i + 1] += vy + self.gravity[1] * h * h;
-                self.positions[3 * i + 2] += vz + self.gravity[2] * h * h;
+        let h = dt / f64::from(self.substeps.max(1));
+        // Apply gravity and predict positions (velocity is the displacement
+        // of the previous substep).
+        let Self {
+            positions,
+            prev_positions,
+            inv_masses,
+            constraints,
+            gravity,
+            ..
+        } = self;
+        for ((position, previous), &inv_mass) in positions
+            .chunks_exact_mut(3)
+            .zip(prev_positions.chunks_exact_mut(3))
+            .zip(inv_masses.iter())
+        {
+            if inv_mass > 0.0 {
+                for ((x, x_prev), &g) in position.iter_mut().zip(previous.iter_mut()).zip(&*gravity)
+                {
+                    let velocity = *x - *x_prev;
+                    *x_prev = *x;
+                    *x += velocity + g * h * h;
+                }
             }
         }
         // Reset lambdas, then solve every constraint once (Gauss-Seidel).
-        let Self {
-            positions,
-            inv_masses,
-            constraints,
-            ..
-        } = self;
         for constraint in constraints.iter_mut() {
             constraint.lambda = 0.0;
             match &constraint.kind {
@@ -426,18 +427,16 @@ impl PyPbdSolver {
 }
 
 impl PyPbdSolver {
-    /// Rust-level core of [`Self::add_volume`] with a typed error.
-    pub fn try_add_volume(
-        &mut self,
-        i: usize,
-        j: usize,
-        k: usize,
-        l: usize,
-        compliance: f64,
-    ) -> Result<(), PbdConstraintError> {
-        let ids = [i, j, k, l];
+    /// Current positions of the particles `ids` of a new constraint.
+    ///
+    /// Every index must name a particle that has both a position and an
+    /// inverse mass, and no particle may be listed twice.
+    fn constraint_positions<const N: usize>(
+        &self,
+        ids: [usize; N],
+    ) -> Result<[[f64; 3]; N], PbdConstraintError> {
         let particle_count = (self.positions.len() / 3).min(self.inv_masses.len());
-        let mut x = [[0.0f64; 3]; 4];
+        let mut x = [[0.0f64; 3]; N];
         for (slot, &id) in ids.iter().enumerate() {
             let position = particle_position(&self.positions, id)
                 .filter(|_| id < particle_count)
@@ -450,6 +449,40 @@ impl PyPbdSolver {
             }
             x[slot] = position;
         }
+        Ok(x)
+    }
+
+    /// Rust-level core of [`Self::add_stretch`] with a typed error.
+    pub fn try_add_stretch(
+        &mut self,
+        i: usize,
+        j: usize,
+        compliance: f64,
+    ) -> Result<(), PbdConstraintError> {
+        let [xi, xj] = self.constraint_positions([i, j])?;
+        let delta = vec_sub(xi, xj);
+        self.constraints.push(PbdConstraint {
+            particles: vec![i, j],
+            kind: PbdConstraintType::Stretch {
+                rest_length: vec_dot(delta, delta).sqrt(),
+                compliance,
+            },
+            lambda: 0.0,
+        });
+        Ok(())
+    }
+
+    /// Rust-level core of [`Self::add_volume`] with a typed error.
+    pub fn try_add_volume(
+        &mut self,
+        i: usize,
+        j: usize,
+        k: usize,
+        l: usize,
+        compliance: f64,
+    ) -> Result<(), PbdConstraintError> {
+        let ids = [i, j, k, l];
+        let x = self.constraint_positions(ids)?;
         self.constraints.push(PbdConstraint {
             particles: ids.to_vec(),
             kind: PbdConstraintType::Volume {
@@ -471,10 +504,83 @@ mod tests {
         let positions = vec![0.0, 0.0, 0.0, 2.0, 0.0, 0.0];
         let inv_masses = vec![1.0, 1.0];
         let mut solver = PyPbdSolver::new(positions, inv_masses);
-        solver.add_stretch(0, 1, 1e-4);
+        solver.add_stretch(0, 1, 1e-4).expect("valid particle pair");
         solver.step(0.016);
         // Particles should have moved due to gravity
         assert!(solver.positions[1] < 0.0); // y should be negative
+    }
+
+    #[test]
+    fn test_pbd_add_stretch_records_the_current_distance() {
+        let mut solver = PyPbdSolver::new(
+            vec![0.0, 0.0, 0.0, 3.0, 4.0, 0.0, 3.0, 4.0, 12.0],
+            vec![1.0; 3],
+        );
+        solver.add_stretch(0, 1, 0.0).expect("valid pair");
+        solver.add_stretch(1, 2, 1e-3).expect("valid pair");
+        let rest_length_of = |constraint: usize| match solver.constraints[constraint].kind {
+            PbdConstraintType::Stretch { rest_length, .. } => rest_length,
+            PbdConstraintType::Volume { .. } => panic!("expected a stretch constraint"),
+        };
+        assert!((rest_length_of(0) - 5.0).abs() < 1e-15);
+        assert!((rest_length_of(1) - 12.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_pbd_add_stretch_rejects_bad_particles() {
+        let mut solver = PyPbdSolver::new(vec![0.0; 6], vec![1.0; 2]);
+        assert_eq!(
+            solver.try_add_stretch(0, 2, 0.0),
+            Err(PbdConstraintError::ParticleOutOfRange {
+                index: 2,
+                particle_count: 2
+            })
+        );
+        assert_eq!(
+            solver.try_add_stretch(1, 1, 0.0),
+            Err(PbdConstraintError::DuplicateParticle(1))
+        );
+        assert!(solver.add_stretch(usize::MAX, 0, 0.0).is_err());
+        assert!(solver.add_stretch(0, 1, 0.0).is_ok());
+        assert_eq!(
+            solver.constraints.len(),
+            1,
+            "only the valid constraint is stored"
+        );
+        // A particle without an inverse mass is not a particle of the solver.
+        solver.inv_masses.truncate(1);
+        assert_eq!(
+            solver.try_add_stretch(0, 1, 0.0),
+            Err(PbdConstraintError::ParticleOutOfRange {
+                index: 1,
+                particle_count: 1
+            })
+        );
+    }
+
+    #[test]
+    fn test_pbd_substep_survives_arrays_of_different_length() {
+        // Fewer inverse masses than particles: the particle without one stays put.
+        let mut solver = PyPbdSolver::new(vec![0.0; 9], vec![1.0, 1.0]);
+        solver.step(1.0 / 60.0);
+        assert!(solver.positions[1] < 0.0 && solver.positions[4] < 0.0);
+        assert_eq!(solver.positions[6..9], [0.0, 0.0, 0.0]);
+        // A previous-position array that was never grown behaves the same way.
+        let mut solver = PyPbdSolver::new(vec![0.0; 3], vec![1.0]);
+        solver.set_positions(vec![0.0; 9]);
+        solver.set_inv_masses(vec![1.0; 3]);
+        solver.step(1.0 / 60.0);
+        assert!(solver.positions[1] < 0.0, "the stored particle falls");
+        assert_eq!(solver.positions[4..6], [0.0, 0.0], "no previous position");
+    }
+
+    #[test]
+    fn test_pbd_substep_without_substeps_does_not_blow_up() {
+        let mut solver = PyPbdSolver::new(vec![0.0, 1.0, 0.0], vec![1.0]);
+        solver.set_substeps(0);
+        solver.substep(1.0 / 60.0);
+        assert!(solver.positions.iter().all(|c| c.is_finite()));
+        assert!(solver.positions[1] < 1.0);
     }
 
     #[test]

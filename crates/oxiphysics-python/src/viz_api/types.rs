@@ -240,7 +240,8 @@ pub struct StressVisOutput {
     pub hydrostatic: f64,
     /// Principal stresses \[σ₁, σ₂, σ₃\] (sorted descending).
     pub principal_stresses: [f64; 3],
-    /// Principal directions as flat 3×3 matrix (row-major).
+    /// Principal directions as flat 3×3 matrix (row-major): row `k` is the unit
+    /// eigenvector belonging to `principal_stresses[k]`, defined up to sign.
     pub principal_directions: [f64; 9],
     /// Mohr circle data: \[center_12, radius_12, center_23, radius_23, center_13, radius_13\].
     pub mohr_circle: [f64; 6],
@@ -426,13 +427,21 @@ impl PyStressVisualizer {
         }
     }
     /// Compute visualization output for tensor at index i.
+    ///
+    /// The principal stresses are the eigenvalues of the full symmetric stress
+    /// tensor (shear components included), sorted descending
+    /// (`σ₁ ≥ σ₂ ≥ σ₃`). `principal_directions` is the row-major 3×3 matrix
+    /// whose row `k` is the unit eigenvector of `σ_{k+1}` (defined up to sign;
+    /// the first non-zero component of each row is positive). The Mohr circle
+    /// data are built from the principal stresses.
+    ///
+    /// Returns `None` if `i` is out of range or the tensor has a non-finite
+    /// component.
     pub fn compute(&self, i: usize) -> Option<StressVisOutput> {
         let t = self.tensors.get(i)?;
         let vm = t.von_mises();
         let hydro = t.hydrostatic();
-        let [s11, s22, s33, _s12, _s13, _s23] = t.components;
-        let mut p = [s11, s22, s33];
-        p.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        let (p, principal_directions) = principal_decomposition(&t.components)?;
         let mohr = [
             (p[0] + p[1]) * 0.5,
             ((p[0] - p[1]) * 0.5).abs(),
@@ -445,7 +454,7 @@ impl PyStressVisualizer {
             von_mises: vm,
             hydrostatic: hydro,
             principal_stresses: p,
-            principal_directions: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            principal_directions,
             mohr_circle: mohr,
         })
     }
@@ -453,6 +462,52 @@ impl PyStressVisualizer {
     pub fn all_von_mises(&self) -> Vec<f64> {
         self.tensors.iter().map(|t| t.von_mises()).collect()
     }
+}
+/// Iteration cap of the symmetric eigen-solver (a 3×3 problem converges in a
+/// handful of QL sweeps; the cap only guards against pathological input).
+const EIGEN_MAX_ITERATIONS: usize = 200;
+
+/// Smallest component magnitude that decides the sign of a principal direction.
+const DIRECTION_SIGN_EPS: f64 = 1.0e-9;
+
+/// Eigen-decompose the symmetric stress tensor stored as
+/// `[σ₁₁, σ₂₂, σ₃₃, σ₁₂, σ₁₃, σ₂₃]`.
+///
+/// Returns the principal stresses sorted descending together with the matching
+/// unit eigenvectors as a row-major 3×3 matrix (row `k` belongs to the `k`-th
+/// principal stress). Each eigenvector is oriented so that its first component
+/// larger than [`DIRECTION_SIGN_EPS`] is positive, which makes the output
+/// deterministic. `None` is returned for a non-finite tensor or if the
+/// eigen-solver does not converge.
+fn principal_decomposition(components: &[f64; 6]) -> Option<([f64; 3], [f64; 9])> {
+    if !components.iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    let [s11, s22, s33, s12, s13, s23] = *components;
+    let tensor = nalgebra::Matrix3::new(s11, s12, s13, s12, s22, s23, s13, s23, s33);
+    let eigen =
+        nalgebra::linalg::SymmetricEigen::try_new(tensor, f64::EPSILON, EIGEN_MAX_ITERATIONS)?;
+    let mut order = [0usize, 1, 2];
+    order.sort_by(|&a, &b| eigen.eigenvalues[b].total_cmp(&eigen.eigenvalues[a]));
+
+    let mut stresses = [0.0_f64; 3];
+    let mut directions = [0.0_f64; 9];
+    for (row, &column) in order.iter().enumerate() {
+        stresses[row] = eigen.eigenvalues[column];
+        let mut direction = [
+            eigen.eigenvectors[(0, column)],
+            eigen.eigenvectors[(1, column)],
+            eigen.eigenvectors[(2, column)],
+        ];
+        let leading = direction.iter().find(|c| c.abs() > DIRECTION_SIGN_EPS);
+        if matches!(leading, Some(&c) if c < 0.0) {
+            for c in &mut direction {
+                *c = -*c;
+            }
+        }
+        directions[3 * row..3 * row + 3].copy_from_slice(&direction);
+    }
+    Some((stresses, directions))
 }
 /// Screen-space ambient occlusion parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]

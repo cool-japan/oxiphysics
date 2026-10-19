@@ -7,6 +7,12 @@
 //! (wavelength / amplitude), sheet draping under gravity, and critical buckling
 //! stress for thin membranes.
 //!
+//! The wrinkle geometry follows the scaling analysis of Cerda & Mahadevan,
+//! "Geometry and Physics of Wrinkling", Phys. Rev. Lett. 90, 074302 (2003): the
+//! wavelength grows with the square root of the sheet length and thickness and
+//! shrinks with the fourth root of the tensile strain, and the amplitude
+//! follows from the compressive strain the wrinkles have to absorb.
+//!
 //! All quantities are in SI units (Pa, m, N/m …) unless otherwise stated.
 
 use std::f64::consts::PI;
@@ -68,20 +74,28 @@ pub enum WrinklingState {
 // ---------------------------------------------------------------------------
 
 /// Wrinkling model for a thin shell element under prescribed principal strains.
+///
+/// The wrinkles of a [`WrinklingState::Wrinkled`] sheet run along the tensile
+/// principal direction; `length` is the length of the sheet in that direction,
+/// i.e. the distance between the clamped ends that the wrinkle crests span.
 #[derive(Clone, Debug)]
 pub struct WrinklingModel {
     /// The underlying thin shell.
     pub shell: ThinShell,
     /// Principal strains \[ε₁, ε₂\] where ε₁ ≥ ε₂ by convention.
     pub principal_strains: [f64; 2],
+    /// Sheet length L along the tensile principal direction (m).
+    pub length: f64,
 }
 
 impl WrinklingModel {
-    /// Construct a new wrinkling model.
-    pub fn new(shell: ThinShell, principal_strains: [f64; 2]) -> Self {
+    /// Construct a new wrinkling model for a sheet of the given `length` (m)
+    /// along its tensile principal direction.
+    pub fn new(shell: ThinShell, principal_strains: [f64; 2], length: f64) -> Self {
         Self {
             shell,
             principal_strains,
+            length,
         }
     }
 
@@ -109,27 +123,87 @@ impl WrinklingModel {
         }
     }
 
-    /// Wrinkle half-wavelength (m) based on bending vs membrane stiffness ratio.
-    ///
-    /// λ/2 = π (D / N)^(1/2) where D is bending stiffness and N membrane stiffness.
-    pub fn wrinkle_wavelength(&self) -> f64 {
-        let d = self.shell.bending_stiffness();
-        let n = self.shell.membrane_stiffness();
-        PI * (d / n).sqrt()
+    /// Tensile and compressive principal strains `(γ, ε_c)`: the larger and the
+    /// smaller of the two prescribed principal strains.
+    fn extreme_strains(&self) -> (f64, f64) {
+        let [e1, e2] = self.principal_strains;
+        (e1.max(e2), e1.min(e2))
     }
 
-    /// Wrinkle amplitude (m) for a given tension N_tension (N/m) along the
-    /// wrinkle direction.
+    /// Wavelength (m) of the wrinkles of a sheet of this length and thickness
+    /// under the tensile strain `gamma` along the wrinkles (Cerda & Mahadevan
+    /// 2003):
     ///
-    /// A = t / sqrt(1 + 4 D N_tension / (π² D_max²))
-    /// Simplified practical formula: A ≈ t * sqrt(N_crit / N_tension).
-    pub fn wrinkle_amplitude(&self, tension: f64) -> f64 {
-        if tension <= 0.0 {
+    /// ```text
+    /// λ = sqrt(2π L t) / (3 (1 − ν²) γ)^(1/4)
+    /// ```
+    ///
+    /// It follows from balancing the bending stiffness `D = E t³ / (12 (1 − ν²))`
+    /// of the wrinkled sheet against the tension `E t γ` that pins the wrinkle
+    /// crests over the length `L`. Zero when `gamma`, `L`, `t` or `1 − ν²` is not
+    /// positive (no tension, or a degenerate sheet).
+    fn wavelength_for_strain(&self, gamma: f64) -> f64 {
+        let nu = self.shell.poisson_ratio;
+        let t = self.shell.thickness;
+        let stiffness_term = 3.0 * (1.0 - nu * nu) * gamma;
+        let usable = gamma > 0.0 && stiffness_term > 0.0 && self.length > 0.0 && t > 0.0;
+        if !usable {
             return 0.0;
         }
-        let d = self.shell.bending_stiffness();
-        let n_crit = PI * PI * d / (self.wrinkle_wavelength().powi(2));
-        self.shell.thickness * (n_crit / tension).sqrt().min(1.0)
+        let wavelength = (2.0 * PI * self.length * t).sqrt() / stiffness_term.powf(0.25);
+        if wavelength.is_finite() {
+            wavelength
+        } else {
+            0.0
+        }
+    }
+
+    /// Wrinkle wavelength λ (m) of the sheet under its tensile principal strain
+    /// γ = max(ε₁, ε₂) (Cerda & Mahadevan 2003):
+    ///
+    /// ```text
+    /// λ = sqrt(2π L t) / (3 (1 − ν²) γ)^(1/4)
+    /// ```
+    ///
+    /// The wavelength grows with `L^(1/2)` and `t^(1/2)` and falls with
+    /// `γ^(1/4)`: a more strongly stretched sheet wrinkles more finely.
+    ///
+    /// Only a [`WrinklingState::Wrinkled`] sheet has wrinkles; for a taut or
+    /// slack sheet the wavelength is `0.0`.
+    pub fn wrinkle_wavelength(&self) -> f64 {
+        if self.determine_state() != WrinklingState::Wrinkled {
+            return 0.0;
+        }
+        self.wavelength_for_strain(self.extreme_strains().0)
+    }
+
+    /// Wrinkle amplitude (m) of the sheet under the tension `tension` (N/m)
+    /// along the wrinkles.
+    ///
+    /// The tension sets the tensile strain `γ = tension / (E t)` and with it the
+    /// wavelength λ (see [`WrinklingModel::wrinkle_wavelength`]). The wrinkles
+    /// absorb the compressive principal strain `|ε_c|`, `ε_c = min(ε₁, ε₂)`:
+    /// a sinusoid of amplitude `A` and wavelength `λ` takes up the strain
+    /// `(π A / λ)²`, hence
+    ///
+    /// ```text
+    /// A = (λ / π) · sqrt(|ε_c|)
+    /// ```
+    ///
+    /// The amplitude is `0.0` if the sheet is not [`WrinklingState::Wrinkled`]
+    /// (nothing to absorb: both principal stresses are tensile, or both are
+    /// compressive and the sheet is slack) or if `tension` is not positive.
+    pub fn wrinkle_amplitude(&self, tension: f64) -> f64 {
+        if tension.is_nan() || tension <= 0.0 {
+            return 0.0;
+        }
+        if self.determine_state() != WrinklingState::Wrinkled {
+            return 0.0;
+        }
+        let gamma = tension / self.shell.membrane_stiffness();
+        let wavelength = self.wavelength_for_strain(gamma);
+        let absorbed_strain = (-self.extreme_strains().1).max(0.0);
+        wavelength / PI * absorbed_strain.sqrt()
     }
 }
 
@@ -444,7 +518,7 @@ mod tests {
     fn test_wrinkling_state_taut_biaxial_tension() {
         let shell = ThinShell::new(1e-3, 200e9, 0.3);
         // Both strains positive → both stresses positive → Taut.
-        let model = WrinklingModel::new(shell, [1e-3, 0.5e-3]);
+        let model = WrinklingModel::new(shell, [1e-3, 0.5e-3], 0.1);
         assert_eq!(model.determine_state(), WrinklingState::Taut);
     }
 
@@ -452,7 +526,7 @@ mod tests {
     fn test_wrinkling_state_slack_biaxial_compression() {
         let shell = ThinShell::new(1e-3, 200e9, 0.3);
         // Both strains negative → both stresses negative → Slack.
-        let model = WrinklingModel::new(shell, [-1e-3, -0.5e-3]);
+        let model = WrinklingModel::new(shell, [-1e-3, -0.5e-3], 0.1);
         assert_eq!(model.determine_state(), WrinklingState::Slack);
     }
 
@@ -460,42 +534,215 @@ mod tests {
     fn test_wrinkling_state_wrinkled_mixed() {
         let shell = ThinShell::new(1e-3, 200e9, 0.3);
         // ε₁ large positive, ε₂ large negative → Wrinkled.
-        let model = WrinklingModel::new(shell, [5e-3, -5e-3]);
+        let model = WrinklingModel::new(shell, [5e-3, -5e-3], 0.1);
         assert_eq!(model.determine_state(), WrinklingState::Wrinkled);
     }
 
-    #[test]
-    fn test_wrinkle_wavelength_positive() {
-        let shell = ThinShell::new(1e-3, 200e9, 0.3);
-        let model = WrinklingModel::new(shell, [0.0, 0.0]);
-        let lam = model.wrinkle_wavelength();
-        assert!(lam > 0.0, "Wavelength must be positive, got {lam}");
+    // ── Wrinkle wavelength and amplitude (Cerda & Mahadevan 2003) ────────────
+
+    /// Polymer-film-like sheet: E = 1 GPa, ν = 0.3, t = 0.1 mm.
+    fn film() -> ThinShell {
+        ThinShell::new(1e-4, 1e9, 0.3)
+    }
+
+    /// A wrinkled sheet of length `length` with tensile strain `gamma` and
+    /// compressive strain `-compression`.
+    fn wrinkled(shell: ThinShell, gamma: f64, compression: f64, length: f64) -> WrinklingModel {
+        let model = WrinklingModel::new(shell, [gamma, -compression], length);
+        assert_eq!(model.determine_state(), WrinklingState::Wrinkled);
+        model
     }
 
     #[test]
-    fn test_wrinkle_wavelength_scales_with_thickness() {
-        // λ ∝ t (since D ∝ t³ and N ∝ t, so sqrt(D/N) ∝ t).
-        let s1 = ThinShell::new(1e-3, 200e9, 0.3);
-        let s2 = ThinShell::new(2e-3, 200e9, 0.3);
-        let lam1 = WrinklingModel::new(s1, [0.0, 0.0]).wrinkle_wavelength();
-        let lam2 = WrinklingModel::new(s2, [0.0, 0.0]).wrinkle_wavelength();
-        let ratio = lam2 / lam1;
-        assert!((ratio - 2.0).abs() < 1e-6, "λ ∝ t: ratio={ratio}");
+    fn test_wrinkle_wavelength_matches_cerda_mahadevan_formula() {
+        // lambda = sqrt(2 pi L t) / (3 (1 - nu^2) gamma)^(1/4)
+        let model = wrinkled(film(), 0.01, 0.01, 0.1);
+        let lam = model.wrinkle_wavelength();
+        let expected = (2.0 * PI * 0.1 * 1e-4_f64).sqrt() / (3.0 * 0.91 * 0.01_f64).powf(0.25);
+        assert!(
+            (lam - expected).abs() < 1e-12 * expected,
+            "lambda={lam}, expected={expected}"
+        );
+        // Hand-evaluated: sqrt(6.2832e-5) = 7.9267e-3 m, (0.0273)^(1/4) = 0.40649.
+        assert!(
+            (lam - 0.019501).abs() < 1e-4 * 0.019501,
+            "lambda={lam} m, hand value 0.019501 m"
+        );
+    }
+
+    #[test]
+    fn test_wrinkle_wavelength_scales_with_sqrt_of_sheet_length() {
+        let short = wrinkled(film(), 0.01, 0.01, 0.1).wrinkle_wavelength();
+        let long = wrinkled(film(), 0.01, 0.01, 0.4).wrinkle_wavelength();
+        assert!(
+            (long / short - 2.0).abs() < 1e-12,
+            "quadrupling L doubles lambda: ratio={}",
+            long / short
+        );
+    }
+
+    #[test]
+    fn test_wrinkle_wavelength_scales_with_inverse_fourth_root_of_strain() {
+        // The compressive strain only has to be large enough to wrinkle the
+        // sheet (nu gamma < |eps_c| < gamma / nu); it does not enter lambda.
+        let weak = wrinkled(film(), 0.001, 0.001, 0.1).wrinkle_wavelength();
+        let strong = wrinkled(film(), 0.016, 0.01, 0.1).wrinkle_wavelength();
+        // 16 times the strain halves the wavelength.
+        assert!(
+            (weak / strong - 2.0).abs() < 1e-12,
+            "16x gamma halves lambda: ratio={}",
+            weak / strong
+        );
+    }
+
+    #[test]
+    fn test_wrinkle_wavelength_scales_with_sqrt_of_thickness() {
+        let thin = wrinkled(ThinShell::new(1e-4, 1e9, 0.3), 0.01, 0.01, 0.1);
+        let thick = wrinkled(ThinShell::new(4e-4, 1e9, 0.3), 0.01, 0.01, 0.1);
+        let ratio = thick.wrinkle_wavelength() / thin.wrinkle_wavelength();
+        assert!(
+            (ratio - 2.0).abs() < 1e-12,
+            "lambda ~ sqrt(t), not t: ratio={ratio}"
+        );
+    }
+
+    #[test]
+    fn test_wrinkle_wavelength_is_independent_of_young_modulus() {
+        // Only the strain enters, not the stress level.
+        let soft = wrinkled(ThinShell::new(1e-4, 1e8, 0.3), 0.01, 0.01, 0.1);
+        let stiff = wrinkled(ThinShell::new(1e-4, 1e11, 0.3), 0.01, 0.01, 0.1);
+        assert!((soft.wrinkle_wavelength() - stiff.wrinkle_wavelength()).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_wrinkle_wavelength_is_zero_unless_wrinkled() {
+        let taut = WrinklingModel::new(film(), [1e-3, 0.5e-3], 0.1);
+        assert_eq!(taut.determine_state(), WrinklingState::Taut);
+        assert_eq!(taut.wrinkle_wavelength(), 0.0);
+        let slack = WrinklingModel::new(film(), [-1e-3, -0.5e-3], 0.1);
+        assert_eq!(slack.determine_state(), WrinklingState::Slack);
+        assert_eq!(slack.wrinkle_wavelength(), 0.0);
+        let unstrained = WrinklingModel::new(film(), [0.0, 0.0], 0.1);
+        assert_eq!(unstrained.wrinkle_wavelength(), 0.0);
+    }
+
+    #[test]
+    fn test_wrinkle_wavelength_does_not_depend_on_strain_order() {
+        let ordered = WrinklingModel::new(film(), [0.01, -0.02], 0.1);
+        let swapped = WrinklingModel::new(film(), [-0.02, 0.01], 0.1);
+        assert!(ordered.wrinkle_wavelength() > 0.0);
+        assert_eq!(ordered.wrinkle_wavelength(), swapped.wrinkle_wavelength());
+        let tension = 1e5;
+        assert_eq!(
+            ordered.wrinkle_amplitude(tension),
+            swapped.wrinkle_amplitude(tension)
+        );
+    }
+
+    #[test]
+    fn test_wrinkle_wavelength_is_zero_for_degenerate_sheets() {
+        for model in [
+            WrinklingModel::new(film(), [0.01, -0.01], 0.0),
+            WrinklingModel::new(film(), [0.01, -0.01], -0.1),
+            WrinklingModel::new(ThinShell::new(0.0, 1e9, 0.3), [0.01, -0.01], 0.1),
+            WrinklingModel::new(film(), [0.01, -0.01], f64::NAN),
+        ] {
+            assert_eq!(model.wrinkle_wavelength(), 0.0);
+            assert_eq!(model.wrinkle_amplitude(1e5), 0.0);
+        }
     }
 
     #[test]
     fn test_wrinkle_amplitude_zero_tension() {
-        let shell = ThinShell::new(1e-3, 200e9, 0.3);
-        let model = WrinklingModel::new(shell, [0.0, 0.0]);
+        let model = WrinklingModel::new(film(), [0.0, 0.0], 0.1);
         assert!((model.wrinkle_amplitude(0.0) - 0.0).abs() < EPS);
+        let wrinkled_model = wrinkled(film(), 0.01, 0.01, 0.1);
+        assert_eq!(wrinkled_model.wrinkle_amplitude(0.0), 0.0);
+        assert_eq!(wrinkled_model.wrinkle_amplitude(-5.0), 0.0);
+        assert_eq!(wrinkled_model.wrinkle_amplitude(f64::NAN), 0.0);
     }
 
     #[test]
-    fn test_wrinkle_amplitude_positive_tension() {
-        let shell = ThinShell::new(1e-3, 200e9, 0.3);
-        let model = WrinklingModel::new(shell, [1e-3, -1e-3]);
-        let a = model.wrinkle_amplitude(1e4);
-        assert!(a >= 0.0, "Amplitude must be non-negative");
+    fn test_wrinkle_amplitude_follows_absorbed_strain_geometry() {
+        // A = (lambda / pi) sqrt(|eps_c|), lambda evaluated at gamma = tension / (E t).
+        let shell = film();
+        let model = wrinkled(shell.clone(), 0.01, 0.02, 0.1);
+        let tension = shell.membrane_stiffness() * 0.01;
+        let a = model.wrinkle_amplitude(tension);
+        let lam = model.wrinkle_wavelength();
+        assert!(lam > 0.0);
+        let expected = lam / PI * 0.02_f64.sqrt();
+        assert!(
+            (a - expected).abs() < 1e-12 * expected,
+            "A={a}, expected {expected}"
+        );
+        // The wrinkles take up exactly the compressive strain: (pi A / lambda)^2.
+        let absorbed = (PI * a / lam).powi(2);
+        assert!(
+            (absorbed - 0.02).abs() < 1e-12,
+            "absorbed strain {absorbed}"
+        );
+    }
+
+    #[test]
+    fn test_wrinkle_amplitude_is_not_the_thickness() {
+        // The former model returned the shell thickness for every load below
+        // E t. The amplitude now depends on the strain that is absorbed.
+        let shell = film();
+        let thickness = shell.thickness;
+        let tension = shell.membrane_stiffness() * 0.01;
+        let small = wrinkled(shell.clone(), 0.01, 0.005, 0.1).wrinkle_amplitude(tension);
+        let large = wrinkled(shell, 0.01, 0.02, 0.1).wrinkle_amplitude(tension);
+        assert!(small > 0.0 && large > 0.0);
+        assert!((small - thickness).abs() > 1e-6, "small={small}");
+        assert!((large - thickness).abs() > 1e-6, "large={large}");
+        // A ~ sqrt(|eps_c|): four times the compressive strain, twice A.
+        assert!(
+            (large / small - 2.0).abs() < 1e-12,
+            "ratio={}",
+            large / small
+        );
+    }
+
+    #[test]
+    fn test_wrinkle_amplitude_falls_with_tension_like_the_wavelength() {
+        // lambda ~ gamma^(-1/4): 16 times the tension halves lambda and A.
+        let shell = film();
+        let model = wrinkled(shell.clone(), 0.01, 0.01, 0.1);
+        let base = shell.membrane_stiffness() * 0.001;
+        let low = model.wrinkle_amplitude(base);
+        let high = model.wrinkle_amplitude(16.0 * base);
+        assert!(low > high && high > 0.0);
+        assert!((low / high - 2.0).abs() < 1e-12, "ratio={}", low / high);
+    }
+
+    #[test]
+    fn test_wrinkle_amplitude_grows_with_sheet_length() {
+        // lambda ~ sqrt(L), so A ~ sqrt(L) at a given load and absorbed strain.
+        let shell = film();
+        let tension = shell.membrane_stiffness() * 0.01;
+        let short = wrinkled(shell.clone(), 0.01, 0.01, 0.1).wrinkle_amplitude(tension);
+        let long = wrinkled(shell, 0.01, 0.01, 0.9).wrinkle_amplitude(tension);
+        assert!((long / short - 3.0).abs() < 1e-12, "ratio={}", long / short);
+    }
+
+    #[test]
+    fn test_wrinkle_amplitude_is_zero_without_compression() {
+        // eps_2 >= 0: no compressive strain to absorb, the sheet is taut.
+        let shell = film();
+        let tension = shell.membrane_stiffness() * 0.01;
+        for strains in [[0.01, 0.0], [0.01, 0.005], [0.01, 0.01]] {
+            let model = WrinklingModel::new(shell.clone(), strains, 0.1);
+            assert_eq!(model.determine_state(), WrinklingState::Taut);
+            assert_eq!(model.wrinkle_amplitude(tension), 0.0, "strains {strains:?}");
+        }
+        // Compression that the Poisson effect keeps tensile does not wrinkle either.
+        let poisson_supported = WrinklingModel::new(shell.clone(), [0.01, -0.002], 0.1);
+        assert_eq!(poisson_supported.determine_state(), WrinklingState::Taut);
+        assert_eq!(poisson_supported.wrinkle_amplitude(tension), 0.0);
+        // A slack sheet has no tension to organise wrinkles.
+        let slack = WrinklingModel::new(shell, [-0.001, -0.002], 0.1);
+        assert_eq!(slack.wrinkle_amplitude(tension), 0.0);
     }
 
     #[test]

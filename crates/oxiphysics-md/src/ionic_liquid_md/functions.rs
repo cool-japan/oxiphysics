@@ -202,7 +202,17 @@ pub fn compute_rdf(
             let r = norm3(rij);
             let bin = (r / dr) as usize;
             if bin < n_bins {
-                histogram[bin] += 2.0;
+                // The loop visits every unordered pair once.  Like-type pairs
+                // (and the `All` selection) are normalised by
+                // `N_i (N_j - 1) / V`, a count of ordered pairs, so each visit
+                // counts twice.  Cation-anion pairs are normalised by
+                // `N_cation N_anion / V`, which already counts each
+                // (cation, anion) pair exactly once.
+                histogram[bin] += if pair_type == PairType::CationAnion {
+                    1.0
+                } else {
+                    2.0
+                };
                 n_pairs += 1;
             }
         }

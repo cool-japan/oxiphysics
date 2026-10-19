@@ -70,6 +70,7 @@
 //! ```
 
 use crate::GpuError;
+use crate::compute_preference::ComputePreference;
 #[cfg(feature = "wgpu-backend")]
 use {crate::compute::WgpuBufferHandle, crate::compute::wgpu_backend::real::WgpuBackendReal, wgpu};
 
@@ -153,6 +154,15 @@ pub struct LbmConfig {
     pub force_y: f64,
     /// Body force in Z.
     pub force_z: f64,
+    /// Which compute device may run the steps (default
+    /// [`ComputePreference::Auto`]).
+    ///
+    /// * `Auto` — GPU when an adapter is available, CPU reference otherwise.
+    /// * `CpuOnly` — never initialise the GPU path (the same as calling
+    ///   [`LbmSimulation::disable_gpu`] right after construction).
+    /// * `GpuRequired` — [`LbmSimulation::try_step`] reports an error instead
+    ///   of running a step on the CPU.
+    pub compute: ComputePreference,
 }
 
 impl Default for LbmConfig {
@@ -166,6 +176,7 @@ impl Default for LbmConfig {
             force_x: 0.0,
             force_y: 0.0,
             force_z: 0.0,
+            compute: ComputePreference::Auto,
         }
     }
 }
@@ -424,6 +435,9 @@ pub struct LbmSimulation {
     ///
     /// `tau` and `force_*` may be changed between steps; the GPU parameters
     /// are re-uploaded automatically.  The grid dimensions must not change.
+    /// Setting `compute` to [`ComputePreference::CpuOnly`] switches the GPU
+    /// path off for good at the next step (see
+    /// [`disable_gpu`](Self::disable_gpu)).
     pub config: LbmConfig,
     /// Distribution functions f_i (19 × N_cells).
     ///
@@ -503,6 +517,12 @@ impl LbmSimulation {
             }
         }
 
+        #[cfg(feature = "wgpu-backend")]
+        let gpu = if config.compute.allows_gpu() {
+            GpuSlot::Untried
+        } else {
+            GpuSlot::Disabled
+        };
         Self {
             config,
             f,
@@ -513,7 +533,7 @@ impl LbmSimulation {
             lid_vel_z: 0.0,
             step_count: 0,
             #[cfg(feature = "wgpu-backend")]
-            gpu: GpuSlot::Untried,
+            gpu,
             #[cfg(feature = "wgpu-backend")]
             gpu_dirty: false,
             #[cfg(feature = "wgpu-backend")]
@@ -632,8 +652,13 @@ impl LbmSimulation {
     /// Initialise the GPU path now instead of on the first step.
     ///
     /// Returns `true` when the GPU is active.  A failed attempt is remembered
-    /// (see [`gpu_error`](Self::gpu_error)) and never retried.
+    /// (see [`gpu_error`](Self::gpu_error)) and never retried.  A simulation
+    /// whose [`config.compute`](LbmConfig::compute) is
+    /// [`ComputePreference::CpuOnly`] never initialises the GPU.
     pub fn ensure_gpu(&mut self) -> bool {
+        if !self.config.compute.allows_gpu() {
+            self.disable_gpu();
+        }
         #[cfg(feature = "wgpu-backend")]
         {
             if matches!(self.gpu, GpuSlot::Untried) {
@@ -645,8 +670,11 @@ impl LbmSimulation {
 
     /// Switch the GPU path off; all further steps run on the CPU reference.
     ///
-    /// Pending GPU results are synchronised into [`f`](Self::f) first.
+    /// Pending GPU results are synchronised into [`f`](Self::f) first.  The
+    /// switch is permanent and sets [`config.compute`](LbmConfig::compute) to
+    /// [`ComputePreference::CpuOnly`] so the configuration stays consistent.
     pub fn disable_gpu(&mut self) {
+        self.config.compute = ComputePreference::CpuOnly;
         #[cfg(feature = "wgpu-backend")]
         {
             self.sync_from_gpu();
@@ -686,37 +714,76 @@ impl LbmSimulation {
     /// is taken on the CPU from the most recently synchronised populations; the
     /// failure is reported by [`gpu_error`](Self::gpu_error) and by
     /// [`try_step`](Self::try_step).
+    ///
+    /// With [`ComputePreference::GpuRequired`] a step the GPU cannot take is
+    /// *not* replaced by a CPU step: the simulation is left unchanged (use
+    /// [`try_step`](Self::try_step) to obtain the error).
     pub fn step(&mut self) {
-        if self.try_step().is_err() {
+        if self.try_step().is_err() && self.config.compute.allows_cpu() {
             self.step_cpu();
             self.step_count += 1;
         }
     }
 
-    /// Advance one LBM step, reporting unrecoverable GPU failures.
+    /// Advance one LBM step, reporting GPU failures that must not be hidden.
     ///
-    /// A GPU that is missing, or whose dispatch fails while its populations can
-    /// still be read back, is not an error: the step is taken on the CPU.
+    /// With [`ComputePreference::Auto`] a GPU that is missing, or whose
+    /// dispatch fails while its populations can still be read back, is not an
+    /// error: the step is taken on the CPU.  [`ComputePreference::CpuOnly`]
+    /// always takes the CPU step.
     ///
     /// # Errors
     ///
-    /// Returns [`GpuError::ReadBack`] when a GPU dispatch failed and the GPU
-    /// populations could not be recovered.  No step is taken in that case; the
-    /// GPU path is marked unavailable and [`f`](Self::f) holds the most
-    /// recently synchronised populations.
+    /// * [`GpuError::ReadBack`] when a GPU dispatch failed and the GPU
+    ///   populations could not be recovered.  No step is taken in that case;
+    ///   the GPU path is marked unavailable and [`f`](Self::f) holds the most
+    ///   recently synchronised populations.
+    /// * With [`ComputePreference::GpuRequired`], the initialisation or
+    ///   dispatch error whenever the GPU cannot take the step
+    ///   ([`GpuError::BackendInit`] when no adapter is available or the GPU
+    ///   path was disabled, the dispatch error otherwise).  The populations
+    ///   stay valid and the step counter is not advanced.
     pub fn try_step(&mut self) -> Result<(), GpuError> {
+        if !self.config.compute.allows_gpu() {
+            self.disable_gpu();
+        }
         #[cfg(feature = "wgpu-backend")]
         {
             if !self.try_step_gpu()? {
+                if !self.config.compute.allows_cpu() {
+                    return Err(self.gpu_required_error());
+                }
                 self.step_cpu();
             }
         }
         #[cfg(not(feature = "wgpu-backend"))]
         {
+            if !self.config.compute.allows_cpu() {
+                return Err(GpuError::BackendInit(
+                    "compute preference is GpuRequired but the crate was built without the \
+                     `wgpu-backend` feature"
+                        .to_string(),
+                ));
+            }
             self.step_cpu();
         }
         self.step_count += 1;
         Ok(())
+    }
+
+    /// The error reported when [`ComputePreference::GpuRequired`] cannot be
+    /// honoured because the GPU did not take the step.
+    #[cfg(feature = "wgpu-backend")]
+    fn gpu_required_error(&self) -> GpuError {
+        match &self.gpu {
+            GpuSlot::Unavailable(e) => e.clone(),
+            GpuSlot::Disabled => GpuError::BackendInit(
+                "compute preference is GpuRequired but the GPU path was disabled".to_string(),
+            ),
+            GpuSlot::Untried | GpuSlot::Ready(_) => GpuError::BackendInit(
+                "compute preference is GpuRequired but the GPU did not take the step".to_string(),
+            ),
+        }
     }
 
     // ── GPU step ──────────────────────────────────────────────────────────────
@@ -1110,7 +1177,7 @@ pub struct LbmGpuSolver {
 
 impl LbmGpuSolver {
     /// Build the configuration shared by both constructors.
-    fn config(nx: u32, ny: u32, nz: u32, omega: f32) -> LbmConfig {
+    fn config(nx: u32, ny: u32, nz: u32, omega: f32, compute: ComputePreference) -> LbmConfig {
         LbmConfig {
             nx: nx as usize,
             ny: ny as usize,
@@ -1120,6 +1187,7 @@ impl LbmGpuSolver {
             } else {
                 0.6
             },
+            compute,
             ..LbmConfig::default()
         }
     }
@@ -1128,10 +1196,17 @@ impl LbmGpuSolver {
     /// available, falls back to the CPU reference (the reason is available
     /// from [`gpu_error`](Self::gpu_error)).
     ///
+    /// The simulation keeps [`ComputePreference::Auto`] while it runs on the
+    /// GPU.  When the GPU cannot be initialised the CPU reference is final, so
+    /// [`ComputePreference::CpuOnly`] is pinned and nothing probes wgpu again.
+    ///
     /// `omega = 1/tau` (e.g. 1.5 for τ = 2/3, giving ν = 1/18 in lattice units).
     pub fn new(nx: u32, ny: u32, nz: u32, omega: f32) -> Self {
-        let mut sim = LbmSimulation::new(Self::config(nx, ny, nz, omega));
-        sim.ensure_gpu();
+        let mut sim = LbmSimulation::new(Self::config(nx, ny, nz, omega, ComputePreference::Auto));
+        if !sim.ensure_gpu() {
+            // The failure stays observable through `gpu_error`.
+            sim.disable_gpu();
+        }
         Self {
             nx,
             ny,
@@ -1143,9 +1218,11 @@ impl LbmGpuSolver {
     }
 
     /// Create directly with the CPU reference (useful for testing without GPU).
+    ///
+    /// The simulation is built with [`ComputePreference::CpuOnly`]: no GPU
+    /// adapter is ever requested and every observation reads the CPU state.
     pub fn new_cpu(nx: u32, ny: u32, nz: u32, omega: f32) -> Self {
-        let mut sim = LbmSimulation::new(Self::config(nx, ny, nz, omega));
-        sim.disable_gpu();
+        let sim = LbmSimulation::new(Self::config(nx, ny, nz, omega, ComputePreference::CpuOnly));
         Self {
             nx,
             ny,

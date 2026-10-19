@@ -12,13 +12,47 @@
 //! * `(10 …)` — node section
 //! * `(12 …)` — cell section
 //! * `(13 …)` — face section
-//! * `(45 …)` — zone section
+//! * `(39 …)`, `(45 …)` — zone section
+//!
+//! # Reading
+//!
+//! [`FluentReader`] reads the layout Fluent itself writes, for example
+//!
+//! ```text
+//! (2 3)
+//! (10 (0 1 2d4 0 3))
+//! (10 (1 1 2d4 1 3)(
+//! 0.0 0.0 0.0
+//! ...
+//! ))
+//! (13 (4 1 b 3 0)(
+//! 3 1 2 3 1 0
+//! ...
+//! ))
+//! ```
+//!
+//! The reader follows the parenthesis structure, not the lines, so the data
+//! of a section may start on the header line or on a line of its own and may
+//! be broken at any white space.  Header numbers are hexadecimal, each node
+//! zone is read with the coordinate count of its header (two-dimensional
+//! meshes have two), nodes and faces take their ids from the index range of
+//! their zone, and zones of face type `0` (mixed) or `5` (polygonal) are
+//! read with the node count in front of every face.
+//!
+//! Binary meshes (sections 2010, 3010, 2012, ...) and the content
+//! [`FluentMesh`] has no place for (faces with more than four nodes,
+//! polyhedral cells) are rejected with an error rather than being misread.
 
 use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io::{self, BufRead};
 
 use crate::Error as IoError;
+
+#[cfg(test)]
+mod reader_tests;
+mod scan;
+mod sections;
 
 // ── FluentZoneType ────────────────────────────────────────────────────────────
 
@@ -135,6 +169,17 @@ impl FluentFaceType {
             FluentFaceType::Quad => 4,
         }
     }
+
+    /// The face type of a face with `count` nodes, or `None` when there is
+    /// none (anything but 2, 3 or 4 nodes).
+    pub fn from_node_count(count: usize) -> Option<Self> {
+        match count {
+            2 => Some(FluentFaceType::Line),
+            3 => Some(FluentFaceType::Triangle),
+            4 => Some(FluentFaceType::Quad),
+            _ => None,
+        }
+    }
 }
 
 // ── FluentFace ────────────────────────────────────────────────────────────────
@@ -191,6 +236,10 @@ pub enum FluentCellType {
     Quad,
     /// 3-D hexahedron.
     Hex,
+    /// 3-D pyramid (quadrilateral base, one apex).
+    Pyramid,
+    /// 3-D wedge (triangular prism).
+    Wedge,
 }
 
 impl FluentCellType {
@@ -201,18 +250,30 @@ impl FluentCellType {
             FluentCellType::Tet => 2,
             FluentCellType::Quad => 3,
             FluentCellType::Hex => 4,
+            FluentCellType::Pyramid => 5,
+            FluentCellType::Wedge => 6,
         }
     }
 
-    /// Parse a Fluent cell type code.
-    pub fn from_code(code: u32) -> Self {
+    /// The cell type of a Fluent cell type code, or `None` for a code this
+    /// type has no variant for (`0` mixed, `7` polyhedral, anything unknown).
+    pub fn try_from_code(code: u32) -> Option<Self> {
         match code {
-            1 => FluentCellType::Tri,
-            2 => FluentCellType::Tet,
-            3 => FluentCellType::Quad,
-            4 => FluentCellType::Hex,
-            _ => FluentCellType::Tet,
+            1 => Some(FluentCellType::Tri),
+            2 => Some(FluentCellType::Tet),
+            3 => Some(FluentCellType::Quad),
+            4 => Some(FluentCellType::Hex),
+            5 => Some(FluentCellType::Pyramid),
+            6 => Some(FluentCellType::Wedge),
+            _ => None,
         }
+    }
+
+    /// Parse a Fluent cell type code, falling back to [`FluentCellType::Tet`]
+    /// for codes that have no variant.  Prefer
+    /// [`FluentCellType::try_from_code`], which reports them.
+    pub fn from_code(code: u32) -> Self {
+        Self::try_from_code(code).unwrap_or(FluentCellType::Tet)
     }
 }
 
@@ -338,9 +399,9 @@ impl<'a> FluentWriter<'a> {
         Ok(())
     }
 
-    fn write_dimension(&self, buf: &mut String) -> crate::Result<()> {
-        // Check if any node has non-zero z to decide 2-D vs 3-D
-        let dim = if self
+    /// Coordinates per node: 3 when any node has a z coordinate, else 2.
+    fn dimension(&self) -> usize {
+        if self
             .mesh
             .nodes
             .iter()
@@ -349,7 +410,11 @@ impl<'a> FluentWriter<'a> {
             3
         } else {
             2
-        };
+        }
+    }
+
+    fn write_dimension(&self, buf: &mut String) -> crate::Result<()> {
+        let dim = self.dimension();
         writeln!(buf, "(2 {dim})")?;
         Ok(())
     }
@@ -359,13 +424,19 @@ impl<'a> FluentWriter<'a> {
         if n == 0 {
             return Ok(());
         }
-        // Header: (10 (zone-id first last type dim))
+        // Header: (10 (zone-id first last type nd)); the data group opens on
+        // the header line, as in the files Fluent writes itself, and a
+        // two-dimensional mesh has two coordinates per node.
+        let dim = self.dimension();
         writeln!(buf, "(10 (0 1 {n:x} 0))")?;
-        writeln!(buf, "(10 (1 1 {n:x} 1 3)")?;
-        writeln!(buf, "(")?;
+        writeln!(buf, "(10 (1 1 {n:x} 1 {dim})(")?;
         for node in &self.mesh.nodes {
             let [x, y, z] = node.coordinates;
-            writeln!(buf, "{x:.10e} {y:.10e} {z:.10e}")?;
+            if dim == 3 {
+                writeln!(buf, "{x:.10e} {y:.10e} {z:.10e}")?;
+            } else {
+                writeln!(buf, "{x:.10e} {y:.10e}")?;
+            }
         }
         writeln!(buf, "))")?;
         Ok(())
@@ -402,8 +473,7 @@ impl<'a> FluentWriter<'a> {
             return Ok(());
         }
         writeln!(buf, "(13 (0 1 {n:x} 0))")?;
-        writeln!(buf, "(13 (1 1 {n:x} 2 0)")?;
-        writeln!(buf, "(")?;
+        writeln!(buf, "(13 (1 1 {n:x} 2 0)(")?;
         for face in &self.mesh.faces {
             // format: <face_type> <n1> <n2> ... <left_cell> <right_cell>
             write!(buf, "{:x}", face.face_type.code())?;
@@ -431,10 +501,18 @@ impl<'a> FluentWriter<'a> {
 // ── FluentReader ──────────────────────────────────────────────────────────────
 
 /// Parses an ANSYS Fluent ASCII `.msh` file into a `FluentMesh`.
+///
+/// See the [module documentation](self) for the layout that is understood.
 pub struct FluentReader;
 
 impl FluentReader {
     /// Read a mesh from an ASCII Fluent `.msh` file.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file cannot be read and with [`IoError::Parse`] when its
+    /// content is not an ASCII Fluent mesh [`FluentMesh`] can hold; see
+    /// [`FluentReader::parse`].
     pub fn read_from_path(path: &str) -> crate::Result<FluentMesh> {
         let file = fs::File::open(path)?;
         let reader = io::BufReader::new(file);
@@ -442,171 +520,17 @@ impl FluentReader {
     }
 
     /// Parse from any `BufRead` source.
-    pub fn parse<R: BufRead>(reader: R) -> crate::Result<FluentMesh> {
-        let mut mesh = FluentMesh::new();
-        let lines: Vec<String> = reader
-            .lines()
-            .collect::<Result<_, _>>()
-            .map_err(IoError::Io)?;
-
-        let mut i = 0;
-        while i < lines.len() {
-            let line = lines[i].trim();
-
-            if line.starts_with("(10") {
-                // Node section
-                i = Self::parse_nodes(&lines, i, &mut mesh)?;
-            } else if line.starts_with("(12") {
-                // Cell section
-                i = Self::parse_cells(&lines, i, &mut mesh)?;
-            } else if line.starts_with("(13") {
-                // Face section
-                i = Self::parse_faces(&lines, i, &mut mesh)?;
-            } else if line.starts_with("(45") {
-                // Zone section
-                Self::parse_zone(line, &mut mesh);
-                i += 1;
-            } else {
-                i += 1;
-            }
-        }
-        Ok(mesh)
-    }
-
-    fn parse_nodes(lines: &[String], start: usize, mesh: &mut FluentMesh) -> crate::Result<usize> {
-        let header = lines[start].trim();
-        // Skip summary lines like (10 (0 1 N 0))
-        if header.contains("(0 ") || !header.contains('(') {
-            return Ok(start + 1);
-        }
-        // Expect data block: look for opening '(' on subsequent line
-        // e.g.: (10 (1 1 N 1 3)\n(\n x y z\n ...))
-        let mut i = start + 1;
-        // Skip until we find the opening data paren
-        while i < lines.len() && !lines[i].trim().starts_with('(') {
-            i += 1;
-        }
-        if i >= lines.len() {
-            return Ok(i);
-        }
-        i += 1; // skip the '(' line
-        let mut node_id = 1usize;
-        while i < lines.len() {
-            let line = lines[i].trim();
-            if line.starts_with(')') {
-                i += 1;
-                break;
-            }
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 {
-                let x = parts[0].parse::<f64>().unwrap_or(0.0);
-                let y = parts[1].parse::<f64>().unwrap_or(0.0);
-                let z = parts[2].parse::<f64>().unwrap_or(0.0);
-                mesh.nodes.push(FluentNode::new(node_id, [x, y, z]));
-                node_id += 1;
-            }
-            i += 1;
-        }
-        Ok(i)
-    }
-
-    fn parse_cells(lines: &[String], start: usize, mesh: &mut FluentMesh) -> crate::Result<usize> {
-        let header = lines[start].trim();
-        // Only handle non-summary single-line cell headers
-        // (12 (zone first last 1 cell_type))
-        if !header.contains("(0 ") {
-            // Try to parse: (12 (zone first last 1 type))
-            if let Some(inner) = Self::extract_inner(header, "12") {
-                let parts: Vec<&str> = inner.split_whitespace().collect();
-                if parts.len() >= 5
-                    && let (Ok(zone_id), Ok(first), Ok(last), Ok(cell_type)) = (
-                        usize::from_str_radix(parts[0], 16),
-                        usize::from_str_radix(parts[1], 16),
-                        usize::from_str_radix(parts[2], 16),
-                        u32::from_str_radix(parts[4], 16),
-                    )
-                {
-                    for id in first..=last {
-                        mesh.cells.push(FluentCell::new(
-                            id,
-                            FluentCellType::from_code(cell_type),
-                            zone_id,
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(start + 1)
-    }
-
-    fn parse_faces(lines: &[String], start: usize, mesh: &mut FluentMesh) -> crate::Result<usize> {
-        let header = lines[start].trim();
-        if header.contains("(0 ") {
-            return Ok(start + 1);
-        }
-        // Look for data block
-        let mut i = start + 1;
-        while i < lines.len() && !lines[i].trim().starts_with('(') {
-            i += 1;
-        }
-        if i >= lines.len() {
-            return Ok(i);
-        }
-        i += 1; // skip '('
-        let mut face_id = mesh.faces.len() + 1;
-        while i < lines.len() {
-            let line = lines[i].trim();
-            if line.starts_with(')') {
-                i += 1;
-                break;
-            }
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 4
-                && let Ok(ft_code) = u32::from_str_radix(parts[0], 16)
-            {
-                let face_type = FluentFaceType::from_code(ft_code);
-                let nn = face_type.node_count();
-                if parts.len() >= 1 + nn + 2 {
-                    let node_ids: Vec<usize> = (1..=nn)
-                        .filter_map(|k| usize::from_str_radix(parts[k], 16).ok())
-                        .collect();
-                    let lc = usize::from_str_radix(parts[1 + nn], 16).unwrap_or(0);
-                    let rc = usize::from_str_radix(parts[2 + nn], 16).unwrap_or(0);
-                    mesh.faces
-                        .push(FluentFace::new(face_id, face_type, node_ids, lc, rc));
-                    face_id += 1;
-                }
-            }
-            i += 1;
-        }
-        Ok(i)
-    }
-
-    fn parse_zone(line: &str, mesh: &mut FluentMesh) {
-        // (45 (zone_id type_str name ()))
-        if let Some(inner) = Self::extract_inner(line, "45") {
-            let parts: Vec<&str> = inner.splitn(3, ' ').collect();
-            if parts.len() >= 2
-                && let Ok(zone_id) = parts[0].parse::<usize>()
-            {
-                let zone_type = FluentZoneType::from_keyword(parts[1]);
-                mesh.add_zone(zone_id, zone_type);
-            }
-        }
-    }
-
-    /// Extract the content inside `(section_code (…))`.
-    fn extract_inner<'a>(line: &'a str, section: &str) -> Option<&'a str> {
-        let prefix = format!("({section} (");
-        if let Some(pos) = line.find(&prefix) {
-            let rest = &line[pos + prefix.len()..];
-            // find closing )
-            let end = rest.rfind(')')?;
-            let end2 = rest[..end].rfind(')')?;
-            Some(rest[..end2].trim())
-        } else {
-            None
-        }
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IoError::Parse`], naming the line, for binary sections, for a
+    /// section that is not closed, for a number that cannot be read, for node,
+    /// face or cell data that does not match the index range of its header, for
+    /// faces with more than four nodes and for polyhedral cells.
+    pub fn parse<R: BufRead>(mut reader: R) -> crate::Result<FluentMesh> {
+        let mut bytes = Vec::new();
+        io::Read::read_to_end(&mut reader, &mut bytes).map_err(IoError::Io)?;
+        sections::parse_mesh(&bytes)
     }
 }
 

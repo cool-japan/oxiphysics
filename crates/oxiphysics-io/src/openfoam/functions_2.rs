@@ -266,10 +266,12 @@ mod tests_openfoam_mesh {
             n_cells,
         );
         assert_eq!(grad.len(), n_cells);
+        // The surface integral of a constant over a closed cell vanishes, so
+        // every cell (boundary cells included) has an exactly zero gradient.
         for g in &grad {
             assert!(
-                g[0].is_finite() && g[1].is_finite() && g[2].is_finite(),
-                "gradient contains non-finite value: {:?}",
+                g.iter().all(|component| component.abs() < 1e-12),
+                "constant field must have a zero gradient, got {:?}",
                 g
             );
         }

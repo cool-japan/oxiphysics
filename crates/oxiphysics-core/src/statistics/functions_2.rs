@@ -131,15 +131,20 @@ mod tests_new_statistics {
         let data: Vec<f64> = (1..=20).map(|i| i as f64 / 20.0).collect();
         let a2 = anderson_darling_statistic(&data, |x| x.clamp(0.0, 1.0));
         assert!(a2.is_finite(), "A² should be finite, got {a2}");
+        // The point 1.0 has 1 - F = 0 (floored at 1e-15), which costs ln(1e-15)/n;
+        // reference value 1.6272583589161407.
+        assert!((a2 - 1.6272583589161407).abs() < 1e-9, "A² = {a2}");
     }
     #[test]
     fn test_anderson_darling_non_negative() {
         let data: Vec<f64> = (0..50).map(|i| i as f64 / 50.0).collect();
         let a2 = anderson_darling_statistic(&data, |x| x.clamp(0.0, 1.0));
         assert!(
-            a2 >= 0.0 || a2.is_nan() || a2.is_infinite(),
-            "A² should be non-negative for typical data, got {a2}"
+            a2.is_finite() && a2 >= 0.0,
+            "A² should be finite and non-negative for typical data, got {a2}"
         );
+        // Reference value 0.6447949719240782 (the point 0.0 has F = 0, floored at 1e-15).
+        assert!((a2 - 0.6447949719240782).abs() < 1e-9, "A² = {a2}");
     }
     #[test]
     fn test_anderson_darling_empty() {
@@ -237,5 +242,9 @@ mod tests_new_statistics {
             "good-fit A² should be finite: {a2_good}"
         );
         assert!(a2_bad.is_finite(), "bad-fit A² should be finite: {a2_bad}");
+        assert!(
+            a2_bad > 10.0 * a2_good,
+            "bad fit A² = {a2_bad} must exceed the good fit A² = {a2_good}"
+        );
     }
 }

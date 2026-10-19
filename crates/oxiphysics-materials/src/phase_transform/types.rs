@@ -6,6 +6,8 @@ use std::f64::consts::E;
 
 use super::functions::R_GAS;
 
+pub use super::brinson::BrinsonModel;
+
 /// Stress-assisted and strain-induced martensitic transformation model.
 ///
 /// The martensite start temperature shifts with applied stress:
@@ -159,9 +161,20 @@ impl BainiteTransformation {
     }
     /// Time to reach a target fraction at temperature T.
     ///
+    /// Inverts the JMAK law `X = 1 - exp(-k t^n)`:
+    ///
     /// t = (-ln(1 - X) / k)^(1/n)
+    ///
+    /// A non-positive target is reached at `t = 0`.  Above `B_s` no bainite
+    /// forms, so any positive target is never reached and the result is
+    /// infinite (as it is for a vanishing rate constant).  A target of 1 is
+    /// clamped just below unity because the JMAK curve only approaches
+    /// completion asymptotically.
     pub fn time_to_fraction(&self, target_fraction: f64, temperature: f64) -> f64 {
-        if temperature > self.b_s || target_fraction <= 0.0 {
+        if target_fraction <= 0.0 {
+            return 0.0;
+        }
+        if temperature > self.b_s {
             return f64::INFINITY;
         }
         let target = target_fraction.clamp(0.0, 1.0 - f64::EPSILON);
@@ -169,7 +182,7 @@ impl BainiteTransformation {
         if k <= 0.0 {
             return f64::INFINITY;
         }
-        ((-1.0 - target).ln().abs() / k).powf(1.0 / self.n)
+        (-(1.0 - target).ln() / k).powf(1.0 / self.n)
     }
     /// Nose temperature: temperature giving maximum transformation rate.
     ///
@@ -1050,108 +1063,6 @@ impl CctDiagram {
             / (self.martensite_critical_rate - self.bainite_end_rate)
     }
 }
-/// Simplified Brinson shape memory alloy (SMA) model.
-///
-/// Tracks stress-induced (`ξs`) and temperature-induced (`ξT`) martensite
-/// fractions and computes the SMA stress-strain response.
-///
-/// Phase fractions: ξ = ξs + ξT (total martensite fraction).
-#[derive(Debug, Clone)]
-pub struct BrinsonModel {
-    /// Young's modulus of austenite (Pa).
-    pub e_austenite: f64,
-    /// Young's modulus of martensite (Pa).
-    pub e_martensite: f64,
-    /// Martensite start temperature on cooling (K).
-    pub ms: f64,
-    /// Martensite finish temperature on cooling (K).
-    pub mf: f64,
-    /// Austenite start temperature on heating (K).
-    pub as_temp: f64,
-    /// Austenite finish temperature on heating (K).
-    pub af_temp: f64,
-    /// Transformation strain (maximum).
-    pub eps_l: f64,
-    /// Stress-induced martensite fraction.
-    pub xi_s: f64,
-    /// Temperature-induced martensite fraction.
-    pub xi_t: f64,
-}
-impl BrinsonModel {
-    /// Create a new Brinson SMA model.
-    pub fn new(
-        e_austenite: f64,
-        e_martensite: f64,
-        ms: f64,
-        mf: f64,
-        as_temp: f64,
-        af_temp: f64,
-        eps_l: f64,
-    ) -> Self {
-        Self {
-            e_austenite,
-            e_martensite,
-            ms,
-            mf,
-            as_temp,
-            af_temp,
-            eps_l,
-            xi_s: 0.0,
-            xi_t: 0.0,
-        }
-    }
-    /// Total martensite fraction.
-    pub fn xi(&self) -> f64 {
-        (self.xi_s + self.xi_t).clamp(0.0, 1.0)
-    }
-    /// Effective Young's modulus (linear mixture).
-    pub fn effective_modulus(&self) -> f64 {
-        let xi = self.xi();
-        self.e_martensite * xi + self.e_austenite * (1.0 - xi)
-    }
-    /// Update temperature-induced martensite at temperature `t`.
-    pub fn update_temperature(&mut self, t: f64) {
-        if t <= self.mf {
-            self.xi_t = 1.0;
-        } else if t < self.ms {
-            self.xi_t =
-                0.5 * (1.0 - ((std::f64::consts::PI * (t - self.ms) / (self.mf - self.ms)).cos()));
-        } else if t >= self.af_temp {
-            self.xi_t = 0.0;
-        } else if t > self.as_temp {
-            self.xi_t = (self.xi_t
-                * 0.5
-                * (1.0
-                    + ((std::f64::consts::PI * (t - self.as_temp)
-                        / (self.af_temp - self.as_temp))
-                        .cos())))
-            .max(0.0);
-        }
-    }
-    /// Compute stress given mechanical strain `eps` and temperature `t`.
-    pub fn stress(&self, eps: f64) -> f64 {
-        let e = self.effective_modulus();
-        let xi = self.xi();
-        e * (eps - self.eps_l * self.xi_s - self.eps_l * xi * 0.1)
-    }
-
-    /// Create a Brinson model with typical Nitinol (NiTi) parameters.
-    ///
-    /// * E_A = 75 GPa, E_M = 28 GPa
-    /// * Ms = 291 K, Mf = 273 K, As = 307 K, Af = 325 K
-    /// * ε_L = 0.067 (maximum transformation strain)
-    pub fn nitinol() -> Self {
-        Self::new(
-            75.0e9, // E_austenite
-            28.0e9, // E_martensite
-            291.0,  // Ms
-            273.0,  // Mf
-            307.0,  // As
-            325.0,  // Af
-            0.067,  // eps_l
-        )
-    }
-}
 /// Time-Temperature-Transformation (TTT) diagram for isothermal
 /// transformation of supercooled austenite.
 ///
@@ -1354,7 +1265,11 @@ impl CalphadModel {
         let x_a = 1.0 - x_b;
         x_a * x_b * (self.l0 + self.l1 * (x_a - x_b))
     }
-    /// Ideal configurational entropy contribution: -R·T·(x_A·ln x_A + x_B·ln x_B).
+    /// Ideal configurational entropy term `T·S_mix` in J/mol.
+    ///
+    /// With `S_mix = -R·(x_A·ln x_A + x_B·ln x_B) >= 0` this returns
+    /// `T·S_mix = -R·T·(x_A·ln x_A + x_B·ln x_B) >= 0`; it enters the Gibbs
+    /// energy with a negative sign (see [`CalphadModel::gibbs_energy`]).
     pub fn ideal_entropy(&self, x_b: f64, temperature: f64) -> f64 {
         let x_a = 1.0 - x_b;
         let s_mix = if x_a > 0.0 && x_b > 0.0 {
@@ -1364,15 +1279,19 @@ impl CalphadModel {
         };
         -R_GAS * temperature * s_mix
     }
-    /// Molar Gibbs energy of mixing.
+    /// Molar Gibbs energy of the solution.
     ///
     /// G = x_A·G_A + x_B·G_B + H_mix - T·S_mix
+    ///
+    /// The configurational entropy of mixing lowers the Gibbs energy, so the
+    /// ideal solution (`L0 = L1 = 0`) has `G = x_A G_A + x_B G_B + R T (x_A ln
+    /// x_A + x_B ln x_B)`.
     pub fn gibbs_energy(&self, x_b: f64, temperature: f64) -> f64 {
         let x_a = 1.0 - x_b;
         let g_ref = x_a * self.g_a + x_b * self.g_b;
         let h_mix = self.mixing_enthalpy(x_b);
         let ts_mix = self.ideal_entropy(x_b, temperature);
-        g_ref + h_mix + ts_mix
+        g_ref + h_mix - ts_mix
     }
     /// Chemical potential of component A: μ_A = G - x_B · (dG/dx_B).
     ///
@@ -1820,10 +1739,21 @@ impl EutecticTransformation {
 }
 /// 2-D phase-field (Allen-Cahn) model for solidification.
 ///
-/// dphi/dt = L · \[W²·∇²phi - f'(phi) + λ·Q/T·(1-phi²)²\]
+/// dphi/dt = L · \[W²·∇²phi - f'(phi) + λ·Q·(T_m - T)/T_m · h'(phi)\]
 ///
-/// where f(phi) = phi²·(1-phi)² is the double-well potential and
-/// f'(phi) = 2·phi·(1-phi)·(1-2·phi).
+/// where f(phi) = phi²·(1-phi)² is the double-well potential with
+/// f'(phi) = 2·phi·(1-phi)·(1-2·phi), and h(phi) = phi³·(10 - 15·phi + 6·phi²)
+/// is the smooth solid/liquid interpolation with
+/// h'(phi) = 30·phi²·(1-phi)².
+///
+/// The thermal driving force `λ·Q·(T_m - T)/T_m` favours the solid (`phi = 1`)
+/// below the melting temperature `T_m`, vanishes at `T = T_m` and favours the
+/// liquid above it.  Because `h'(0) = h'(1) = 0` the pure phases stay
+/// stationary at every temperature: the driving force acts only inside the
+/// diffuse interface, so a flat liquid does not solidify spontaneously (a seed
+/// is needed, see [`PhaseFieldModel2D::initialize_seed`]) and a flat solid does
+/// not melt.  The energy-like terms are expressed in the nondimensional units
+/// fixed by `W`, `L` and the coupling `λ`.
 #[derive(Debug, Clone)]
 pub struct PhaseFieldModel2D {
     /// Grid size in x direction.
@@ -1840,10 +1770,22 @@ pub struct PhaseFieldModel2D {
     pub mobility: f64,
     /// Latent heat Q (J m⁻³).
     pub latent_heat: f64,
+    /// Equilibrium melting temperature T_m (K).  A non-positive value
+    /// disables the thermal driving force.
+    pub melting_temperature: f64,
+    /// Dimensionless coupling λ scaling the thermal driving force
+    /// `λ·Q·(T_m - T)/T_m`.
+    pub coupling: f64,
 }
 impl PhaseFieldModel2D {
-    /// Create a new flat liquid domain at uniform temperature 0 K.
-    pub fn new(nx: usize, ny: usize, w: f64, l: f64, q: f64) -> Self {
+    /// Create a new flat liquid domain (`phi = 0` everywhere) with the given
+    /// melting temperature `t_m` (K) and driving-force coupling `lambda`.
+    ///
+    /// The temperature field starts at a uniform 0 K, i.e. maximally
+    /// undercooled; overwrite [`PhaseFieldModel2D::temperature`] with the
+    /// simulated temperature (equal to `t_m` for no driving force) before
+    /// stepping.
+    pub fn new(nx: usize, ny: usize, w: f64, l: f64, q: f64, t_m: f64, lambda: f64) -> Self {
         Self {
             nx,
             ny,
@@ -1852,6 +1794,8 @@ impl PhaseFieldModel2D {
             interface_width: w,
             mobility: l,
             latent_heat: q,
+            melting_temperature: t_m,
+            coupling: lambda,
         }
     }
     /// Initialise a spherical solid nucleus centred at `(cx, cy)` with the
@@ -1873,14 +1817,18 @@ impl PhaseFieldModel2D {
         let ny = self.ny;
         let w2 = self.interface_width * self.interface_width;
         let l = self.mobility;
-        let q = self.latent_heat;
-        let lambda = 1.0;
+        let t_m = self.melting_temperature;
+        let driving_scale = if t_m > 0.0 {
+            self.coupling * self.latent_heat / t_m
+        } else {
+            0.0
+        };
         let mut phi_new = self.phi.clone();
         for j in 0..ny {
             for i in 0..nx {
                 let idx = j * nx + i;
                 let phi_c = self.phi[idx];
-                let t_c = self.temperature[idx].max(1.0);
+                let undercooling = t_m - self.temperature[idx];
                 let ip = if i + 1 < nx { i + 1 } else { 0 };
                 let im = if i > 0 { i - 1 } else { nx - 1 };
                 let jp = if j + 1 < ny { j + 1 } else { 0 };
@@ -1892,8 +1840,9 @@ impl PhaseFieldModel2D {
                     - 4.0 * phi_c)
                     / (dx * dx);
                 let df = 2.0 * phi_c * (1.0 - phi_c) * (1.0 - 2.0 * phi_c);
-                let coupling = lambda * q / t_c * (1.0 - phi_c * phi_c).powi(2);
-                let dphi = l * (w2 * lap - df + coupling);
+                let h_prime = 30.0 * phi_c * phi_c * (1.0 - phi_c) * (1.0 - phi_c);
+                let thermal_driving = driving_scale * undercooling * h_prime;
+                let dphi = l * (w2 * lap - df + thermal_driving);
                 phi_new[idx] = (phi_c + dt * dphi).clamp(0.0, 1.0);
             }
         }

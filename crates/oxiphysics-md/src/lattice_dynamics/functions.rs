@@ -41,16 +41,26 @@ pub(super) fn norm3(a: [f64; 3]) -> f64 {
 pub(super) fn interpolate3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     add3(scale3(a, 1.0 - t), scale3(b, t))
 }
-/// Assemble a simplified 3×3 mass-weighted dynamical matrix for a mono-atomic
-/// crystal with isotropic harmonic spring constant `k`.
+/// Assemble the diagonal 3×3 matrix `k z / m · 1` for a mono-atomic crystal
+/// with isotropic harmonic spring constant `k` and coordination number `z`.
+///
+/// This is only a crude Einstein-type frequency scale.  It is not a lattice
+/// dynamical matrix: it has no wave-vector dependence and no acoustic branches,
+/// and it is not even the stiffness of an atom between frozen neighbours
+/// (`k Σ r̂ r̂ᵀ / m`, i.e. `2k/m` on a simple cubic lattice, not `6k/m`).  Use
+/// [`DynamicalMatrix`](super::force_constants::DynamicalMatrix) for the phonon
+/// dispersion of a crystal.
 ///
 /// Returns a flat 3×3 matrix (row-major).
 pub fn dynamical_matrix(k_spring: f64, mass: f64, coordination: usize) -> [f64; 9] {
     let d = k_spring * coordination as f64 / mass;
     [d, 0.0, 0.0, 0.0, d, 0.0, 0.0, 0.0, d]
 }
-/// Extract phonon frequencies (in rad/s) from a 3×3 dynamical matrix via the
-/// eigenvalues of the diagonal approximation.
+/// Extract the three Einstein-type frequencies (in rad/s) from the diagonal of
+/// a 3×3 matrix such as the one returned by [`dynamical_matrix`].
+///
+/// Only the diagonal is read, so this is exact for the isotropic Einstein
+/// matrix and an approximation for anything else.
 pub fn phonon_frequencies(dyn_mat: &[f64; 9]) -> [f64; 3] {
     [
         dyn_mat[0].max(0.0).sqrt(),
@@ -200,6 +210,7 @@ pub fn gruneisen_parameter(
 }
 #[cfg(test)]
 mod tests {
+    use super::super::force_constants::*;
     use super::super::types::*;
     use super::*;
     #[test]
@@ -318,11 +329,19 @@ mod tests {
         assert!(dm.max_frequency() > 0.0);
     }
     #[test]
-    fn test_dynmat_at_q_zone_boundary_nonzero() {
+    fn test_dynmat_at_q_zone_boundary_has_longitudinal_mode_only() {
+        // Nearest-neighbour central springs on a simple cubic lattice: at
+        // q = (pi/a, 0, 0) the longitudinal mode is at 2 sqrt(k/m) and the two
+        // transverse modes do not feel the x springs and stay at zero.
         let lv = LatticeVectors::cubic(1.0);
         let dm = DynamicalMatrix::new_cubic(1.0, 1.0, 6, lv);
         let freqs = dm.at_q([PI, 0.0, 0.0]);
-        assert!(freqs[0] > 0.0);
+        assert_eq!(freqs.len(), 3);
+        assert!(
+            freqs[0].abs() < 1e-12 && freqs[1].abs() < 1e-12,
+            "{freqs:?}"
+        );
+        assert!((freqs[2] - 2.0).abs() < 1e-10, "{freqs:?}");
     }
     #[test]
     fn test_dispersion_n_kpoints() {

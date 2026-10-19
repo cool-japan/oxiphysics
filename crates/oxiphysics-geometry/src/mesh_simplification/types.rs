@@ -109,17 +109,38 @@ impl HalfEdgeMesh {
         false
     }
     /// Get all faces adjacent to a vertex.
+    ///
+    /// The faces are found by walking around the vertex, in both directions when
+    /// the vertex is on the boundary, so every live face that contains `v` is
+    /// returned whichever outgoing half-edge is stored for `v`.
     pub fn vertex_faces(&self, v: usize) -> Vec<usize> {
         let mut faces = Vec::new();
         let start = self.vertex_half_edge[v];
         if start == usize::MAX {
             return faces;
         }
-        let mut he = start;
-        loop {
+        let limit = self.half_edges.len();
+        // Records the face of `he`; `false` means the walk came back to a face it
+        // has seen, which only happens for a corrupt half-edge structure.
+        let mut collect = |he: usize| -> bool {
             let f = self.half_edges[he].face;
-            if f != usize::MAX && !self.face_deleted[f] {
-                faces.push(f);
+            if f == usize::MAX || self.face_deleted[f] {
+                return true;
+            }
+            if faces.contains(&f) {
+                return false;
+            }
+            faces.push(f);
+            true
+        };
+        // Counter-clockwise around `v`: the next outgoing half-edge leaves
+        // through the face on the other side of the incoming twin.
+        let mut he = start;
+        let mut closed = false;
+        for _ in 0..limit {
+            if !collect(he) {
+                closed = true;
+                break;
             }
             let twin = self.half_edges[he].twin;
             if twin == usize::MAX {
@@ -127,33 +148,50 @@ impl HalfEdgeMesh {
             }
             he = self.half_edges[twin].next;
             if he == start {
+                closed = true;
                 break;
+            }
+        }
+        // An open fan is completed clockwise from the start.
+        if !closed {
+            let mut he = start;
+            for _ in 0..limit {
+                let incoming_twin = self.half_edges[self.half_edges[he].prev].twin;
+                if incoming_twin == usize::MAX {
+                    break;
+                }
+                he = incoming_twin;
+                if !collect(he) {
+                    break;
+                }
             }
         }
         faces
     }
+    /// The three vertices of a face in winding order.
+    pub fn face_vertices(&self, fi: usize) -> [usize; 3] {
+        let he0 = self.face_half_edge[fi];
+        let he1 = self.half_edges[he0].next;
+        let he2 = self.half_edges[he1].next;
+        [
+            self.half_edges[he2].vertex,
+            self.half_edges[he0].vertex,
+            self.half_edges[he1].vertex,
+        ]
+    }
     /// Get one-ring neighbor vertices of a vertex.
+    ///
+    /// Returns the vertices that share a live face with `v`, sorted and without
+    /// duplicates, including the neighbour at the far end of a boundary edge.
     pub fn vertex_neighbors(&self, v: usize) -> Vec<usize> {
-        let mut neighbors = Vec::new();
-        let start = self.vertex_half_edge[v];
-        if start == usize::MAX {
-            return neighbors;
-        }
-        let mut he = start;
-        loop {
-            let target = self.half_edges[he].vertex;
-            if !self.vertex_deleted[target] {
-                neighbors.push(target);
-            }
-            let twin = self.half_edges[he].twin;
-            if twin == usize::MAX {
-                break;
-            }
-            he = self.half_edges[twin].next;
-            if he == start {
-                break;
-            }
-        }
+        let mut neighbors: Vec<usize> = self
+            .vertex_faces(v)
+            .into_iter()
+            .flat_map(|f| self.face_vertices(f))
+            .filter(|&u| u != v && !self.vertex_deleted[u])
+            .collect();
+        neighbors.sort_unstable();
+        neighbors.dedup();
         neighbors
     }
     /// Compute the face normal for a given face index.
@@ -225,19 +263,33 @@ pub struct MeshStats {
     pub min_quality: f64,
 }
 /// Configuration for QEM mesh simplification.
+///
+/// See [`qem_simplify`](super::qem_simplify) for how the options act. If neither
+/// `target_triangles` nor `max_error` is set, the mesh is simplified as far as
+/// the other constraints allow.
 #[derive(Debug, Clone)]
 pub struct QemConfig {
     /// Target number of triangles (0 = use error threshold).
     pub target_triangles: usize,
-    /// Maximum allowed error (0.0 = use triangle target).
+    /// Largest quadric error of a collapse that is still performed (0.0 = use
+    /// triangle target). The error of a collapse is the sum of the squared
+    /// distances of the merged vertex to the planes of the faces around the two
+    /// vertices that are merged.
     pub max_error: f64,
-    /// Whether to preserve boundary edges.
+    /// Whether to preserve the boundary exactly: boundary vertices never move and
+    /// are never merged with each other. If `false`, the boundary is simplified
+    /// under the penalty `boundary_weight`.
     pub preserve_boundary: bool,
-    /// Maximum allowed normal deviation (radians, 0.0 = no constraint).
+    /// Maximum angle (radians) by which a collapse may turn the normal of a
+    /// surrounding face; 0.0 = no angular limit. Collapses that fold a face over
+    /// or make it degenerate are rejected in any case.
     pub max_normal_deviation: f64,
-    /// Whether to preserve texture seams.
+    /// Whether to preserve texture seams. Seams are supplied to
+    /// [`qem_simplify_with_seams`](super::qem_simplify_with_seams); without seams
+    /// there is nothing to preserve.
     pub preserve_texture_seams: bool,
-    /// Boundary penalty weight.
+    /// Weight of the quadrics that hold boundary vertices near their boundary
+    /// edges when `preserve_boundary` is `false` (0.0 = no penalty).
     pub boundary_weight: f64,
 }
 impl QemConfig {
@@ -453,14 +505,21 @@ pub struct TopologyValidation {
     pub degenerate_triangles: usize,
 }
 /// An edge collapse candidate with its error cost.
+///
+/// The candidate was computed for the vertex versions it records; once either
+/// vertex has changed or is gone, the candidate is outdated and must be dropped.
 #[derive(Debug, Clone)]
 pub(super) struct CollapseCandidate {
-    /// Vertex at one end.
+    /// Vertex that survives the collapse.
     pub(super) v0: usize,
-    /// Vertex at the other end.
+    /// Vertex that is merged into `v0`.
     pub(super) v1: usize,
     /// Optimal position for the merged vertex.
     pub(super) optimal_pos: [f64; 3],
     /// Quadric error cost.
     pub(super) cost: f64,
+    /// Version of `v0` this candidate was computed for.
+    pub(super) v0_version: u32,
+    /// Version of `v1` this candidate was computed for.
+    pub(super) v1_version: u32,
 }

@@ -3,7 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::{poiseuille_profile, zou_he_inlet_left};
-use crate::lattice::{D3Q19_VELOCITIES, D3Q19_WEIGHTS};
+use crate::lattice::{D3Q19_OPPOSITES, D3Q19_VELOCITIES, D3Q19_WEIGHTS};
 
 /// Apply a Poiseuille velocity profile as a Zou-He left inlet for D2Q9.
 ///
@@ -21,46 +21,64 @@ pub fn apply_poiseuille_inlet_d2q9(f_cells: &mut [[f64; 9]], h: f64, u_max: f64)
         zou_he_inlet_left(cell, ux);
     }
 }
+/// Reflect the D3Q19 populations that point towards a moving wall normal to `y`.
+///
+/// `wall_normal_y` is the `y` component (`+1` or `-1`) shared by the lattice
+/// velocities that point *towards* the wall: `+1` for the top wall, `-1` for
+/// the bottom wall.  For every such population `i` the reflected population
+/// `ī = D3Q19_OPPOSITES[i]` is set to
+/// `f_ī = f_i − 2 w_i ρ (c_i · u_wall) / cs²` with `cs² = 1/3` and
+/// `u_wall = (ux_wall, 0, uz_wall)` (Krüger et al., *The Lattice Boltzmann
+/// Method*, eq. 5.27).  `c_i` is the lattice velocity of the population
+/// heading into the wall, so the correction is linear in the wall velocity
+/// and its sign follows the direction of the link.
+fn reflect_from_moving_wall_d3q19(
+    f: &mut [f64; 19],
+    rho: f64,
+    ux_wall: f64,
+    uz_wall: f64,
+    wall_normal_y: i32,
+) {
+    for (i_in, c) in D3Q19_VELOCITIES.iter().enumerate() {
+        if c[1] != wall_normal_y {
+            continue;
+        }
+        let wall_speed_along_link = f64::from(c[0]) * ux_wall + f64::from(c[2]) * uz_wall;
+        f[D3Q19_OPPOSITES[i_in]] =
+            f[i_in] - 6.0 * D3Q19_WEIGHTS[i_in] * rho * wall_speed_along_link;
+    }
+}
 /// Half-way bounce-back with moving wall velocity for D3Q19 top face.
 ///
-/// Implements the standard half-way bounce-back plus a momentum source
-/// due to wall velocity (ux_wall, uy_wall = 0, uz_wall):
-/// `f_opposite = f_i − 2 w_i ρ (c_i · u_wall) / cs²`
+/// Implements the standard bounce-back plus a momentum source due to wall
+/// velocity (ux_wall, uy_wall = 0, uz_wall).  The populations pointing towards
+/// the top wall (`c_y = +1`: 3, 7, 8, 15, 17) are reflected into their lattice
+/// opposites (4, 10, 9, 18, 16):
+/// `f_opposite = f_i − 2 w_i ρ (c_i · u_wall) / cs²`,
+/// where `c_i` is the lattice velocity of the incoming population `i`.  The
+/// correction is therefore linear in the wall velocity, e.g.
+/// `f10 = f7 − 6 w ρ ux_wall`, `f9 = f8 + 6 w ρ ux_wall`,
+/// `f18 = f15 − 6 w ρ uz_wall` and `f16 = f17 + 6 w ρ uz_wall`, and the
+/// populations that do not point towards the wall are left untouched.
 ///
 /// # Arguments
-/// * `f`       – distribution at wall cell
+/// * `f`       – distribution of the node that reflects the populations
+///   (the wall node after streaming, or a copy of the post-collision
+///   populations of the adjacent fluid node)
 /// * `rho`     – local density
 /// * `ux_wall` – wall velocity in x-direction
 /// * `uz_wall` – wall velocity in z-direction
 pub fn bounce_back_moving_top_d3q19(f: &mut [f64; 19], rho: f64, ux_wall: f64, uz_wall: f64) {
-    use crate::lattice::D3Q19_WEIGHTS;
-    let bounce_pairs: [(usize, usize, f64, f64); 5] = [
-        (3, 4, 0.0, 0.0),
-        (7, 10, ux_wall, 0.0),
-        (8, 9, -ux_wall, 0.0),
-        (15, 18, 0.0, uz_wall),
-        (16, 17, 0.0, -uz_wall),
-    ];
-    for (i_in, i_out, cx, cz) in bounce_pairs {
-        let correction = 2.0 * D3Q19_WEIGHTS[i_in] * rho * (cx * ux_wall + cz * uz_wall) * 3.0;
-        f[i_out] = f[i_in] - correction;
-    }
+    reflect_from_moving_wall_d3q19(f, rho, ux_wall, uz_wall, 1);
 }
 /// Half-way bounce-back for D3Q19 bottom face with moving wall.
 ///
-/// Same as `bounce_back_moving_top_d3q19` but for the bottom wall (−y face).
+/// Same as `bounce_back_moving_top_d3q19` but for the bottom wall (−y face):
+/// the populations pointing towards the wall (`c_y = −1`: 4, 9, 10, 16, 18)
+/// are reflected into their lattice opposites (3, 8, 7, 17, 15) with
+/// `f_opposite = f_i − 2 w_i ρ (c_i · u_wall) / cs²`.
 pub fn bounce_back_moving_bottom_d3q19(f: &mut [f64; 19], rho: f64, ux_wall: f64, uz_wall: f64) {
-    let bounce_pairs: [(usize, usize, f64, f64); 5] = [
-        (4, 3, 0.0, 0.0),
-        (9, 8, ux_wall, 0.0),
-        (10, 7, -ux_wall, 0.0),
-        (17, 16, 0.0, uz_wall),
-        (18, 15, 0.0, -uz_wall),
-    ];
-    for (i_in, i_out, cx, cz) in bounce_pairs {
-        let correction = 2.0 * D3Q19_WEIGHTS[i_in] * rho * (cx * ux_wall + cz * uz_wall) * 3.0;
-        f[i_out] = f[i_in] - correction;
-    }
+    reflect_from_moving_wall_d3q19(f, rho, ux_wall, uz_wall, -1);
 }
 /// Compute the mass flux through the left face of a D2Q9 cell.
 ///
@@ -125,7 +143,16 @@ mod tests_advanced_zou_he {
         assert!(ux.is_finite(), "Pressure left ux={ux}");
         assert!(f.iter().all(|v| v.is_finite()), "Pressure left has NaN/Inf");
         let rho_out: f64 = f.iter().sum();
-        assert!(rho_out > 0.0, "Pressure left rho={rho_out}");
+        assert!(
+            (rho_out - rho_set).abs() < 1e-12,
+            "Pressure left rho={rho_out}, expected {rho_set}"
+        );
+        // Rest state: tangent + 2 * outgoing populations sum to 1, so
+        // rho_set * (1 - ux) = 1.
+        assert!(
+            (ux - (1.0 - 1.0 / rho_set)).abs() < 1e-12,
+            "Pressure left ux={ux}"
+        );
     }
     #[test]
     fn test_pressure_right_d3q19_density() {
@@ -138,7 +165,16 @@ mod tests_advanced_zou_he {
             "Pressure right has NaN/Inf"
         );
         let rho_out: f64 = f.iter().sum();
-        assert!(rho_out > 0.0, "Pressure right rho={rho_out}");
+        assert!(
+            (rho_out - rho_set).abs() < 1e-12,
+            "Pressure right rho={rho_out}, expected {rho_set}"
+        );
+        // Rest state: tangent + 2 * outgoing populations sum to 1, so
+        // rho_set * (1 + ux) = 1.
+        assert!(
+            (ux - (1.0 / rho_set - 1.0)).abs() < 1e-12,
+            "Pressure right ux={ux}"
+        );
     }
     #[test]
     fn test_pressure_left_d3q19_finite() {
@@ -203,8 +239,17 @@ mod tests_advanced_zou_he {
     fn test_zou_he_velocity_inlet_d3q27_density() {
         let mut f = rest_d3q27();
         let rho = zou_he_velocity_inlet_d3q27(&mut f, 0.05, 0.0, 0.0);
-        assert!((rho - 1.0).abs() < 0.1, "D3Q27 inlet rho={rho}");
+        // Rest state: tangent + 2 * outgoing populations sum to 1.
+        assert!(
+            (rho - 1.0 / (1.0 - 0.05)).abs() < 1e-12,
+            "D3Q27 inlet rho={rho}"
+        );
         assert!(f.iter().all(|v| v.is_finite()), "D3Q27 inlet has NaN/Inf");
+        let rho_sum: f64 = f.iter().sum();
+        assert!(
+            (rho_sum - rho).abs() < 1e-12,
+            "D3Q27 inlet sum f={rho_sum}, rho={rho}"
+        );
     }
     #[test]
     fn test_zou_he_pressure_outlet_d3q27_finite() {
@@ -212,6 +257,13 @@ mod tests_advanced_zou_he {
         let ux = zou_he_pressure_outlet_d3q27(&mut f, 1.0);
         assert!(ux.is_finite(), "D3Q27 outlet ux={ux}");
         assert!(f.iter().all(|v| v.is_finite()), "D3Q27 outlet has NaN/Inf");
+        // The rest state already has the prescribed density, so nothing moves.
+        let rho_sum: f64 = f.iter().sum();
+        assert!(
+            (rho_sum - 1.0).abs() < 1e-12,
+            "D3Q27 outlet sum f={rho_sum}"
+        );
+        assert!(ux.abs() < 1e-12, "D3Q27 outlet ux={ux}");
     }
     #[test]
     fn test_convective_outlet_d2q9_mass_positive() {
@@ -522,6 +574,9 @@ mod tests_advanced_zou_he {
             f.iter().all(|v| v.is_finite()),
             "Moving wall top has NaN/Inf"
         );
+        // Linear in the wall velocity: w * (1 -/+ 6 * 0.05) with w = 1/36.
+        assert!((f[10] - 0.7 / 36.0).abs() < 1e-15, "f10={}", f[10]);
+        assert!((f[9] - 1.3 / 36.0).abs() < 1e-15, "f9={}", f[9]);
     }
     #[test]
     fn test_bounce_back_moving_bottom_d3q19_finite() {
@@ -531,6 +586,9 @@ mod tests_advanced_zou_he {
             f.iter().all(|v| v.is_finite()),
             "Moving wall bottom has NaN/Inf"
         );
+        // Linear in the wall velocity: w * (1 +/- 6 * 0.05) with w = 1/36.
+        assert!((f[7] - 1.3 / 36.0).abs() < 1e-15, "f7={}", f[7]);
+        assert!((f[8] - 0.7 / 36.0).abs() < 1e-15, "f8={}", f[8]);
     }
     #[test]
     fn test_momentum_flux_xx_d3q19_positive() {

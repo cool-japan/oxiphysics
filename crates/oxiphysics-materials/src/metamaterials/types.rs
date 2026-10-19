@@ -312,18 +312,35 @@ impl ElasticMetamaterial {
     pub fn is_auxetic(&self) -> bool {
         self.effective_poisson < 0.0
     }
-    /// Re-entrant honeycomb Poisson's ratio from rib angle (Masters–Evans).
+    /// Re-entrant honeycomb Poisson's ratio from rib angle (Gibson–Ashby /
+    /// Masters–Evans rib flexure).
     ///
-    /// Updates and returns `self.effective_poisson` based on `self.rib_angle`.
+    /// Computes ν₂₁ for loading along the vertical ribs:
+    /// ```text
+    /// ν₂₁ = sin(θ)·(h/l + sin(θ)) / cos²(θ)
+    /// ```
+    /// with θ = `self.rib_angle` (radians, negative for a re-entrant cell), so a
+    /// regular hexagon (θ = 30°, h/l = 1) gives +1 and θ = −30°, h/l = 2 gives −1.
+    ///
+    /// On success the value is stored in `self.effective_poisson` and returned.
+    /// For non-physical geometry (|θ| ≥ 90°, non-finite or non-positive `h_over_l`,
+    /// or `h/l + sin θ ≤ 0` where the cell cannot close) `f64::NAN` is returned
+    /// and `self.effective_poisson` is left unchanged.
     pub fn compute_auxetic_poisson(&mut self, h_over_l: f64) -> f64 {
         let theta = self.rib_angle;
-        let sin_t = theta.sin();
-        let cos2 = theta.cos().powi(2);
-        if cos2.abs() < 1e-15 {
-            self.effective_poisson = 0.0;
-            return 0.0;
+        if !(theta.is_finite() && h_over_l.is_finite()) || h_over_l <= 0.0 {
+            return f64::NAN;
         }
-        let nu = -sin_t * (h_over_l + sin_t) / cos2;
+        let sin_t = theta.sin();
+        let cos_t = theta.cos();
+        if cos_t <= 1e-12 {
+            return f64::NAN;
+        }
+        let closure = h_over_l + sin_t;
+        if closure <= 0.0 {
+            return f64::NAN;
+        }
+        let nu = sin_t * closure / (cos_t * cos_t);
         self.effective_poisson = nu;
         nu
     }
@@ -672,10 +689,31 @@ impl SplitRingResonator {
 }
 /// Re-entrant honeycomb unit-cell geometry.
 ///
-/// Parameters follow the notation of Masters & Evans (1996):
-/// `theta` – cell angle (rad, negative for re-entrant), `l` – inclined rib
-/// length, `h` – vertical rib length, `t` – rib thickness, `es` – solid
-/// Young's modulus.
+/// Parameters follow the notation of Gibson & Ashby and Masters & Evans (1996):
+/// `theta` – cell angle (rad, positive for a conventional hexagonal cell and
+/// negative for a re-entrant one), `l` – inclined rib length, `h` – vertical
+/// rib length, `t` – rib thickness, `es` – solid Young's modulus.
+///
+/// The in-plane constants are the thin-rib flexure results (rib bending only,
+/// no axial or shear deformation of the ribs).  Direction 1 (x) is
+/// perpendicular to the vertical ribs and direction 2 (y) runs along them:
+///
+/// ```text
+/// E₁/Es  = (t/l)³ · cosθ / [(h/l + sinθ) · sin²θ]
+/// E₂/Es  = (t/l)³ · (h/l + sinθ) / cos³θ
+/// ν₁₂    = cos²θ / [(h/l + sinθ) · sinθ]
+/// ν₂₁    = (h/l + sinθ) · sinθ / cos²θ
+/// G₁₂/Es = (t/l)³ · (h/l + sinθ) / [(h/l)² · (1 + 2h/l) · cosθ]
+/// ```
+///
+/// They satisfy the reciprocity relation ν₁₂/E₁ = ν₂₁/E₂ (and ν₁₂·ν₂₁ = 1).
+/// A regular hexagon (θ = +30°, h = l) has ν₁₂ = ν₂₁ = +1, whereas the
+/// re-entrant cell θ = −30°, h/l = 2 has ν₁₂ = ν₂₁ = −1.
+///
+/// The model needs a cell that closes, `h/l + sin θ > 0` (a re-entrant cell
+/// with `h/l ≤ |sin θ|` would have its inclined ribs crossing each other), and
+/// |θ| < 90°.  For non-physical geometry, including non-positive or
+/// non-finite rib lengths, every accessor returns `NaN`.
 #[derive(Debug, Clone)]
 pub struct ReentrantHoneycomb {
     /// Cell angle in radians (negative → auxetic behaviour).
@@ -689,74 +727,132 @@ pub struct ReentrantHoneycomb {
     /// Young's modulus of the solid material (Pa).
     pub es: f64,
 }
+/// Validated trigonometric and geometric terms shared by the honeycomb flexure
+/// formulas of [`ReentrantHoneycomb`].
+#[derive(Debug, Clone, Copy)]
+struct HoneycombTerms {
+    /// sin θ.
+    sin_t: f64,
+    /// cos θ (strictly positive).
+    cos_t: f64,
+    /// Rib-length ratio h/l (strictly positive).
+    h_over_l: f64,
+    /// Closure term h/l + sin θ (strictly positive for a cell that closes).
+    closure: f64,
+}
 impl ReentrantHoneycomb {
+    /// Smallest `cos θ` (and, where the formula divides by it, `|sin θ|`) for
+    /// which the flexure formulas are evaluated.
+    const TRIG_EPS: f64 = 1.0e-12;
     /// Create a new [`ReentrantHoneycomb`] unit cell.
     pub fn new(theta: f64, l: f64, h: f64, t: f64, es: f64) -> Self {
         Self { theta, l, h, t, es }
     }
-    /// In-plane Poisson's ratio ν_xy (can be negative for re-entrant cells).
+    /// Terms of the flexure model, or `None` for a non-physical cell
+    /// (non-finite or non-positive rib lengths, |θ| ≥ 90°, or `h/l + sin θ ≤ 0`).
+    fn terms(&self) -> Option<HoneycombTerms> {
+        let finite = self.theta.is_finite() && self.l.is_finite() && self.h.is_finite();
+        if !finite || self.l <= 0.0 || self.h <= 0.0 {
+            return None;
+        }
+        let (sin_t, cos_t) = self.theta.sin_cos();
+        if cos_t <= Self::TRIG_EPS {
+            return None;
+        }
+        let h_over_l = self.h / self.l;
+        let closure = h_over_l + sin_t;
+        if closure <= 0.0 {
+            return None;
+        }
+        Some(HoneycombTerms {
+            sin_t,
+            cos_t,
+            h_over_l,
+            closure,
+        })
+    }
+    /// In-plane Poisson's ratio ν_xy = ν₁₂ = −ε_y/ε_x for uniaxial loading
+    /// along x (negative for re-entrant cells).
     ///
-    /// Uses the Masters–Evans closed-form solution based on flexure of the
-    /// inclined ribs.
+    /// ```text
+    /// ν_xy = cos²θ / [(h/l + sinθ) · sinθ]
+    /// ```
+    ///
+    /// This is the Gibson–Ashby rib-flexure result consistent with
+    /// [`ReentrantHoneycomb::young_modulus_x`]: ν_xy/E_x = ν_yx/E_y.  A regular
+    /// hexagon (θ = 30°, h = l) gives +1 and the re-entrant cell θ = −30°,
+    /// h/l = 2 gives −1.
+    ///
+    /// Returns `NaN` for non-physical geometry (see [`ReentrantHoneycomb`]) and
+    /// for θ = 0, where the flexure model is singular (the horizontal ribs
+    /// would carry the load axially, so E_x → ∞ and ν_xy → ∞).
     pub fn poisson_ratio_xy(&self) -> f64 {
-        let sin_t = self.theta.sin();
-        let cos_t = self.theta.cos();
-        let h_over_l = self.h / self.l;
-        let numerator = sin_t * (h_over_l + sin_t);
-        let denominator = cos_t * cos_t;
-        if denominator.abs() < 1e-15 {
-            0.0
-        } else {
-            -numerator / denominator
+        match self.terms() {
+            Some(c) if c.sin_t.abs() > Self::TRIG_EPS => c.cos_t * c.cos_t / (c.closure * c.sin_t),
+            _ => f64::NAN,
         }
     }
-    /// Normalised Young's modulus E_x (Pa) in the x-direction.
+    /// In-plane Poisson's ratio ν_yx = ν₂₁ = −ε_x/ε_y for uniaxial loading
+    /// along y, i.e. along the vertical ribs (negative for re-entrant cells).
     ///
-    /// Returns the absolute value of the Masters–Evans expression to ensure
-    /// physically meaningful (positive) stiffness regardless of the sign of
-    /// the cell angle.
+    /// ```text
+    /// ν_yx = (h/l + sinθ) · sinθ / cos²θ
+    /// ```
+    ///
+    /// Reciprocal to [`ReentrantHoneycomb::poisson_ratio_xy`]
+    /// (ν_xy · ν_yx = 1) and consistent with
+    /// [`ReentrantHoneycomb::young_modulus_y`]: ν_xy/E_x = ν_yx/E_y.
+    ///
+    /// Returns `NaN` for non-physical geometry (see [`ReentrantHoneycomb`]).
+    pub fn poisson_ratio_yx(&self) -> f64 {
+        self.terms()
+            .map_or(f64::NAN, |c| c.closure * c.sin_t / (c.cos_t * c.cos_t))
+    }
+    /// Young's modulus E_x = E₁ (Pa) in the x-direction (perpendicular to the
+    /// vertical ribs).
+    ///
+    /// ```text
+    /// E_x = Es · (t/l)³ · cosθ / [(h/l + sinθ) · sin²θ]
+    /// ```
+    ///
+    /// Returns `NaN` for non-physical geometry (see [`ReentrantHoneycomb`]) and
+    /// for θ = 0, where the flexure model is singular.
     pub fn young_modulus_x(&self) -> f64 {
-        let cos_t = self.theta.cos();
-        let sin_t = self.theta.sin();
-        let h_over_l = self.h / self.l;
-        let t_over_l = self.t / self.l;
-        let denom = (h_over_l + sin_t) * sin_t * sin_t;
-        if denom.abs() < 1e-30 {
-            0.0
-        } else {
-            (t_over_l.powi(3) * cos_t / denom * self.es).abs()
+        match self.terms() {
+            Some(c) if c.sin_t.abs() > Self::TRIG_EPS => {
+                let t_over_l = self.t / self.l;
+                self.es * t_over_l.powi(3) * c.cos_t / (c.closure * c.sin_t * c.sin_t)
+            }
+            _ => f64::NAN,
         }
     }
-    /// Normalised Young's modulus E_y (Pa) in the y-direction.
+    /// Young's modulus E_y = E₂ (Pa) in the y-direction (along the vertical
+    /// ribs).
     ///
-    /// Returns the absolute value to ensure positive stiffness.
+    /// ```text
+    /// E_y = Es · (t/l)³ · (h/l + sinθ) / cos³θ
+    /// ```
+    ///
+    /// Returns `NaN` for non-physical geometry (see [`ReentrantHoneycomb`]).
     pub fn young_modulus_y(&self) -> f64 {
-        let cos_t = self.theta.cos();
-        let sin_t = self.theta.sin();
-        let h_over_l = self.h / self.l;
-        let t_over_l = self.t / self.l;
-        let denom = cos_t.powi(3);
-        if denom.abs() < 1e-30 {
-            0.0
-        } else {
-            (t_over_l.powi(3) * (h_over_l + sin_t) / denom * self.es).abs()
-        }
+        self.terms().map_or(f64::NAN, |c| {
+            let t_over_l = self.t / self.l;
+            self.es * t_over_l.powi(3) * c.closure / c.cos_t.powi(3)
+        })
     }
-    /// In-plane shear modulus G_xy (Pa).
+    /// In-plane shear modulus G_xy = G₁₂ (Pa).
     ///
-    /// Returns the absolute value to ensure positive stiffness.
+    /// ```text
+    /// G_xy = Es · (t/l)³ · (h/l + sinθ) / [(h/l)² · (1 + 2h/l) · cosθ]
+    /// ```
+    ///
+    /// Returns `NaN` for non-physical geometry (see [`ReentrantHoneycomb`]).
     pub fn shear_modulus_xy(&self) -> f64 {
-        let cos_t = self.theta.cos();
-        let sin_t = self.theta.sin();
-        let h_over_l = self.h / self.l;
-        let t_over_l = self.t / self.l;
-        let num = t_over_l.powi(3) * (h_over_l + sin_t);
-        let denom = h_over_l * h_over_l * (1.0 + 2.0 * h_over_l) * cos_t;
-        if denom.abs() < 1e-30 {
-            0.0
-        } else {
-            (num / denom * self.es).abs()
-        }
+        self.terms().map_or(f64::NAN, |c| {
+            let t_over_l = self.t / self.l;
+            let denominator = c.h_over_l * c.h_over_l * (1.0 + 2.0 * c.h_over_l) * c.cos_t;
+            self.es * t_over_l.powi(3) * c.closure / denominator
+        })
     }
 }
 /// Pentamode metamaterial — a solid with five near-zero eigenvalues in its
@@ -891,9 +987,24 @@ impl ElectromagneticMetamaterial {
 }
 /// Acoustic cloaking shell designed via coordinate transformation.
 ///
-/// A spherical cloak maps the region `r_1 < r < r_2` in virtual space to the
-/// annulus `r_1 < r < r_2` in physical space, while pushing all wave energy
-/// around the inner core.
+/// A cylindrical (2-D) cloak compresses the virtual disk `0 ≤ s ≤ r₂` onto the
+/// annulus `r₁ ≤ r ≤ r₂` through the linear radial map
+/// `r = r₁ + s (r₂ − r₁)/r₂`, which guides incident waves around the hidden
+/// core `r < r₁` and leaves the field outside the shell undisturbed.  With the
+/// compression factor k = (r₂ − r₁)/r₂ the transformation-acoustics rules
+/// κ = J κ₀ and ρ⁻¹ = Λ Λᵀ / (J ρ₀), where Λ = diag(k, k r/(r − r₁)) is the
+/// Jacobian of the map and J = det Λ, give the ideal Cummer–Schurig
+/// parameters (New J. Phys. 9, 45, 2007):
+///
+/// ```text
+/// ρ_r(r) = ρ₀ · r / (r − r₁)
+/// ρ_θ(r) = ρ₀ · (r − r₁) / r
+/// κ(r)   = κ₀ · k² · r / (r − r₁)
+/// ```
+///
+/// Hence ρ_r · ρ_θ = ρ₀², the radial phase speed √(κ/ρ_r) = k c₀ is constant
+/// and the angular one √(κ/ρ_θ) = k c₀ r/(r − r₁) diverges towards the inner
+/// boundary, where ρ_r and κ become infinite and ρ_θ vanishes.
 #[derive(Debug, Clone)]
 pub struct AcousticCloakShell {
     /// Inner radius of the cloak shell (m).
@@ -906,6 +1017,16 @@ pub struct AcousticCloakShell {
     pub background_modulus: f64,
     /// Number of discrete shell layers.
     pub n_layers: usize,
+}
+/// Region of the acoustic cloak that a radius falls into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloakRegion {
+    /// Hidden core, `r ≤ r₁`: the ideal shell parameters are singular here.
+    Core,
+    /// Cloak shell, `r₁ < r < r₂`.
+    Shell,
+    /// Background medium, `r ≥ r₂`.
+    Background,
 }
 impl AcousticCloakShell {
     /// Create a new [`AcousticCloakShell`].
@@ -924,59 +1045,97 @@ impl AcousticCloakShell {
             n_layers,
         }
     }
-    /// Effective radial density at radius `r` within the cloak shell.
-    ///
-    /// From linear coordinate transformation:
+    /// `true` if the radii describe an annulus `0 ≤ r₁ < r₂` with finite radii.
+    fn has_valid_radii(&self) -> bool {
+        self.r_inner.is_finite()
+            && self.r_outer.is_finite()
+            && self.r_inner >= 0.0
+            && self.r_outer > self.r_inner
+    }
+    /// Region of the cloak that contains radius `r`, or `None` if `r` is NaN or
+    /// the shell radii are invalid.
+    fn region(&self, r: f64) -> Option<CloakRegion> {
+        if r.is_nan() || !self.has_valid_radii() {
+            return None;
+        }
+        Some(if r >= self.r_outer {
+            CloakRegion::Background
+        } else if r <= self.r_inner {
+            CloakRegion::Core
+        } else {
+            CloakRegion::Shell
+        })
+    }
+    /// Radial density ρ_r at radius `r` (kg/m³).
     ///
     /// ```text
-    /// ρ_r(r) = ρ₀ · (r − r₁)² / (r · (r₂ − r₁) / r₂) · (r₂ / (r₂ − r₁))²
+    /// ρ_r = ρ₀ · r / (r − r₁)        for r₁ < r < r₂
     /// ```
     ///
-    /// Simplified closed-form (Cummer & Schurig, 2007):
+    /// Outside the shell (`r ≥ r₂`) the background density ρ₀ is returned.  At
+    /// and inside the inner radius (`r ≤ r₁`) the ideal parameter is singular
+    /// and its limit for r → r₁⁺, `f64::INFINITY`, is returned.
     ///
-    /// ```text
-    /// ρ_r = ρ₀ · (r₂/(r₂−r₁))² · ((r−r₁)/r)²
-    /// ```
+    /// Returns `NaN` if `r` is NaN or the radii do not describe an annulus
+    /// (`0 ≤ r₁ < r₂`, both finite).
     pub fn radial_density(&self, r: f64) -> f64 {
-        let r1 = self.r_inner;
-        let r2 = self.r_outer;
-        if r <= r1 || r >= r2 || (r2 - r1).abs() < 1e-15 {
-            return 0.0;
+        match self.region(r) {
+            None => f64::NAN,
+            Some(CloakRegion::Core) => f64::INFINITY,
+            Some(CloakRegion::Shell) => self.background_density * r / (r - self.r_inner),
+            Some(CloakRegion::Background) => self.background_density,
         }
-        let factor = r2 / (r2 - r1);
-        self.background_density * factor * factor * ((r - r1) / r).powi(2)
     }
-    /// Effective angular density at radius `r`.
+    /// Angular (azimuthal) density ρ_θ at radius `r` (kg/m³).
     ///
     /// ```text
-    /// ρ_θ = ρ₀ · (r₂ / (r₂ − r₁))²
+    /// ρ_θ = ρ₀ · (r − r₁) / r        for r₁ < r < r₂
     /// ```
-    pub fn angular_density(&self, _r: f64) -> f64 {
-        let r1 = self.r_inner;
-        let r2 = self.r_outer;
-        if (r2 - r1).abs() < 1e-15 {
-            return 0.0;
+    ///
+    /// Outside the shell (`r ≥ r₂`) the background density ρ₀ is returned.  At
+    /// and inside the inner radius (`r ≤ r₁`) the limit for r → r₁⁺, zero, is
+    /// returned.
+    ///
+    /// Returns `NaN` if `r` is NaN or the radii do not describe an annulus
+    /// (`0 ≤ r₁ < r₂`, both finite).
+    pub fn angular_density(&self, r: f64) -> f64 {
+        match self.region(r) {
+            None => f64::NAN,
+            Some(CloakRegion::Core) => 0.0,
+            Some(CloakRegion::Shell) => self.background_density * (r - self.r_inner) / r,
+            Some(CloakRegion::Background) => self.background_density,
         }
-        let factor = r2 / (r2 - r1);
-        self.background_density * factor * factor
     }
-    /// Effective bulk modulus at radius `r`.
+    /// Effective bulk modulus κ at radius `r` (Pa).
     ///
     /// ```text
-    /// κ(r) = κ₀ · (r₂/(r₂−r₁))² · ((r−r₁)/r)²
+    /// κ = κ₀ · ((r₂ − r₁)/r₂)² · r / (r − r₁)        for r₁ < r < r₂
     /// ```
+    ///
+    /// Outside the shell (`r ≥ r₂`) the background modulus κ₀ is returned.  At
+    /// and inside the inner radius (`r ≤ r₁`) the ideal parameter is singular
+    /// and its limit for r → r₁⁺, `f64::INFINITY`, is returned.
+    ///
+    /// Returns `NaN` if `r` is NaN or the radii do not describe an annulus
+    /// (`0 ≤ r₁ < r₂`, both finite).
     pub fn effective_modulus(&self, r: f64) -> f64 {
-        let r1 = self.r_inner;
-        let r2 = self.r_outer;
-        if r <= r1 || r >= r2 || (r2 - r1).abs() < 1e-15 {
-            return 0.0;
+        match self.region(r) {
+            None => f64::NAN,
+            Some(CloakRegion::Core) => f64::INFINITY,
+            Some(CloakRegion::Shell) => {
+                let compression = (self.r_outer - self.r_inner) / self.r_outer;
+                self.background_modulus * compression * compression * r / (r - self.r_inner)
+            }
+            Some(CloakRegion::Background) => self.background_modulus,
         }
-        let factor = r2 / (r2 - r1);
-        self.background_modulus * factor * factor * ((r - r1) / r).powi(2)
     }
     /// Generate layer-by-layer material properties for the discretized shell.
     ///
-    /// Returns a `Vec` of `(r_center, rho_r, rho_theta, kappa)` for each layer.
+    /// Returns a `Vec` of `(r_center, rho_r, rho_theta, kappa)` for each layer,
+    /// with the ideal parameters of [`AcousticCloakShell::radial_density`],
+    /// [`AcousticCloakShell::angular_density`] and
+    /// [`AcousticCloakShell::effective_modulus`] sampled at the mid-radius of
+    /// each of the `n_layers` equally thick layers.
     pub fn layer_properties(&self) -> Vec<(f64, f64, f64, f64)> {
         if self.n_layers == 0 {
             return Vec::new();

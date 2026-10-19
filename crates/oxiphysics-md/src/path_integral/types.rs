@@ -62,9 +62,14 @@ pub struct PimdState {
     pub n_beads: usize,
 }
 impl PimdState {
-    /// Quantum kinetic energy via virial estimator.
+    /// Quantum kinetic energy via the centroid-virial estimator.
     ///
-    /// KE_vir = (3*N/2)*k_B*T + (1/(2*P)) * sum_{a,i} (r_{a,i} - r_bar_a) . F_{a,i}
+    /// KE_vir = (3*N/2)*k_B*T - (1/(2*P)) * sum_{a,i} (r_{a,i} - r_bar_a) . F_{a,i}
+    ///
+    /// `F_{a,i}` is the **physical force** `-grad V` on bead `i` of atom `a`
+    /// ([`PimdAtom::forces`]), so the second term is `+(1/(2P)) sum (r - r_bar) . grad V`.
+    /// For a harmonic well `F = -k r` it equals `(k/(2P)) sum |r - r_bar|^2 >= 0`: the
+    /// spread of the ring raises the kinetic energy above the classical value.
     pub fn quantum_kinetic_energy(&self) -> f64 {
         let n = self.atoms.len();
         let p = self.n_beads as f64;
@@ -83,7 +88,7 @@ impl PimdState {
                 }
             }
         }
-        classical_part + virial / (2.0 * p)
+        classical_part - virial / (2.0 * p)
     }
     /// Centroid positions of all atoms.
     pub fn centroid_positions(&self) -> Vec<[f64; 3]> {
@@ -324,7 +329,8 @@ impl PileLThermostat {
     ///
     /// Performs the stochastic velocity update for each mode k over the time
     /// interval `dt`, drawing one standard normal variate per Cartesian
-    /// component from `rng`.
+    /// component from `rng`.  The bath is at the thermostat's own
+    /// `temperature`.
     pub fn apply<R: Rng + ?Sized>(
         &self,
         mode_vel: &mut [[f64; 3]],
@@ -332,59 +338,246 @@ impl PileLThermostat {
         dt: f64,
         rng: &mut R,
     ) {
+        self.apply_at_bath_temperature(mode_vel, mass, self.temperature, dt, rng);
+    }
+    /// Same as [`PileLThermostat::apply`] but with the bath temperature given
+    /// explicitly, independently of the temperature that fixed the mode
+    /// frequencies and frictions.
+    ///
+    /// A ring polymer with springs `m ω_P²`, `ω_P = P k_B T / ħ`, and the full
+    /// physical potential on every bead needs a bath at `P T` to sample the
+    /// path-integral distribution (see [`CentroidMD`]).  A mode with zero
+    /// friction is left exactly unchanged.
+    pub fn apply_at_bath_temperature<R: Rng + ?Sized>(
+        &self,
+        mode_vel: &mut [[f64; 3]],
+        mass: f64,
+        bath_temperature: f64,
+        dt: f64,
+        rng: &mut R,
+    ) {
         for (k, mv) in mode_vel.iter_mut().enumerate() {
             let gamma_k = self.gamma.get(k).copied().unwrap_or(0.0);
             for v in mv.iter_mut() {
                 let xi = standard_normal(rng);
-                *v = Self::ou_step(gamma_k, self.temperature, mass, *v, dt, xi);
+                *v = Self::ou_step(gamma_k, bath_temperature, mass, *v, dt, xi);
             }
         }
     }
 }
-/// Centroid Molecular Dynamics (CMD) propagator.
+/// Adiabatic centroid molecular dynamics (CMD) propagator.
 ///
-/// In CMD the physical force acts only on the centroid degree of freedom,
-/// while the internal modes are thermostatted to sample the quantum
-/// distribution.  The centroid trajectory approximates real-time quantum
-/// dynamics for computing time-correlation functions.
+/// In CMD the centroid `r̄ = (1/P) Σ_i r_i` of the ring polymer moves as a
+/// classical particle of the physical mass `m` on the centroid potential of
+/// mean force.  Its force is the thermal average of the bead-mean physical
+/// force `F̄ = (1/P) Σ_i F_i` over the ring-polymer configurations at fixed
+/// centroid, so the quantum spread of the ring (zero-point motion) feeds back on
+/// the centroid.  The centroid trajectory approximates real-time quantum
+/// dynamics and is used for time-correlation functions.
 ///
-/// Reference: Cao & Voth, J. Chem. Phys. 99, 10070 (1993).
-pub struct CentroidMD;
+/// This is the *adiabatic* variant (Cao & Voth, J. Chem. Phys. 99, 10070 (1993)
+/// and 101, 6168 (1994)), written in the normal-mode basis `C` of
+/// [`NormalModePropagator`]:
+///
+/// * The centroid mode (`k = 0`) keeps the physical mass `m` and is driven by
+///   the mean physical force only.  It is not thermostatted.
+/// * Every internal mode `k ≥ 1` gets the fictitious mass `m̃ = γ² m` with the
+///   adiabaticity parameter `0 < γ ≤ 1`, while its spring potential
+///   `½ m ω_k² q_k²` is unchanged.  The mode frequency becomes `ω_k / γ`, so
+///   the internal modes relax much faster than the centroid moves and follow it
+///   adiabatically.
+/// * The internal modes are coupled to a Langevin bath (PILE-L friction
+///   `2 ω_k / γ`, see [`PileLThermostat`]) that keeps sampling their thermal
+///   distribution at the instantaneous centroid position.
+/// * The physical force `F_j` on bead `j` enters through the mode forces
+///   `F̃_k = Σ_j C_kj F_j`; mode `k` accelerates with `F̃_k / m̃_k`.
+///
+/// One step is the symmetric splitting
+/// `O(Δt/2) B(Δt/2) A(Δt) B(Δt/2) O(Δt/2)` with the exact Ornstein-Uhlenbeck
+/// bath step `O`, the half kick `B` with the mode forces and the exact free
+/// ring-polymer propagation `A`.  The force closure is called once per step, at
+/// the propagated positions, so the second half kick uses updated forces.
+///
+/// # Conventions
+///
+/// The module-wide ring-polymer (RPMD) convention is used: the springs are
+/// `m ω_P²` with `ω_P = P k_B T / ħ` (see [`RingPolymer::spring_forces`]) and the
+/// force closure returns the **full** physical force `-∇V(r_i)` on every bead.
+/// Sampling the Gibbs weight of the exact path integral with that Hamiltonian
+/// requires the bath of the ring's classical isomorphism to run at `P T`
+/// ([`CentroidMD::bath_temperature`]); the centroid velocity `v̄` is thermal at
+/// the physical temperature `T`.  Units are SI (m, m s⁻¹, kg, s, K).
+#[derive(Debug, Clone)]
+pub struct CentroidMD {
+    /// Number of ring-polymer beads `P`.
+    pub n_beads: usize,
+    /// Physical temperature `T` (K).
+    pub temperature: f64,
+    /// Adiabaticity parameter `γ` (`0 < γ ≤ 1`): internal modes have the mass `γ² m`.
+    pub adiabaticity: f64,
+    /// Free ring-polymer propagator of the fictitious dynamics.  Its mode
+    /// frequencies are `ω_k / γ` for `k ≥ 1` and zero for the centroid.
+    pub propagator: NormalModePropagator,
+    /// Langevin bath of the internal modes: friction `2 ω_k / γ` for `k ≥ 1` and
+    /// zero for the centroid.  Set every `gamma` entry to zero for a
+    /// thermostat-free (microcanonical) internal dynamics.
+    pub thermostat: PileLThermostat,
+}
 impl CentroidMD {
-    /// Propagate the centroid position and velocity by dt under the centroid force.
+    /// Create an adiabatic CMD propagator for rings of `n_beads` beads at the
+    /// physical temperature `temperature` (K).
     ///
-    /// The centroid force is the mean of the per-bead external forces:
-    /// F_c = (1/P) * sum_i F_ext_i
-    pub fn step(ring: &mut RingPolymer, per_bead_forces: &[[f64; 3]], dt: f64) {
-        let p = ring.n_beads as f64;
-        let mut f_c = [0.0_f64; 3];
-        for pbf in per_bead_forces.iter().take(ring.n_beads) {
+    /// # Errors
+    /// Returns an error if `n_beads` is zero, if `temperature` is not a positive
+    /// finite number, or if `adiabaticity` is not in `(0, 1]`.
+    pub fn new(n_beads: usize, temperature: f64, adiabaticity: f64) -> Result<Self, MdError> {
+        if !temperature.is_finite() || temperature <= 0.0 {
+            return Err(MdError::General(format!(
+                "CMD temperature must be positive and finite, got {temperature}"
+            )));
+        }
+        if !adiabaticity.is_finite() || adiabaticity <= 0.0 || adiabaticity > 1.0 {
+            return Err(MdError::General(format!(
+                "CMD adiabaticity parameter must lie in (0, 1], got {adiabaticity}"
+            )));
+        }
+        let mut thermostat = PileLThermostat::new(n_beads, temperature, 0.0)?;
+        let mut propagator = NormalModePropagator::new(n_beads, temperature);
+        for k in 1..n_beads {
+            propagator.omega[k] /= adiabaticity;
+            thermostat.omega[k] = propagator.omega[k];
+            thermostat.gamma[k] = 2.0 * propagator.omega[k];
+        }
+        Ok(CentroidMD {
+            n_beads,
+            temperature,
+            adiabaticity,
+            propagator,
+            thermostat,
+        })
+    }
+    /// Temperature `P T` of the internal-mode bath (see the type-level
+    /// conventions).
+    pub fn bath_temperature(&self) -> f64 {
+        self.n_beads as f64 * self.temperature
+    }
+    /// Fictitious mass `γ² m` of the internal modes for the physical mass `mass`.
+    pub fn internal_mass(&self, mass: f64) -> f64 {
+        self.adiabaticity * self.adiabaticity * mass
+    }
+    /// Langevin bath half step on the internal modes at the bath temperature
+    /// `P T` with the fictitious mass `γ² m`.  The centroid mode (index 0) is
+    /// restored afterwards, so it is never thermostatted whatever the friction
+    /// stored for it.
+    fn bath_half_step<R: Rng + ?Sized>(
+        &self,
+        mode_vel: &mut [[f64; 3]],
+        mass: f64,
+        half_dt: f64,
+        rng: &mut R,
+    ) {
+        let centroid_velocity = mode_vel.first().copied();
+        self.thermostat.apply_at_bath_temperature(
+            mode_vel,
+            self.internal_mass(mass),
+            self.bath_temperature(),
+            half_dt,
+            rng,
+        );
+        if let (Some(v0), Some(slot)) = (centroid_velocity, mode_vel.first_mut()) {
+            *slot = v0;
+        }
+    }
+    /// Half kick of the mode velocities with the mode forces: the centroid mode
+    /// has the mass `mass`, every internal mode the mass `γ² mass`.
+    fn kick_modes(&self, mode_vel: &mut [[f64; 3]], mode_forces: &[[f64; 3]], mass: f64, dt: f64) {
+        let internal_mass = self.internal_mass(mass);
+        for (k, (v, f)) in mode_vel.iter_mut().zip(mode_forces.iter()).enumerate() {
+            let m_k = if k == 0 { mass } else { internal_mass };
             for d in 0..3 {
-                f_c[d] += pbf[d];
+                v[d] += dt * f[d] / m_k;
             }
         }
-        for v in &mut f_c {
-            *v /= p;
+    }
+    /// Advance the ring polymer by one CMD step of length `dt` (s).
+    ///
+    /// `forces` holds the physical force `-∇V(r_i)` on every bead at the current
+    /// bead positions on entry (evaluate it once with `force_fn` before the first
+    /// step) and the forces at the new positions on return, so a trajectory costs
+    /// one `force_fn` call per step.  `force_fn` receives the bead positions and
+    /// returns the physical force on each of them.  `rng` supplies the Gaussian
+    /// noise of the two bath half steps; a seeded generator makes the trajectory
+    /// reproducible.
+    ///
+    /// # Errors
+    /// Returns an error, leaving `ring` and `forces` unchanged, if the ring, the
+    /// velocity, the force list or the result of `force_fn` do not hold exactly
+    /// `n_beads` entries, or if the ring mass or `dt` is not a positive finite
+    /// number.
+    pub fn step<F, R>(
+        &self,
+        ring: &mut RingPolymer,
+        forces: &mut Vec<[f64; 3]>,
+        mut force_fn: F,
+        dt: f64,
+        rng: &mut R,
+    ) -> Result<(), MdError>
+    where
+        F: FnMut(&[[f64; 3]]) -> Vec<[f64; 3]>,
+        R: Rng + ?Sized,
+    {
+        let p = self.n_beads;
+        if ring.n_beads != p
+            || ring.positions.len() != p
+            || ring.velocities.len() != p
+            || forces.len() != p
+        {
+            return Err(MdError::General(format!(
+                "CMD step expects {p} beads, got a ring of {} beads with {} positions, \
+                 {} velocities and {} forces",
+                ring.n_beads,
+                ring.positions.len(),
+                ring.velocities.len(),
+                forces.len()
+            )));
         }
-        let inv_m = 1.0 / ring.mass;
-        let mut cv = ring.centroid_velocity();
-        for d in 0..3 {
-            cv[d] += f_c[d] * inv_m * 0.5 * dt;
+        if !ring.mass.is_finite() || ring.mass <= 0.0 {
+            return Err(MdError::General(format!(
+                "CMD step needs a positive finite ring mass, got {}",
+                ring.mass
+            )));
         }
-        let mut cpos = ring.centroid();
-        for d in 0..3 {
-            cpos[d] += cv[d] * dt;
+        if !dt.is_finite() || dt <= 0.0 {
+            return Err(MdError::General(format!(
+                "CMD step needs a positive finite time step, got {dt}"
+            )));
         }
-        for d in 0..3 {
-            cv[d] += f_c[d] * inv_m * 0.5 * dt;
+        let mass = ring.mass;
+        let half_dt = 0.5 * dt;
+        let c = &self.propagator.c_matrix;
+        let mut mode_pos = beads_to_normal_modes(&ring.positions, c);
+        let mut mode_vel = beads_to_normal_modes(&ring.velocities, c);
+        let mode_forces = beads_to_normal_modes(forces, c);
+        self.bath_half_step(&mut mode_vel, mass, half_dt, rng);
+        self.kick_modes(&mut mode_vel, &mode_forces, mass, half_dt);
+        for (k, (q, v)) in mode_pos.iter_mut().zip(mode_vel.iter_mut()).enumerate() {
+            BeadPropagator::propagate_mode(q, v, self.propagator.omega[k], dt);
         }
-        let old_c = ring.centroid();
-        for i in 0..ring.n_beads {
-            for d in 0..3 {
-                ring.positions[i][d] += cpos[d] - old_c[d];
-            }
-            ring.velocities[i].copy_from_slice(&cv);
+        let new_positions = normal_modes_to_beads(&mode_pos, c);
+        let new_forces = force_fn(&new_positions);
+        if new_forces.len() != p {
+            return Err(MdError::General(format!(
+                "CMD force closure returned {} forces for {p} beads",
+                new_forces.len()
+            )));
         }
+        let new_mode_forces = beads_to_normal_modes(&new_forces, c);
+        self.kick_modes(&mut mode_vel, &new_mode_forces, mass, half_dt);
+        self.bath_half_step(&mut mode_vel, mass, half_dt, rng);
+        ring.positions = new_positions;
+        ring.velocities = normal_modes_to_beads(&mode_vel, c);
+        *forces = new_forces;
+        Ok(())
     }
     /// Centroid mean-square displacement from initial centroid position.
     pub fn centroid_msd(ring: &RingPolymer, initial_centroid: [f64; 3]) -> f64 {
@@ -783,11 +976,13 @@ impl RingPolymer {
             .sum();
         classical_ke - 0.5 * self.mass * omega_p * omega_p * spring_sum
     }
-    /// Virial kinetic energy estimator.
+    /// Centroid-virial kinetic energy estimator.
     ///
-    /// KE_vir = (3/2)*k_B*T + (1/(2P)) * sum_i (r_i - r_bar) . F_ext_i
+    /// KE_vir = (3/2)*k_B*T - (1/(2P)) * sum_i (r_i - r_bar) . F_ext_i
     ///
-    /// where F_ext_i is the external (physical) force on bead i.
+    /// where F_ext_i is the external (physical) force `-grad V` on bead i.  For a
+    /// harmonic well `F = -k r` the correction is `+(k/(2P)) sum |r_i - r_bar|^2`,
+    /// i.e. positive for a spread-out ring.
     /// The virial estimator has lower variance than the primitive estimator.
     pub fn virial_kinetic_energy(&self, temperature: f64, external_forces: &[[f64; 3]]) -> f64 {
         let c = self.centroid();
@@ -803,7 +998,7 @@ impl RingPolymer {
                 virial_sum += (pos[d] - c[d]) * ef[d];
             }
         }
-        1.5 * KB * temperature + virial_sum / (2.0 * p)
+        1.5 * KB * temperature - virial_sum / (2.0 * p)
     }
     /// Thermodynamic estimator for the potential energy.
     ///

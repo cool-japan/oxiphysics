@@ -2,6 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use crate::error::Error;
+
 /// Parameters for the bilinear (linear-softening) traction-separation law.
 ///
 /// The law has two phases:
@@ -76,13 +78,45 @@ impl BilinearCzmParams {
         }
     }
 }
+/// Number of Gauss–Legendre panels used by [`PprParams::mode_i_energy_numerical`].
+const PPR_ENERGY_PANELS: usize = 64;
+
+/// Nodes and weights of the 5-point Gauss–Legendre rule on `[-1, 1]`.
+const GAUSS_LEGENDRE_5: [(f64, f64); 5] = [
+    (-0.906_179_845_938_664, 0.236_926_885_056_189_1),
+    (-0.538_469_310_105_683, 0.478_628_670_499_366_5),
+    (0.0, 0.568_888_888_888_889),
+    (0.538_469_310_105_683, 0.478_628_670_499_366_5),
+    (0.906_179_845_938_664, 0.236_926_885_056_189_1),
+];
+
 /// PPR (Park-Paulino-Roesler, 2009) potential-based cohesive zone model.
 ///
-/// The PPR potential unifies mode-I and mode-II with a polynomial form:
+/// The PPR potential is built from the polynomial
 ///
-/// Ψ = Γ_n/m * (m/n * (1 - Δ_n/δ_n)^m - 1)^n * (Γ_t/n * (n/m * (1 - |Δ_t|/δ_t)^n - 1)^m + Γ_n)
+/// `f(s) = (1 − s)^α · (1 + α·s/m)^m`,  `s = Δ/δ`,
 ///
-/// Simplified implementation: independent polynomial traction-separation law.
+/// with the shape exponent `m = α(α − 1)·λ² / (1 − α·λ²)`, which makes `f`
+/// fall from 1 at `s = 0` to 0 at `s = 1` and places the traction maximum
+/// exactly at the initial-slope indicator `s = λ`.  For pure mode I (no
+/// tangential opening) the potential is `Ψ = Γ_n·(1 − f(Δ_n/δ_n))`, so the
+/// normal traction is its exact derivative
+///
+/// `T_n(Δ_n) = Γ_n/δ_n · α·(1 + α/m) · s·(1 − s)^(α−1)·(1 + α·s/m)^(m−1)`
+///
+/// and the work of separation `∫₀^δn T_n dΔ_n` equals the mode-I fracture
+/// energy `Γ_n` for every admissible `(α, λ_n)`.  The peak traction is
+/// [`sigma_max`](Self::sigma_max) at `Δ_n = λ_n·δ_n`
+/// ([`delta_n_peak`](Self::delta_n_peak)).
+///
+/// The tangential parameters (`Γ_t`, `β`, `δ_t`, `λ_t`) define the mode-II law
+/// of the same form; this type evaluates the mode-I traction and the
+/// tangential peak position.
+///
+/// The model is only defined for `α > 1` and `0 < λ < 1/√α` (otherwise `m` is
+/// not a positive finite number); [`validate`](Self::validate) checks the whole
+/// parameter set, and the traction functions return `NaN` for parameters
+/// outside the domain instead of inventing a value.
 ///
 /// References: Park, Paulino, Roesler (2009) J. Mech. Phys. Solids 57(6).
 #[derive(Debug, Clone, Copy)]
@@ -91,21 +125,25 @@ pub struct PprParams {
     pub gamma_n: f64,
     /// Mode-II fracture energy Γ_t (J/m²).
     pub gamma_t: f64,
-    /// Shape parameter for normal direction (controls softening slope) α.
+    /// Shape parameter for normal direction (controls softening slope) α > 1.
     pub alpha: f64,
-    /// Shape parameter for tangential direction β.
+    /// Shape parameter for tangential direction β > 1.
     pub beta: f64,
     /// Critical normal separation δ_n (m) where traction → 0.
     pub delta_n: f64,
     /// Critical tangential separation δ_t (m) where traction → 0.
     pub delta_t: f64,
-    /// Normal initial slope indicator λ_n ∈ (0,1).
+    /// Normal initial slope indicator λ_n = δ_nc/δ_n ∈ (0, 1/√α): the peak
+    /// traction occurs at Δ_n = λ_n·δ_n.
     pub lambda_n: f64,
-    /// Tangential initial slope indicator λ_t ∈ (0,1).
+    /// Tangential initial slope indicator λ_t ∈ (0, 1/√β).
     pub lambda_t: f64,
 }
 impl PprParams {
     /// Create a new PPR parameter set.
+    ///
+    /// The values are stored as given; use [`try_new`](Self::try_new) or
+    /// [`validate`](Self::validate) to check that they lie in the PPR domain.
     pub fn new(
         gamma_n: f64,
         gamma_t: f64,
@@ -127,6 +165,96 @@ impl PprParams {
             lambda_t,
         }
     }
+    /// Create a PPR parameter set and check it with [`validate`](Self::validate).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidInput`] for parameters outside the PPR domain.
+    pub fn try_new(
+        gamma_n: f64,
+        gamma_t: f64,
+        alpha: f64,
+        beta: f64,
+        delta_n: f64,
+        delta_t: f64,
+        lambda_n: f64,
+        lambda_t: f64,
+    ) -> Result<Self, Error> {
+        let params = Self::new(
+            gamma_n, gamma_t, alpha, beta, delta_n, delta_t, lambda_n, lambda_t,
+        );
+        params.validate()?;
+        Ok(params)
+    }
+    /// Check that the parameters lie in the PPR domain: finite positive
+    /// fracture energies and critical separations, shape parameters `α, β > 1`
+    /// and slope indicators `0 < λ_n < 1/√α`, `0 < λ_t < 1/√β` (so that both
+    /// shape exponents `m`, `n` are positive and finite).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidInput`] naming the first offending parameter.
+    pub fn validate(&self) -> Result<(), Error> {
+        let positive = |name: &str, value: f64| -> Result<(), Error> {
+            if value.is_finite() && value > 0.0 {
+                Ok(())
+            } else {
+                Err(Error::InvalidInput(format!(
+                    "PPR parameter {name} must be finite and positive, got {value}"
+                )))
+            }
+        };
+        positive("gamma_n", self.gamma_n)?;
+        positive("gamma_t", self.gamma_t)?;
+        positive("delta_n", self.delta_n)?;
+        positive("delta_t", self.delta_t)?;
+        for (name, shape, lambda) in [
+            ("alpha", self.alpha, self.lambda_n),
+            ("beta", self.beta, self.lambda_t),
+        ] {
+            if !(shape.is_finite() && shape > 1.0) {
+                return Err(Error::InvalidInput(format!(
+                    "PPR shape parameter {name} must be finite and greater than 1, got {shape}"
+                )));
+            }
+            if !(lambda.is_finite() && lambda > 0.0 && shape * lambda * lambda < 1.0) {
+                return Err(Error::InvalidInput(format!(
+                    "PPR slope indicator for {name} = {shape} must satisfy 0 < λ < 1/√{name} \
+                     (= {}), got {lambda}",
+                    1.0 / shape.sqrt()
+                )));
+            }
+        }
+        Ok(())
+    }
+    /// Shape exponent `m = α(α − 1)·λ_n² / (1 − α·λ_n²)` of the mode-I law, or
+    /// `None` when `α` and `λ_n` are outside the PPR domain.
+    pub fn normal_shape_exponent(&self) -> Option<f64> {
+        let alpha = self.alpha;
+        let lambda = self.lambda_n;
+        if !(alpha.is_finite() && alpha > 1.0 && lambda.is_finite() && lambda > 0.0) {
+            return None;
+        }
+        let denominator = 1.0 - alpha * lambda * lambda;
+        if denominator > 0.0 {
+            Some(alpha * (alpha - 1.0) * lambda * lambda / denominator)
+        } else {
+            None
+        }
+    }
+    /// Mode-I traction at the normalised opening `s ∈ (0, 1)` for the shape
+    /// exponent `m` (see the type-level documentation).
+    fn mode_i_shape_traction(&self, s: f64, m: f64) -> f64 {
+        let alpha = self.alpha;
+        // (1 + α s/m)^(m−1) through ln_1p stays accurate for very large m.
+        let growth = ((m - 1.0) * (alpha * s / m).ln_1p()).exp();
+        self.gamma_n / self.delta_n
+            * alpha
+            * (1.0 + alpha / m)
+            * s
+            * (1.0 - s).powf(alpha - 1.0)
+            * growth
+    }
     /// Separation at peak normal traction: δ_n^peak = λ_n * δ_n.
     pub fn delta_n_peak(&self) -> f64 {
         self.lambda_n * self.delta_n
@@ -135,39 +263,53 @@ impl PprParams {
     pub fn delta_t_peak(&self) -> f64 {
         self.lambda_t * self.delta_t
     }
-    /// Peak normal traction σ_max (Pa).
+    /// Peak normal traction σ_max (Pa), attained at Δ_n = λ_n·δ_n:
     ///
-    /// Derived from the PPR potential as: σ_max = Γ_n / δ_n * (α/λ_n) * (α-1)^(α-1) ...
-    /// Simplified polynomial approximation:
+    /// `σ_max = Γ_n/δ_n · α·(1 + α/m) · λ_n·(1 − λ_n)^(α−1)·(1 + α·λ_n/m)^(m−1)`.
+    ///
+    /// `NaN` for parameters outside the PPR domain (see [`validate`](Self::validate)).
     pub fn sigma_max(&self) -> f64 {
-        let dn = self.delta_n.max(f64::EPSILON);
-        let lam = self.lambda_n.clamp(f64::EPSILON, 1.0 - f64::EPSILON);
-        self.gamma_n / dn * self.alpha * (1.0 - lam).powf(self.alpha - 1.0) / lam.powf(self.alpha)
+        match (self.normal_shape_exponent(), self.validate()) {
+            (Some(m), Ok(())) => self.mode_i_shape_traction(self.lambda_n, m),
+            _ => f64::NAN,
+        }
     }
-    /// Evaluate the normal traction T_n at separation Δ_n (mode-I, Δ_t=0).
+    /// Evaluate the normal traction T_n at separation Δ_n (mode I, Δ_t = 0):
     ///
-    /// Uses polynomial traction-separation shape:
-    /// T_n = σ_max * (Δ_n/δ_n^p)^(α-1) * (1 - Δ_n/δ_n)^α   for 0 ≤ Δ_n ≤ δ_n
+    /// `T_n = Γ_n/δ_n · α·(1 + α/m) · s·(1 − s)^(α−1)·(1 + α·s/m)^(m−1)`,
+    /// `s = Δ_n/δ_n`, for `0 < Δ_n < δ_n`, and 0 outside that range.
+    ///
+    /// This is the exact derivative of the PPR mode-I potential, so
+    /// `∫ T_n dΔ_n = Γ_n`, and its maximum [`sigma_max`](Self::sigma_max) lies at
+    /// `Δ_n = λ_n·δ_n`.  `NaN` for parameters outside the PPR domain (see
+    /// [`validate`](Self::validate)).
     pub fn normal_traction(&self, delta_n: f64) -> f64 {
+        let m = match (self.normal_shape_exponent(), self.validate()) {
+            (Some(m), Ok(())) => m,
+            _ => return f64::NAN,
+        };
+        if delta_n.is_nan() {
+            return f64::NAN;
+        }
         if delta_n <= 0.0 || delta_n >= self.delta_n {
             return 0.0;
         }
-        let s = delta_n / self.delta_n;
-        let sp = self.lambda_n.clamp(f64::EPSILON, 1.0 - f64::EPSILON);
-        let t_max = self.sigma_max();
-        let numerator = (s / sp).powf(self.alpha - 1.0) * (1.0 - s).powf(self.alpha);
-        let denom = (1.0 - sp).powf(self.alpha);
-        t_max * numerator / denom.max(f64::EPSILON)
+        self.mode_i_shape_traction(delta_n / self.delta_n, m)
     }
-    /// Evaluate the mode-I fracture energy by integrating T_n dΔ_n numerically (n=200 pts).
+    /// Evaluate the mode-I fracture energy by integrating T_n dΔ_n numerically
+    /// (64 panels of 5-point Gauss–Legendre quadrature); it reproduces the
+    /// fracture energy `gamma_n` to better than `1e-4` relative.
+    ///
+    /// `NaN` for parameters outside the PPR domain.
     pub fn mode_i_energy_numerical(&self) -> f64 {
-        let n = 200usize;
-        let dn_max = self.delta_n;
-        let h = dn_max / n as f64;
+        let panel_width = self.delta_n / PPR_ENERGY_PANELS as f64;
         let mut sum = 0.0;
-        for i in 0..n {
-            let d = (i as f64 + 0.5) * h;
-            sum += self.normal_traction(d) * h;
+        for panel in 0..PPR_ENERGY_PANELS {
+            let start = panel as f64 * panel_width;
+            for &(node, weight) in &GAUSS_LEGENDRE_5 {
+                let d = start + 0.5 * panel_width * (node + 1.0);
+                sum += 0.5 * panel_width * weight * self.normal_traction(d);
+            }
         }
         sum
     }
@@ -323,11 +465,22 @@ impl ThermalCzmParams {
 }
 /// Xu-Needleman exponential traction-separation law (1993).
 ///
-/// The potential is:
-/// Φ = φ_n * \[ 1 - (1 + Δ_n/δ_n) * exp(-Δ_n/δ_n) * exp(-Δ_t²/δ_t²) \]
+/// The potential (coupling parameters `q = φ_t/φ_n`, `r = 0`) is
 ///
-/// where φ_n is the normal work of separation, δ_n and δ_t are
-/// characteristic lengths, and Δ_n, Δ_t are normal and tangential separations.
+/// `Φ = φ_n − (1 + Δ_n/δ_n)·exp(−Δ_n/δ_n)·[(φ_n − φ_t) + φ_t·exp(−Δ_t²/δ_t²)]`
+///
+/// which for equal works of separation `φ_t = φ_n` is the familiar
+/// `Φ = φ_n·[1 − (1 + Δ_n/δ_n)·exp(−Δ_n/δ_n)·exp(−Δ_t²/δ_t²)]`.  φ_n and φ_t
+/// are the normal and tangential works of separation, δ_n and δ_t the
+/// characteristic lengths, and Δ_n, Δ_t the normal and tangential separations.
+/// The tractions are the exact derivatives of Φ:
+///
+/// `T_n = ∂Φ/∂Δ_n = (1/δ_n)·(Δ_n/δ_n)·exp(−Δ_n/δ_n)·[(φ_n − φ_t) + φ_t·exp(−Δ_t²/δ_t²)]`
+///
+/// `T_t = ∂Φ/∂Δ_t = (2φ_t/δ_t²)·Δ_t·(1 + Δ_n/δ_n)·exp(−Δ_n/δ_n)·exp(−Δ_t²/δ_t²)`
+///
+/// so the normal traction vanishes at zero opening and peaks at `Δ_n = δ_n`
+/// with [`sigma_max`](Self::sigma_max).
 #[derive(Debug, Clone, Copy)]
 pub struct XuNeedlemanParams {
     /// Normal work of separation φ_n = σ_max * e * δ_n  (J/m²).
@@ -357,31 +510,31 @@ impl XuNeedlemanParams {
     pub fn tau_max(&self) -> f64 {
         self.phi_t / ((std::f64::consts::E / 2.0).sqrt() * self.delta_t.max(f64::EPSILON))
     }
-    /// Normal traction T_n at (Δ_n, Δ_t).
+    /// Normal traction `T_n = ∂Φ/∂Δ_n` at (Δ_n, Δ_t); zero at zero opening.
     pub fn normal_traction(&self, delta_n: f64, delta_t: f64) -> f64 {
         let dn = self.delta_n.max(f64::EPSILON);
         let dt = self.delta_t.max(f64::EPSILON);
-        let exp_n = (-delta_n / dn).exp();
+        let s = delta_n / dn;
         let exp_t = (-(delta_t * delta_t) / (dt * dt)).exp();
-        (self.phi_n / dn) * exp_n * exp_t * (1.0 + delta_n / dn)
+        let coupling = (self.phi_n - self.phi_t) + self.phi_t * exp_t;
+        s * (-s).exp() * coupling / dn
     }
-    /// Tangential traction T_t at (Δ_n, Δ_t) — magnitude in the tangential plane.
+    /// Tangential traction `T_t = ∂Φ/∂Δ_t` at (Δ_n, Δ_t) — magnitude in the
+    /// tangential plane.
     pub fn tangential_traction(&self, delta_n: f64, delta_t: f64) -> f64 {
         let dn = self.delta_n.max(f64::EPSILON);
         let dt = self.delta_t.max(f64::EPSILON);
-        let exp_n = (-delta_n / dn).exp();
+        let s = delta_n / dn;
         let exp_t = (-(delta_t * delta_t) / (dt * dt)).exp();
-        2.0 * (self.phi_t / (dt * dt)) * delta_t * exp_n * exp_t
+        2.0 * (self.phi_t / (dt * dt)) * delta_t * (1.0 + s) * (-s).exp() * exp_t
     }
     /// Evaluate the full cohesive potential Φ at (Δ_n, Δ_t).
     pub fn potential(&self, delta_n: f64, delta_t: f64) -> f64 {
         let dn = self.delta_n.max(f64::EPSILON);
         let dt = self.delta_t.max(f64::EPSILON);
-        self.phi_n
-            * (1.0
-                - (1.0 + delta_n / dn)
-                    * (-delta_n / dn).exp()
-                    * (-(delta_t * delta_t) / (dt * dt)).exp())
+        let s = delta_n / dn;
+        let exp_t = (-(delta_t * delta_t) / (dt * dt)).exp();
+        self.phi_n - (1.0 + s) * (-s).exp() * ((self.phi_n - self.phi_t) + self.phi_t * exp_t)
     }
 }
 /// Fatigue cohesive zone model parameters (Paris-type interface fatigue).

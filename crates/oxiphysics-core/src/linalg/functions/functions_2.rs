@@ -963,3 +963,178 @@ mod tests {
         assert!(ata[0][1].abs() < 1e-12);
     }
 }
+#[cfg(test)]
+mod symmetric_eigenvalues3_tests {
+    use super::*;
+    use crate::linalg::*;
+    use crate::math::UnitQuaternion;
+
+    /// SplitMix64 generator for reproducible test matrices.
+    struct SplitMix64(u64);
+
+    impl SplitMix64 {
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        /// Uniform sample in `[-1, 1)`.
+        fn next_signed(&mut self) -> Real {
+            (self.next_u64() >> 11) as Real / (1u64 << 52) as Real - 1.0
+        }
+
+        /// Random proper rotation matrix.
+        fn rotation(&mut self) -> Mat3 {
+            loop {
+                let q = nalgebra::Quaternion::new(
+                    self.next_signed(),
+                    self.next_signed(),
+                    self.next_signed(),
+                    self.next_signed(),
+                );
+                if q.norm() > 0.1 {
+                    return UnitQuaternion::from_quaternion(q)
+                        .to_rotation_matrix()
+                        .into_inner();
+                }
+            }
+        }
+
+        /// Random symmetric matrix with entries in `[-1, 1)`.
+        fn symmetric(&mut self) -> Mat3 {
+            let a = Mat3::from_fn(|_, _| self.next_signed());
+            0.5 * (a + a.transpose())
+        }
+    }
+
+    /// `Q diag(lambda) Qᵀ`, a symmetric matrix with the given spectrum.
+    fn with_spectrum(q: &Mat3, lambda: [Real; 3]) -> Mat3 {
+        q * Mat3::from_diagonal(&Vec3::new(lambda[0], lambda[1], lambda[2])) * q.transpose()
+    }
+
+    /// Checks the computed eigenvalues of `m` against `expected` (any order),
+    /// with a tolerance relative to the largest eigenvalue magnitude.
+    fn assert_spectrum(m: Mat3, expected: [Real; 3], rel_tol: Real, what: &str) {
+        let mut sorted = expected;
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        let reference = sorted.iter().fold(0.0_f64, |acc, v| acc.max(v.abs()));
+        let evals = symmetric_eigenvalues3(m);
+        for (got, want) in [evals.x, evals.y, evals.z].into_iter().zip(sorted) {
+            assert!(
+                (got - want).abs() <= rel_tol * reference,
+                "{what}: eigenvalues {evals:?}, expected {sorted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_symmetric_eigenvalues3_spectra_without_mirror_symmetry() {
+        // The spectrum is not symmetric about its mean, so a spectrum mirrored
+        // about tr/3 (the former Cardano sign error) is detected.
+        let diag = |a: Real, b: Real, c: Real| Mat3::from_diagonal(&Vec3::new(a, b, c));
+        assert_spectrum(diag(1.0, 2.0, 4.0), [1.0, 2.0, 4.0], 1e-14, "diag(1,2,4)");
+        assert_spectrum(diag(1.0, 1.0, 4.0), [1.0, 1.0, 4.0], 1e-14, "diag(1,1,4)");
+        assert_spectrum(diag(4.0, 4.0, 1.0), [1.0, 4.0, 4.0], 1e-14, "diag(4,4,1)");
+        assert_spectrum(
+            diag(-3.0, 0.5, 7.0),
+            [-3.0, 0.5, 7.0],
+            1e-14,
+            "diag(-3,.5,7)",
+        );
+        let coupled = Mat3::new(2.0, 1.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 1.0);
+        assert_spectrum(coupled, [1.0, 1.0, 3.0], 1e-14, "coupled block");
+    }
+
+    #[test]
+    fn test_symmetric_eigenvalues3_rotated_known_spectra() {
+        // Double, triple and nearly double eigenvalues are where the roots of the
+        // characteristic polynomial lose half of their digits.
+        let spectra: [[Real; 3]; 9] = [
+            [-2.0, 0.3, 5.0],
+            [1.5, 1.5, -4.0],
+            [-4.0, 2.0, 2.0],
+            [3.25, 3.25, 3.25],
+            [1.0, 1.0 + 1e-9, 3.0],
+            [1.0, 1.0 + 1e-12, 3.0],
+            [0.0, 1.0, 2.0],
+            [-1.0e-3, 0.0, 1.0e-3],
+            [7.0, 7.0, 7.0 + 1.0e-10],
+        ];
+        let mut rng = SplitMix64(0x5EED_0001);
+        for scale in [1.0, 1.0e8, 1.0e-8] {
+            for spectrum in spectra {
+                for _ in 0..40 {
+                    let q = rng.rotation();
+                    let lambda = spectrum.map(|l| l * scale);
+                    assert_spectrum(with_spectrum(&q, lambda), lambda, 1e-13, "rotated");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_symmetric_eigenvalues3_agrees_with_jacobi_on_random_matrices() {
+        let mut rng = SplitMix64(0xC0FF_EE11);
+        for _ in 0..500 {
+            let m = rng.symmetric();
+            let closed_form = symmetric_eigenvalues3(m);
+            let (jacobi, _) = symmetric_eigen3(m);
+            assert!(
+                (closed_form - jacobi).abs().max() < 1e-10,
+                "matrix {m:?}: {closed_form:?} vs {jacobi:?}"
+            );
+            assert!(closed_form.x <= closed_form.y && closed_form.y <= closed_form.z);
+            assert!((closed_form.sum() - trace3(m)).abs() < 1e-12);
+            let product = closed_form.x * closed_form.y * closed_form.z;
+            assert!((product - det3(m)).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_symmetric_eigenvalues3_gram_matrices_stay_positive_semidefinite() {
+        let mut rng = SplitMix64(0xBAD5_EED5);
+        for _ in 0..200 {
+            let b = Mat3::from_fn(|_, _| rng.next_signed());
+            let evals = symmetric_eigenvalues3(b.transpose() * b);
+            assert!(evals.x >= -1e-13 * evals.z, "Gram eigenvalues {evals:?}");
+        }
+    }
+
+    #[test]
+    fn test_symmetric_eigenvalues3_uses_symmetric_part() {
+        // Symmetric part of an upper-triangular matrix: [[1, 1, 0], [1, 1, 0], [0, 0, 3]].
+        let m = Mat3::new(1.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 3.0);
+        assert_spectrum(m, [0.0, 2.0, 3.0], 1e-14, "symmetric part");
+    }
+
+    #[test]
+    fn test_symmetric_eigenvalues3_degenerate_and_extreme_inputs() {
+        assert_eq!(symmetric_eigenvalues3(Mat3::zeros()), Vec3::zeros());
+        let scalar = Mat3::identity() * -2.5;
+        assert_eq!(symmetric_eigenvalues3(scalar), Vec3::new(-2.5, -2.5, -2.5));
+        for bad in [Real::NAN, Real::INFINITY] {
+            let m = Mat3::new(1.0, 0.0, 0.0, 0.0, bad, 0.0, 0.0, 0.0, 1.0);
+            assert!(symmetric_eigenvalues3(m).iter().all(|v| v.is_nan()));
+        }
+        // The squares of these entries overflow or underflow without the internal scaling.
+        let coupled = Mat3::new(2.0, 1.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 1.0);
+        for scale in [1.0e300, 1.0e-300] {
+            assert_spectrum(
+                coupled * scale,
+                [scale, scale, 3.0 * scale],
+                1e-13,
+                "scaled",
+            );
+        }
+        // Subnormal entries stay finite, ordered and accurate to their resolution.
+        let tiny = Mat3::from_diagonal(&Vec3::new(1.0e-320, 2.0e-320, 3.0e-320));
+        let evals = symmetric_eigenvalues3(tiny);
+        assert!(evals.x <= evals.y && evals.y <= evals.z);
+        for (got, want) in [evals.x, evals.y, evals.z].into_iter().zip([1.0, 2.0, 3.0]) {
+            assert!((got - want * 1.0e-320).abs() < 1.0e-322, "{evals:?}");
+        }
+    }
+}

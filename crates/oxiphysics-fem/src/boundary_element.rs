@@ -89,14 +89,23 @@ pub fn kelvin_laplace_3d(x: &[f64; 3], y: &[f64; 3]) -> f64 {
     1.0 / (4.0 * PI * r)
 }
 
-/// Gradient of the 3-D Kelvin fundamental solution (flux kernel).
+/// Normal derivative of the 3-D Kelvin fundamental solution with respect to the
+/// field point (the double-layer kernel).
 ///
-/// `dG/dn = -(x - y) . n / (4 pi |x - y|^3)`
+/// `x` is the collocation (source) point, `y` the integration (field) point and
+/// `normal` the outward unit normal at `y`:
+///
+/// `dG/dn_y = (x - y) . n_y / (4 pi |x - y|^3)`
+///
+/// (`grad_y 1/(4 pi |x - y|) = (x - y) / (4 pi |x - y|^3)`).  For a closed
+/// surface with outward normals and `x` inside, `∮ dG/dn_y dS = -1`, which
+/// makes the interior representation `u(x) = ∮ (G q - dG/dn_y u) dS` reproduce
+/// a constant potential.
 pub fn kelvin_laplace_3d_grad(x: &[f64; 3], y: &[f64; 3], normal: &[f64; 3]) -> f64 {
     let rv = sub3(x, y);
     let r = norm3(&rv).max(f64::EPSILON);
     let r3 = r * r * r;
-    -dot3(&rv, normal) / (4.0 * PI * r3)
+    dot3(&rv, normal) / (4.0 * PI * r3)
 }
 
 /// 2-D Kelvin fundamental solution for Laplace's equation.
@@ -107,10 +116,13 @@ pub fn kelvin_laplace_2d(x: &[f64; 3], y: &[f64; 3]) -> f64 {
     -(r.ln()) / (2.0 * PI)
 }
 
-/// Boussinesq–Cerruti displacement fundamental solution component (simplified).
+/// Kelvin displacement fundamental solution component of 3-D elastostatics.
 ///
-/// Returns the `(i,j)` component of the Kelvin displacement tensor in 3-D
-/// elastostatics for a source at `y` and field point `x`.
+/// Returns the `(i,j)` component of the exact Kelvin tensor (displacement in
+/// direction `j` at the field point `x` due to a unit point force in direction
+/// `i` at the source point `y`, in an infinite elastic body).  The tensor is
+/// symmetric in `i`, `j` and even in `x - y`, so the order of `x` and `y` does
+/// not matter.
 ///
 /// `U_ij = 1/(16 pi G (1-nu) r) [ (3 - 4 nu) delta_ij + r_i r_j / r^2 ]`
 pub fn kelvin_displacement_3d(
@@ -128,10 +140,18 @@ pub fn kelvin_displacement_3d(
     c * ((3.0 - 4.0 * nu) * delta + rv[i] * rv[j] / (r * r))
 }
 
-/// Kelvin traction fundamental solution component in 3-D elastostatics.
+/// Kelvin traction fundamental solution component in 3-D elastostatics: the
+/// traction component `j` on a surface with outward unit normal `normal`
+/// at the **field point** `x` due to a unit point force in direction `i`
+/// at the **source (collocation) point** `y`.
 ///
 /// `T_ij = -1/(8 pi (1-nu) r^2) [ dr/dn ((1-2nu) delta_ij + 3 r_i r_j / r^2)
 ///          + (1-2nu)(n_i r_j - n_j r_i) / r ]`
+///
+/// with `r_i = x_i - y_i` (field point minus source point), `r = |r|` and
+/// `dr/dn = r . n / r`.  Note the argument order: the point that carries the
+/// normal comes first, so a boundary-element collocation at `xi` integrating
+/// over an element at `xj` calls `kelvin_traction_3d(&xj, &xi, &nj, ..)`.
 pub fn kelvin_traction_3d(
     x: &[f64; 3],
     y: &[f64; 3],
@@ -163,20 +183,22 @@ pub fn helmholtz_3d(x: &[f64; 3], y: &[f64; 3], k: f64) -> (f64, f64) {
     (c * phase.cos(), c * phase.sin())
 }
 
-/// Normal derivative of the Helmholtz fundamental solution in 3-D.
+/// Normal derivative of the Helmholtz fundamental solution in 3-D with respect
+/// to the field point `y` (outward unit normal `normal` at `y`, source `x`):
+///
+/// `dG/dn_y = (x - y) . n_y / (4 pi r^3) * exp(i k r) (1 - i k r)`
+///
+/// which tends to the Laplace kernel [`kelvin_laplace_3d_grad`] as `k -> 0`.
 ///
 /// Returns `(real, imag)`.
 pub fn helmholtz_3d_grad(x: &[f64; 3], y: &[f64; 3], normal: &[f64; 3], k: f64) -> (f64, f64) {
     let rv = sub3(x, y);
     let r = norm3(&rv).max(f64::EPSILON);
-    let r2 = r * r;
-    let drdn = dot3(&rv, normal) / r;
-    let phase = k * r;
-    let cos_kr = phase.cos();
-    let sin_kr = phase.sin();
-    let c = drdn / (4.0 * PI * r2);
-    let real = c * ((k * r * (-sin_kr)) - cos_kr);
-    let imag = c * ((k * r * cos_kr) - sin_kr);
+    let kr = k * r;
+    let c = dot3(&rv, normal) / (4.0 * PI * r * r * r);
+    // exp(i kr) (1 - i kr) = (cos kr + kr sin kr) + i (sin kr - kr cos kr)
+    let real = c * (kr.cos() + kr * kr.sin());
+    let imag = c * (kr.sin() - kr * kr.cos());
     (real, imag)
 }
 
@@ -188,10 +210,17 @@ pub fn half_space_laplace_3d(x: &[f64; 3], y: &[f64; 3]) -> f64 {
     kelvin_laplace_3d(x, y) + kelvin_laplace_3d(x, &y_img)
 }
 
-/// Half-space Green's function for Laplace – gradient part.
+/// Half-space Green's function for Laplace – normal derivative with respect to
+/// the field point `y` (outward unit normal `normal` at `y`, source `x`).
+///
+/// The image term depends on `y` through its mirror image
+/// `y* = (y_x, y_y, -y_z)`, so it is differentiated along the mirrored normal
+/// `(n_x, n_y, -n_z)`.  On the free surface (`y_z = 0`, `normal = e_z`) the two
+/// contributions cancel: the Neumann function has no flux through the surface.
 pub fn half_space_laplace_3d_grad(x: &[f64; 3], y: &[f64; 3], normal: &[f64; 3]) -> f64 {
     let y_img = [y[0], y[1], -y[2]];
-    kelvin_laplace_3d_grad(x, y, normal) + kelvin_laplace_3d_grad(x, &y_img, normal)
+    let normal_img = [normal[0], normal[1], -normal[2]];
+    kelvin_laplace_3d_grad(x, y, normal) + kelvin_laplace_3d_grad(x, &y_img, &normal_img)
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +338,10 @@ impl BoundaryMesh {
 
     /// Build a sphere mesh of radius `r` centered at origin via latitude
     /// subdivision (`n_lat` latitudes, `n_lon` longitudes).
+    ///
+    /// Every triangle is wound counter-clockwise seen from outside, so the stored
+    /// element normals point **outward** (including the triangles of the latitude
+    /// strips between the two polar caps).
     pub fn sphere(r: f64, n_lat: usize, n_lon: usize) -> Self {
         let mut nodes = Vec::new();
         // top pole
@@ -349,20 +382,24 @@ impl BoundaryMesh {
                 let b = row0 + j_next;
                 let c = row1 + j_next;
                 let d = row1 + j;
+                // `a`/`b` lie on the northern ring and `d`/`c` on the southern
+                // one, `b`/`c` being the next longitude.  Seen from outside
+                // (north up, east to the right) a-c-b and a-d-c run
+                // counter-clockwise, so their normals point outward.
                 // tri1
-                let area1 = triangle_area(&nodes[a], &nodes[b], &nodes[c]);
-                let norm1 = element_normal(&nodes[a], &nodes[b], &nodes[c]);
+                let area1 = triangle_area(&nodes[a], &nodes[c], &nodes[b]);
+                let norm1 = element_normal(&nodes[a], &nodes[c], &nodes[b]);
                 elements.push(BoundaryElement {
-                    node_ids: vec![a, b, c],
+                    node_ids: vec![a, c, b],
                     normal: norm1,
                     area: area1,
                     order: ElementOrder::Constant,
                 });
                 // tri2
-                let area2 = triangle_area(&nodes[a], &nodes[c], &nodes[d]);
-                let norm2 = element_normal(&nodes[a], &nodes[c], &nodes[d]);
+                let area2 = triangle_area(&nodes[a], &nodes[d], &nodes[c]);
+                let norm2 = element_normal(&nodes[a], &nodes[d], &nodes[c]);
                 elements.push(BoundaryElement {
-                    node_ids: vec![a, c, d],
+                    node_ids: vec![a, d, c],
                     normal: norm2,
                     area: area2,
                     order: ElementOrder::Constant,
@@ -617,64 +654,6 @@ fn apply_rigid_body_motion(h: &mut DenseMatrix) {
         }
         h.set(i, i, -off_sum);
     }
-}
-
-/// Assemble H and G matrices for 3-D elastostatics BEM (constant elements).
-///
-/// Each element carries 3 DOFs (u_x, u_y, u_z), so H and G are `(3n x 3n)`.
-pub fn assemble_elastostatic_bem(
-    mesh: &BoundaryMesh,
-    shear_modulus: f64,
-    nu: f64,
-) -> (DenseMatrix, DenseMatrix) {
-    let n = mesh.num_elements();
-    let dim = 3 * n;
-    let mut h_mat = DenseMatrix::zeros(dim, dim);
-    let mut g_mat = DenseMatrix::zeros(dim, dim);
-
-    for ie in 0..n {
-        let xi = mesh.element_centroid(ie);
-        for je in 0..n {
-            let xj = mesh.element_centroid(je);
-            let nj = &mesh.elements[je].normal.clone();
-            let aj = mesh.elements[je].area;
-
-            for di in 0..3_usize {
-                let row = ie * 3 + di;
-                for dj in 0..3_usize {
-                    let col = je * 3 + dj;
-                    if ie == je {
-                        // Approximate self-influence
-                        let equiv_r = (aj / PI).sqrt();
-                        let delta = if di == dj { 1.0 } else { 0.0 };
-                        let g_val = aj * delta / (16.0 * PI * shear_modulus * (1.0 - nu) * equiv_r);
-                        g_mat.set(row, col, g_val);
-                    } else {
-                        let u_ij = kelvin_displacement_3d(&xi, &xj, di, dj, shear_modulus, nu);
-                        let t_ij = kelvin_traction_3d(&xi, &xj, nj, di, dj, nu);
-                        g_mat.set(row, col, u_ij * aj);
-                        h_mat.set(row, col, t_ij * aj);
-                    }
-                }
-            }
-        }
-    }
-
-    // Rigid body motion for elastostatics: H * {e_k} = 0 for each direction
-    for i in 0..n {
-        for di in 0..3_usize {
-            let row = i * 3 + di;
-            let mut off_sum = 0.0;
-            for j in 0..n {
-                if j != i {
-                    off_sum += h_mat.get(row, j * 3 + di);
-                }
-            }
-            h_mat.set(row, i * 3 + di, -off_sum);
-        }
-    }
-
-    (h_mat, g_mat)
 }
 
 /// Assemble H and G matrices for Helmholtz BEM (acoustic scattering).
@@ -985,6 +964,12 @@ mod dual;
 // Dense LU and the Dirichlet-to-Neumann condensation (`BemFemCoupling::condense`).
 #[path = "boundary_element_coupling.rs"]
 mod coupling;
+
+// Elastostatic influence matrices (`assemble_elastostatic_bem`).
+#[path = "boundary_element_elastostatic.rs"]
+mod elastostatic;
+pub use elastostatic::assemble_elastostatic_bem;
+use elastostatic::elastostatic_self_g_block;
 
 // ---------------------------------------------------------------------------
 // 9. BEM–FEM coupling interface

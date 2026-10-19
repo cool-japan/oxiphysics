@@ -4,7 +4,9 @@
 
 use std::collections::VecDeque;
 
-use super::types::{NormalDistribution, PcaResult, StatRng};
+use super::types::{PcaResult, StatRng};
+use crate::numerical_methods::symmetric_eigen_n;
+use crate::random::{log_gamma, normal_ppf, student_t_cdf};
 
 /// Returns the arithmetic mean of `data`.  Returns `0.0` for an empty slice.
 pub fn mean(data: &[f64]) -> f64 {
@@ -164,11 +166,20 @@ pub fn histogram(data: &[f64], n_bins: usize) -> Vec<(f64, f64, usize)> {
         })
         .collect()
 }
+/// Two-sided p-value `P(|T| >= |t|)` of Student's t distribution with `nu`
+/// degrees of freedom.
+///
+/// Evaluated from the lower tail of [`student_t_cdf`], that is from the
+/// regularized incomplete beta function `I_{nu/(nu+t²)}(nu/2, 1/2)`, whose tail
+/// keeps full relative accuracy for very small p-values.
+pub(super) fn student_t_two_sided_p(t: f64, nu: f64) -> f64 {
+    2.0 * student_t_cdf(-t.abs(), nu)
+}
 /// One-sample t-test against a hypothesised mean `mu0`.
 ///
-/// Returns `(t_statistic, approximate_p_value)`.
-/// The p-value is a two-tailed approximation based on a large-sample normal
-/// approximation (valid when n is not too small).
+/// Returns `(t_statistic, p_value)` with `t = (mean - mu0) / (s / sqrt(n))`.
+/// The p-value is the exact two-sided tail probability of Student's t
+/// distribution with `n - 1` degrees of freedom.
 ///
 /// Returns `(0.0, 1.0)` for fewer than 2 data points or zero variance.
 pub fn t_test_one_sample(data: &[f64], mu0: f64) -> (f64, f64) {
@@ -182,8 +193,7 @@ pub fn t_test_one_sample(data: &[f64], mu0: f64) -> (f64, f64) {
         return (0.0, 1.0);
     }
     let t = (m - mu0) / (s / (n as f64).sqrt());
-    let p = 2.0 * (1.0 - NormalDistribution::new(0.0, 1.0).cdf(t.abs()));
-    (t, p)
+    (t, student_t_two_sided_p(t, n as f64 - 1.0))
 }
 /// Pearson's χ² goodness-of-fit statistic.
 ///
@@ -377,10 +387,34 @@ pub fn covariance_matrix(data: &[Vec<f64>]) -> Vec<Vec<f64>> {
     }
     mat
 }
-/// Compute PCA using power iteration on the covariance matrix.
+/// Flips `vector` when necessary so that its entry of largest magnitude is
+/// positive; eigenvectors are only defined up to sign, and this fixes it.
+fn orient_by_largest_entry(vector: &[f64]) -> Vec<f64> {
+    let mut largest = 0.0_f64;
+    for &value in vector {
+        if value.abs() > largest.abs() {
+            largest = value;
+        }
+    }
+    let sign = if largest < 0.0 { -1.0 } else { 1.0 };
+    vector.iter().map(|&value| sign * value).collect()
+}
+/// Principal component analysis through the eigendecomposition of the sample
+/// covariance matrix.
 ///
-/// Returns up to `n_components` principal components.
-/// `data[i]` is the i-th observation of length `d`.
+/// `data[i]` is the i-th observation (a row of length `d`).  The covariance
+/// matrix (normalised by `n - 1`) is diagonalised with Householder
+/// tridiagonalisation and implicit QL ([`symmetric_eigen_n`]), and the
+/// `n_components` (at most `d`) eigenvectors with the largest eigenvalues are
+/// returned in order of decreasing variance.
+///
+/// Every component is a unit vector, the components are mutually orthogonal, and
+/// the sign of each is fixed so that its largest-magnitude entry is positive.
+/// `explained_variance` holds the matching eigenvalues, that is the variance of
+/// the data along each component (clamped at zero against rounding error).
+///
+/// Returns `None` when there are fewer than two observations, the observations
+/// have no features, their lengths differ, or any value is not finite.
 pub fn pca(data: &[Vec<f64>], n_components: usize) -> Option<PcaResult> {
     if data.is_empty() {
         return None;
@@ -388,6 +422,12 @@ pub fn pca(data: &[Vec<f64>], n_components: usize) -> Option<PcaResult> {
     let n = data.len();
     let d = data[0].len();
     if d == 0 || n < 2 {
+        return None;
+    }
+    if data
+        .iter()
+        .any(|row| row.len() != d || row.iter().any(|value| !value.is_finite()))
+    {
         return None;
     }
     let n_comp = n_components.min(d);
@@ -405,35 +445,12 @@ pub fn pca(data: &[Vec<f64>], n_components: usize) -> Option<PcaResult> {
                 .collect()
         })
         .collect();
+    let (eigenvalues, eigenvectors) = symmetric_eigen_n(&cov);
     let mut components = Vec::with_capacity(n_comp);
     let mut variances = Vec::with_capacity(n_comp);
-    let mut deflated = cov.clone();
-    let mat_vec = |m: &[Vec<f64>], v: &[f64]| -> Vec<f64> {
-        m[..d]
-            .iter()
-            .map(|row| row.iter().zip(v.iter()).map(|(a, b)| a * b).sum::<f64>())
-            .collect()
-    };
-    let norm_vec = |v: &[f64]| -> f64 { v.iter().map(|x| x * x).sum::<f64>().sqrt() };
-    for _ in 0..n_comp {
-        let mut q: Vec<f64> = (0..d).map(|i| if i == 0 { 1.0 } else { 0.0 }).collect();
-        for _ in 0..200 {
-            let aq = mat_vec(&deflated, &q);
-            let nrm = norm_vec(&aq);
-            if nrm < 1e-30 {
-                break;
-            }
-            q = aq.iter().map(|x| x / nrm).collect();
-        }
-        let aq = mat_vec(&deflated, &q);
-        let eigenvalue: f64 = q.iter().zip(aq.iter()).map(|(qi, aqj)| qi * aqj).sum();
-        for i in 0..d {
-            for j in 0..d {
-                deflated[i][j] -= eigenvalue * q[i] * q[j];
-            }
-        }
-        components.push(q);
-        variances.push(eigenvalue);
+    for (&eigenvalue, eigenvector) in eigenvalues.iter().zip(&eigenvectors).rev().take(n_comp) {
+        components.push(orient_by_largest_entry(eigenvector));
+        variances.push(eigenvalue.max(0.0));
     }
     Some(PcaResult {
         mean: mean_vec,
@@ -578,28 +595,34 @@ pub fn bootstrap_se(
         .collect();
     std_dev(&boot_stats)
 }
-/// Two-sample independent t-test.
+/// Two-sample independent t-test (Welch's test for unequal variances).
 ///
-/// Returns `(t_statistic, approximate_p_value)`.
-/// Uses Welch's t-test (unequal variances).
-/// Returns `(0.0, 1.0)` when either sample has fewer than 2 elements.
+/// Returns `(t_statistic, p_value)` with
+/// `t = (mean_x - mean_y) / sqrt(s_x²/n_x + s_y²/n_y)`.  The p-value is the
+/// exact two-sided tail probability of Student's t distribution with the
+/// Welch-Satterthwaite degrees of freedom
+/// `(s_x²/n_x + s_y²/n_y)² / ((s_x²/n_x)²/(n_x - 1) + (s_y²/n_y)²/(n_y - 1))`.
+///
+/// Returns `(0.0, 1.0)` when either sample has fewer than 2 elements or both
+/// samples have no spread.
 pub fn t_test_two_sample(x: &[f64], y: &[f64]) -> (f64, f64) {
     if x.len() < 2 || y.len() < 2 {
         return (0.0, 1.0);
     }
     let mx = mean(x);
     let my = mean(y);
-    let sx2 = variance(x);
-    let sy2 = variance(y);
     let nx = x.len() as f64;
     let ny = y.len() as f64;
-    let se = (sx2 / nx + sy2 / ny).sqrt();
+    let var_of_mean_x = variance(x) / nx;
+    let var_of_mean_y = variance(y) / ny;
+    let se = (var_of_mean_x + var_of_mean_y).sqrt();
     if se < f64::EPSILON {
         return (0.0, 1.0);
     }
     let t = (mx - my) / se;
-    let p = 2.0 * (1.0 - NormalDistribution::new(0.0, 1.0).cdf(t.abs()));
-    (t, p)
+    let df = (var_of_mean_x + var_of_mean_y).powi(2)
+        / (var_of_mean_x.powi(2) / (nx - 1.0) + var_of_mean_y.powi(2) / (ny - 1.0));
+    (t, student_t_two_sided_p(t, df))
 }
 /// Mann-Whitney U statistic (non-parametric two-sample test).
 ///
@@ -658,47 +681,98 @@ pub fn wilcoxon_signed_rank(x: &[f64], y: &[f64]) -> f64 {
         .sum();
     w_plus
 }
-/// Shapiro-Wilk normality approximation (W statistic only, no p-value).
+/// Polynomial `c[0] + c[1] x + c[2] x² + ...`, evaluated with Horner's scheme.
+fn poly(coefficients: &[f64], x: f64) -> f64 {
+    coefficients
+        .iter()
+        .rev()
+        .fold(0.0, |acc, &coefficient| acc * x + coefficient)
+}
+/// Coefficients of the Shapiro-Wilk statistic for the upper half of the order
+/// statistics of a sample of size `n >= 3`, after Royston (1992, algorithm AS R94).
 ///
-/// Returns a value close to 1.0 for normally distributed data.
-/// This is a simplified approximation suitable for quick checks.
+/// Entry `i` weights the difference `x_(n-i) - x_(i+1)` of the sorted sample
+/// (the coefficient vector is antisymmetric, and its middle entry is zero for
+/// odd `n`).  The outermost coefficients (one for `n <= 5`, two for larger `n`)
+/// come from Royston's polynomial approximations; the others are proportional to
+/// Blom's approximation `Phi^-1((i - 3/8) / (n + 1/4))` of the expected normal
+/// order statistics, scaled so that the complete coefficient vector has unit
+/// Euclidean length.  `n = 3` uses the exact value `sqrt(1/2)`.
+fn shapiro_wilk_upper_coefficients(n: usize) -> Vec<f64> {
+    const C1: [f64; 6] = [0.0, 0.221157, -0.147981, -2.07119, 4.434685, -2.706056];
+    const C2: [f64; 6] = [0.0, 0.042981, -0.293762, -1.752461, 5.682633, -3.582633];
+    let half = n / 2;
+    if n < 4 {
+        return vec![std::f64::consts::FRAC_1_SQRT_2; half];
+    }
+    let nf = n as f64;
+    // Lower-half Blom scores: negative, the most extreme one first.
+    let scores: Vec<f64> = (1..=half)
+        .map(|i| normal_ppf((i as f64 - 0.375) / (nf + 0.25)))
+        .collect();
+    let sum_sq = 2.0 * scores.iter().map(|m| m * m).sum::<f64>();
+    let root_sum_sq = sum_sq.sqrt();
+    let u = 1.0 / nf.sqrt();
+    let leading = if n > 5 { 2 } else { 1 };
+    let mut coefficients = Vec::with_capacity(half);
+    coefficients.push(poly(&C1, u) - scores[0] / root_sum_sq);
+    if n > 5 {
+        coefficients.push(poly(&C2, u) - scores[1] / root_sum_sq);
+    }
+    let fixed_sq: f64 = coefficients.iter().map(|a| a * a).sum();
+    let fixed_score_sq: f64 = scores[..leading].iter().map(|m| m * m).sum();
+    let scale = ((sum_sq - 2.0 * fixed_score_sq) / (1.0 - 2.0 * fixed_sq)).sqrt();
+    coefficients.extend(scores[leading..].iter().map(|m| -m / scale));
+    coefficients
+}
+/// Shapiro-Wilk normality statistic `W` (no p-value).
+///
+/// `W` is the squared correlation between the ordered sample and the
+/// coefficients of the Shapiro-Wilk test, `W = (sum a_i x_(i))² / sum (x_i - mean)²`,
+/// with the coefficients from Royston's AS R94 approximation (the algorithm of
+/// R's `shapiro.test`).  It lies in `(0, 1]`; values near 1 indicate a sample
+/// compatible with a normal distribution, small values indicate departures
+/// from normality.  `W` is invariant under affine transformations of the data.
+///
+/// The coefficient approximation is calibrated for `3 <= n <= 5000`.  Returns
+/// `1.0` for fewer than 3 observations and for a constant sample, and `NaN` when
+/// the data contain a non-finite value.
 pub fn shapiro_wilk_w(data: &[f64]) -> f64 {
     let n = data.len();
     if n < 3 {
         return 1.0;
     }
+    if data.iter().any(|value| !value.is_finite()) {
+        return f64::NAN;
+    }
     let mut sorted = data.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let m = mean(&sorted);
-    let s2: f64 = sorted.iter().map(|x| (x - m).powi(2)).sum::<f64>();
-    if s2 < f64::EPSILON {
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let (Some(&low), Some(&high)) = (sorted.first(), sorted.last()) else {
+        return 1.0;
+    };
+    let range = high - low;
+    if range == 0.0 {
         return 1.0;
     }
-    let half = n / 2;
-    let mut b_sum = 0.0f64;
-    for i in 0..half {
-        let rank = n - 1 - i;
-        let p = (rank as f64 + 1.0 - 0.375) / (n as f64 + 0.25);
-        let a_i = normal_quantile_approx(p);
-        b_sum += a_i * (sorted[rank] - sorted[i]);
+    if !range.is_finite() {
+        return f64::NAN;
     }
-    (b_sum * b_sum) / s2
-}
-/// Approximate normal quantile (probit) function for p in (0, 1).
-pub(super) fn normal_quantile_approx(p: f64) -> f64 {
-    if p <= 0.0 || p >= 1.0 {
-        return 0.0;
-    }
-    let pp = if p < 0.5 { p } else { 1.0 - p };
-    let t = (-2.0 * pp.ln()).sqrt();
-    let c0 = 2.515517_f64;
-    let c1 = 0.802853_f64;
-    let c2 = 0.010328_f64;
-    let d1 = 1.432788_f64;
-    let d2 = 0.189269_f64;
-    let d3 = 0.001308_f64;
-    let x = t - (c0 + c1 * t + c2 * t * t) / (1.0 + d1 * t + d2 * t * t + d3 * t * t * t);
-    if p < 0.5 { -x } else { x }
+    let scaled: Vec<f64> = sorted.iter().map(|&x| (x - low) / range).collect();
+    let coefficients = shapiro_wilk_upper_coefficients(n);
+    let cross: f64 = coefficients
+        .iter()
+        .zip(scaled.iter().zip(scaled.iter().rev()))
+        .map(|(&a, (&lower, &upper))| a * (upper - lower))
+        .sum();
+    let sum_a_sq = 2.0 * coefficients.iter().map(|a| a * a).sum::<f64>();
+    let scaled_mean = scaled.iter().sum::<f64>() / n as f64;
+    let sum_x_sq: f64 = scaled.iter().map(|x| (x - scaled_mean).powi(2)).sum();
+    let product = sum_a_sq * sum_x_sq;
+    let root = product.sqrt();
+    // 1 - W = (1 - r²) with r the correlation; the factored form avoids the
+    // cancellation of `1 - cross² / product` when W is very close to 1.
+    let one_minus_w = (root - cross) * (root + cross) / product;
+    1.0 - one_minus_w.clamp(0.0, 1.0)
 }
 /// Approximation of erf(x) using Abramowitz & Stegun formula 7.1.26.
 pub(super) fn erf_approx(x: f64) -> f64 {
@@ -714,19 +788,8 @@ pub(super) fn erf_approx(x: f64) -> f64 {
     let poly = t * (A1 + t * (A2 + t * (A3 + t * (A4 + t * A5))));
     sign * (1.0 - poly * (-x * x).exp())
 }
-/// Natural log of the gamma function via Stirling's approximation.
-///
-/// Accurate for z > ~0.5; uses the recurrence for small z.
-pub(super) fn log_gamma_stirling(z: f64) -> f64 {
-    if z < 7.0 {
-        return log_gamma_stirling(z + 1.0) - z.ln();
-    }
-    let z = z - 1.0;
-    0.5 * (std::f64::consts::TAU / z).ln()
-        + z * ((z + 1.0 / (12.0 * z) - 1.0 / (360.0 * z.powi(3))) / std::f64::consts::E).ln()
-}
-/// Natural log of k! computed via log-gamma (Stirling) for large k,
-/// or a direct sum for small k.
+/// Natural log of k!: a direct sum for small `k`, the log-gamma function
+/// ([`log_gamma`], a Lanczos approximation) for large `k`.
 pub(super) fn log_factorial(k: u64) -> f64 {
     if k == 0 || k == 1 {
         return 0.0;
@@ -734,7 +797,7 @@ pub(super) fn log_factorial(k: u64) -> f64 {
     if k <= 20 {
         (1..=k).map(|i| (i as f64).ln()).sum()
     } else {
-        log_gamma_stirling(k as f64 + 1.0)
+        log_gamma(k as f64 + 1.0)
     }
 }
 /// Returns the lower quartile (Q1), median (Q2), and upper quartile (Q3).
@@ -913,20 +976,22 @@ pub fn sample_kurtosis(data: &[f64]) -> f64 {
 pub fn pearson_r(x: &[f64], y: &[f64]) -> f64 {
     correlation(x, y)
 }
-/// Compute the p-value for a two-sided one-sample Student's t-test.
+/// Two-sided one-sample Student's t-test, `(t_statistic, p_value)`.
 ///
-/// Internally calls `t_test_one_sample` but presents the result as
-/// `(t_statistic, p_value)` with a more complete approximation for the
-/// p-value using the regularised incomplete beta function approximation.
+/// Named alias of [`t_test_one_sample`], whose p-value is the exact tail
+/// probability of Student's t distribution with `n - 1` degrees of freedom
+/// (regularized incomplete beta function).
 pub fn t_test_one_sample_full(data: &[f64], mu0: f64) -> (f64, f64) {
     t_test_one_sample(data, mu0)
 }
-/// Compute two-sample Welch's t-test (unequal variances).
+/// Two-sample Welch's t-test (unequal variances).
 ///
-/// Returns `(t_statistic, p_value_two_sided)`.  The degrees-of-freedom are
-/// computed via the Welch-Satterthwaite equation.
+/// Returns `(t_statistic, p_value_two_sided)`.  The degrees of freedom are
+/// computed with the Welch-Satterthwaite equation and the p-value is the exact
+/// tail probability of Student's t distribution with that many degrees of
+/// freedom.
 ///
-/// This is an alias that delegates to the existing `t_test_two_sample`.
+/// Named alias of [`t_test_two_sample`].
 pub fn welch_t_test(x: &[f64], y: &[f64]) -> (f64, f64) {
     t_test_two_sample(x, y)
 }
@@ -1076,28 +1141,32 @@ pub fn ecdf_at(data: &[f64], x: f64) -> f64 {
 }
 /// Anderson-Darling test statistic for testing goodness-of-fit.
 ///
-/// Returns the A² statistic against a theoretical CDF `cdf`.
-/// Larger values indicate greater discrepancy from the theoretical distribution.
+/// Returns `A² = -n - (1/n) Σ (2i - 1) [ln F(Y_i) + ln(1 - F(Y_{n+1-i}))]` for
+/// the sorted sample `Y_1 <= ... <= Y_n` against the theoretical CDF `cdf` (the
+/// fit of a fully specified distribution).  Larger values indicate greater
+/// discrepancy from the theoretical distribution.
+///
+/// The probabilities `F(Y_i)` and `1 - F(Y_i)` are floored at `1e-15`, so a
+/// sample point outside the support of `cdf` yields a large finite value rather
+/// than infinity.  Returns `0.0` for fewer than two observations.
 pub fn anderson_darling_statistic(data: &[f64], cdf: impl Fn(f64) -> f64) -> f64 {
+    const PROBABILITY_FLOOR: f64 = 1e-15;
     let n = data.len();
     if n < 2 {
         return 0.0;
     }
     let mut sorted = data.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let probabilities: Vec<f64> = sorted.iter().map(|&x| cdf(x)).collect();
     let nf = n as f64;
-    let s: f64 = sorted
+    let s: f64 = probabilities
         .iter()
+        .zip(probabilities.iter().rev())
         .enumerate()
-        .map(|(i, &x)| {
-            let fi = cdf(x).clamp(1e-15, 1.0 - 1e-15);
-            let fn_i = cdf(*sorted
-                .iter()
-                .rev()
-                .nth(i)
-                .expect("sorted has enough elements"))
-            .clamp(1e-15, 1.0 - 1e-15);
-            (2.0 * (i as f64 + 1.0) - 1.0) * (fi.ln() + fn_i.ln())
+        .map(|(i, (&lower, &upper))| {
+            let ln_lower = lower.clamp(PROBABILITY_FLOOR, 1.0).ln();
+            let ln_upper_tail = (1.0 - upper).clamp(PROBABILITY_FLOOR, 1.0).ln();
+            (2.0 * (i as f64 + 1.0) - 1.0) * (ln_lower + ln_upper_tail)
         })
         .sum();
     -nf - s / nf
@@ -1152,6 +1221,7 @@ mod tests {
     use crate::ExponentialDistribution;
     use crate::KernelDensityEstimate;
     use crate::KernelDensityEstimate2D;
+    use crate::NormalDistribution;
     use crate::PoissonDistribution;
     use crate::SlidingWindowStats;
     use crate::WelfordOnline;
@@ -1491,6 +1561,10 @@ mod tests {
         let w = shapiro_wilk_w(&data);
         assert!(w > 0.0, "W should be positive for any data, got {w}");
         assert!(w.is_finite(), "W should be finite, got {w}");
+        // Symmetric, bell-shaped sample: W is close to (and never above) 1;
+        // reference value from R's AS R94 routine.
+        assert!(w <= 1.0, "W must not exceed 1, got {w}");
+        assert!((w - 0.97343277306387).abs() < 1e-7, "W = {w}");
     }
     #[test]
     fn test_shapiro_wilk_w_constant_data() {

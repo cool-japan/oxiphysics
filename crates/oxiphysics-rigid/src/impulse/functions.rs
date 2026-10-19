@@ -130,9 +130,17 @@ pub(super) fn effective_mass_along_direction(
 }
 /// Compute the scalar normal impulse magnitude.
 ///
-/// j = −(1 + e) · v_rel·n
+/// The manifold normal `n` points from body A to body B and
+/// `v_rel = v_A − v_B` (contact-point velocities), so the bodies approach
+/// when `v_rel·n > 0`:
+///
+/// j = (1 + e) · v_rel·n
 ///     ────────────────────────────────────────────────────────────────────
 ///     1/mA + 1/mB + (rA×n)·IA⁻¹·(rA×n) + (rB×n)·IB⁻¹·(rB×n)
+///
+/// The impulse `j·n` is applied with [`apply_impulse_b`] to A and with
+/// [`apply_impulse_a`] to B.  Returns `0.0` for separating or resting contacts
+/// (`v_rel·n <= 0`) and for a degenerate effective mass.
 pub fn compute_impulse(
     a: &RigidBodyState,
     b: &RigidBodyState,
@@ -173,10 +181,18 @@ pub fn compute_impulse_with_model(
     }
     (1.0 + e) * v_rel_n / denom
 }
-/// Apply a normal impulse to body A (adds to velocity and angular velocity).
+/// Add the impulse `impulse_vec` (`J`) to the velocity and angular velocity of
+/// `state`:
 ///
-/// Δv_A  = +j·n / mA
-/// Δω_A  = +IA⁻¹ · (rA × (j·n))
+/// Δv  = +J / m
+/// Δω  = +I⁻¹ · (r × J)
+///
+/// with `r` the contact point relative to the centre of mass.  The name refers
+/// to the sign, not to a fixed body: with the contact normal `n` pointing from
+/// body A to body B, a normal impulse `j·n` pushes B along `+n`, so this
+/// function is applied to **B** (and [`apply_impulse_b`] to A), whereas a
+/// friction impulse that opposes the sliding velocity `v_A − v_B` is applied
+/// to A with this function and to B with [`apply_impulse_b`].
 pub fn apply_impulse_a(state: &mut RigidBodyState, contact: [f64; 3], impulse_vec: [f64; 3]) {
     let ra = sub3(contact, state.position);
     state.velocity = add3(state.velocity, scale3(impulse_vec, state.inv_mass));
@@ -184,10 +200,15 @@ pub fn apply_impulse_a(state: &mut RigidBodyState, contact: [f64; 3], impulse_ve
     let delta_omega = apply_inv_inertia(state.inv_inertia_local, torque_arm);
     state.angular_velocity = add3(state.angular_velocity, delta_omega);
 }
-/// Apply a normal impulse to body B (subtracts — Newton's 3rd law).
+/// Subtract the impulse `impulse_vec` (`J`) from the velocity and angular
+/// velocity of `state` (the opposite of [`apply_impulse_a`], i.e. the reaction
+/// of Newton's third law):
 ///
-/// Δv_B  = −j·n / mB
-/// Δω_B  = −IB⁻¹ · (rB × (j·n))
+/// Δv  = −J / m
+/// Δω  = −I⁻¹ · (r × J)
+///
+/// With the A→B contact normal this is the impulse that a normal impulse
+/// `j·n` exerts on body **A**.
 pub fn apply_impulse_b(state: &mut RigidBodyState, contact: [f64; 3], impulse_vec: [f64; 3]) {
     let rb = sub3(contact, state.position);
     state.velocity = sub3(state.velocity, scale3(impulse_vec, state.inv_mass));
@@ -200,8 +221,10 @@ pub fn apply_impulse_b(state: &mut RigidBodyState, contact: [f64; 3], impulse_ve
 /// * Computes the relative velocity at the contact and removes its normal component
 ///   to obtain the tangential relative velocity.
 /// * If tangential speed is negligible, returns zero.
-/// * Otherwise, applies a tangential impulse that opposes relative sliding,
-///   clamped to μ · |j_n| (Coulomb cone).
+/// * Otherwise, returns the tangential impulse acting on body A: it opposes the
+///   relative sliding velocity `v_A − v_B` and is clamped to μ · |j_n| (Coulomb
+///   cone).  Its reaction acts on body B, i.e. apply it with [`apply_impulse_a`]
+///   to A and with [`apply_impulse_b`] to B.
 pub fn friction_impulse(
     a: &RigidBodyState,
     b: &RigidBodyState,
@@ -320,37 +343,64 @@ pub fn resolve_collision_with_model(
         apply_impulse_b(b, contact, jf);
     }
 }
+/// Borrow the two distinct bodies `a` and `b` of a constraint mutably.
+///
+/// Returns `None` when either index is out of range or when `a == b`
+/// (a body cannot be in contact with itself), so callers can skip malformed
+/// constraints instead of panicking.  The indices may come in any order.
+pub(super) fn pair_mut(
+    bodies: &mut [RigidBodyState],
+    a: usize,
+    b: usize,
+) -> Option<(&mut RigidBodyState, &mut RigidBodyState)> {
+    match bodies.get_disjoint_mut([a, b]) {
+        Ok([body_a, body_b]) => Some((body_a, body_b)),
+        Err(_) => None,
+    }
+}
+/// Shared-borrow counterpart of [`pair_mut`].
+pub(super) fn pair_ref(
+    bodies: &[RigidBodyState],
+    a: usize,
+    b: usize,
+) -> Option<(&RigidBodyState, &RigidBodyState)> {
+    if a == b {
+        return None;
+    }
+    Some((bodies.get(a)?, bodies.get(b)?))
+}
 /// Run the sequential impulse solver over a set of contact constraints.
 ///
 /// `bodies` is a mutable slice of all rigid body states.
 /// `constraints` is a mutable slice of contact constraints (with body indices).
+///
+/// The contact normal of every constraint points from body A (`body_a`) to
+/// body B (`body_b`).  The body indices may be given in any order; a
+/// constraint whose indices are equal or out of range is skipped.
 pub fn solve_sequential_impulses(
     bodies: &mut [RigidBodyState],
     constraints: &mut [ContactConstraint],
     config: &SequentialImpulseSolverConfig,
 ) {
     for c in constraints.iter_mut() {
-        let (a_slice, b_slice) = bodies.split_at(c.body_b);
-        let a = &a_slice[c.body_a];
-        let b = &b_slice[0];
-        c.prepare(a, b, config.baumgarte, config.dt);
+        if let Some((a, b)) = pair_ref(bodies, c.body_a, c.body_b) {
+            c.prepare(a, b, config.baumgarte, config.dt);
+        }
     }
     if config.warm_start {
         for c in constraints.iter() {
-            let (a_slice, b_slice) = bodies.split_at_mut(c.body_b);
-            let a = &mut a_slice[c.body_a];
-            let b = &mut b_slice[0];
-            c.warm_start(a, b);
+            if let Some((a, b)) = pair_mut(bodies, c.body_a, c.body_b) {
+                c.warm_start(a, b);
+            }
         }
     }
     for _ in 0..config.velocity_iterations {
         for c in constraints.iter_mut() {
-            let (a_slice, b_slice) = bodies.split_at_mut(c.body_b);
-            let a = &mut a_slice[c.body_a];
-            let b = &mut b_slice[0];
-            c.solve_normal(a, b);
-            c.solve_friction_t1(a, b);
-            c.solve_friction_t2(a, b);
+            if let Some((a, b)) = pair_mut(bodies, c.body_a, c.body_b) {
+                c.solve_normal(a, b);
+                c.solve_friction_t1(a, b);
+                c.solve_friction_t2(a, b);
+            }
         }
     }
 }

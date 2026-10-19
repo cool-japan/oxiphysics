@@ -44,6 +44,7 @@ fn vec3_length(a: [f64; 3]) -> f64 {
 }
 
 /// Normalise a 3-D vector (returns zero vector if near-zero length).
+#[cfg(test)]
 #[inline]
 fn vec3_normalize(a: [f64; 3]) -> [f64; 3] {
     let len = vec3_length(a);
@@ -62,6 +63,7 @@ fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 /// Cross product.
+#[cfg(test)]
 #[inline]
 fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
@@ -598,88 +600,19 @@ impl StressGlyph {
     }
 }
 
-/// Compute eigenvectors and eigenvalues of the 3×3 symmetric stress matrix
-/// using the analytical method for symmetric matrices.
+/// Compute eigenvectors and eigenvalues of the 3×3 symmetric stress matrix.
 ///
 /// The stress Voigt vector is `[σxx, σyy, σzz, σxy, σyz, σxz]`.
-/// Returns three `(eigenvalue, eigenvector)` pairs sorted by descending eigenvalue.
+/// Returns three `(eigenvalue, eigenvector)` pairs sorted by descending
+/// eigenvalue.  The eigenvectors are unit vectors (defined up to sign) that
+/// form an orthonormal frame even for repeated eigenvalues, such as
+/// hydrostatic or uniaxial stress states.
+///
+/// Delegates to the Jacobi solver [`crate::tensor_visualization::eig3`], which
+/// uses the same Voigt order.
 pub fn stress_principal(stress: &[f64; 6]) -> [(f64, [f64; 3]); 3] {
-    // Build 3×3 matrix
-    let m = [
-        [stress[0], stress[3], stress[5]],
-        [stress[3], stress[1], stress[4]],
-        [stress[5], stress[4], stress[2]],
-    ];
-
-    // Cardano / Jacobi iteration (3×3 symmetric, single pass is sufficient
-    // for moderate precision)
-    let eigenvalues = eigenvalues_sym3(m);
-    let mut result = std::array::from_fn(|i| (eigenvalues[i], eigenvector_sym3(m, eigenvalues[i])));
-    // Sort descending by eigenvalue
-    result.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    result
-}
-
-/// Cardano formula for eigenvalues of a 3×3 real symmetric matrix.
-fn eigenvalues_sym3(m: [[f64; 3]; 3]) -> [f64; 3] {
-    // Standard Cardano method
-    let p1 = m[0][1].powi(2) + m[0][2].powi(2) + m[1][2].powi(2);
-    if p1 < 1e-30 {
-        // Already diagonal
-        return [m[0][0], m[1][1], m[2][2]];
-    }
-    let q = (m[0][0] + m[1][1] + m[2][2]) / 3.0;
-    let p2 = (m[0][0] - q).powi(2) + (m[1][1] - q).powi(2) + (m[2][2] - q).powi(2) + 2.0 * p1;
-    let p = (p2 / 6.0).sqrt();
-    // B = (1/p) * (M - q*I)
-    let b: [[f64; 3]; 3] = std::array::from_fn(|i| {
-        std::array::from_fn(|j| {
-            let diag = if i == j { m[i][j] - q } else { m[i][j] };
-            diag / p
-        })
-    });
-    let det_b = b[0][0] * (b[1][1] * b[2][2] - b[1][2] * b[2][1])
-        - b[0][1] * (b[1][0] * b[2][2] - b[1][2] * b[2][0])
-        + b[0][2] * (b[1][0] * b[2][1] - b[1][1] * b[2][0]);
-    let r = (det_b / 2.0).clamp(-1.0, 1.0);
-    let phi = r.acos() / 3.0;
-    use std::f64::consts::PI;
-    [
-        q + 2.0 * p * phi.cos(),
-        q + 2.0 * p * (phi + 2.0 * PI / 3.0).cos(),
-        q + 2.0 * p * (phi + 4.0 * PI / 3.0).cos(),
-    ]
-}
-
-/// Compute an approximate eigenvector for `lambda` using the null-space approach.
-fn eigenvector_sym3(m: [[f64; 3]; 3], lambda: f64) -> [f64; 3] {
-    // Form (M - λI) and find a null-space vector via cross-products of rows
-    let a = [
-        [m[0][0] - lambda, m[0][1], m[0][2]],
-        [m[1][0], m[1][1] - lambda, m[1][2]],
-        [m[2][0], m[2][1], m[2][2] - lambda],
-    ];
-    // Try cross products of pairs of rows; use the longest
-    let candidates = [
-        vec3_cross(a[0], a[1]),
-        vec3_cross(a[1], a[2]),
-        vec3_cross(a[0], a[2]),
-    ];
-    let best = candidates
-        .iter()
-        .max_by(|u, v| {
-            vec3_length(**u)
-                .partial_cmp(&vec3_length(**v))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .copied()
-        .unwrap_or([1.0, 0.0, 0.0]);
-    let n = vec3_normalize(best);
-    if vec3_length(n) < 0.5 {
-        [1.0, 0.0, 0.0]
-    } else {
-        n
-    }
+    let eigen = crate::tensor_visualization::eig3(stress);
+    std::array::from_fn(|i| (eigen.values[i], eigen.vectors[i]))
 }
 
 /// Build a [`GlyphSet`] of stress-tensor ellipsoid glyphs for a collection of
@@ -1005,14 +938,12 @@ impl ConvergenceHistory {
 
     /// Reduction ratio: first residual divided by last (or 1.0 if ≤ 1 point).
     pub fn reduction_ratio(&self) -> f64 {
+        let (Some(&first), Some(&last)) = (self.residuals.first(), self.residuals.last()) else {
+            return 1.0;
+        };
         if self.residuals.len() < 2 {
             return 1.0;
         }
-        let first = self.residuals[0];
-        let last = *self
-            .residuals
-            .last()
-            .expect("collection should not be empty");
         if last.abs() < 1e-300 {
             f64::INFINITY
         } else {
@@ -1400,6 +1331,131 @@ mod tests {
         assert!((eigs[2] - 1.0).abs() < 1e-6);
     }
 
+    /// `T·v` for the symmetric stress `[σxx, σyy, σzz, σxy, σyz, σxz]`.
+    fn stress_times(t: &[f64; 6], v: [f64; 3]) -> [f64; 3] {
+        [
+            t[0] * v[0] + t[3] * v[1] + t[5] * v[2],
+            t[3] * v[0] + t[1] * v[1] + t[4] * v[2],
+            t[5] * v[0] + t[4] * v[1] + t[2] * v[2],
+        ]
+    }
+
+    /// Assert unit length, mutual orthogonality and `T·v = λ·v` for every pair.
+    fn assert_principal_frame(t: &[f64; 6], principals: &[(f64, [f64; 3]); 3], tol: f64) {
+        for (k, &(lambda, v)) in principals.iter().enumerate() {
+            assert!(
+                (vec3_length(v) - 1.0).abs() < tol,
+                "eigenvector {k} = {v:?}"
+            );
+            let tv = stress_times(t, v);
+            for i in 0..3 {
+                assert!(
+                    (tv[i] - lambda * v[i]).abs() < tol,
+                    "T·v{k} component {i}: {} vs {}",
+                    tv[i],
+                    lambda * v[i]
+                );
+            }
+            for &(_, w) in &principals[k + 1..] {
+                assert!(vec3_dot(v, w).abs() < tol, "{v:?} not orthogonal to {w:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_stress_principal_uniaxial_has_an_orthonormal_frame() {
+        // σ = (5, 0, 0): the repeated zero eigenvalue used to give [1, 0, 0] twice.
+        let t = [5.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let principals = stress_principal(&t);
+        assert_eq!(principals.map(|p| p.0), [5.0, 0.0, 0.0]);
+        assert!((principals[0].1[0].abs() - 1.0).abs() < 1e-12);
+        assert_principal_frame(&t, &principals, 1e-12);
+    }
+
+    #[test]
+    fn test_stress_principal_hydrostatic_has_an_orthonormal_frame() {
+        // Three equal eigenvalues used to give three identical x axes.
+        let t = [2.0, 2.0, 2.0, 0.0, 0.0, 0.0];
+        let principals = stress_principal(&t);
+        assert_eq!(principals.map(|p| p.0), [2.0, 2.0, 2.0]);
+        assert_principal_frame(&t, &principals, 1e-12);
+        let axes: Vec<[f64; 3]> = principals.iter().map(|p| p.1).collect();
+        assert!(axes[0] != axes[1] && axes[1] != axes[2] && axes[0] != axes[2]);
+    }
+
+    #[test]
+    fn test_stress_principal_repeated_eigenvalue_with_shear_coupling() {
+        // I + 𝟙𝟙ᵀ: σ = (4, 1, 1) with a double eigenvalue and full shear coupling.
+        let t = [2.0, 2.0, 2.0, 1.0, 1.0, 1.0];
+        let principals = stress_principal(&t);
+        assert!((principals[0].0 - 4.0).abs() < 1e-9);
+        assert!((principals[1].0 - 1.0).abs() < 1e-9);
+        assert!((principals[2].0 - 1.0).abs() < 1e-9);
+        assert_principal_frame(&t, &principals, 1e-9);
+        let third = 1.0 / 3.0_f64.sqrt();
+        for component in principals[0].1 {
+            assert!(
+                (component.abs() - third).abs() < 1e-9,
+                "{:?}",
+                principals[0].1
+            );
+        }
+    }
+
+    #[test]
+    fn test_stress_principal_general_state_satisfies_the_eigen_equation() {
+        // Shear order [σxy, σyz, σxz]: this tensor distinguishes yz from xz.
+        let t = [3.0, 1.0, 0.0, 1.0, 0.5, -0.7];
+        let principals = stress_principal(&t);
+        assert!(principals[0].0 >= principals[1].0 && principals[1].0 >= principals[2].0);
+        assert!((principals.iter().map(|p| p.0).sum::<f64>() - 4.0).abs() < 1e-9);
+        assert_principal_frame(&t, &principals, 1e-9);
+        let t = [3.0, 1.0, 0.0, 1.0, 0.0, 0.0];
+        let principals = stress_principal(&t);
+        let v = principals[0].1;
+        let angle = std::f64::consts::FRAC_PI_8;
+        assert!((v[0].abs() - angle.cos()).abs() < 1e-10, "{v:?}");
+        assert!((v[1].abs() - angle.sin()).abs() < 1e-10, "{v:?}");
+        assert!(v[2].abs() < 1e-10, "{v:?}");
+        assert!(
+            v[0] * v[1] > 0.0,
+            "major axis lies along (cos, sin), not (cos, -sin)"
+        );
+    }
+
+    #[test]
+    fn test_stress_principal_random_states() {
+        let mut state = 0x853C_49E6_748F_EA9B_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1_u64 << 53) as f64
+        };
+        for _ in 0..200 {
+            let t: [f64; 6] = std::array::from_fn(|_| 200.0 * next() - 100.0);
+            let principals = stress_principal(&t);
+            assert!(principals[0].0 >= principals[1].0 && principals[1].0 >= principals[2].0);
+            assert_principal_frame(&t, &principals, 1e-8);
+        }
+    }
+
+    #[test]
+    fn test_stress_glyphs_hydrostatic_state_has_three_distinct_axes() {
+        let gs = stress_glyphs(&[[1.0, 2.0, 3.0]], &[[2.0, 2.0, 2.0, 0.0, 0.0, 0.0]], 1.0);
+        let glyph = &gs.glyphs[0];
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                assert!(
+                    vec3_dot(glyph.axes[i].0, glyph.axes[j].0).abs() < 1e-12,
+                    "axes {i} and {j} coincide: {:?}",
+                    glyph.axes
+                );
+            }
+            assert!((glyph.axes[i].1 - 2.0).abs() < 1e-12);
+        }
+    }
+
     // --- ModeShape ---
 
     #[test]
@@ -1533,6 +1589,24 @@ mod tests {
         h.push(1, 1.0);
         let ratio = h.reduction_ratio();
         assert!((ratio - 1000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_convergence_reduction_ratio_of_degenerate_histories() {
+        let mut h = ConvergenceHistory::new("res");
+        assert_eq!(
+            h.reduction_ratio(),
+            1.0,
+            "an empty history has no reduction"
+        );
+        h.push(0, 5.0);
+        assert_eq!(h.reduction_ratio(), 1.0, "a single point has no reduction");
+        h.push(1, 0.0);
+        assert_eq!(
+            h.reduction_ratio(),
+            f64::INFINITY,
+            "a vanishing last residual is an infinite reduction"
+        );
     }
 
     #[test]

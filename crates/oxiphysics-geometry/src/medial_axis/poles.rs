@@ -410,15 +410,15 @@ fn orient_normals(
             });
         }
     };
-    for i in 0..n {
-        if let Some(h) = hull_normals[i]
-            && axes[i].is_some()
+    for ((slot, &hull), axis) in oriented.iter_mut().zip(hull_normals).zip(axes) {
+        if let Some(h) = hull
+            && axis.is_some()
         {
-            oriented[i] = Some(h);
+            *slot = Some(h);
         }
     }
-    for i in 0..n {
-        if let Some(ni) = oriented[i] {
+    for (i, &slot) in oriented.iter().enumerate() {
+        if let Some(ni) = slot {
             push_edges(&mut heap, i, ni);
         }
     }

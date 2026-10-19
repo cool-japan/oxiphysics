@@ -374,8 +374,9 @@ fn collisions_conserve_moments_and_satisfy_the_h_theorem_far_from_equilibrium() 
             );
             // The entropic and EOR collisions stay on the admissible segment
             // between f and the (positive) over-relaxed state, so they obey the
-            // H-theorem and keep every population positive; the simplified
-            // KBC split does not promise that for such extreme states.
+            // H-theorem and keep every population positive; the KBC
+            // stabiliser only minimises a quadratic entropy estimate and does
+            // not promise that for such extreme states.
             if *name != "kbc" {
                 assert!(
                     post.iter().all(|&v| v > 0.0),

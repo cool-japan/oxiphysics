@@ -22,6 +22,8 @@
 //! assert!(sig[0] < 0.0); // compressive on heating
 //! ```
 
+use crate::analysis::FemError;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // § 1  FREE FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -179,6 +181,13 @@ pub enum CouplingMode {
     /// Thermal problem solved first; result used as load for mechanics (no feedback).
     OneWay,
     /// Fully coupled: mechanical deformation feeds back into thermal solution.
+    ///
+    /// The *steady-state* 1-D solver of [`ThermalStressAnalysis`] has no feedback
+    /// path: the thermoelastic term of the heat equation is proportional to the
+    /// strain rate and vanishes at steady state, so the temperature field cannot
+    /// depend on the deformation.  [`ThermalStressAnalysis::solve`] therefore
+    /// rejects this mode with [`FemError::InvalidInput`] instead of silently
+    /// returning a one-way result.
     TwoWay,
 }
 
@@ -374,10 +383,14 @@ pub struct ThermoelasticResult {
 
 /// High-level thermoelastic analysis driver.
 ///
-/// Performs a one-way (thermal → mechanical) or two-way coupled analysis on a
-/// 1-D rod mesh.  The thermal problem is solved first using a simple direct
-/// method; the mechanical problem is then solved using the Thomas algorithm with
-/// the thermal load vector added.
+/// Performs a one-way (thermal → mechanical) analysis on a 1-D rod mesh.  The
+/// steady heat-conduction problem is solved first with a direct method; the
+/// resulting temperatures, measured against the stress-free
+/// [`reference_temp`](Self::reference_temp), load the axial mechanical problem
+/// through the thermal strain `α (T − T_ref)`.  Element stresses are recovered
+/// from the *total* strain of the displacement solution,
+/// `σ = E (du/dx − α ΔT)`, so a freely expanding rod carries no stress while a
+/// fully constrained one carries `−E α ΔT`.
 #[derive(Debug, Clone)]
 pub struct ThermalStressAnalysis {
     /// Discretised mesh.
@@ -396,12 +409,19 @@ pub struct ThermalStressAnalysis {
     pub conductivity: f64,
     /// Uniform heat generation rate \[W/m³\] (zero for pure-conduction).
     pub heat_source: f64,
-    /// Coupling mode (one-way or two-way).
+    /// Stress-free reference temperature \[K or °C\]: the thermal strain is
+    /// `α (T − reference_temp)`.
+    pub reference_temp: f64,
+    /// Coupling mode.  Only [`CouplingMode::OneWay`] is supported by the
+    /// steady-state solver (see [`CouplingMode::TwoWay`]).
     pub coupling_mode: CouplingMode,
 }
 
 impl ThermalStressAnalysis {
     /// Create a `ThermalStressAnalysis` with default one-way coupling.
+    ///
+    /// `reference_temp` is the stress-free reference temperature; the thermal
+    /// strain of an element is `α (T_mean − reference_temp)`.
     pub fn new(
         mesh: ThermoelasticMesh,
         thermal_bc: Vec<BoundaryCondition>,
@@ -411,6 +431,7 @@ impl ThermalStressAnalysis {
         alpha: f64,
         conductivity: f64,
         heat_source: f64,
+        reference_temp: f64,
     ) -> Self {
         Self {
             mesh,
@@ -421,6 +442,7 @@ impl ThermalStressAnalysis {
             alpha,
             conductivity,
             heat_source,
+            reference_temp,
             coupling_mode: CouplingMode::OneWay,
         }
     }
@@ -429,20 +451,84 @@ impl ThermalStressAnalysis {
     ///
     /// Returns a [`ThermoelasticResult`] containing nodal temperatures,
     /// nodal displacements, and element stresses.
-    pub fn solve(&self) -> ThermoelasticResult {
-        let temperatures = self.solve_thermal();
-        let displacements = self.solve_mechanical(&temperatures);
+    ///
+    /// # Errors
+    /// [`FemError::InvalidInput`] when
+    /// * `coupling_mode` is [`CouplingMode::TwoWay`] (no feedback path exists in
+    ///   the steady-state solver),
+    /// * the mesh or the material data are unusable (fewer than one element,
+    ///   non-positive or non-finite area / modulus / conductivity / element
+    ///   length, connectivity outside the node list, non-finite parameters),
+    /// * a boundary condition addresses a node outside the mesh, has a
+    ///   non-finite value, or conflicts with another one on the same node, or
+    /// * the thermal or the mechanical problem has no boundary condition at all
+    ///   (the steady problem would be singular).
+    ///
+    /// [`FemError::SingularSystem`] if a direct solve meets a vanishing pivot.
+    pub fn solve(&self) -> Result<ThermoelasticResult, FemError> {
+        self.validate()?;
+        let temperatures = self.solve_thermal()?;
+        let displacements = self.solve_mechanical(&temperatures)?;
         let stresses = self.compute_stresses(&temperatures, &displacements);
-        ThermoelasticResult {
+        Ok(ThermoelasticResult {
             temperatures,
             displacements,
             stresses,
+        })
+    }
+
+    // ── Internal: input validation ─────────────────────────────────────────────
+
+    fn validate(&self) -> Result<(), FemError> {
+        let invalid = |message: String| Err(FemError::InvalidInput(message));
+        if self.coupling_mode == CouplingMode::TwoWay {
+            return invalid(
+                "CouplingMode::TwoWay is not supported: the steady-state 1-D solver has no \
+                 feedback path from the deformation to the temperature field"
+                    .to_string(),
+            );
         }
+        let n_nodes = self.mesh.n_nodes();
+        if self.mesh.n_elements() == 0 {
+            return invalid("the mesh must contain at least one element".to_string());
+        }
+        for (name, value) in [
+            ("cross-sectional area", self.mesh.area),
+            ("Young's modulus", self.e_modulus),
+            ("thermal conductivity", self.conductivity),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return invalid(format!("{name} must be positive and finite, got {value}"));
+            }
+        }
+        for (name, value) in [
+            ("thermal expansion coefficient", self.alpha),
+            ("heat source", self.heat_source),
+            ("reference temperature", self.reference_temp),
+        ] {
+            if !value.is_finite() {
+                return invalid(format!("{name} must be finite, got {value}"));
+            }
+        }
+        for (i, &[n0, n1]) in self.mesh.connectivity.iter().enumerate() {
+            if n0 >= n_nodes || n1 >= n_nodes {
+                return invalid(format!(
+                    "element {i} connects nodes ({n0}, {n1}) but the mesh has {n_nodes} nodes"
+                ));
+            }
+            let len = self.mesh.element_length(i);
+            if !len.is_finite() || len <= 0.0 {
+                return invalid(format!(
+                    "element {i} must have a positive finite length, got {len}"
+                ));
+            }
+        }
+        Ok(())
     }
 
     // ── Internal: thermal solve ────────────────────────────────────────────────
 
-    fn solve_thermal(&self) -> Vec<f64> {
+    fn solve_thermal(&self) -> Result<Vec<f64>, FemError> {
         let n = self.mesh.n_nodes();
         // Assemble global conductivity matrix K (diagonal + off-diagonal).
         let mut k_global = vec![vec![0.0_f64; n]; n];
@@ -462,15 +548,7 @@ impl ThermalStressAnalysis {
             f_global[n1] += q;
         }
 
-        // Apply Dirichlet BCs by penalty / elimination.
-        let penalty = 1e20_f64;
-        for bc in &self.thermal_bc {
-            let d = bc.dof;
-            if d < n {
-                k_global[d][d] += penalty;
-                f_global[d] += penalty * bc.value;
-            }
-        }
+        Self::apply_dirichlet(&mut k_global, &mut f_global, &self.thermal_bc, "thermal")?;
 
         // Solve K T = f using Gaussian elimination (small systems only).
         Self::gauss_solve(&k_global, &f_global)
@@ -478,57 +556,128 @@ impl ThermalStressAnalysis {
 
     // ── Internal: mechanical solve ─────────────────────────────────────────────
 
-    fn solve_mechanical(&self, temperatures: &[f64]) -> Vec<f64> {
+    fn solve_mechanical(&self, temperatures: &[f64]) -> Result<Vec<f64>, FemError> {
         let n = self.mesh.n_nodes();
         let mut k_global = vec![vec![0.0_f64; n]; n];
         let mut f_global = vec![0.0_f64; n];
 
         for i in 0..self.mesh.n_elements() {
             let [n0, n1] = self.mesh.connectivity[i];
-            let len = self.mesh.element_length(i);
+            let dx = self.mesh.node_positions[n1] - self.mesh.node_positions[n0];
+            let len = dx.abs();
             let g = self.e_modulus * self.mesh.area / len;
             k_global[n0][n0] += g;
             k_global[n0][n1] -= g;
             k_global[n1][n0] -= g;
             k_global[n1][n1] += g;
-            // Thermal load.
-            let t_mean = 0.5 * (temperatures[n0] + temperatures[n1]);
-            let dt_mean = t_mean; // temperatures already relative (T not ΔT here, but reference_temp=0 for solver)
-            let fth = self.e_modulus * self.mesh.area * self.alpha * dt_mean;
+            // Thermal load  f_th = ∫ Bᵀ E α ΔT A dx = E A α ΔT · sign(dx) · [-1, +1],
+            // with ΔT measured from the stress-free reference temperature.
+            let d_t_mean = 0.5 * (temperatures[n0] + temperatures[n1]) - self.reference_temp;
+            let fth = dx.signum() * self.e_modulus * self.mesh.area * self.alpha * d_t_mean;
             f_global[n0] -= fth;
             f_global[n1] += fth;
         }
 
         // Dirichlet BCs for mechanics.
-        let penalty = 1e20_f64;
-        for bc in &self.mechanical_bc {
-            let d = bc.dof;
-            if d < n {
-                k_global[d][d] += penalty;
-                f_global[d] += penalty * bc.value;
-            }
-        }
+        Self::apply_dirichlet(
+            &mut k_global,
+            &mut f_global,
+            &self.mechanical_bc,
+            "mechanical",
+        )?;
 
         Self::gauss_solve(&k_global, &f_global)
     }
 
     // ── Internal: stress recovery ──────────────────────────────────────────────
 
-    fn compute_stresses(&self, temperatures: &[f64], _displacements: &[f64]) -> Vec<ThermalStress> {
+    /// Axial stress of every element from the total strain of the displacement
+    /// field: `σ = E (du/dx − α (T_mean − T_ref))`.
+    fn compute_stresses(&self, temperatures: &[f64], displacements: &[f64]) -> Vec<ThermalStress> {
         let mut stresses = Vec::with_capacity(self.mesh.n_elements());
         for i in 0..self.mesh.n_elements() {
             let [n0, n1] = self.mesh.connectivity[i];
+            let dx = self.mesh.node_positions[n1] - self.mesh.node_positions[n0];
             let t_mean = 0.5 * (temperatures[n0] + temperatures[n1]);
-            let sxx = -self.e_modulus * self.alpha * t_mean;
-            let ts = ThermalStress::from_plane_stress(sxx, 0.0, 0.0, t_mean);
-            stresses.push(ts);
+            let thermal_strain = compute_thermal_strain(t_mean - self.reference_temp, self.alpha);
+            let total_strain = (displacements[n1] - displacements[n0]) / dx;
+            let sxx = self.e_modulus * (total_strain - thermal_strain);
+            stresses.push(ThermalStress::from_plane_stress(sxx, 0.0, 0.0, t_mean));
         }
         stresses
     }
 
+    // ── Internal: Dirichlet boundary conditions ────────────────────────────────
+
+    /// Impose prescribed values `bcs` on the system `K x = f` by exact
+    /// elimination: the known column is moved to the right-hand side of every
+    /// free equation and the constrained row and column become the identity.
+    ///
+    /// Fails with [`FemError::InvalidInput`] for an out-of-range node, a
+    /// non-finite value, two different values on one node, or an empty list
+    /// (the steady problem is singular without a boundary condition).
+    fn apply_dirichlet(
+        k: &mut [Vec<f64>],
+        f: &mut [f64],
+        bcs: &[BoundaryCondition],
+        kind: &str,
+    ) -> Result<(), FemError> {
+        let n = f.len();
+        let mut prescribed: Vec<Option<f64>> = vec![None; n];
+        for bc in bcs {
+            if bc.dof >= n {
+                return Err(FemError::InvalidInput(format!(
+                    "{kind} boundary condition addresses node {} but the mesh has {n} nodes",
+                    bc.dof
+                )));
+            }
+            if !bc.value.is_finite() {
+                return Err(FemError::InvalidInput(format!(
+                    "{kind} boundary condition on node {} has the non-finite value {}",
+                    bc.dof, bc.value
+                )));
+            }
+            match prescribed[bc.dof] {
+                Some(existing) if existing != bc.value => {
+                    return Err(FemError::InvalidInput(format!(
+                        "conflicting {kind} boundary conditions on node {} ({existing} and {})",
+                        bc.dof, bc.value
+                    )));
+                }
+                _ => prescribed[bc.dof] = Some(bc.value),
+            }
+        }
+        if prescribed.iter().all(Option::is_none) {
+            return Err(FemError::InvalidInput(format!(
+                "at least one {kind} boundary condition is required: the steady problem is \
+                 singular without it"
+            )));
+        }
+        for (d, value) in prescribed.iter().enumerate() {
+            if let Some(v) = *value {
+                for (i, f_i) in f.iter_mut().enumerate() {
+                    if prescribed[i].is_none() {
+                        *f_i -= k[i][d] * v;
+                    }
+                }
+            }
+        }
+        for (d, value) in prescribed.iter().enumerate() {
+            if let Some(v) = *value {
+                for j in 0..n {
+                    k[d][j] = 0.0;
+                    k[j][d] = 0.0;
+                }
+                k[d][d] = 1.0;
+                f[d] = v;
+            }
+        }
+        Ok(())
+    }
+
     // ── Internal: Gaussian elimination (dense, n×n) ────────────────────────────
 
-    fn gauss_solve(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
+    fn gauss_solve(a: &[Vec<f64>], b: &[f64]) -> Result<Vec<f64>, FemError> {
         let n = b.len();
         let mut mat: Vec<Vec<f64>> = a.to_vec();
         let mut rhs: Vec<f64> = b.to_vec();
@@ -547,8 +696,8 @@ impl ThermalStressAnalysis {
             rhs.swap(col, pivot_row);
 
             let diag = mat[col][col];
-            if diag.abs() < 1e-30 {
-                continue;
+            if !diag.is_finite() || diag.abs() < 1e-300 {
+                return Err(FemError::SingularSystem);
             }
             let col_slice: Vec<f64> = mat[col][col..].to_vec();
             for row in (col + 1)..n {
@@ -567,16 +716,18 @@ impl ThermalStressAnalysis {
             for c in (row + 1)..n {
                 sum -= mat[row][c] * x[c];
             }
-            let d = mat[row][row];
-            x[row] = if d.abs() > 1e-30 { sum / d } else { 0.0 };
+            x[row] = sum / mat[row][row];
         }
-        x
+        Ok(x)
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 3  UNIT TESTS
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {
@@ -859,25 +1010,27 @@ mod tests {
             BoundaryCondition::new(5, 100.0), // T(L) = 100
         ];
         let mech_bc = vec![BoundaryCondition::new(0, 0.0)]; // fixed at x=0
-        let analysis =
-            ThermalStressAnalysis::new(mesh, thermal_bc, mech_bc, 200e9, 0.3, 12e-6, 50.0, 0.0);
-        let result = analysis.solve();
+        let analysis = ThermalStressAnalysis::new(
+            mesh, thermal_bc, mech_bc, 200e9, 0.3, 12e-6, 50.0, 0.0, 0.0,
+        );
+        let result = analysis.solve().expect("well-posed analysis");
         assert_eq!(result.temperatures.len(), 6);
         assert_eq!(result.displacements.len(), 6);
         assert_eq!(result.stresses.len(), 5);
     }
 
     #[test]
-    fn analysis_uniform_temperature_stresses_nonzero() {
+    fn analysis_uniform_temperature_gives_uniform_field() {
         let mesh = ThermoelasticMesh::uniform_1d(3, 1.0, 1e-4);
         let thermal_bc = vec![
             BoundaryCondition::new(0, 50.0),
             BoundaryCondition::new(3, 50.0),
         ];
         let mech_bc = vec![BoundaryCondition::new(0, 0.0)];
-        let analysis =
-            ThermalStressAnalysis::new(mesh, thermal_bc, mech_bc, 200e9, 0.3, 12e-6, 50.0, 0.0);
-        let result = analysis.solve();
+        let analysis = ThermalStressAnalysis::new(
+            mesh, thermal_bc, mech_bc, 200e9, 0.3, 12e-6, 50.0, 0.0, 0.0,
+        );
+        let result = analysis.solve().expect("well-posed analysis");
         // All temperatures should be ~50 °C
         for &t in &result.temperatures {
             assert!((t - 50.0).abs() < 1.0);
@@ -898,6 +1051,7 @@ mod tests {
             0.3,
             12e-6,
             50.0,
+            0.0,
             0.0,
         );
         assert_eq!(analysis.coupling_mode, CouplingMode::OneWay);

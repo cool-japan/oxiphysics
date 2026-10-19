@@ -524,226 +524,9 @@ impl IdealGasEos {
 // 7. Shock tube problem (Sod) for validation
 // ---------------------------------------------------------------------------
 
-/// Initial conditions for one side of a shock tube.
-#[derive(Debug, Clone, Copy)]
-pub struct ShockTubeState {
-    /// Density (kg/m^3).
-    pub rho: f64,
-    /// Pressure (Pa).
-    pub pressure: f64,
-    /// Velocity (m/s).
-    pub velocity: f64,
-}
+mod shock_tube;
 
-/// Sod shock tube problem definition.
-#[derive(Debug, Clone)]
-pub struct SodShockTube {
-    /// Left state.
-    pub left: ShockTubeState,
-    /// Right state.
-    pub right: ShockTubeState,
-    /// Ratio of specific heats.
-    pub gamma: f64,
-    /// Domain length (m).
-    pub length: f64,
-    /// Diaphragm position (m).
-    pub diaphragm: f64,
-}
-
-impl SodShockTube {
-    /// Standard Sod problem.
-    pub fn standard() -> Self {
-        Self {
-            left: ShockTubeState {
-                rho: 1.0,
-                pressure: 1.0,
-                velocity: 0.0,
-            },
-            right: ShockTubeState {
-                rho: 0.125,
-                pressure: 0.1,
-                velocity: 0.0,
-            },
-            gamma: 1.4,
-            length: 1.0,
-            diaphragm: 0.5,
-        }
-    }
-
-    /// Compute the exact solution at time `t` and position `x`.
-    ///
-    /// Returns `(density, velocity, pressure)`.
-    pub fn exact_solution(&self, x: f64, t: f64) -> (f64, f64, f64) {
-        if t < f64::EPSILON {
-            if x < self.diaphragm {
-                return (self.left.rho, self.left.velocity, self.left.pressure);
-            } else {
-                return (self.right.rho, self.right.velocity, self.right.pressure);
-            }
-        }
-
-        let g = self.gamma;
-        let gm1 = g - 1.0;
-        let gp1 = g + 1.0;
-
-        let pl = self.left.pressure;
-        let pr = self.right.pressure;
-        let rl = self.left.rho;
-        let rr = self.right.rho;
-        let _ul = self.left.velocity;
-        let _ur = self.right.velocity;
-
-        let cl = (g * pl / rl).sqrt();
-        let cr = (g * pr / rr).sqrt();
-
-        // Iterative solver for the star-region pressure
-        let mut p_star = 0.5 * (pl + pr);
-        for _ in 0..50 {
-            let fl = if p_star > pl {
-                (p_star - pl) * (2.0 / (gp1 * rl) / (p_star + gm1 / gp1 * pl)).sqrt()
-            } else {
-                2.0 * cl / gm1 * ((p_star / pl).powf(gm1 / (2.0 * g)) - 1.0)
-            };
-            let fr = if p_star > pr {
-                (p_star - pr) * (2.0 / (gp1 * rr) / (p_star + gm1 / gp1 * pr)).sqrt()
-            } else {
-                2.0 * cr / gm1 * ((p_star / pr).powf(gm1 / (2.0 * g)) - 1.0)
-            };
-            let dfl = if p_star > pl {
-                let a = 2.0 / (gp1 * rl);
-                let b_val = gm1 / gp1 * pl;
-                (a / (b_val + p_star)).sqrt() * (1.0 - (p_star - pl) / (2.0 * (b_val + p_star)))
-            } else {
-                1.0 / (rl * cl) * (p_star / pl).powf(-(gp1) / (2.0 * g))
-            };
-            let dfr = if p_star > pr {
-                let a = 2.0 / (gp1 * rr);
-                let b_val = gm1 / gp1 * pr;
-                (a / (b_val + p_star)).sqrt() * (1.0 - (p_star - pr) / (2.0 * (b_val + p_star)))
-            } else {
-                1.0 / (rr * cr) * (p_star / pr).powf(-(gp1) / (2.0 * g))
-            };
-
-            let residual = fl + fr;
-            let deriv = dfl + dfr;
-            if deriv.abs() < 1e-15 {
-                break;
-            }
-            let dp = -residual / deriv;
-            p_star = (p_star + dp).max(1e-10);
-            if dp.abs() / p_star < 1e-10 {
-                break;
-            }
-        }
-
-        // Star-region velocity
-        let fl_star = if p_star > pl {
-            (p_star - pl) * (2.0 / (gp1 * rl) / (p_star + gm1 / gp1 * pl)).sqrt()
-        } else {
-            2.0 * cl / gm1 * ((p_star / pl).powf(gm1 / (2.0 * g)) - 1.0)
-        };
-        let fr_star = if p_star > pr {
-            (p_star - pr) * (2.0 / (gp1 * rr) / (p_star + gm1 / gp1 * pr)).sqrt()
-        } else {
-            2.0 * cr / gm1 * ((p_star / pr).powf(gm1 / (2.0 * g)) - 1.0)
-        };
-        let u_star = 0.5 * (fl_star - fr_star);
-
-        // Sample solution at x/t
-        let s = (x - self.diaphragm) / t;
-
-        if s < u_star {
-            // Left of contact
-            if p_star > pl {
-                // Left shock
-                let sl = -cl * ((gp1 / (2.0 * g)) * (p_star / pl) + gm1 / (2.0 * g)).sqrt();
-                if s < sl {
-                    (rl, 0.0, pl)
-                } else {
-                    let rho_star_l =
-                        rl * (p_star / pl + gm1 / gp1) / (gm1 / gp1 * p_star / pl + 1.0);
-                    (rho_star_l, u_star, p_star)
-                }
-            } else {
-                // Left rarefaction
-                let sh = -cl;
-                let st = u_star - cl * (p_star / pl).powf(gm1 / (2.0 * g));
-                if s < sh {
-                    (rl, 0.0, pl)
-                } else if s < st {
-                    let cs = 2.0 / gp1 * (cl + gm1 / 2.0 * s.abs().copysign(-s));
-                    // Simplified rarefaction fan
-                    let rho_fan = rl * (cs / cl).powf(2.0 / gm1);
-                    let p_fan = pl * (cs / cl).powf(2.0 * g / gm1);
-                    let u_fan = 2.0 / gp1 * (cl + s);
-                    (rho_fan, u_fan, p_fan)
-                } else {
-                    let rho_star_l = rl * (p_star / pl).powf(1.0 / g);
-                    (rho_star_l, u_star, p_star)
-                }
-            }
-        } else {
-            // Right of contact
-            if p_star > pr {
-                // Right shock
-                let sr = cr * ((gp1 / (2.0 * g)) * (p_star / pr) + gm1 / (2.0 * g)).sqrt();
-                if s > sr {
-                    (rr, 0.0, pr)
-                } else {
-                    let rho_star_r =
-                        rr * (p_star / pr + gm1 / gp1) / (gm1 / gp1 * p_star / pr + 1.0);
-                    (rho_star_r, u_star, p_star)
-                }
-            } else {
-                // Right rarefaction
-                let sh = cr;
-                let st = u_star + cr * (p_star / pr).powf(gm1 / (2.0 * g));
-                if s > sh {
-                    (rr, 0.0, pr)
-                } else if s > st {
-                    let cs = 2.0 / gp1 * (cr - gm1 / 2.0 * s);
-                    let rho_fan = rr * (cs / cr).powf(2.0 / gm1);
-                    let p_fan = pr * (cs / cr).powf(2.0 * g / gm1);
-                    let u_fan = 2.0 / gp1 * (-cr + s);
-                    (rho_fan, u_fan, p_fan)
-                } else {
-                    let rho_star_r = rr * (p_star / pr).powf(1.0 / g);
-                    (rho_star_r, u_star, p_star)
-                }
-            }
-        }
-    }
-
-    /// Generate initial SPH particles for the shock tube.
-    ///
-    /// Returns `(positions, densities, pressures, velocities)` as 1-D arrays.
-    pub fn generate_particles(
-        &self,
-        n_particles: usize,
-    ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
-        let dx = self.length / n_particles as f64;
-        let mut positions = Vec::with_capacity(n_particles);
-        let mut densities = Vec::with_capacity(n_particles);
-        let mut pressures = Vec::with_capacity(n_particles);
-        let mut velocities = Vec::with_capacity(n_particles);
-
-        for i in 0..n_particles {
-            let x = (i as f64 + 0.5) * dx;
-            positions.push(x);
-            if x < self.diaphragm {
-                densities.push(self.left.rho);
-                pressures.push(self.left.pressure);
-                velocities.push(self.left.velocity);
-            } else {
-                densities.push(self.right.rho);
-                pressures.push(self.right.pressure);
-                velocities.push(self.right.velocity);
-            }
-        }
-
-        (positions, densities, pressures, velocities)
-    }
-}
+pub use shock_tube::{ShockTubeState, SodShockTube};
 
 // ---------------------------------------------------------------------------
 // 8. Blast loading on structures (pressure–impulse)
@@ -1611,10 +1394,16 @@ mod tests {
     #[test]
     fn test_sod_exact_at_time() {
         let sod = SodShockTube::standard();
-        let (r, _u, p) = sod.exact_solution(0.25, 0.2);
-        // Left of diaphragm at time 0.2 should still be approximately left state
-        assert!(r > 0.1);
-        assert!(p > 0.01);
+        // x = 0.25 lies to the left of the rarefaction head
+        // (x = 0.5 - c_L t = 0.2634 at t = 0.2): the undisturbed left state.
+        let (r, u, p) = sod.exact_solution(0.25, 0.2);
+        assert_eq!((r, u, p), (1.0, 0.0, 1.0));
+        // The contact discontinuity moves to the right: the star region
+        // (p* = 0.30313, u* = 0.92745) lies to the right of the diaphragm.
+        let (r_star, u_star, p_star) = sod.exact_solution(0.6, 0.2);
+        assert!((r_star - 0.42632).abs() < 1e-4, "rho* = {r_star}");
+        assert!((u_star - 0.92745).abs() < 1e-4, "u* = {u_star}");
+        assert!((p_star - 0.30313).abs() < 1e-4, "p* = {p_star}");
     }
 
     #[test]

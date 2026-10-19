@@ -15,16 +15,20 @@ impl EquationOfState for MieGruneisenEos {
     fn pressure(&self, density: f64) -> f64 {
         self.pressure_from_energy(density, 0.0)
     }
+    /// Sound speed `c = √(dP/dρ)` of the zero-energy pressure curve `P(ρ)`.
+    ///
+    /// The slope is evaluated analytically (see
+    /// [`MieGruneisenEos::pressure_density_derivative`]), so `c² = P_H′ − Γ₀ (e_H + ρ e_H′)`
+    /// has the dimension of a squared velocity and `c(ρ₀) = c₀`.  For
+    /// `ρ ≤ ρ₀` (where the curve is identically zero) the reference sound speed
+    /// `c₀` is returned; where the curve softens (`dP/dρ ≤ 0`) the result is 0
+    /// and beyond the Hugoniot pole it is `+∞`.
     fn sound_speed(&self, density: f64) -> f64 {
-        let mu = density / self.rho0 - 1.0;
-        let denom = (1.0 - self.s * mu).powi(2);
-        if denom.abs() < f64::EPSILON {
+        if density <= self.rho0 {
             return self.c0;
         }
-        let ph = self.hugoniot_pressure(density);
-        let dp_drho =
-            self.c0 * self.c0 * (1.0 + 2.0 * self.s * mu) / (denom * denom) + self.gamma_0 * ph;
-        dp_drho.max(0.0).sqrt()
+        let slope = self.pressure_density_derivative(density);
+        if slope > 0.0 { slope.sqrt() } else { 0.0 }
     }
     fn density_from_pressure(&self, pressure: f64) -> f64 {
         let mut lo = self.rho0 * 0.5;

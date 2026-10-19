@@ -176,6 +176,11 @@ pub struct PlasmaParticle {
     pub density: f64,
     /// Thermal pressure P \[Pa\].
     pub pressure: f64,
+    /// Specific internal energy u \[J kg⁻¹\] of the gas, `P = (γ − 1) ρ u`.
+    ///
+    /// Evolved by [`MhdSph`]; [`MhdSph::add_particle`] initialises it from the
+    /// temperature when it is still zero.
+    pub internal_energy: f64,
     /// Local magnetic field B \[T\].
     pub magnetic_field: [f64; 3],
     /// Divergence-cleaning scalar ψ (Dedner).
@@ -211,6 +216,7 @@ impl PlasmaParticle {
             temperature,
             density,
             pressure,
+            internal_energy: 0.0,
             magnetic_field: [0.0; 3],
             psi: 0.0,
             smoothing_length: 1e-3,
@@ -245,182 +251,14 @@ impl PlasmaParticle {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MhdSph – Magnetohydrodynamics SPH
+// MhdSph – Magnetohydrodynamics SPH (implemented in the `mhd` submodule)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Magnetohydrodynamics SPH solver.
-///
-/// Implements:
-/// - Ideal and resistive induction equation ∂B/∂t = ∇×(v×B) − η∇²B
-/// - Lorentz force f = (1/μ₀)(∇×B)×B
-/// - Dedner hyperbolic/parabolic divergence cleaning for ∇·B = 0
-/// - SPH particle integration
-pub struct MhdSph {
-    /// List of plasma particles.
-    pub particles: Vec<PlasmaParticle>,
-    /// Resistivity η \[Ω m\].
-    pub resistivity: f64,
-    /// Dedner cleaning speed c_h \[m s⁻¹\].
-    pub dedner_ch: f64,
-    /// Dedner parabolic decay parameter c_p² \[m² s⁻²\].
-    pub dedner_cp2: f64,
-    /// Adiabatic index γ.
-    pub gamma: f64,
-}
+mod mhd;
+pub use mhd::MhdSph;
 
-impl MhdSph {
-    /// Create a new MHD-SPH solver.
-    pub fn new(resistivity: f64, gamma: f64) -> Self {
-        Self {
-            particles: Vec::new(),
-            resistivity,
-            dedner_ch: 1e4,
-            dedner_cp2: 1e8,
-            gamma,
-        }
-    }
-
-    /// Add a particle to the simulation.
-    pub fn add_particle(&mut self, p: PlasmaParticle) {
-        self.particles.push(p);
-    }
-
-    /// Compute the ideal induction equation RHS: ∇×(v×B).
-    ///
-    /// Returns dB/dt at particle `i` due to its neighbours (simplified SPH estimate).
-    pub fn induction_rhs(&self, i: usize) -> [f64; 3] {
-        let pi = &self.particles[i];
-        let mut db_dt = [0.0f64; 3];
-        for (j, pj) in self.particles.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            let r_ij = sub3(pi.position, pj.position);
-            let grad_w = cubic_kernel_grad(r_ij, pi.smoothing_length);
-            let vxb_i = cross3(pi.velocity, pi.magnetic_field);
-            let vxb_j = cross3(pj.velocity, pj.magnetic_field);
-            let vxb_avg = scale3(add3(vxb_i, vxb_j), 0.5);
-            // curl contribution: (m_j/ρ_j) * (vxB) × ∇W
-            let factor = if pj.density > 0.0 {
-                pj.mass / pj.density
-            } else {
-                0.0
-            };
-            let contrib = cross3(vxb_avg, grad_w);
-            db_dt = add3(db_dt, scale3(contrib, factor));
-        }
-        db_dt
-    }
-
-    /// Compute Lorentz force on particle `i`: f = (1/μ₀)(∇×B)×B.
-    ///
-    /// Uses the SPH curl operator ∇×B ≈ Σ_j (m_j/ρ_j)(B_j − B_i)×∇W_ij.
-    pub fn lorentz_force(&self, i: usize) -> [f64; 3] {
-        let pi = &self.particles[i];
-        let mut curl_b = [0.0f64; 3];
-        for (j, pj) in self.particles.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            let r_ij = sub3(pi.position, pj.position);
-            let grad_w = cubic_kernel_grad(r_ij, pi.smoothing_length);
-            let db = sub3(pj.magnetic_field, pi.magnetic_field);
-            let factor = if pj.density > 0.0 {
-                pj.mass / pj.density
-            } else {
-                0.0
-            };
-            let contrib = cross3(db, grad_w);
-            curl_b = add3(curl_b, scale3(contrib, factor));
-        }
-        // f = (1/μ₀) (∇×B) × B
-        let f = cross3(curl_b, pi.magnetic_field);
-        scale3(f, 1.0 / (MU_0 * pi.density.max(1e-300)))
-    }
-
-    /// Apply Dedner divergence cleaning: evolve ψ and damp B divergence.
-    ///
-    /// ∂ψ/∂t = −c_h² (∇·B) − ψ/τ_p
-    pub fn dedner_cleaning_step(&mut self, dt: f64) {
-        let decay = (-self.dedner_ch / self.dedner_cp2 * dt).exp();
-        for p in self.particles.iter_mut() {
-            // ψ decays parabolically; here we apply exponential damping
-            p.psi *= decay;
-            // Correct B: B ← B − ∇ψ·dt (simplified as scalar shift)
-            let b_mag = len3(p.magnetic_field);
-            if b_mag > 1e-30 {
-                let b_hat = norm3(p.magnetic_field);
-                let correction = p.psi * dt * self.dedner_ch;
-                p.magnetic_field = sub3(p.magnetic_field, scale3(b_hat, correction));
-            }
-        }
-    }
-
-    /// Compute resistive diffusion term η∇²B at particle `i`.
-    pub fn resistive_diffusion(&self, i: usize) -> [f64; 3] {
-        let pi = &self.particles[i];
-        let mut lap_b = [0.0f64; 3];
-        for (j, pj) in self.particles.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            let r_ij = sub3(pi.position, pj.position);
-            let r2 = dot3(r_ij, r_ij);
-            let h = pi.smoothing_length;
-            let w = cubic_kernel(r2.sqrt(), h);
-            let db = sub3(pj.magnetic_field, pi.magnetic_field);
-            let factor = if pj.density > 0.0 && r2 > 1e-30 {
-                2.0 * pj.mass / pj.density * w / r2
-            } else {
-                0.0
-            };
-            lap_b = add3(lap_b, scale3(db, factor));
-        }
-        scale3(lap_b, self.resistivity)
-    }
-
-    /// Advance the simulation by one Euler step of duration `dt`.
-    pub fn euler_step(&mut self, dt: f64) {
-        let n = self.particles.len();
-        let mut accels = vec![[0.0f64; 3]; n];
-        let mut db_dts = vec![[0.0f64; 3]; n];
-
-        for i in 0..n {
-            let f_lorentz = self.lorentz_force(i);
-            let f_resist = self.resistive_diffusion(i);
-            accels[i] = f_lorentz;
-            db_dts[i] = add3(self.induction_rhs(i), f_resist);
-        }
-
-        for (i, p) in self.particles.iter_mut().enumerate() {
-            p.velocity = add3(p.velocity, scale3(accels[i], dt));
-            p.position = add3(p.position, scale3(p.velocity, dt));
-            p.magnetic_field = add3(p.magnetic_field, scale3(db_dts[i], dt));
-        }
-        self.dedner_cleaning_step(dt);
-    }
-
-    /// Total kinetic energy of all particles \[J\].
-    pub fn total_kinetic_energy(&self) -> f64 {
-        self.particles.iter().map(|p| p.kinetic_energy()).sum()
-    }
-
-    /// Total magnetic energy Σ B²/(2μ₀) V_i \[J\].
-    pub fn total_magnetic_energy(&self) -> f64 {
-        self.particles
-            .iter()
-            .map(|p| {
-                let b2 = dot3(p.magnetic_field, p.magnetic_field);
-                let vol = if p.density > 0.0 {
-                    p.mass / p.density
-                } else {
-                    0.0
-                };
-                b2 / (2.0 * MU_0) * vol
-            })
-            .sum()
-    }
-}
+#[cfg(test)]
+mod mhd_tests;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PlasmaEquationOfState

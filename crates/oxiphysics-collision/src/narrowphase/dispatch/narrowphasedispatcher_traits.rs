@@ -13,8 +13,7 @@ use oxiphysics_geometry::{BoxShape, Capsule, Sphere};
 
 use super::box_manifold::box_box_manifold;
 use super::functions::{
-    convex_manifold_dispatch, gjk_fallback_dispatch, normal_from_b_to_a, sphere_capsule_dispatch,
-    type_name,
+    convex_manifold_dispatch, gjk_fallback_dispatch, sphere_capsule_dispatch, type_name,
 };
 use super::types::{NarrowPhaseDispatcher, NarrowPhaseResult, ShapeType};
 use crate::narrowphase::specialized;
@@ -48,7 +47,7 @@ impl Default for NarrowPhaseDispatcher {
                 match specialized::sphere_sphere(s1, ta, s2, tb) {
                     Some(contact) => {
                         let mut m = ContactManifold::new(pair);
-                        m.add_contact(normal_from_b_to_a(contact));
+                        m.add_contact(contact);
                         NarrowPhaseResult::contact(m)
                     }
                     None => NarrowPhaseResult::separated(),
@@ -127,7 +126,7 @@ impl Default for NarrowPhaseDispatcher {
                 match specialized::capsule_capsule(c1, ta, c2, tb) {
                     Some(contact) => {
                         let mut m = ContactManifold::new(pair);
-                        m.add_contact(normal_from_b_to_a(contact));
+                        m.add_contact(contact);
                         NarrowPhaseResult::contact(m)
                     }
                     None => NarrowPhaseResult::separated(),

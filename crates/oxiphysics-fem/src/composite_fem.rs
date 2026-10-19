@@ -5,7 +5,10 @@
 //!
 //! Provides ply/laminate data structures, the ABD stiffness matrix, mid-plane
 //! strain/curvature solution, ply-level stress recovery, and failure criteria
-//! (Tsai-Wu, Hashin).
+//! (Tsai-Wu, Hashin, first-ply failure from explicit ply strengths).
+
+use crate::analysis::dense::LuFactors;
+use crate::error::Error;
 
 // ---------------------------------------------------------------------------
 // Ply
@@ -104,9 +107,12 @@ pub fn reduced_stiffness(ply: &Ply) -> [[f64; 3]; 3] {
     [[q11, q12, 0.0], [q12, q22, 0.0], [0.0, 0.0, q66]]
 }
 
-/// 3×3 Reuter rotation matrix T for a given angle (radians).
+/// 3×3 **stress** transformation matrix T for a ply rotated by `angle_rad`.
 ///
-/// Maps material-frame Voigt strain to global-frame: `ε_global = T⁻¹ * ε_mat`.
+/// Maps the laminate-frame stress `[σₓ, σ_y, τ_xy]` to the material frame:
+/// `σ_mat = T · σ_global` (and back with `T⁻¹`).  Engineering strains
+/// `[εₓ, ε_y, γ_xy]` transform with a *different* matrix, see
+/// [`strain_transform_2d`]; using `T` on strains doubles the shear coupling.
 pub fn rotation_matrix_2d(angle_rad: f64) -> [[f64; 3]; 3] {
     let c = angle_rad.cos();
     let s = angle_rad.sin();
@@ -114,6 +120,24 @@ pub fn rotation_matrix_2d(angle_rad: f64) -> [[f64; 3]; 3] {
     let s2 = s * s;
     let cs = c * s;
     [[c2, s2, 2.0 * cs], [s2, c2, -2.0 * cs], [-cs, cs, c2 - s2]]
+}
+
+/// 3×3 **engineering-strain** transformation matrix `T_ε` for a ply rotated by
+/// `angle_rad`.
+///
+/// Maps the laminate-frame strain `[εₓ, ε_y, γ_xy]` to the material frame:
+/// `ε_mat = T_ε · ε_global` with
+/// `T_ε = [[c², s², cs], [s², c², −cs], [−2cs, 2cs, c² − s²]]`.
+/// It equals the inverse transpose of the stress transformation,
+/// `T_ε = (T⁻¹)ᵀ` with `T` = [`rotation_matrix_2d`], which is what makes the
+/// transformed stiffness `Q̄ = T⁻¹·Q·T⁻ᵀ` consistent with the ply recovery.
+pub fn strain_transform_2d(angle_rad: f64) -> [[f64; 3]; 3] {
+    let c = angle_rad.cos();
+    let s = angle_rad.sin();
+    let c2 = c * c;
+    let s2 = s * s;
+    let cs = c * s;
+    [[c2, s2, cs], [s2, c2, -cs], [-2.0 * cs, 2.0 * cs, c2 - s2]]
 }
 
 /// Invert a 3×3 matrix; returns zero matrix if singular.
@@ -174,8 +198,10 @@ fn transpose3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 
 /// Compute the transformed (global-frame) reduced stiffness matrix Q̄ for a ply.
 ///
-/// Uses the transformation `Q̄ = T⁻¹ Q T⁻ᵀ` where T is the Reuter rotation
-/// matrix corresponding to the ply fibre angle.
+/// Uses the transformation `Q̄ = T⁻¹ Q T⁻ᵀ` where `T` is the stress
+/// transformation matrix [`rotation_matrix_2d`] of the ply fibre angle; the
+/// right-hand factor `T⁻ᵀ` is the engineering-strain transformation
+/// [`strain_transform_2d`].
 pub fn transformed_stiffness(ply: &Ply) -> [[f64; 3]; 3] {
     let angle_rad = ply.angle_deg.to_radians();
     let t = rotation_matrix_2d(angle_rad);
@@ -324,9 +350,10 @@ pub fn ply_stresses(ply: &Ply, midplane_strain: [f64; 3], z: f64, curvature: [f6
         midplane_strain[1] + z * curvature[1],
         midplane_strain[2] + z * curvature[2],
     ];
-    // Transform to material frame: ε_mat = T * ε_global
+    // Transform to material frame: ε_mat = T_ε * ε_global (engineering strains
+    // transform with T_ε, not with the stress transformation).
     let angle_rad = ply.angle_deg.to_radians();
-    let t = rotation_matrix_2d(angle_rad);
+    let t = strain_transform_2d(angle_rad);
     let eps_mat = [
         t[0][0] * eps_global[0] + t[0][1] * eps_global[1] + t[0][2] * eps_global[2],
         t[1][0] * eps_global[0] + t[1][1] * eps_global[1] + t[1][2] * eps_global[2],
@@ -422,54 +449,234 @@ pub fn hashin_failure(
 }
 
 // ---------------------------------------------------------------------------
-// First-ply failure
+// Ply strengths and first-ply failure
 // ---------------------------------------------------------------------------
 
-/// Find the index of the first ply to fail under the given in-plane loads.
+/// In-plane strengths of one ply, all given as positive magnitudes (Pa).
 ///
-/// Uses the Tsai-Wu criterion with default interaction factors derived from
-/// the ply strengths.  Returns `None` if no ply fails.
+/// They are material data and must come from tests or a datasheet; they cannot
+/// be derived from the elastic constants.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlyStrength {
+    /// Longitudinal (fibre direction) tensile strength Xᵀ.
+    pub xt: f64,
+    /// Longitudinal compressive strength Xᶜ (magnitude).
+    pub xc: f64,
+    /// Transverse tensile strength Yᵀ.
+    pub yt: f64,
+    /// Transverse compressive strength Yᶜ (magnitude).
+    pub yc: f64,
+    /// In-plane shear strength S₁₂.
+    pub s12: f64,
+}
+
+impl PlyStrength {
+    /// Create a validated strength set.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidInput`] unless all five strengths are finite and positive.
+    pub fn new(xt: f64, xc: f64, yt: f64, yc: f64, s12: f64) -> Result<Self, Error> {
+        let strength = Self {
+            xt,
+            xc,
+            yt,
+            yc,
+            s12,
+        };
+        strength.validate()?;
+        Ok(strength)
+    }
+
+    /// Check that all five strengths are finite and positive.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidInput`] naming the first offending strength.
+    pub fn validate(&self) -> Result<(), Error> {
+        for (name, value) in [
+            ("Xt", self.xt),
+            ("Xc", self.xc),
+            ("Yt", self.yt),
+            ("Yc", self.yc),
+            ("S12", self.s12),
+        ] {
+            if !(value.is_finite() && value > 0.0) {
+                return Err(Error::InvalidInput(format!(
+                    "ply strength {name} must be finite and positive, got {value}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Tsai-Wu strength ratio `R` of a plane-stress state in the **material frame**.
 ///
-/// `loads = [N_x, N_y, N_xy, M_x, M_y, M_xy]` (forces/moments per unit width).
+/// `R` is the factor by which the stress `[σ₁, σ₂, τ₁₂]` can be scaled
+/// proportionally until the Tsai-Wu criterion is met, i.e. the positive root of
+/// `F(R·σ) = a·R² + b·R = 1` with the quadratic part
+/// `a = F₁₁σ₁² + F₂₂σ₂² + F₆₆τ₁₂² + 2F₁₂σ₁σ₂` and the linear part
+/// `b = F₁σ₁ + F₂σ₂`.  The coefficients follow from the strengths:
+/// `F₁ = 1/Xᵀ − 1/Xᶜ`, `F₂ = 1/Yᵀ − 1/Yᶜ`, `F₁₁ = 1/(XᵀXᶜ)`,
+/// `F₂₂ = 1/(YᵀYᶜ)`, `F₆₆ = 1/S₁₂²` and the customary `F₁₂ = −½√(F₁₁F₂₂)`.
+/// `R < 1` means the stress state already violates the criterion.
 ///
-/// Failure strengths are approximated from the ply elastic constants for
-/// this demo implementation; in production code they would be explicit inputs.
-pub fn first_ply_failure(lam: &Laminate, loads: [f64; 6]) -> Option<usize> {
+/// The root is evaluated as `R = 2 / (b + √(b² + 4a))`, which stays accurate as
+/// `a → 0`.  Returns `Ok(None)` when no positive `R` exists (zero stress, or a
+/// state that never reaches the criterion because `a = 0` and `b ≤ 0`).
+///
+/// # Errors
+///
+/// [`Error::InvalidInput`] for invalid strengths or a non-finite stress.
+pub fn tsai_wu_strength_ratio(
+    stress: [f64; 3],
+    strength: &PlyStrength,
+) -> Result<Option<f64>, Error> {
+    strength.validate()?;
+    if stress.iter().any(|value| !value.is_finite()) {
+        return Err(Error::InvalidInput(
+            "ply stress contains a non-finite component".to_string(),
+        ));
+    }
+    let f1 = 1.0 / strength.xt - 1.0 / strength.xc;
+    let f2 = 1.0 / strength.yt - 1.0 / strength.yc;
+    let f11 = 1.0 / (strength.xt * strength.xc);
+    let f22 = 1.0 / (strength.yt * strength.yc);
+    let f66 = 1.0 / (strength.s12 * strength.s12);
+    let f12 = -0.5 * (f11 * f22).sqrt();
+    let [s1, s2, t12] = stress;
+    // The quadratic form is positive semi-definite for this choice of F12.
+    let a = (f11 * s1 * s1 + f22 * s2 * s2 + f66 * t12 * t12 + 2.0 * f12 * s1 * s2).max(0.0);
+    let b = f1 * s1 + f2 * s2;
+    let denominator = b + (b * b + 4.0 * a).sqrt();
+    if denominator > 0.0 && denominator.is_finite() {
+        Ok(Some(2.0 / denominator))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Check that a ply has physical data (positive finite thickness and moduli,
+/// and a positive-definite reduced stiffness `1 − ν₁₂ν₂₁ > 0`).
+fn validate_ply(index: usize, ply: &Ply) -> Result<(), Error> {
+    let positive = |value: f64| value.is_finite() && value > 0.0;
+    if !(positive(ply.thickness)
+        && positive(ply.e1)
+        && positive(ply.e2)
+        && positive(ply.g12)
+        && ply.nu12.is_finite()
+        && ply.angle_deg.is_finite())
+    {
+        return Err(Error::InvalidInput(format!(
+            "ply {index} needs a positive finite thickness and moduli and a finite angle and \
+             Poisson ratio"
+        )));
+    }
+    if 1.0 - ply.nu12 * ply.nu21() <= 0.0 {
+        return Err(Error::InvalidInput(format!(
+            "ply {index} has ν12·ν21 >= 1: its reduced stiffness is not positive definite"
+        )));
+    }
+    Ok(())
+}
+
+/// Solve `ABD · [ε⁰, κ] = loads`, reporting a singular laminate.
+///
+/// `ABD` mixes the units N/m, N and N·m, so it is first scaled symmetrically by
+/// the square root of its diagonal; the singularity test of the LU
+/// factorisation is then independent of the ply thickness.
+fn solve_abd(abd: &[[f64; 6]; 6], loads: [f64; 6]) -> Result<[f64; 6], Error> {
+    let mut scale = [0.0_f64; 6];
+    for (i, entry) in scale.iter_mut().enumerate() {
+        let diagonal = abd[i][i];
+        if !(diagonal.is_finite() && diagonal > 0.0) {
+            return Err(Error::SingularSystem);
+        }
+        *entry = diagonal.sqrt();
+    }
+    let mut scaled = [0.0_f64; 36];
+    for i in 0..6 {
+        for j in 0..6 {
+            scaled[i * 6 + j] = abd[i][j] / (scale[i] * scale[j]);
+        }
+    }
+    let rhs: Vec<f64> = (0..6).map(|i| loads[i] / scale[i]).collect();
+    let solution = LuFactors::factor(&scaled, 6)?.solve(&rhs)?;
+    let mut result = [0.0_f64; 6];
+    for i in 0..6 {
+        result[i] = solution[i] / scale[i];
+    }
+    Ok(result)
+}
+
+/// First-ply failure of a laminate under the resultants
+/// `loads = [N_x, N_y, N_xy, M_x, M_y, M_xy]` (forces / moments per unit width),
+/// by the Tsai-Wu criterion with the explicit ply `strengths` (one
+/// [`PlyStrength`] per ply, in stacking order).
+///
+/// The laminate response is linear, so scaling the loads by `R` scales every ply
+/// stress by `R`.  For each ply the stress is evaluated on both surfaces (the
+/// strain varies linearly through the thickness and the Tsai-Wu index is convex,
+/// so its maximum lies on a surface) and converted into a strength ratio, see
+/// [`tsai_wu_strength_ratio`].  Returns the ply with the **minimum** strength
+/// ratio as `Some((ply_index, R))`: the laminate first fails in that ply when
+/// the loads are multiplied by `R` (`R < 1`: it fails already under the given
+/// loads, `R > 1`: safety margin).  Ties go to the lowest ply index.
+///
+/// Returns `Ok(None)` for an empty laminate or when no ply can reach the
+/// criterion under the given loads (for example zero loads).
+///
+/// # Errors
+///
+/// * [`Error::InvalidInput`] — `strengths.len()` differs from the number of
+///   plies, an invalid [`PlyStrength`] or [`Ply`], or non-finite loads;
+/// * [`Error::SingularSystem`] — the extension-bending matrix is singular.
+pub fn first_ply_failure(
+    lam: &Laminate,
+    strengths: &[PlyStrength],
+    loads: [f64; 6],
+) -> Result<Option<(usize, f64)>, Error> {
+    if strengths.len() != lam.plies.len() {
+        return Err(Error::InvalidInput(format!(
+            "first_ply_failure needs one PlyStrength per ply: {} strengths for {} plies",
+            strengths.len(),
+            lam.plies.len()
+        )));
+    }
+    if loads.iter().any(|value| !value.is_finite()) {
+        return Err(Error::InvalidInput(
+            "laminate loads contain a non-finite component".to_string(),
+        ));
+    }
+    for (index, (ply, strength)) in lam.plies.iter().zip(strengths).enumerate() {
+        validate_ply(index, ply)?;
+        strength.validate()?;
+    }
     if lam.plies.is_empty() {
-        return None;
+        return Ok(None);
     }
     let abd = laminate_abd_matrix(lam);
-    let sol = laminate_midplane_strains(&abd, loads);
+    let sol = solve_abd(&abd, loads)?;
     let eps0 = [sol[0], sol[1], sol[2]];
     let kappa = [sol[3], sol[4], sol[5]];
 
-    let total = lam.total_thickness();
-    let mut z = -total / 2.0;
-
-    for (idx, ply) in lam.plies.iter().enumerate() {
-        let z_mid = z + ply.thickness / 2.0;
-        let stress = ply_stresses(ply, eps0, z_mid, kappa);
-
-        // Approximate strength values from moduli for demonstration
-        let xt = ply.e1 * 0.01;
-        let xc = ply.e1 * 0.008;
-        let yt = ply.e2 * 0.005;
-        let yc = ply.e2 * 0.004;
-        let sh = ply.g12 * 0.02;
-
-        let f1 = 1.0 / xt - 1.0 / xc;
-        let f2 = 1.0 / yt - 1.0 / yc;
-        let f11 = 1.0 / (xt * xc);
-        let f22 = 1.0 / (yt * yc);
-        let f12 = -0.5 * (f11 * f22).sqrt();
-
-        let fi = tsai_wu_failure(stress, f1, f2, f12, f11, f22, sh);
-        if fi >= 1.0 {
-            return Some(idx);
+    let mut weakest: Option<(usize, f64)> = None;
+    let mut z = -lam.total_thickness() / 2.0;
+    for (index, (ply, strength)) in lam.plies.iter().zip(strengths).enumerate() {
+        let z_bottom = z;
+        let z_top = z + ply.thickness;
+        for surface in [z_bottom, z_top] {
+            let stress = ply_stresses(ply, eps0, surface, kappa);
+            if let Some(ratio) = tsai_wu_strength_ratio(stress, strength)?
+                && weakest.is_none_or(|(_, best)| ratio < best)
+            {
+                weakest = Some((index, ratio));
+            }
         }
-        z += ply.thickness;
+        z = z_top;
     }
-    None
+    Ok(weakest)
 }
 
 // ---------------------------------------------------------------------------
@@ -804,34 +1011,62 @@ mod tests {
 
     // --- first ply failure ---
 
+    fn carbon_epoxy_strength() -> PlyStrength {
+        PlyStrength {
+            xt: 1500e6,
+            xc: 1200e6,
+            yt: 50e6,
+            yc: 200e6,
+            s12: 70e6,
+        }
+    }
+
+    fn strengths_for(lam: &Laminate) -> Vec<PlyStrength> {
+        vec![carbon_epoxy_strength(); lam.plies.len()]
+    }
+
     #[test]
     fn test_first_ply_failure_returns_none_at_zero_load() {
         let lam = make_symmetric_cross_ply();
-        let result = first_ply_failure(&lam, [0.0; 6]);
+        let result = first_ply_failure(&lam, &strengths_for(&lam), [0.0; 6]).expect("valid input");
         assert!(result.is_none(), "No failure at zero loads");
     }
 
     #[test]
     fn test_first_ply_failure_returns_some_at_large_load() {
         let lam = make_symmetric_cross_ply();
-        // Extremely large axial load → failure
-        let result = first_ply_failure(&lam, [1e14, 0.0, 0.0, 0.0, 0.0, 0.0]);
-        assert!(result.is_some(), "Should fail under very large load");
+        // Extremely large axial load → failure (strength ratio far below 1)
+        let result = first_ply_failure(&lam, &strengths_for(&lam), [1e14, 0.0, 0.0, 0.0, 0.0, 0.0])
+            .expect("valid input");
+        let (_, ratio) = result.expect("Should fail under very large load");
+        assert!(ratio < 1.0, "strength ratio {ratio} must be below 1");
     }
 
     #[test]
     fn test_first_ply_failure_empty_laminate() {
         let lam = Laminate::new();
-        let result = first_ply_failure(&lam, [1e10; 6]);
+        let result = first_ply_failure(&lam, &[], [1e10; 6]).expect("valid input");
         assert!(result.is_none(), "Empty laminate → None");
     }
 
     #[test]
     fn test_first_ply_failure_index_in_range() {
         let lam = make_symmetric_cross_ply();
-        if let Some(idx) = first_ply_failure(&lam, [1e14, 0.0, 0.0, 0.0, 0.0, 0.0]) {
+        let result = first_ply_failure(&lam, &strengths_for(&lam), [1e14, 0.0, 0.0, 0.0, 0.0, 0.0])
+            .expect("valid input");
+        if let Some((idx, _)) = result {
             assert!(idx < lam.plies.len(), "Index must be in range");
         }
+    }
+
+    #[test]
+    fn test_first_ply_failure_needs_one_strength_per_ply() {
+        let lam = make_symmetric_cross_ply();
+        let too_few = [carbon_epoxy_strength()];
+        assert!(matches!(
+            first_ply_failure(&lam, &too_few, [1e3, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            Err(Error::InvalidInput(_))
+        ));
     }
 
     // --- angle-ply ---

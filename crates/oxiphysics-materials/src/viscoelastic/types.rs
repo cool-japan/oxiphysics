@@ -1094,17 +1094,43 @@ impl LogNormalRetardation {
     }
 }
 
+/// Exact-integration factors of one Maxwell branch over a step `dt`.
+///
+/// Returns `(exp(−x), (1 − exp(−x)) / x)` with `x = dt / tau`.  A branch with a
+/// non-positive (or undefined) relaxation time relaxes instantly: it keeps no
+/// stress memory and contributes nothing to the tangent, so `(0, 0)` is returned.
+fn maxwell_step_factors(dt: f64, tau: f64) -> (f64, f64) {
+    if tau.is_nan() || tau <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let x = dt / tau;
+    let decay = (-x).exp();
+    let gain = if x < 1.0e-8 {
+        1.0 - 0.5 * x + x * x / 6.0
+    } else {
+        -(-x).exp_m1() / x
+    };
+    (decay, gain)
+}
 impl GeneralizedMaxwell {
     /// Tensorial Voigt-6 viscoelastic stress update (component-wise scalar
     /// relaxation modulus, exact exponential integration per Maxwell branch).
     ///
-    /// Each branch partial stress relaxes from its previous value toward the
-    /// instantaneous branch stress `E_a · ε` over the step via the discrete
-    /// recurrence `h_new = exp(−dt/τ_a)·h_old + E_a·(1−exp(−dt/τ_a))·ε`. The
-    /// total stress is `σ = E_inf·ε + Σ_a h_new` and the consistent tangent is
-    /// the diagonal `D·I₆` with `D = E_inf + Σ_a E_a·(1−exp(−dt/τ_a))`.
+    /// Each Maxwell branch `a` carries a partial stress `h_a` obeying
+    /// `ḣ_a + h_a/τ_a = E_a·ε̇`.  With the total strain varying linearly over
+    /// the step (`ε̇ = Δε/dt`, `Δε = ε_{n+1} − ε_n`) this integrates exactly to
+    ///
+    /// `h_a(n+1) = exp(−x)·h_a(n) + E_a·g(x)·Δε`, `x = dt/τ_a`, `g(x) = (1 − exp(−x))/x`.
+    ///
+    /// The total stress is `σ = E_inf·ε_{n+1} + Σ_a h_a(n+1)` and the
+    /// consistent tangent `∂σ/∂ε_{n+1}` is the diagonal `D·I₆` with
+    /// `D = E_inf + Σ_a E_a·g(x_a)`.  For `dt → 0` the tangent tends to the
+    /// glassy modulus `E_inf + Σ_a E_a` (instantaneous response) and for
+    /// `dt → ∞` to the equilibrium modulus `E_inf`.  A branch with a
+    /// non-positive relaxation time relaxes instantly and carries no stress.
     ///
     /// * `strain` — total strain at t_{n+1} (Voigt-6).
+    /// * `prev_strain` — total strain at t_n (Voigt-6); zero for a virgin state.
     /// * `branch_stress` — per-branch history (partial) stresses at t_n; a
     ///   shorter/empty slice is treated as all-zero virgin history.
     /// * `dt` — time-step size (s).
@@ -1113,6 +1139,7 @@ impl GeneralizedMaxwell {
     pub fn voigt_stress_update(
         &self,
         strain: &[f64; 6],
+        prev_strain: &[f64; 6],
         branch_stress: &[[f64; 6]],
         dt: f64,
     ) -> ([f64; 6], [[f64; 6]; 6], Vec<[f64; 6]>) {
@@ -1127,19 +1154,14 @@ impl GeneralizedMaxwell {
             .enumerate()
         {
             let e_a = w * m.elastic_modulus;
-            let tau = m.relaxation_time();
-            let exp_a = if tau > 0.0 { (-dt / tau).exp() } else { 0.0 };
+            let (decay, gain) = maxwell_step_factors(dt, m.relaxation_time());
             let old = branch_stress.get(a).copied().unwrap_or([0.0; 6]);
             let mut h_new = [0.0_f64; 6];
-            for (k, (hk, (&ok, &sk))) in h_new
-                .iter_mut()
-                .zip(old.iter().zip(strain.iter()))
-                .enumerate()
-            {
-                *hk = exp_a * ok + e_a * (1.0 - exp_a) * sk;
+            for (k, hk) in h_new.iter_mut().enumerate() {
+                *hk = decay * old[k] + e_a * gain * (strain[k] - prev_strain[k]);
                 branch_sum[k] += *hk;
             }
-            d_scalar += e_a * (1.0 - exp_a);
+            d_scalar += e_a * gain;
             new_hist.push(h_new);
         }
         let mut stress = [0.0_f64; 6];
@@ -1163,16 +1185,17 @@ impl ConstitutiveModel for GeneralizedMaxwell {
         dt: f64,
     ) -> ConstitutiveResponse<ViscoelasticState> {
         let (stress, tangent, new_hist) =
-            self.voigt_stress_update(strain, &state.branch_stress, dt);
+            self.voigt_stress_update(strain, &state.prev_strain, &state.branch_stress, dt);
         ConstitutiveResponse {
             stress,
             tangent,
             state: ViscoelasticState {
                 branch_stress: new_hist,
+                prev_strain: *strain,
             },
         }
     }
     fn n_state_vars(&self) -> usize {
-        6 * self.n_elements()
+        6 * self.n_elements() + 6
     }
 }

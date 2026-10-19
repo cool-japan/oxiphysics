@@ -72,7 +72,7 @@ geometry — all pure Rust.
 - [x] VHACD approximate convex decomposition (`vhacd.rs`) — comparison baseline for the CoACD-style v2 gate
 - [x] 2D Delaunay + Voronoi-from-Delaunay (`computational_geometry`: `delaunay_2d`, `voronoi_from_delaunay`) — 3D/CDT/α-shapes are the open parts
 - [x] QEM simplification/decimation (`mesh_simplification`, `decimation`) — attribute-preserving v2 is the open part
-- [x] Simplified LSCM + Tutte parameterization (`mesh_param.rs`) — ABF++ and a proper sparse LSCM are the open parts
+- [x] Sparse LSCM + Tutte + harmonic-map parameterization (`mesh_param`; boundary loops in loop order) — ABF++ is the open part
 - [x] Medial axis transform (`medial_axis.rs`) — distinct structure from the planned straight skeleton
 - [x] Float-predicate mesh booleans/CSG (`mesh_boolean`, `csg`) — functional today; exact-arithmetic rebuild is the open part
 
@@ -106,12 +106,12 @@ geometry — all pure Rust.
   - [x] Empty-sphere audit over every tet of a 10⁴-point tetrahedralization (`verify_empty_sphere`; `random_cloud_10k_empty_sphere_audit`, env-gated `OXIPHYSICS_DELAUNAY_10K`)
 
 - [ ] ABF++ parameterization + LSCM v2
-  - **Goal:** disk-topology mesh UV area distortion < 5% vs current simplified LSCM.
+  - **Goal:** disk-topology mesh UV area distortion < 5% vs the current sparse LSCM.
   - **Design:** angle-based flattening with proper sparse solve. Sheffer 2005.
-  - Verified: `mesh_param.rs` has simplified LSCM + Tutte (see Completed); ABF is missing.
+  - Verified: `mesh_param` has sparse LSCM (`lscm_solve`) + Tutte + harmonic maps (see Completed); ABF is missing.
   - [ ] ABF++ angle-space optimization (Newton on the Lagrangian with sparse linear solves)
   - [ ] Angle-to-UV reconstruction (least-squares layout)
-  - [ ] LSCM v2 with a proper sparse least-squares solve replacing the simplified path
+  - [x] LSCM v2 with a proper sparse least-squares solve (`mesh_param::lscm_solve`, Jacobi-preconditioned CG on the normal equations)
   - [ ] Distortion metrics (area/angle) + disk-topology benchmark meshes; < 5% area-distortion gate
 
 ## v0.3.0 — Advanced operations
@@ -193,8 +193,8 @@ geometry — all pure Rust.
 Verified: 263 (critical 3, high 86, medium 150, low 24); 42 further raw findings pending second-round verification. IDs refer to the audit ledger; `[x]` = fixed.
 
 ### Critical (3)
-- [ ] **F1546** (critical, fabrication, easy/small) `implicit_geometry/functions.rs:202` — extract_isosurface uses garbage edge table and fan triangulation
-- [ ] **F1555** (critical, stub, easy/small) `level_set/functions.rs:123` — Level-set MC tri table truncated (223/256 cases empty); edge table corrupt
+- [x] **F1546** (critical, fabrication, easy/small) `implicit_geometry/functions.rs:202` — extract_isosurface uses garbage edge table and fan triangulation
+- [x] **F1555** (critical, stub, easy/small) `level_set/functions.rs:123` — Level-set MC tri table truncated (223/256 cases empty); edge table corrupt
 - [ ] **F1723** (critical, bug, medium/small) `torus.rs:620` — Torus quartic solver mixes Ferrari conventions; ray casts wrong/miss
 
 ### High (86)
@@ -221,30 +221,30 @@ Verified: 263 (critical 3, high 86, medium 150, low 24); 42 further raw findings
 - [ ] **F1499** (high, fabrication, easy/small) `convex_hull/types.rs:30` — ConvexHull Shape volume/COM sum vertex pairs; inertia is AABB box
 - [ ] **F1504** (high, fabrication, easy/small) `csg/functions.rs:261` — extract_mesh_simple emits flat z-plane triangles, not marching cubes
 - [ ] **F1511** (high, perf, medium/medium) `decimation/types.rs:88` — QEM decimation recomputes all quadrics/edges per collapse: O(F²)
-- [ ] **F1514** (high, bug, easy/small) `discrete_geometry.rs:218` — voronoi_area pairs cotangents with wrong edges; O(V·F) per call
-- [ ] **F1515** (high, bug, medium/medium) `discrete_geometry.rs:542` — Heat-method geodesics: explicit Euler without mass matrix, O(n·nnz) Gauss-Seidel
-- [ ] **F1516** (high, perf, medium/medium) `discrete_geometry.rs:599` — HeatMethodSolver Poisson Gauss-Seidel scans all triplets per vertex
-- [ ] **F1518** (high, fabrication, hard/medium) `discrete_geometry.rs:957` — Hodge decomposition co-exact part is a normal vector, not N×∇g
-- [ ] **F1521** (high, fabrication, medium/medium) `discrete_geometry.rs:1310` — ricci_flow_step ignores conformal factors; curvature never changes
-- [ ] **F1527** (high, fabrication, medium/medium) `geodesic/functions.rs:317` — heat_geodesic discards heat/divergence, returns BFS-tree path lengths
-- [ ] **F1536** (high, bug, medium/medium) `geodesic_geometry/functions.rs:408` — Heat-method divergence misses half the terms; Jacobi on singular Laplacian
-- [ ] **F1541** (high, fabrication, medium/medium) `implicit.rs:474` — SdfReinitialize is not fast marching: one 1-D min pass
-- [ ] **F1543** (high, bug, medium/medium) `implicit.rs:1003` — DualContouring: degenerate quads, no QEF, misses active cells
-- [ ] **F1544** (high, bug, medium/small) `implicit.rs:1068` — MarchingTetrahedra: 5-tet split covers 2/3 of cube; case table wrong
-- [ ] **F1545** (high, bug, medium/small) `implicit.rs:1154` — MarchingTetrahedra: degenerate tet leaves holes, normals hardcoded +Y
-- [ ] **F1547** (high, bug, easy/small) `implicit_geometry/sdfcone_traits.rs:16` — SdfCone reports points above the base as inside
-- [ ] **F1548** (high, bug, easy/trivial) `implicit_geometry/sdfhexagonalprism_traits.rs:20` — SdfHexagonalPrism reflection clamp inverted; outside points read inside
-- [ ] **F1549** (high, bug, medium/small) `implicit_geometry/sdfpyramid_traits.rs:34` — SdfPyramid has wrong sign and magnitude (above apex reads inside)
-- [ ] **F1550** (high, bug, easy/small) `implicit_geometry/sdftriangularprism_traits.rs:27` — SdfTriangularPrism never negative inside; points below prism read 0
-- [ ] **F1551** (high, fabrication, easy/small) `implicit_surfaces.rs:532` — marching_cubes fan-triangulates, has a corrupt edge table, and evaluates nodes 8x
-- [ ] **F1559** (high, bug, easy/small) `level_set/types.rs:572` — LevelSetField::mean_curvature: bogus φxy term, φxz/φyz hard-coded zero
-- [ ] **F1560** (high, fabrication, medium/medium) `level_set/types.rs:789` — fast_sweep discards its Godunov work and only propagates along x
-- [ ] **F1562** (high, fabrication, hard/large) `medial_axis.rs:65` — MedialAxis::from_points is a 5-point straight-line stub
-- [ ] **F1570** (high, bug, easy/small) `medial_axis.rs:689` — distance_transform_exact lower envelope always collapses
-- [ ] **F1575** (high, fabrication, easy/small) `medical_geometry.rs:925` — Medical marching_cubes fans active edges instead of using tri-table
-- [ ] **F1577** (high, missing-feature, hard/large) `mesh_boolean.rs:846` — mesh_boolean keeps/drops whole triangles; never splits along intersections
-- [ ] **F1580** (high, fabrication, medium/small) `mesh_param.rs:287` — LscmParameterization is fake LSCM; every v stays 0
-- [ ] **F1581** (high, bug, medium/medium) `mesh_param.rs:466` — Tutte/Harmonic boundary placed in vertex-id order, not loop order
+- [x] **F1514** (high, bug, easy/small) `discrete_geometry.rs:218` — voronoi_area pairs cotangents with wrong edges; O(V·F) per call
+- [x] **F1515** (high, bug, medium/medium) `discrete_geometry.rs:542` — Heat-method geodesics: explicit Euler without mass matrix, O(n·nnz) Gauss-Seidel
+- [x] **F1516** (high, perf, medium/medium) `discrete_geometry.rs:599` — HeatMethodSolver Poisson Gauss-Seidel scans all triplets per vertex
+- [x] **F1518** (high, fabrication, hard/medium) `discrete_geometry.rs:957` — Hodge decomposition co-exact part is a normal vector, not N×∇g
+- [x] **F1521** (high, fabrication, medium/medium) `discrete_geometry.rs:1310` — ricci_flow_step ignores conformal factors; curvature never changes
+- [x] **F1527** (high, fabrication, medium/medium) `geodesic/functions.rs:317` — heat_geodesic discards heat/divergence, returns BFS-tree path lengths
+- [x] **F1536** (high, bug, medium/medium) `geodesic_geometry/functions.rs:408` — Heat-method divergence misses half the terms; Jacobi on singular Laplacian
+- [x] **F1541** (high, fabrication, medium/medium) `implicit.rs:474` — SdfReinitialize is not fast marching: one 1-D min pass
+- [x] **F1543** (high, bug, medium/medium) `implicit.rs:1003` — DualContouring: degenerate quads, no QEF, misses active cells
+- [x] **F1544** (high, bug, medium/small) `implicit.rs:1068` — MarchingTetrahedra: 5-tet split covers 2/3 of cube; case table wrong
+- [x] **F1545** (high, bug, medium/small) `implicit.rs:1154` — MarchingTetrahedra: degenerate tet leaves holes, normals hardcoded +Y
+- [x] **F1547** (high, bug, easy/small) `implicit_geometry/sdfcone_traits.rs:16` — SdfCone reports points above the base as inside
+- [x] **F1548** (high, bug, easy/trivial) `implicit_geometry/sdfhexagonalprism_traits.rs:20` — SdfHexagonalPrism reflection clamp inverted; outside points read inside
+- [x] **F1549** (high, bug, medium/small) `implicit_geometry/sdfpyramid_traits.rs:34` — SdfPyramid has wrong sign and magnitude (above apex reads inside)
+- [x] **F1550** (high, bug, easy/small) `implicit_geometry/sdftriangularprism_traits.rs:27` — SdfTriangularPrism never negative inside; points below prism read 0
+- [x] **F1551** (high, fabrication, easy/small) `implicit_surfaces.rs:532` — marching_cubes fan-triangulates, has a corrupt edge table, and evaluates nodes 8x
+- [x] **F1559** (high, bug, easy/small) `level_set/types.rs:572` — LevelSetField::mean_curvature: bogus φxy term, φxz/φyz hard-coded zero
+- [x] **F1560** (high, fabrication, medium/medium) `level_set/types.rs:789` — fast_sweep discards its Godunov work and only propagates along x
+- [x] **F1562** (high, fabrication, hard/large) `medial_axis.rs:65` — MedialAxis::from_points is a 5-point straight-line stub
+- [x] **F1570** (high, bug, easy/small) `medial_axis.rs:689` — distance_transform_exact lower envelope always collapses
+- [x] **F1575** (high, fabrication, easy/small) `medical_geometry.rs:925` — Medical marching_cubes fans active edges instead of using tri-table
+- [x] **F1577** (high, missing-feature, hard/large) `mesh_boolean.rs:846` — mesh_boolean keeps/drops whole triangles; never splits along intersections
+- [x] **F1580** (high, fabrication, medium/small) `mesh_param.rs:287` — LscmParameterization is fake LSCM; every v stays 0
+- [x] **F1581** (high, bug, medium/medium) `mesh_param.rs:466` — Tutte/Harmonic boundary placed in vertex-id order, not loop order
 - [ ] **F1586** (high, bug, medium/medium) `mesh_processing/functions.rs:339` — qem_decimate collapses self-edges of dead faces, corrupting indices
 - [ ] **F1587** (high, bug, easy/small) `mesh_processing/functions.rs:588` — fix_non_manifold_vertices is always a no-op
 - [ ] **F1591** (high, bug, easy/trivial) `mesh_quality.rs:181` — Tet dihedral normals inconsistent: regular tet reports 109.47° max
@@ -260,16 +260,16 @@ Verified: 263 (critical 3, high 86, medium 150, low 24); 42 further raw findings
 - [ ] **F1616** (high, stub, medium/small) `nurbs_geometry.rs:1150` — NurbsTrimming::is_inside always returns true; trimming never applied
 - [ ] **F1635** (high, bug, easy/trivial) `point_cloud/types.rs:359` — Smallest-eigenvector power iteration fails for axis-aligned planar neighbourhoods
 - [ ] **F1642** (high, bug, medium/small) `quickhull.rs:742` — hull_inertia_tensor drops tetra cross terms; uses vertex mean not COM
-- [ ] **F1646** (high, bug, medium/medium) `remesh.rs:304` — Edge flips use stale edge map, invert winding, skip validity checks
-- [ ] **F1648** (high, bug, easy/trivial) `robot_geometry.rs:413` — jacobian_6dof_numerical angular rows negated and in body frame
-- [ ] **F1653** (high, fabrication, medium/small) `signed_distance_field/fmm.rs:231` — FMM is Manhattan BFS: eikonal quadratic dead, no signed propagation
-- [ ] **F1666** (high, bug, medium/small) `sphere.rs:824` — Welzl MES: depth-n recursion, no shuffle, sign-flipped circumsphere_3 centre
-- [ ] **F1667** (high, bug, easy/trivial) `sphere.rs:863` — circumsphere_3 returns mirrored centre; minimum_enclosing_sphere wrong
-- [ ] **F1668** (high, bug, medium/small) `sphere.rs:891` — circumsphere_4 fallback not enclosing; Welzl recursion depth n, unshuffled
-- [ ] **F1675** (high, bug, easy/small) `sphere_packing/types.rs:752` — HCP lattice uses cubic FCC cell, generated spheres overlap
-- [ ] **F1676** (high, bug, easy/small) `sphere_packing/types.rs:776` — HCP lattice uses cubic cell; generated spheres overlap
-- [ ] **F1682** (high, bug, medium/small) `subdivision.rs:349` — Butterfly stencil weights sum to 7/8, not affine invariant
-- [ ] **F1684** (high, bug, medium/small) `subdivision.rs:541` — Catmull-Clark applies interior rule to boundary/corner vertices
+- [x] **F1646** (high, bug, medium/medium) `remesh.rs:304` — Edge flips use stale edge map, invert winding, skip validity checks
+- [x] **F1648** (high, bug, easy/trivial) `robot_geometry.rs:413` — jacobian_6dof_numerical angular rows negated and in body frame
+- [x] **F1653** (high, fabrication, medium/small) `signed_distance_field/fmm.rs:231` — FMM is Manhattan BFS: eikonal quadratic dead, no signed propagation
+- [x] **F1666** (high, bug, medium/small) `sphere.rs:824` — Welzl MES: depth-n recursion, no shuffle, sign-flipped circumsphere_3 centre
+- [x] **F1667** (high, bug, easy/trivial) `sphere.rs:863` — circumsphere_3 returns mirrored centre; minimum_enclosing_sphere wrong
+- [x] **F1668** (high, bug, medium/small) `sphere.rs:891` — circumsphere_4 fallback not enclosing; Welzl recursion depth n, unshuffled
+- [x] **F1675** (high, bug, easy/small) `sphere_packing/types.rs:752` — HCP lattice uses cubic FCC cell, generated spheres overlap
+- [x] **F1676** (high, bug, easy/small) `sphere_packing/types.rs:776` — HCP lattice uses cubic cell; generated spheres overlap
+- [x] **F1682** (high, bug, medium/small) `subdivision.rs:349` — Butterfly stencil weights sum to 7/8, not affine invariant
+- [x] **F1684** (high, bug, medium/small) `subdivision.rs:541` — Catmull-Clark applies interior rule to boundary/corner vertices
 - [ ] **F1687** (high, bug, easy/trivial) `swept/functions.rs:155` — Swept sphere TOI returns exit time/None when initially overlapping
 - [ ] **F1689** (high, bug, easy/trivial) `swept/functions.rs:440` — capsule_capsule_toi bisects non-monotone distance, tunnels through contacts
 - [ ] **F1690** (high, bug, medium/small) `swept/functions.rs:878` — ccd_sphere_vs_capsule samples only t=0.5/1, misses contacts

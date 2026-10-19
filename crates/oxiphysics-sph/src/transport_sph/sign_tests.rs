@@ -261,17 +261,61 @@ fn advection_sph_artificial_diffusion_damps_peak() {
 }
 
 #[test]
-fn advection_sph_convective_term_transports_downstream() {
-    // c increases with x and the flow is +x: ∂c/∂t = −v ∂c/∂x < 0 at the left particle.
-    let mut particles = peak_triple();
+fn advection_sph_back_tracing_transports_a_ramp_downstream() {
+    // c = 2x with the flow along +x and fixed particles: ∂c/∂t = −v ∂c/∂x = −2 per
+    // second.  Back-tracing to x − v Δt (Shepard interpolation with the cubic kernel)
+    // reproduces this to within a few per cent on an interior particle.
+    let (mut particles, centre) = lattice(7, 0.05, 1000.0, |x| (2.0 * x[0], 300.0));
     for p in &mut particles {
         p.velocity = [1.0, 0.0, 0.0];
     }
     let adv = AdvectionSPH::new(0.01, 0.0, true);
-    let left = adv.advect_scalar(&particles, 0, super::cubic_kernel, cubic_kernel_grad);
-    let right = adv.advect_scalar(&particles, 2, super::cubic_kernel, cubic_kernel_grad);
-    assert!(left < 0.0, "upstream flank must lose scalar: {left}");
-    assert!(right > 0.0, "downstream flank must gain scalar: {right}");
+    let rate = adv.advect_scalar(&particles, centre, super::cubic_kernel, cubic_kernel_grad);
+    assert!(
+        rel_err(rate, -2.0) < 0.03,
+        "back-traced rate {rate} vs −v ∂c/∂x = −2"
+    );
+    // The same ramp advected against the flow gains scalar.
+    for p in &mut particles {
+        p.velocity = [-1.0, 0.0, 0.0];
+    }
+    let reversed = adv.advect_scalar(&particles, centre, super::cubic_kernel, cubic_kernel_grad);
+    assert!(
+        rel_err(reversed, 2.0) < 0.03,
+        "reversed flow rate {reversed} vs +2"
+    );
+}
+
+#[test]
+fn advection_sph_without_semi_lagrangian_flag_has_no_convective_term() {
+    // Lagrangian particles carry the scalar with them: without artificial diffusion the
+    // rate vanishes even though the velocity and the gradient are non-zero.
+    let (mut particles, centre) = lattice(7, 0.05, 1000.0, |x| (2.0 * x[0], 300.0));
+    for p in &mut particles {
+        p.velocity = [1.0, 0.0, 0.0];
+    }
+    let lagrangian = AdvectionSPH::new(0.01, 0.0, false);
+    let rate = lagrangian.advect_scalar(&particles, centre, super::cubic_kernel, cubic_kernel_grad);
+    assert_eq!(rate, 0.0);
+    // The flag matters: the back-traced scheme sees the ramp.
+    let traced = AdvectionSPH::new(0.01, 0.0, true);
+    let traced_rate =
+        traced.advect_scalar(&particles, centre, super::cubic_kernel, cubic_kernel_grad);
+    assert!(traced_rate < -1.0);
+    // With artificial diffusion a Lagrangian particle only feels the Laplacian of a
+    // quadratic profile, which is positive (the profile is convex) for c = x².
+    let (mut convex, centre) = lattice(7, 0.05, 1000.0, |x| (x[0] * x[0], 300.0));
+    for p in &mut convex {
+        p.velocity = [1.0, 0.0, 0.0];
+    }
+    let diffusive = AdvectionSPH::new(0.01, 1.0, false);
+    let smoothing =
+        diffusive.advect_scalar(&convex, centre, super::cubic_kernel, cubic_kernel_grad);
+    // ε_art |v| h ∇²c = 1 · 1 · 0.0625 · 2
+    assert!(
+        rel_err(smoothing, 0.125) < 0.08,
+        "artificial diffusion rate {smoothing} vs 0.125"
+    );
 }
 
 #[test]

@@ -11,10 +11,11 @@
 //! An optional motor can drive any axis toward a target velocity or position.
 
 use oxiphysics_core::BodyHandle;
-use oxiphysics_core::math::{Real, Vec3};
+use oxiphysics_core::math::{Mat3, Quat, Real, Vec3};
 use oxiphysics_rigid::RigidBodySet;
 
 use crate::traits::Constraint;
+use crate::{Error, Result};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MotorConfig
@@ -23,9 +24,13 @@ use crate::traits::Constraint;
 /// Configuration for a motor on one DOF axis.
 #[derive(Debug, Clone)]
 pub struct MotorConfig {
-    /// Target velocity for this axis (m/s or rad/s).
+    /// Target velocity for this axis (m/s or rad/s): the rate of change of the
+    /// joint coordinate, i.e. the velocity of body B relative to body A along
+    /// (about) the axis.  A positive target moves the coordinate towards its
+    /// upper limit.
     pub target_velocity: f64,
-    /// Maximum force/torque for this axis (N or N·m).
+    /// Maximum force/torque for this axis (N or N·m); the motor impulse of one
+    /// step is limited to `max_force·dt`.  Must not be negative.
     pub max_force: f64,
     /// Simple proportional gain for velocity error.
     pub gain: f64,
@@ -49,10 +54,16 @@ impl MotorConfig {
 /// Per-axis configuration for a 6-DOF constraint.
 #[derive(Debug, Clone)]
 pub struct AxisConfig {
-    /// If `true`, this axis is rigidly locked (zero relative motion).
+    /// If `true`, this axis is rigidly locked: its joint coordinate is held at
+    /// zero.  A motor and a limit on a locked axis are ignored.
     pub locked: bool,
-    /// Optional `(min, max)` limit for this axis.
+    /// Optional `(min, max)` limit on the joint coordinate of this axis
+    /// (metres for a linear axis, radians for an angular one).
     /// Ignored when `locked == true`.
+    ///
+    /// The bounds are used in ascending order; a pair containing NaN is
+    /// ignored.  Prefer [`SixDofConstraint::set_linear_limit`] /
+    /// [`SixDofConstraint::set_angular_limit`], which reject such pairs.
     pub limited: Option<(f64, f64)>,
     /// Optional motor configuration.
     pub motor: Option<MotorConfig>,
@@ -110,6 +121,41 @@ impl AxisConfig {
 /// - `angular[0]` → rotation about local X
 /// - `angular[1]` → rotation about local Y
 /// - `angular[2]` → rotation about local Z
+///
+/// # Joint coordinates
+///
+/// Every degree of freedom has a joint coordinate that describes body B
+/// relative to body A, along (or about) the corresponding local axis of A:
+///
+/// - a linear coordinate is the displacement `(anchor_b − anchor_a)·axis`
+///   (metres), zero when the two anchors coincide along the axis,
+/// - an angular coordinate is the component, along the axis, of the rotation
+///   vector of `rot_a⁻¹·rot_b·ref⁻¹` (radians), where `ref` is the *reference
+///   rotation*: the relative orientation `rot_a⁻¹·rot_b` the joint was in when
+///   it was first prepared (or the one set with
+///   [`with_reference_rotation`](SixDofConstraint::with_reference_rotation)).
+///   All angular coordinates are therefore zero in the initial configuration.
+///
+/// A locked axis keeps its coordinate at zero, a limited axis keeps it inside
+/// `[min, max]` and a motor drives its rate of change (the relative velocity
+/// of B with respect to A along the axis) to the motor's target velocity.
+///
+/// # Limits
+///
+/// A limit is a one-sided velocity constraint: the coordinate may approach a
+/// bound by at most the remaining distance in one step (so it stops exactly at
+/// the bound instead of overshooting), and beyond a bound it may not move
+/// further out.  A violated limit is brought back by the position pass
+/// ([`solve_position`](Constraint::solve_position)), which moves the bodies
+/// without giving them a velocity.  A lock, in contrast, is a two-sided
+/// constraint that also uses a Baumgarte velocity.
+///
+/// # Impulse sign convention
+///
+/// A positive row impulse pushes body B along `+axis` (or turns it about
+/// `+axis`) and body A the opposite way, so it increases the coordinate.  The
+/// accumulated impulse of a lower limit is therefore `≥ 0` and that of an upper
+/// limit `≤ 0`.
 #[derive(Debug, Clone)]
 pub struct SixDofConstraint {
     /// Handle of body A.
@@ -125,23 +171,189 @@ pub struct SixDofConstraint {
     /// Per-axis config for the three angular DOFs.
     pub angular: [AxisConfig; 3],
 
-    // ── Cached Jacobian data ──────────────────────────────────────────────────
+    // ── Cached solver data ────────────────────────────────────────────────────
     /// World-space offset from body A CoM to anchor (updated each `prepare`).
     r_a: Vec3,
     /// World-space offset from body B CoM to anchor (updated each `prepare`).
     r_b: Vec3,
-    /// Accumulated impulses for each linear axis.
-    lambda_linear: [Real; 3],
-    /// Accumulated impulses for each angular axis.
-    lambda_angular: [Real; 3],
-    /// Effective masses for each linear axis.
-    eff_mass_linear: [Real; 3],
-    /// Effective masses for each angular axis.
-    eff_mass_angular: [Real; 3],
-    /// Velocity biases for position correction (linear).
-    bias_linear: [Real; 3],
-    /// Velocity biases for position correction (angular).
-    bias_angular: [Real; 3],
+    /// Relative orientation `rot_a⁻¹·rot_b` the angular coordinates are
+    /// measured from (captured on the first `prepare`).
+    reference_rotation: Option<Quat>,
+    /// Solver rows of the six DOFs: three linear, then three angular.
+    rows: [DofRow; 6],
+    /// Joint coordinates measured by the latest `prepare`.
+    coordinates: [Real; 6],
+    /// Size of the velocity update of the latest velocity solve.
+    last_residual: Real,
+}
+
+/// Baumgarte factor for positional correction.
+const BAUMGARTE_6DOF: f64 = 0.2;
+/// Largest linear correction (m) one position pass applies to a single row.
+const MAX_LINEAR_CORRECTION: f64 = 0.2;
+/// Largest angular correction (rad, about 8°) one position pass applies to a
+/// single row.
+const MAX_ANGULAR_CORRECTION: f64 = 0.14;
+/// Errors below this size are not corrected by the position pass.
+const MIN_POSITION_ERROR: f64 = 1e-12;
+/// Smallest inverse effective mass a row needs to be solved.
+const MIN_INVERSE_EFFECTIVE_MASS: f64 = 1e-12;
+/// Smallest SOR factor accepted by [`Constraint::solve_velocity_relaxed`].
+const MIN_SOR_OMEGA: f64 = 0.01;
+/// Largest SOR factor accepted by [`Constraint::solve_velocity_relaxed`].
+const MAX_SOR_OMEGA: f64 = 1.99;
+
+/// One one-sided limit row of a DOF.
+#[derive(Debug, Clone, Copy, Default)]
+struct LimitRow {
+    /// Whether the limit exists and is finite.
+    enabled: bool,
+    /// Velocity bound the row enforces: the coordinate rate must stay above
+    /// (lower limit) or below (upper limit) this value.
+    target: Real,
+    /// Accumulated impulse of the row (`≥ 0` for a lower, `≤ 0` for an upper
+    /// limit).
+    lambda: Real,
+}
+
+/// Solver data of one degree of freedom.
+#[derive(Debug, Clone, Copy)]
+struct DofRow {
+    /// World-space direction of the DOF (a local axis of body A).
+    axis: Vec3,
+    /// Effective mass `1 / K` of the DOF, `0` if no row is active or `K` vanishes.
+    eff_mass: Real,
+    /// Whether the DOF is locked.
+    locked: bool,
+    /// Rate the lock row drives the coordinate to (Baumgarte).
+    lock_target: Real,
+    /// Accumulated impulse of the lock row.
+    lock_lambda: Real,
+    /// Lower limit row.
+    lower: LimitRow,
+    /// Upper limit row.
+    upper: LimitRow,
+    /// Whether a motor drives the DOF.
+    motor: bool,
+    /// Rate the motor drives the coordinate to.
+    motor_target: Real,
+    /// Largest motor force or torque (non-negative).
+    motor_max_force: Real,
+    /// Accumulated impulse of the motor row.
+    motor_lambda: Real,
+}
+
+impl DofRow {
+    /// A DOF without any active row.
+    fn idle() -> Self {
+        Self {
+            axis: Vec3::zeros(),
+            eff_mass: 0.0,
+            locked: false,
+            lock_target: 0.0,
+            lock_lambda: 0.0,
+            lower: LimitRow::default(),
+            upper: LimitRow::default(),
+            motor: false,
+            motor_target: 0.0,
+            motor_max_force: 0.0,
+            motor_lambda: 0.0,
+        }
+    }
+}
+
+/// State of one body that the constraint needs.
+#[derive(Debug, Clone, Copy)]
+struct Pose {
+    position: Vec3,
+    rotation: Quat,
+    inv_mass: Real,
+    inv_inertia: Mat3,
+}
+
+impl Pose {
+    /// Read the pose of `handle`, `None` if the body does not exist.
+    fn read(bodies: &RigidBodySet, handle: BodyHandle) -> Option<Self> {
+        let body = bodies.get(handle)?;
+        Some(Self {
+            position: body.transform.position,
+            rotation: body.transform.rotation,
+            inv_mass: body.inverse_mass,
+            inv_inertia: body.world_inverse_inertia,
+        })
+    }
+}
+
+/// The geometry shared by all rows of one velocity solve.
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    body_a: BodyHandle,
+    body_b: BodyHandle,
+    r_a: Vec3,
+    r_b: Vec3,
+}
+
+/// A rotation as the vector `angle·axis` along the shortest path.
+fn rotation_vector(rotation: &Quat) -> Vec3 {
+    let (w, v) = (rotation.w, Vec3::new(rotation.i, rotation.j, rotation.k));
+    // q and -q are the same rotation: take the one with w >= 0 (angle <= π).
+    let (w, v) = if w < 0.0 { (-w, -v) } else { (w, v) };
+    let sin_half = v.norm();
+    if sin_half < 1e-12 {
+        return v * 2.0;
+    }
+    v * (2.0 * sin_half.atan2(w) / sin_half)
+}
+
+/// Project `x` onto `[lo, hi]`; never panics on inverted or NaN bounds.
+fn project(x: Real, lo: Real, hi: Real) -> Real {
+    x.max(lo).min(hi)
+}
+
+/// `(min, max)` of a limit pair in ascending order, `None` if a bound is NaN.
+fn ordered_limits(limited: Option<(f64, f64)>) -> Option<(f64, f64)> {
+    let (a, b) = limited?;
+    if a.is_nan() || b.is_nan() {
+        return None;
+    }
+    Some((a.min(b), a.max(b)))
+}
+
+/// The magnitude of a force limit (a NaN limit counts as 0), so the clamp of a
+/// motor impulse always has `-limit <= limit`.
+fn sanitized_force(max_force: f64) -> f64 {
+    let magnitude = max_force.abs();
+    if magnitude.is_nan() { 0.0 } else { magnitude }
+}
+
+/// Validate the bounds of a limit.
+fn check_limits(min: f64, max: f64) -> Result<()> {
+    if min.is_nan() || max.is_nan() || min > max {
+        return Err(Error::joint_limits(min, max));
+    }
+    Ok(())
+}
+
+/// Validate a motor configuration.
+fn check_motor(motor: &MotorConfig) -> Result<()> {
+    if motor.target_velocity.is_nan() {
+        return Err(Error::controller("motor target velocity is NaN"));
+    }
+    if motor.max_force.is_nan() || motor.max_force < 0.0 {
+        return Err(Error::controller(format!(
+            "motor max_force must be non-negative, got {}",
+            motor.max_force
+        )));
+    }
+    Ok(())
+}
+
+/// Validate an axis index.
+fn check_axis(axis: usize) -> Result<()> {
+    if axis >= 3 {
+        return Err(Error::config("axis", axis as f64, 0.0, 2.0));
+    }
+    Ok(())
 }
 
 impl SixDofConstraint {
@@ -156,12 +368,10 @@ impl SixDofConstraint {
             angular: std::array::from_fn(|_| AxisConfig::free()),
             r_a: Vec3::zeros(),
             r_b: Vec3::zeros(),
-            lambda_linear: [0.0; 3],
-            lambda_angular: [0.0; 3],
-            eff_mass_linear: [0.0; 3],
-            eff_mass_angular: [0.0; 3],
-            bias_linear: [0.0; 3],
-            bias_angular: [0.0; 3],
+            reference_rotation: None,
+            rows: [DofRow::idle(); 6],
+            coordinates: [0.0; 6],
+            last_residual: 0.0,
         }
     }
 
@@ -170,6 +380,32 @@ impl SixDofConstraint {
         self.anchor_a = anchor_a;
         self.anchor_b = anchor_b;
         self
+    }
+
+    /// Fix the relative orientation `rot_a⁻¹·rot_b` that the angular
+    /// coordinates (locks, limits, motors) are measured from.
+    ///
+    /// Without it the joint uses the relative orientation of its bodies at the
+    /// first [`prepare`](Constraint::prepare), so the initial configuration has
+    /// all angular coordinates at zero.  Pass the identity to measure angles
+    /// from the configuration in which the two body frames are aligned.
+    pub fn with_reference_rotation(mut self, reference: Quat) -> Self {
+        self.reference_rotation = Some(reference);
+        self
+    }
+
+    /// The reference rotation of the angular coordinates, `None` until it is
+    /// set or captured by the first `prepare`.
+    pub fn reference_rotation(&self) -> Option<Quat> {
+        self.reference_rotation
+    }
+
+    /// The joint coordinates measured by the latest `prepare`: the three linear
+    /// displacements in metres followed by the three angles in radians, each
+    /// along (about) the local axis of body A.  All zero before the first
+    /// `prepare` and while a body of the constraint is missing.
+    pub fn coordinates(&self) -> [f64; 6] {
+        self.coordinates
     }
 
     /// Lock the linear DOF along the given axis (0=X, 1=Y, 2=Z).
@@ -188,28 +424,52 @@ impl SixDofConstraint {
         self.angular[axis] = AxisConfig::locked();
     }
 
-    /// Set a linear limit `[min, max]` for the given axis.
-    pub fn set_linear_limit(&mut self, axis: usize, min: f64, max: f64) {
-        assert!(axis < 3, "axis must be 0, 1, or 2");
+    /// Set a linear limit `[min, max]` (metres of the joint coordinate) for the
+    /// given axis.
+    ///
+    /// Fails with [`Error::InvalidJointLimits`] if `min > max` or a bound is
+    /// NaN, and with [`Error::ConfigurationError`] if `axis >= 3`.
+    pub fn set_linear_limit(&mut self, axis: usize, min: f64, max: f64) -> Result<()> {
+        check_axis(axis)?;
+        check_limits(min, max)?;
         self.linear[axis] = AxisConfig::limited(min, max);
+        Ok(())
     }
 
-    /// Set an angular limit `[min, max]` (radians) for the given axis.
-    pub fn set_angular_limit(&mut self, axis: usize, min: f64, max: f64) {
-        assert!(axis < 3, "axis must be 0, 1, or 2");
+    /// Set an angular limit `[min, max]` (radians of the joint coordinate) for
+    /// the given axis.
+    ///
+    /// Fails with [`Error::InvalidJointLimits`] if `min > max` or a bound is
+    /// NaN, and with [`Error::ConfigurationError`] if `axis >= 3`.
+    pub fn set_angular_limit(&mut self, axis: usize, min: f64, max: f64) -> Result<()> {
+        check_axis(axis)?;
+        check_limits(min, max)?;
         self.angular[axis] = AxisConfig::limited(min, max);
+        Ok(())
     }
 
     /// Attach a motor to a linear axis.
-    pub fn set_linear_motor(&mut self, axis: usize, motor: MotorConfig) {
-        assert!(axis < 3, "axis must be 0, 1, or 2");
+    ///
+    /// Fails with [`Error::ControllerError`] for a NaN target velocity or a
+    /// negative or NaN `max_force`, and with [`Error::ConfigurationError`] if
+    /// `axis >= 3`.
+    pub fn set_linear_motor(&mut self, axis: usize, motor: MotorConfig) -> Result<()> {
+        check_axis(axis)?;
+        check_motor(&motor)?;
         self.linear[axis].motor = Some(motor);
+        Ok(())
     }
 
     /// Attach a motor to an angular axis.
-    pub fn set_angular_motor(&mut self, axis: usize, motor: MotorConfig) {
-        assert!(axis < 3, "axis must be 0, 1, or 2");
+    ///
+    /// Fails with [`Error::ControllerError`] for a NaN target velocity or a
+    /// negative or NaN `max_force`, and with [`Error::ConfigurationError`] if
+    /// `axis >= 3`.
+    pub fn set_angular_motor(&mut self, axis: usize, motor: MotorConfig) -> Result<()> {
+        check_axis(axis)?;
+        check_motor(&motor)?;
         self.angular[axis].motor = Some(motor);
+        Ok(())
     }
 
     /// Create a fully-locked constraint (weld joint equivalent).
@@ -224,88 +484,240 @@ impl SixDofConstraint {
 
     // ── Jacobian helpers ──────────────────────────────────────────────────────
 
-    /// Compute the effective mass for a single constraint row.
-    ///
-    /// For a linear axis `d`:
+    /// Inverse effective mass of a linear row along `axis`:
     ///   k = inv_m_a + inv_m_b + (r_a×d)·I_a^{-1}·(r_a×d) + (r_b×d)·I_b^{-1}·(r_b×d)
-    fn effective_mass_linear(
-        inv_mass_a: f64,
-        inv_mass_b: f64,
-        inv_inertia_a: &oxiphysics_core::math::Mat3,
-        inv_inertia_b: &oxiphysics_core::math::Mat3,
-        r_a: &Vec3,
-        r_b: &Vec3,
-        axis: &Vec3,
-    ) -> f64 {
+    fn linear_inverse_mass(a: &Pose, b: &Pose, r_a: &Vec3, r_b: &Vec3, axis: &Vec3) -> f64 {
         let rn_a = r_a.cross(axis);
         let rn_b = r_b.cross(axis);
-        let k = inv_mass_a
-            + inv_mass_b
-            + rn_a.dot(&(inv_inertia_a * rn_a))
-            + rn_b.dot(&(inv_inertia_b * rn_b));
-        if k > 1e-12 { 1.0 / k } else { 0.0 }
+        a.inv_mass
+            + b.inv_mass
+            + rn_a.dot(&(a.inv_inertia * rn_a))
+            + rn_b.dot(&(b.inv_inertia * rn_b))
     }
 
-    /// Compute the effective mass for an angular constraint row.
-    ///
-    /// For an angular axis `d`:
+    /// Inverse effective mass of an angular row about `axis`:
     ///   k = d·I_a^{-1}·d + d·I_b^{-1}·d
-    fn effective_mass_angular(
-        inv_inertia_a: &oxiphysics_core::math::Mat3,
-        inv_inertia_b: &oxiphysics_core::math::Mat3,
-        axis: &Vec3,
-    ) -> f64 {
-        let k = axis.dot(&(inv_inertia_a * axis)) + axis.dot(&(inv_inertia_b * axis));
-        if k > 1e-12 { 1.0 / k } else { 0.0 }
+    fn angular_inverse_mass(a: &Pose, b: &Pose, axis: &Vec3) -> f64 {
+        axis.dot(&(a.inv_inertia * axis)) + axis.dot(&(b.inv_inertia * axis))
     }
 
-    /// The three world-space axes derived from body A's orientation.
-    fn world_axes(bodies: &RigidBodySet, handle: BodyHandle) -> Option<[Vec3; 3]> {
-        let body = bodies.get(handle)?;
-        let rot = body.transform.rotation;
-        Some([
-            rot * Vec3::new(1.0, 0.0, 0.0),
-            rot * Vec3::new(0.0, 1.0, 0.0),
-            rot * Vec3::new(0.0, 0.0, 1.0),
-        ])
+    /// The configuration of DOF `dof` (0..3 linear, 3..6 angular).
+    fn config(&self, dof: usize) -> &AxisConfig {
+        if dof < 3 {
+            &self.linear[dof]
+        } else {
+            &self.angular[dof - 3]
+        }
     }
 
-    /// Apply a single-row impulse along `axis` to bodies A and B.
-    fn apply_impulse_row(
+    /// The three world-space axes (local axes of body A) and the six joint
+    /// coordinates for the given poses.  Captures the reference rotation if it
+    /// is not known yet.
+    fn measure(&mut self, a: &Pose, b: &Pose) -> ([Vec3; 3], [Real; 6]) {
+        let axes = [
+            a.rotation * Vec3::new(1.0, 0.0, 0.0),
+            a.rotation * Vec3::new(0.0, 1.0, 0.0),
+            a.rotation * Vec3::new(0.0, 0.0, 1.0),
+        ];
+        let r_a = a.rotation * self.anchor_a;
+        let r_b = b.rotation * self.anchor_b;
+        let offset = (b.position + r_b) - (a.position + r_a);
+
+        // Rotation of B relative to A, in A's frame, beyond the reference.
+        let relative = a.rotation.inverse() * b.rotation;
+        let reference = *self.reference_rotation.get_or_insert(relative);
+        let angles = rotation_vector(&(relative * reference.inverse()));
+
+        let coordinates = [
+            offset.dot(&axes[0]),
+            offset.dot(&axes[1]),
+            offset.dot(&axes[2]),
+            angles.x,
+            angles.y,
+            angles.z,
+        ];
+        (axes, coordinates)
+    }
+
+    /// Residual position error of DOF `dof` for its current coordinate: the
+    /// coordinate itself for a locked DOF, the distance to the violated limit
+    /// (zero inside the limits) for a limited one.
+    fn position_error(&self, dof: usize, coordinate: Real) -> Real {
+        let config = self.config(dof);
+        if config.locked {
+            return coordinate;
+        }
+        let Some((min, max)) = ordered_limits(config.limited) else {
+            return 0.0;
+        };
+        if coordinate < min {
+            coordinate - min
+        } else if coordinate > max {
+            coordinate - max
+        } else {
+            0.0
+        }
+    }
+
+    /// Translate and rotate `handle` by a position-level impulse `linear` at
+    /// lever arm `r` (zero for a pure torque) and an angular impulse `angular`.
+    fn move_body(
         bodies: &mut RigidBodySet,
-        handle_a: BodyHandle,
-        handle_b: BodyHandle,
-        axis: Vec3,
-        r_a: Vec3,
-        r_b: Vec3,
-        lambda: f64,
+        handle: BodyHandle,
+        linear: &Vec3,
+        r: &Vec3,
+        angular: &Vec3,
+        sign: Real,
     ) {
-        let impulse = axis * lambda;
-        if let Some(b) = bodies.get_mut(handle_a) {
+        let Some(body) = bodies.get_mut(handle) else {
+            return;
+        };
+        body.transform.position += linear * (sign * body.inverse_mass);
+        let turn = body.world_inverse_inertia * (r.cross(linear) + angular) * sign;
+        if turn.norm_squared() > 0.0 {
+            body.transform.rotation = Quat::from_scaled_axis(turn) * body.transform.rotation;
+            body.update_world_inertia();
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Row solving
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Rate of change of the coordinate of DOF `dof`: the velocity of B relative to
+/// A along (about) `axis`.
+fn coordinate_rate(bodies: &RigidBodySet, frame: &Frame, dof: usize, axis: &Vec3) -> Option<Real> {
+    let a = bodies.get(frame.body_a)?;
+    let b = bodies.get(frame.body_b)?;
+    Some(if dof < 3 {
+        let point_a = a.velocity + a.angular_velocity.cross(&frame.r_a);
+        let point_b = b.velocity + b.angular_velocity.cross(&frame.r_b);
+        (point_b - point_a).dot(axis)
+    } else {
+        (b.angular_velocity - a.angular_velocity).dot(axis)
+    })
+}
+
+/// Apply the row impulse `delta` of DOF `dof`: `+delta` on body B and `-delta`
+/// on body A, along (about) `axis`.
+fn apply_row_impulse(
+    bodies: &mut RigidBodySet,
+    frame: &Frame,
+    dof: usize,
+    axis: &Vec3,
+    delta: Real,
+) {
+    let impulse = axis * delta;
+    if let Some(b) = bodies.get_mut(frame.body_b) {
+        if dof < 3 {
             b.velocity += impulse * b.inverse_mass;
-            b.angular_velocity += b.world_inverse_inertia * r_a.cross(&impulse);
-        }
-        if let Some(b) = bodies.get_mut(handle_b) {
-            b.velocity -= impulse * b.inverse_mass;
-            b.angular_velocity -= b.world_inverse_inertia * r_b.cross(&impulse);
+            b.angular_velocity += b.world_inverse_inertia * frame.r_b.cross(&impulse);
+        } else {
+            b.angular_velocity += b.world_inverse_inertia * impulse;
         }
     }
+    if let Some(a) = bodies.get_mut(frame.body_a) {
+        if dof < 3 {
+            a.velocity -= impulse * a.inverse_mass;
+            a.angular_velocity -= a.world_inverse_inertia * frame.r_a.cross(&impulse);
+        } else {
+            a.angular_velocity -= a.world_inverse_inertia * impulse;
+        }
+    }
+}
 
-    /// Apply a pure angular impulse about `axis` to bodies A and B.
-    fn apply_angular_impulse_row(
-        bodies: &mut RigidBodySet,
-        handle_a: BodyHandle,
-        handle_b: BodyHandle,
-        axis: Vec3,
-        lambda: f64,
-    ) {
-        let torque_impulse = axis * lambda;
-        if let Some(b) = bodies.get_mut(handle_a) {
-            b.angular_velocity += b.world_inverse_inertia * torque_impulse;
+/// What a row does to the coordinate rate of its DOF.
+#[derive(Debug, Clone, Copy)]
+struct RowGoal {
+    /// Index of the DOF (0..3 linear, 3..6 angular).
+    dof: usize,
+    /// World-space direction of the DOF.
+    axis: Vec3,
+    /// Effective mass of the DOF.
+    eff_mass: Real,
+    /// Coordinate rate the row drives towards.
+    target: Real,
+    /// Bounds of the accumulated impulse.
+    bounds: (Real, Real),
+}
+
+/// One Gauss-Seidel update of a row: `λ ← project(λ + ω·m·(target − rate))`,
+/// applied to the bodies.  Returns the size of the velocity change the update
+/// made to the coordinate rate (`|Δλ|·K`).
+fn solve_row(
+    bodies: &mut RigidBodySet,
+    frame: &Frame,
+    goal: &RowGoal,
+    lambda: &mut Real,
+    omega: Real,
+) -> Real {
+    let Some(rate) = coordinate_rate(bodies, frame, goal.dof, &goal.axis) else {
+        return 0.0;
+    };
+    let old = *lambda;
+    let new = project(
+        old + omega * goal.eff_mass * (goal.target - rate),
+        goal.bounds.0,
+        goal.bounds.1,
+    );
+    let applied = new - old;
+    *lambda = new;
+    if applied != 0.0 {
+        apply_row_impulse(bodies, frame, goal.dof, &goal.axis, applied);
+    }
+    (applied / goal.eff_mass).abs()
+}
+
+impl SixDofConstraint {
+    /// One sweep over all rows with the SOR factor `omega`; stores and returns
+    /// the size of the velocity update.
+    fn solve_rows(&mut self, bodies: &mut RigidBodySet, dt: Real, omega: Real) -> Real {
+        let frame = Frame {
+            body_a: self.body_a,
+            body_b: self.body_b,
+            r_a: self.r_a,
+            r_b: self.r_b,
+        };
+        let step = if dt > 0.0 && dt.is_finite() { dt } else { 0.0 };
+        let mut sum_sq = 0.0;
+        for dof in 0..6 {
+            let row = self.rows[dof];
+            if row.eff_mass <= 0.0 {
+                continue;
+            }
+            let goal = |target: Real, bounds: (Real, Real)| RowGoal {
+                dof,
+                axis: row.axis,
+                eff_mass: row.eff_mass,
+                target,
+                bounds,
+            };
+            if row.locked {
+                let lock = goal(row.lock_target, (f64::NEG_INFINITY, f64::INFINITY));
+                let lambda = &mut self.rows[dof].lock_lambda;
+                sum_sq += solve_row(bodies, &frame, &lock, lambda, omega).powi(2);
+                continue;
+            }
+            if row.motor {
+                let limit = row.motor_max_force * step;
+                let motor = goal(row.motor_target, (-limit, limit));
+                let lambda = &mut self.rows[dof].motor_lambda;
+                sum_sq += solve_row(bodies, &frame, &motor, lambda, omega).powi(2);
+            }
+            if row.lower.enabled {
+                let lower = goal(row.lower.target, (0.0, f64::INFINITY));
+                let lambda = &mut self.rows[dof].lower.lambda;
+                sum_sq += solve_row(bodies, &frame, &lower, lambda, omega).powi(2);
+            }
+            if row.upper.enabled {
+                let upper = goal(row.upper.target, (f64::NEG_INFINITY, 0.0));
+                let lambda = &mut self.rows[dof].upper.lambda;
+                sum_sq += solve_row(bodies, &frame, &upper, lambda, omega).powi(2);
+            }
         }
-        if let Some(b) = bodies.get_mut(handle_b) {
-            b.angular_velocity -= b.world_inverse_inertia * torque_impulse;
-        }
+        self.last_residual = sum_sq.sqrt();
+        self.last_residual
     }
 }
 
@@ -313,310 +725,190 @@ impl SixDofConstraint {
 // Constraint impl
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Baumgarte factor for positional correction.
-const BAUMGARTE_6DOF: f64 = 0.2;
-/// Penetration slop for positional correction.
-const SLOP_6DOF: f64 = 0.005;
-
 impl Constraint for SixDofConstraint {
     fn prepare(&mut self, bodies: &RigidBodySet, dt: f64) {
-        let (pos_a, rot_a, inv_mass_a, inv_inertia_a, vel_a, ang_vel_a) =
-            match bodies.get(self.body_a) {
-                Some(b) => (
-                    b.transform.position,
-                    b.transform.rotation,
-                    b.inverse_mass,
-                    b.world_inverse_inertia,
-                    b.velocity,
-                    b.angular_velocity,
-                ),
-                None => return,
-            };
-
-        let (pos_b, _rot_b, inv_mass_b, inv_inertia_b, vel_b, ang_vel_b) =
-            match bodies.get(self.body_b) {
-                Some(b) => (
-                    b.transform.position,
-                    b.transform.rotation,
-                    b.inverse_mass,
-                    b.world_inverse_inertia,
-                    b.velocity,
-                    b.angular_velocity,
-                ),
-                None => return,
-            };
-
-        // Anchor offsets in world space
-        self.r_a = rot_a * self.anchor_a;
-        self.r_b = {
-            let rot_b = bodies
-                .get(self.body_b)
-                .expect("key must exist")
-                .transform
-                .rotation;
-            rot_b * self.anchor_b
+        self.last_residual = 0.0;
+        self.rows = [DofRow::idle(); 6];
+        self.coordinates = [0.0; 6];
+        let (Some(a), Some(b)) = (
+            Pose::read(bodies, self.body_a),
+            Pose::read(bodies, self.body_b),
+        ) else {
+            return;
         };
 
-        // World-space axes from body A orientation
-        let axes = [
-            rot_a * Vec3::new(1.0, 0.0, 0.0),
-            rot_a * Vec3::new(0.0, 1.0, 0.0),
-            rot_a * Vec3::new(0.0, 0.0, 1.0),
-        ];
+        // Anchor offsets in world space
+        self.r_a = a.rotation * self.anchor_a;
+        self.r_b = b.rotation * self.anchor_b;
+        let (axes, coordinates) = self.measure(&a, &b);
+        self.coordinates = coordinates;
 
-        // Anchor positions in world space
-        let anchor_world_a = pos_a + self.r_a;
-        let anchor_world_b = pos_b + self.r_b;
-        let positional_error = anchor_world_b - anchor_world_a;
+        // A paused (dt = 0) or invalid step has no rate to correct at: locks
+        // stay at zero rate, limits are left alone.
+        let inv_dt = if dt > 1e-12 && dt.is_finite() {
+            1.0 / dt
+        } else {
+            0.0
+        };
 
-        for (i, &ax) in axes.iter().enumerate() {
-            let config = &self.linear[i];
+        for dof in 0..6 {
+            let config = self.config(dof).clone();
+            let limits = if config.locked {
+                None
+            } else {
+                ordered_limits(config.limited)
+            };
+            let motor = if config.locked {
+                None
+            } else {
+                config.motor.as_ref()
+            };
+            if !config.locked && limits.is_none() && motor.is_none() {
+                continue;
+            }
 
-            if config.locked || config.limited.is_some() {
-                self.eff_mass_linear[i] = Self::effective_mass_linear(
-                    inv_mass_a,
-                    inv_mass_b,
-                    &inv_inertia_a,
-                    &inv_inertia_b,
-                    &self.r_a,
-                    &self.r_b,
-                    &ax,
-                );
+            let (axis, coordinate) = (axes[dof % 3], coordinates[dof]);
+            let inverse_mass = if dof < 3 {
+                Self::linear_inverse_mass(&a, &b, &self.r_a, &self.r_b, &axis)
+            } else {
+                Self::angular_inverse_mass(&a, &b, &axis)
+            };
+            let mut row = DofRow::idle();
+            row.axis = axis;
+            row.eff_mass = if inverse_mass > MIN_INVERSE_EFFECTIVE_MASS {
+                1.0 / inverse_mass
+            } else {
+                0.0
+            };
 
-                // Position error along this axis
-                let pos_err = positional_error.dot(&ax);
-
-                let correction = if config.locked {
-                    pos_err
-                } else if let Some((min, max)) = config.limited {
-                    if pos_err < min {
-                        pos_err - min
-                    } else if pos_err > max {
-                        pos_err - max
+            if config.locked {
+                row.locked = true;
+                // Drive the coordinate to zero with the Baumgarte rate.
+                row.lock_target = -BAUMGARTE_6DOF * coordinate * inv_dt;
+            }
+            if let Some((min, max)) = limits.filter(|_| inv_dt > 0.0) {
+                // Speculative one-sided rows: the coordinate may approach a
+                // limit by at most the remaining gap in one step, and once it
+                // is beyond a limit it may not move further out.  The violation
+                // itself is removed by the position pass; pushing it back with
+                // a Baumgarte velocity would leave that velocity in the bodies
+                // and carry them across the allowed range.
+                let lower_gap = coordinate - min;
+                row.lower = LimitRow {
+                    enabled: min.is_finite(),
+                    target: if lower_gap >= 0.0 {
+                        -lower_gap * inv_dt
                     } else {
                         0.0
-                    }
-                } else {
-                    0.0
+                    },
+                    lambda: 0.0,
                 };
-
-                self.bias_linear[i] = (BAUMGARTE_6DOF / dt)
-                    * (correction.abs() - SLOP_6DOF).max(0.0)
-                    * correction.signum();
-            } else {
-                self.eff_mass_linear[i] = 0.0;
-                self.bias_linear[i] = 0.0;
+                let upper_gap = max - coordinate;
+                row.upper = LimitRow {
+                    enabled: max.is_finite(),
+                    target: if upper_gap >= 0.0 {
+                        upper_gap * inv_dt
+                    } else {
+                        0.0
+                    },
+                    lambda: 0.0,
+                };
             }
-        }
-
-        // Angular axes
-        // Relative angular velocity and orientation error (small-angle approximation)
-        let ang_vel_rel = ang_vel_a - ang_vel_b;
-        let _ = ang_vel_rel; // used below per-axis
-
-        for (i, &ax) in axes.iter().enumerate() {
-            let config = &self.angular[i];
-
-            if config.locked || config.limited.is_some() {
-                self.eff_mass_angular[i] =
-                    Self::effective_mass_angular(&inv_inertia_a, &inv_inertia_b, &ax);
-
-                // For locked axes: bias toward zero angular velocity difference
-                // (full angular error correction requires rotation difference quaternion)
-                let ang_err = 0.0_f64; // simplified: rely on velocity correction
-                let correction = ang_err;
-                self.bias_angular[i] = (BAUMGARTE_6DOF / dt) * correction;
-            } else {
-                self.eff_mass_angular[i] = 0.0;
-                self.bias_angular[i] = 0.0;
+            if let Some(m) = motor {
+                row.motor = true;
+                row.motor_target = if m.target_velocity.is_nan() {
+                    0.0
+                } else {
+                    m.target_velocity
+                };
+                row.motor_max_force = sanitized_force(m.max_force);
             }
+            self.rows[dof] = row;
         }
-
-        let _ = (vel_a, ang_vel_a, vel_b, ang_vel_b);
     }
 
     fn solve_velocity(&mut self, bodies: &mut RigidBodySet, dt: f64) {
-        let axes = match Self::world_axes(bodies, self.body_a) {
-            Some(a) => a,
-            None => return,
+        self.solve_rows(bodies, dt, 1.0);
+    }
+
+    fn solve_velocity_relaxed(&mut self, bodies: &mut RigidBodySet, dt: f64, omega: f64) -> f64 {
+        let omega = if omega.is_nan() {
+            1.0
+        } else {
+            omega.clamp(MIN_SOR_OMEGA, MAX_SOR_OMEGA)
         };
+        self.solve_rows(bodies, dt, omega)
+    }
 
-        let r_a = self.r_a;
-        let r_b = self.r_b;
-
-        // ── Linear rows ────────────────────────────────────────────────────────
-        for (i, &ax) in axes.iter().enumerate() {
-            let config = self.linear[i].clone();
-
-            if !config.locked && config.limited.is_none() && config.motor.is_none() {
-                continue;
-            }
-
-            let eff_mass = self.eff_mass_linear[i];
-            if eff_mass < 1e-14 {
-                continue;
-            }
-
-            // Current relative velocity along this axis
-            let (vel_a, ang_vel_a) = match bodies.get(self.body_a) {
-                Some(b) => (b.velocity, b.angular_velocity),
-                None => return,
-            };
-            let (vel_b, ang_vel_b) = match bodies.get(self.body_b) {
-                Some(b) => (b.velocity, b.angular_velocity),
-                None => return,
-            };
-
-            let v_a = vel_a + ang_vel_a.cross(&r_a);
-            let v_b = vel_b + ang_vel_b.cross(&r_b);
-            let rel_vel = (v_a - v_b).dot(&ax);
-
-            let motor_target_vel = config
-                .motor
-                .as_ref()
-                .map(|m| m.target_velocity)
-                .unwrap_or(0.0);
-
-            let target_vel = if config.locked {
-                self.bias_linear[i]
-            } else {
-                motor_target_vel
-            };
-
-            let delta_lambda = eff_mass * (target_vel - rel_vel);
-
-            let old = self.lambda_linear[i];
-            let new = if config.locked {
-                old + delta_lambda // locked: unclamped (bilateral)
-            } else if let Some((min, max)) = config.limited {
-                (old + delta_lambda).clamp(min, max)
-            } else if let Some(ref mc) = config.motor {
-                (old + delta_lambda).clamp(-mc.max_force * dt, mc.max_force * dt)
-            } else {
-                old + delta_lambda
-            };
-
-            let applied = new - old;
-            self.lambda_linear[i] = new;
-
-            Self::apply_impulse_row(bodies, self.body_a, self.body_b, ax, r_a, r_b, applied);
-        }
-
-        // ── Angular rows ───────────────────────────────────────────────────────
-        for (i, &ax) in axes.iter().enumerate() {
-            let config = self.angular[i].clone();
-
-            if !config.locked && config.limited.is_none() && config.motor.is_none() {
-                continue;
-            }
-
-            let eff_mass = self.eff_mass_angular[i];
-            if eff_mass < 1e-14 {
-                continue;
-            }
-
-            let (ang_vel_a,) = match bodies.get(self.body_a) {
-                Some(b) => (b.angular_velocity,),
-                None => return,
-            };
-            let (ang_vel_b,) = match bodies.get(self.body_b) {
-                Some(b) => (b.angular_velocity,),
-                None => return,
-            };
-
-            let rel_ang_vel = (ang_vel_a - ang_vel_b).dot(&ax);
-
-            let motor_target_vel = config
-                .motor
-                .as_ref()
-                .map(|m| m.target_velocity)
-                .unwrap_or(0.0);
-
-            let target_vel = if config.locked {
-                self.bias_angular[i]
-            } else {
-                motor_target_vel
-            };
-
-            let delta_lambda = eff_mass * (target_vel - rel_ang_vel);
-
-            let old = self.lambda_angular[i];
-            let new = if config.locked {
-                old + delta_lambda
-            } else if let Some((min, max)) = config.limited {
-                (old + delta_lambda).clamp(min, max)
-            } else if let Some(ref mc) = config.motor {
-                (old + delta_lambda).clamp(-mc.max_force * dt, mc.max_force * dt)
-            } else {
-                old + delta_lambda
-            };
-
-            let applied = new - old;
-            self.lambda_angular[i] = new;
-
-            Self::apply_angular_impulse_row(bodies, self.body_a, self.body_b, ax, applied);
-        }
+    fn residual(&self) -> f64 {
+        self.last_residual
     }
 
     fn solve_position(&mut self, bodies: &mut RigidBodySet, _dt: f64) {
-        let (pos_a, rot_a, inv_mass_a) = match bodies.get(self.body_a) {
-            Some(b) => (b.transform.position, b.transform.rotation, b.inverse_mass),
-            None => return,
-        };
-        let (pos_b, inv_mass_b) = match bodies.get(self.body_b) {
-            Some(b) => (b.transform.position, b.inverse_mass),
-            None => return,
-        };
-
-        let axes = [
-            rot_a * Vec3::new(1.0, 0.0, 0.0),
-            rot_a * Vec3::new(0.0, 1.0, 0.0),
-            rot_a * Vec3::new(0.0, 0.0, 1.0),
-        ];
-
-        let r_a_world = rot_a * self.anchor_a;
-        let r_b_world = {
-            let rot_b = bodies
-                .get(self.body_b)
-                .expect("key must exist")
-                .transform
-                .rotation;
-            rot_b * self.anchor_b
-        };
-
-        let anchor_a = pos_a + r_a_world;
-        let anchor_b = pos_b + r_b_world;
-        let positional_error = anchor_b - anchor_a;
-
-        for (i, &ax) in axes.iter().enumerate() {
-            let config = &self.linear[i];
-            if !config.locked {
+        for dof in 0..6 {
+            let config = self.config(dof);
+            let corrects = config.locked || ordered_limits(config.limited).is_some();
+            if !corrects {
                 continue;
             }
-            let err = positional_error.dot(&ax);
-            let correction = (err.abs() - SLOP_6DOF).max(0.0) * BAUMGARTE_6DOF * err.signum();
-
-            if correction.abs() < 1e-10 {
+            // Re-measure for every row: the previous rows moved the bodies.
+            let (Some(a), Some(b)) = (
+                Pose::read(bodies, self.body_a),
+                Pose::read(bodies, self.body_b),
+            ) else {
+                return;
+            };
+            let (axes, coordinates) = self.measure(&a, &b);
+            let error = self.position_error(dof, coordinates[dof]);
+            if error.abs() < MIN_POSITION_ERROR {
                 continue;
             }
+            let axis = axes[dof % 3];
+            let max_correction = if dof < 3 {
+                MAX_LINEAR_CORRECTION
+            } else {
+                MAX_ANGULAR_CORRECTION
+            };
+            // Change of the coordinate the pass asks for (opposite to the error).
+            let wanted = project(-BAUMGARTE_6DOF * error, -max_correction, max_correction);
 
-            let k = inv_mass_a + inv_mass_b;
-            if k < 1e-12 {
-                continue;
-            }
-
-            let pos_impulse = ax * (correction / k);
-            if let Some(b) = bodies.get_mut(self.body_a) {
-                b.transform.position -= pos_impulse * b.inverse_mass;
-            }
-            if let Some(b) = bodies.get_mut(self.body_b) {
-                b.transform.position += pos_impulse * b.inverse_mass;
+            if dof < 3 {
+                let r_a = a.rotation * self.anchor_a;
+                let r_b = b.rotation * self.anchor_b;
+                let inverse_mass = Self::linear_inverse_mass(&a, &b, &r_a, &r_b, &axis);
+                if inverse_mass < MIN_INVERSE_EFFECTIVE_MASS {
+                    continue;
+                }
+                // A position impulse along +axis moves B along +axis and A the
+                // other way, which increases the coordinate.
+                let impulse = axis * (wanted / inverse_mass);
+                Self::move_body(bodies, self.body_b, &impulse, &r_b, &Vec3::zeros(), 1.0);
+                Self::move_body(bodies, self.body_a, &impulse, &r_a, &Vec3::zeros(), -1.0);
+            } else {
+                let inverse_mass = Self::angular_inverse_mass(&a, &b, &axis);
+                if inverse_mass < MIN_INVERSE_EFFECTIVE_MASS {
+                    continue;
+                }
+                let torque = axis * (wanted / inverse_mass);
+                let nowhere = Vec3::zeros();
+                Self::move_body(bodies, self.body_b, &nowhere, &nowhere, &torque, 1.0);
+                Self::move_body(bodies, self.body_a, &nowhere, &nowhere, &torque, -1.0);
             }
         }
     }
 
     fn body_handles(&self) -> Vec<BodyHandle> {
         vec![self.body_a, self.body_b]
+    }
+
+    /// The number of locked or limited axes (motors do not constrain).
+    fn dof_count(&self) -> usize {
+        (0..6)
+            .filter(|&dof| {
+                let config = self.config(dof);
+                config.locked || ordered_limits(config.limited).is_some()
+            })
+            .count()
     }
 }
 
@@ -908,457 +1200,4 @@ pub fn clamp_accumulated_impulse(old: f64, delta: f64, min: f64, max: f64) -> (f
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use oxiphysics_rigid::RigidBody;
-
-    fn make_two_bodies() -> (RigidBodySet, BodyHandle, BodyHandle) {
-        let mut bodies = RigidBodySet::new();
-
-        let mut b_a = RigidBody::new(1.0);
-        b_a.transform.position = Vec3::new(0.0, 0.0, 0.0);
-        b_a.linear_damping = 0.0;
-        b_a.angular_damping = 0.0;
-        let ha = bodies.insert(b_a);
-
-        let mut b_b = RigidBody::new(1.0);
-        b_b.transform.position = Vec3::new(1.0, 0.0, 0.0);
-        b_b.linear_damping = 0.0;
-        b_b.angular_damping = 0.0;
-        let hb = bodies.insert(b_b);
-
-        (bodies, ha, hb)
-    }
-
-    #[test]
-    fn test_six_dof_all_free_by_default() {
-        let (_, ha, hb) = make_two_bodies();
-        let c = SixDofConstraint::new(ha, hb);
-        for i in 0..3 {
-            assert!(!c.linear[i].locked);
-            assert!(!c.angular[i].locked);
-            assert!(c.linear[i].limited.is_none());
-            assert!(c.angular[i].limited.is_none());
-        }
-    }
-
-    #[test]
-    fn test_lock_linear() {
-        let (_, ha, hb) = make_two_bodies();
-        let mut c = SixDofConstraint::new(ha, hb);
-        c.lock_linear(1);
-        assert!(c.linear[1].locked);
-        assert!(!c.linear[0].locked);
-        assert!(!c.linear[2].locked);
-    }
-
-    #[test]
-    fn test_lock_angular() {
-        let (_, ha, hb) = make_two_bodies();
-        let mut c = SixDofConstraint::new(ha, hb);
-        c.lock_angular(2);
-        assert!(c.angular[2].locked);
-        assert!(!c.angular[0].locked);
-        assert!(!c.angular[1].locked);
-    }
-
-    #[test]
-    fn test_set_linear_limit() {
-        let (_, ha, hb) = make_two_bodies();
-        let mut c = SixDofConstraint::new(ha, hb);
-        c.set_linear_limit(0, -1.0, 1.0);
-        assert_eq!(c.linear[0].limited, Some((-1.0, 1.0)));
-    }
-
-    #[test]
-    fn test_set_angular_limit() {
-        let (_, ha, hb) = make_two_bodies();
-        let mut c = SixDofConstraint::new(ha, hb);
-        c.set_angular_limit(0, -0.5, 0.5);
-        assert_eq!(c.angular[0].limited, Some((-0.5, 0.5)));
-    }
-
-    #[test]
-    fn test_weld_locks_all_dof() {
-        let (_, ha, hb) = make_two_bodies();
-        let c = SixDofConstraint::weld(ha, hb);
-        for i in 0..3 {
-            assert!(c.linear[i].locked, "linear[{i}] should be locked");
-            assert!(c.angular[i].locked, "angular[{i}] should be locked");
-        }
-    }
-
-    #[test]
-    fn test_locked_linear_dof_produces_zero_velocity() {
-        let mut bodies = RigidBodySet::new();
-
-        // Place both bodies at the same position so there is no positional error;
-        // the test checks only that the velocity constraint zeroes relative motion.
-        let mut b_a = RigidBody::new(1.0);
-        b_a.transform.position = Vec3::new(0.0, 0.0, 0.0);
-        b_a.velocity = Vec3::new(5.0, 0.0, 0.0);
-        b_a.linear_damping = 0.0;
-        b_a.angular_damping = 0.0;
-        let ha = bodies.insert(b_a);
-
-        let mut b_b = RigidBody::new(1.0);
-        b_b.transform.position = Vec3::new(0.0, 0.0, 0.0); // same position → no bias
-        b_b.velocity = Vec3::new(-5.0, 0.0, 0.0);
-        b_b.linear_damping = 0.0;
-        b_b.angular_damping = 0.0;
-        let hb = bodies.insert(b_b);
-
-        let mut c = SixDofConstraint::new(ha, hb);
-        c.lock_linear(0); // lock X translation
-
-        let dt = 1.0 / 60.0;
-        c.prepare(&bodies, dt);
-
-        for _ in 0..20 {
-            c.solve_velocity(&mut bodies, dt);
-        }
-
-        let vel_a = bodies.get(ha).unwrap().velocity;
-        let vel_b = bodies.get(hb).unwrap().velocity;
-        let rel_vel_x = (vel_a - vel_b).x;
-
-        assert!(
-            rel_vel_x.abs() < 0.5,
-            "Locked X DOF should produce near-zero relative velocity along X, got {rel_vel_x}"
-        );
-    }
-
-    #[test]
-    fn test_locked_angular_dof_produces_zero_ang_vel() {
-        let (mut bodies, ha, hb) = make_two_bodies();
-
-        // Give bodies opposing angular velocities about Z
-        bodies.get_mut(ha).unwrap().angular_velocity = Vec3::new(0.0, 0.0, 5.0);
-        bodies.get_mut(hb).unwrap().angular_velocity = Vec3::new(0.0, 0.0, -5.0);
-
-        let mut c = SixDofConstraint::new(ha, hb);
-        c.lock_angular(2); // lock Z rotation
-
-        let dt = 1.0 / 60.0;
-        c.prepare(&bodies, dt);
-
-        for _ in 0..20 {
-            c.solve_velocity(&mut bodies, dt);
-        }
-
-        let ang_a = bodies.get(ha).unwrap().angular_velocity;
-        let ang_b = bodies.get(hb).unwrap().angular_velocity;
-        let rel_ang_z = (ang_a - ang_b).z;
-
-        assert!(
-            rel_ang_z.abs() < 1.0,
-            "Locked Z angular DOF should produce near-zero relative angular velocity about Z, got {rel_ang_z}"
-        );
-    }
-
-    #[test]
-    fn test_body_handles() {
-        let (_, ha, hb) = make_two_bodies();
-        let c = SixDofConstraint::new(ha, hb);
-        let handles = c.body_handles();
-        assert_eq!(handles.len(), 2);
-        assert_eq!(handles[0], ha);
-        assert_eq!(handles[1], hb);
-    }
-
-    #[test]
-    fn test_jacobian_linear_rows_orthogonality() {
-        let r_a = Vec3::new(0.1, 0.2, 0.3);
-        let r_b = Vec3::new(-0.1, 0.1, -0.2);
-        let axes = [
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-        ];
-
-        let j = compute_jacobian_6dof(r_a, r_b, &axes);
-
-        // Rows 0, 1, 2 should correspond to X, Y, Z linear axes
-        // The first 3 columns of each linear row should match the axis
-        for (row, ax) in axes.iter().enumerate() {
-            assert!((j[row][0] - ax.x).abs() < 1e-12);
-            assert!((j[row][1] - ax.y).abs() < 1e-12);
-            assert!((j[row][2] - ax.z).abs() < 1e-12);
-        }
-
-        // Angular rows (3,4,5) body-A cols should equal axes
-        for (i, ax) in axes.iter().enumerate() {
-            let row = 3 + i;
-            assert!((j[row][3] - ax.x).abs() < 1e-12);
-            assert!((j[row][4] - ax.y).abs() < 1e-12);
-            assert!((j[row][5] - ax.z).abs() < 1e-12);
-        }
-    }
-
-    #[test]
-    fn test_six_dof_with_motor() {
-        let (_, ha, hb) = make_two_bodies();
-        let mut c = SixDofConstraint::new(ha, hb);
-        let motor = MotorConfig::new(2.0, 100.0, 50.0);
-        c.set_linear_motor(0, motor);
-        assert!(c.linear[0].motor.is_some());
-        assert_eq!(c.linear[0].motor.as_ref().unwrap().target_velocity, 2.0);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_lock_linear_out_of_bounds() {
-        let (_, ha, hb) = make_two_bodies();
-        let mut c = SixDofConstraint::new(ha, hb);
-        c.lock_linear(3); // should panic
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_lock_angular_out_of_bounds() {
-        let (_, ha, hb) = make_two_bodies();
-        let mut c = SixDofConstraint::new(ha, hb);
-        c.lock_angular(3); // should panic
-    }
-
-    // ── Spring/damper ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_spring_damper_config_creation() {
-        let sd = SpringDamperConfig::new(100.0, 10.0, 1.0, 0.0);
-        assert!((sd.stiffness - 100.0).abs() < 1e-12);
-        assert!((sd.damping - 10.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_spring_force_at_rest_position() {
-        let sd = SpringDamperConfig::new(100.0, 10.0, 1.0, 0.0);
-        let f = sd.force(1.0, 0.0); // at rest length, zero velocity → zero force
-        assert!(f.abs() < 1e-12, "At rest: force = {f}");
-    }
-
-    #[test]
-    fn test_spring_force_compressed() {
-        let sd = SpringDamperConfig::new(100.0, 0.0, 0.5, 0.0);
-        let f = sd.force(0.0, 0.0); // displacement = rest_length from neutral
-        // Extension = 0.0 - 0.5 = -0.5; F = -k * (-0.5) = +50
-        assert!((f - 50.0).abs() < 1e-10, "Compressed spring: f = {f}");
-    }
-
-    #[test]
-    fn test_damper_force_velocity() {
-        let sd = SpringDamperConfig::new(0.0, 50.0, 0.0, 0.0);
-        let f = sd.force(0.0, 2.0); // velocity = 2 m/s
-        // F = -c * vel = -100
-        assert!((f + 100.0).abs() < 1e-10, "Damper: f = {f}");
-    }
-
-    // ── Velocity drive ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_velocity_drive_config_linear() {
-        let vd = VelocityDriveConfig::new_linear(5.0, 1000.0);
-        assert!((vd.target_velocity - 5.0).abs() < 1e-12);
-        assert!((vd.max_force - 1000.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_velocity_drive_impulse_positive_error() {
-        let vd = VelocityDriveConfig::new_linear(5.0, 1000.0);
-        let imp = vd.compute_impulse(3.0, 2.0, 1.0 / 60.0); // actual_vel < target
-        assert!(
-            imp > 0.0,
-            "Positive velocity error → positive impulse: {imp}"
-        );
-    }
-
-    #[test]
-    fn test_velocity_drive_impulse_clamped() {
-        let vd = VelocityDriveConfig::new_linear(100.0, 1.0); // small max force
-        let imp = vd.compute_impulse(0.0, 10.0, 1.0 / 60.0);
-        let limit = 1.0 * (1.0 / 60.0);
-        assert!(
-            imp.abs() <= limit + 1e-12,
-            "Impulse should be clamped: {imp}"
-        );
-    }
-
-    // ── Position drive ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_position_drive_config_creation() {
-        let pd = PositionDriveConfig::new(1.0, 100.0, 10.0, 500.0);
-        assert!((pd.target_position - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_position_drive_force_toward_target() {
-        let pd = PositionDriveConfig::new(2.0, 100.0, 10.0, 500.0);
-        let f = pd.compute_force(0.0, 0.0); // position error = 2.0
-        assert!(f > 0.0, "Force should drive toward target: {f}");
-    }
-
-    #[test]
-    fn test_position_drive_zero_error() {
-        let pd = PositionDriveConfig::new(1.0, 100.0, 10.0, 500.0);
-        let f = pd.compute_force(1.0, 0.0); // at target, zero velocity
-        assert!(f.abs() < 1e-10, "Zero position error: f = {f}");
-    }
-
-    // ── Compliance / restitution ──────────────────────────────────────────────
-
-    #[test]
-    fn test_compliance_reduces_effective_mass() {
-        let em_no_compliance = 1.0; // 1/k
-        let em_with_compliance = apply_compliance(em_no_compliance, 0.01, 1.0 / 60.0);
-        assert!(
-            em_with_compliance < em_no_compliance,
-            "Compliance should reduce effective mass: {em_with_compliance} vs {em_no_compliance}"
-        );
-    }
-
-    #[test]
-    fn test_restitution_impulse_sign() {
-        let imp = restitution_impulse(1.0, -2.0, 0.5); // approaching velocity -2
-        assert!(
-            imp > 0.0,
-            "Restitution impulse should oppose approach: {imp}"
-        );
-    }
-
-    #[test]
-    fn test_restitution_zero_coefficient() {
-        let imp = restitution_impulse(1.0, -2.0, 0.0);
-        // e=0: perfectly inelastic; impulse = eff_mass * |v_approach| = 2
-        assert!((imp - 2.0).abs() < 1e-12, "Zero restitution: imp = {imp}");
-    }
-
-    // ── 6-DOF limits ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_axis_config_free_no_limits() {
-        let ac = AxisConfig::free();
-        assert!(!ac.locked);
-        assert!(ac.limited.is_none());
-    }
-
-    #[test]
-    fn test_axis_config_limited_clamps_correctly() {
-        let ac = AxisConfig::limited(-1.0, 1.0);
-        assert_eq!(ac.limited, Some((-1.0, 1.0)));
-    }
-
-    #[test]
-    fn test_six_dof_linear_limit_enforcement() {
-        let (_, ha, hb) = make_two_bodies();
-        let mut c = SixDofConstraint::new(ha, hb);
-        c.set_linear_limit(0, -0.5, 0.5);
-        assert!(c.linear[0].limited.is_some());
-    }
-
-    #[test]
-    fn test_six_dof_angular_limit_enforcement() {
-        let (_, ha, hb) = make_two_bodies();
-        let mut c = SixDofConstraint::new(ha, hb);
-        c.set_angular_limit(1, -0.3, 0.3);
-        assert_eq!(c.angular[1].limited, Some((-0.3, 0.3)));
-    }
-
-    // ── Jacobian correctness ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_jacobian_body_b_linear_is_negated() {
-        let r_a = Vec3::new(0.0, 0.0, 0.0);
-        let r_b = Vec3::new(0.0, 0.0, 0.0);
-        let axes = [
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-        ];
-        let j = compute_jacobian_6dof(r_a, r_b, &axes);
-        // For row 0 (X axis): columns 0..3 = [1,0,0], columns 6..9 = [-1,0,0]
-        assert!(
-            (j[0][6] + 1.0).abs() < 1e-12,
-            "Body B X-linear should be -1: {}",
-            j[0][6]
-        );
-        assert!((j[0][7]).abs() < 1e-12, "Body B Y should be 0: {}", j[0][7]);
-    }
-
-    #[test]
-    fn test_jacobian_angular_rows_body_b_negated() {
-        let r_a = Vec3::zeros();
-        let r_b = Vec3::zeros();
-        let axes = [
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-        ];
-        let j = compute_jacobian_6dof(r_a, r_b, &axes);
-        // Row 3 (X angular): body B angular should be -1
-        assert!(
-            (j[3][9] + 1.0).abs() < 1e-12,
-            "Body B angular X row: {}",
-            j[3][9]
-        );
-    }
-
-    #[test]
-    fn test_jacobian_r_cross_axis_terms() {
-        // Non-zero r_a: r_a = [0, 0, 1], axis = [1, 0, 0]
-        // r_a × ax = [0,0,1] × [1,0,0] = [0*0-1*0, 1*1-0*0, 0*0-0*1] = [0,1,0]
-        let r_a = Vec3::new(0.0, 0.0, 1.0);
-        let r_b = Vec3::zeros();
-        let axes = [
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-        ];
-        let j = compute_jacobian_6dof(r_a, r_b, &axes);
-        // Row 0 (X axis), cols 3..6 = r_a × ax = [0,1,0]
-        assert!((j[0][3]).abs() < 1e-12, "j[0][3] = {}", j[0][3]);
-        assert!((j[0][4] - 1.0).abs() < 1e-12, "j[0][4] = {}", j[0][4]);
-        assert!((j[0][5]).abs() < 1e-12, "j[0][5] = {}", j[0][5]);
-    }
-
-    // ── Motor angular ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_angular_motor_config_attached() {
-        let (_, ha, hb) = make_two_bodies();
-
-        let mut c = SixDofConstraint::new(ha, hb);
-        let motor = MotorConfig::new(5.0, 1000.0, 100.0);
-        c.set_angular_motor(2, motor);
-
-        // Verify motor config was stored
-        assert!(
-            c.angular[2].motor.is_some(),
-            "Motor should be attached to angular axis 2"
-        );
-        let m = c.angular[2].motor.as_ref().unwrap();
-        assert!((m.target_velocity - 5.0).abs() < 1e-12);
-        assert!((m.max_force - 1000.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_linear_motor_drives_velocity() {
-        let (mut bodies, ha, hb) = make_two_bodies();
-
-        let mut c = SixDofConstraint::new(ha, hb);
-        let motor = MotorConfig::new(5.0, 1000.0, 50.0);
-        c.set_linear_motor(0, motor); // drive X translation
-
-        let dt = 1.0 / 60.0;
-        c.prepare(&bodies, dt);
-        for _ in 0..30 {
-            c.solve_velocity(&mut bodies, dt);
-        }
-
-        // Velocity difference along X should not be worse (motor constrains)
-        let vel_a = bodies.get(ha).unwrap().velocity;
-        let vel_b = bodies.get(hb).unwrap().velocity;
-        // No panic = motor step ran without error
-        let _ = (vel_a, vel_b);
-    }
-}
+mod tests;

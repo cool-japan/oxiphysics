@@ -204,14 +204,19 @@ pub struct GursonModel {
     pub q3: f64,
 }
 impl GursonModel {
-    /// Gurson yield function value.
+    /// Gurson-Tvergaard-Needleman yield function value using this model's
+    /// void fraction `f` and parameters `q1`, `q2`, `q3`.
+    ///
+    /// The value is negative inside the yield surface (elastic), zero on it and
+    /// positive outside of it.  Equivalent to [`GursonModel::phi`].
     ///
     /// * `sigma_eq` – von-Mises equivalent stress
     /// * `sigma_h`  – hydrostatic (mean) stress
     /// * `sigma_0`  – current yield stress of the matrix
-    pub fn yield_function(sigma_eq: f64, sigma_h: f64, sigma_0: f64) -> f64 {
-        let _ = (sigma_eq, sigma_h, sigma_0);
-        0.0
+    ///
+    /// Returns `NaN` when `sigma_0` is (numerically) zero.
+    pub fn yield_function(&self, sigma_eq: f64, sigma_h: f64, sigma_0: f64) -> f64 {
+        self.phi(sigma_eq, sigma_h, sigma_0)
     }
     /// Gurson yield function using this model's parameters.
     pub fn phi(&self, sigma_eq: f64, sigma_h: f64, sigma_0: f64) -> f64 {

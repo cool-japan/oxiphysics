@@ -38,6 +38,18 @@ pub fn mat3_scale(a: &Mat3, s: f64) -> Mat3 {
     }
     c
 }
+/// Matrix product `a · b` of two 3×3 matrices.
+pub fn mat3_mul(a: &Mat3, b: &Mat3) -> Mat3 {
+    let mut c = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                c[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+    c
+}
 /// Matrix-vector product: a * v (3D).
 pub fn mat3_vec(a: &Mat3, v: [f64; 3]) -> [f64; 3] {
     let mut r = [0.0f64; 3];
@@ -372,6 +384,25 @@ mod tests {
     fn test_mat3_trace() {
         let a: Mat3 = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         assert!((mat3_trace(&a) - 15.0).abs() < 1e-14);
+    }
+    /// `mat3_mul` is the row-by-column product: a worked example, the identity
+    /// as neutral element, `(A B) v = A (B v)` and the non-commutativity that
+    /// distinguishes `Ω σ − σ Ω` from zero.
+    #[test]
+    fn test_mat3_mul_is_the_row_by_column_product() {
+        let a: Mat3 = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let b: Mat3 = [[0.0, 1.0, 0.0], [-1.0, 0.0, 2.0], [3.0, 0.0, 1.0]];
+        let ab = mat3_mul(&a, &b);
+        assert_eq!(ab, [[7.0, 1.0, 7.0], [13.0, 4.0, 16.0], [19.0, 7.0, 25.0]]);
+        assert_eq!(mat3_mul(&a, &IDENTITY3), a);
+        assert_eq!(mat3_mul(&IDENTITY3, &a), a);
+        let v = [1.0, -2.0, 0.5];
+        let left = mat3_vec(&ab, v);
+        let right = mat3_vec(&a, mat3_vec(&b, v));
+        for (l, r) in left.iter().zip(right.iter()) {
+            assert!((l - r).abs() < 1e-12, "(AB)v = {left:?}, A(Bv) = {right:?}");
+        }
+        assert_ne!(mat3_mul(&b, &a), ab);
     }
     #[test]
     fn test_damage_model_modulus() {

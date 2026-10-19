@@ -7,6 +7,17 @@
 //! - w_0 = 1/3  (rest)
 //! - w_{1-6} = 1/18  (face-center: ±X, ±Y, ±Z)
 //! - w_{7-18} = 1/36  (edge-center: ±X±Y, ±X±Z, ±Y±Z)
+//!
+//! # Body forces (Guo scheme)
+//!
+//! A uniform ([`D3q19Simulation::body_force`]) and/or position-dependent
+//! ([`D3q19Simulation::force_field`]) body force enters **every** collision operator
+//! ([`D3q19Simulation::collide`], [`D3q19Simulation::collide_mrt`],
+//! [`D3q19Simulation::collide_trt`]) the way Guo, Zheng and Shi (2002) prescribe: the equilibrium
+//! is evaluated at the corrected velocity `u = (Σ f e + F/2) / ρ`, which is also what
+//! [`D3q19Simulation::macroscopic`] and [`D3q19Simulation::velocity_field`] report, and the source
+//! `(1 − ω/2) G_i` is added to the post-collision populations. Exactly `F` of momentum is
+//! injected per node and step for every relaxation rate.
 
 /// Number of discrete velocity directions in D3Q19.
 pub const N_DIRS: usize = 19;
@@ -57,6 +68,40 @@ pub const D3Q19_OPP: [usize; 19] = crate::lattice::D3Q19_OPPOSITES;
 /// Lattice speed of sound squared (cs² = 1/3 in lattice units).
 const CS2: f64 = 1.0 / 3.0;
 
+/// `true` when the force vector has a non-zero component.
+#[inline]
+fn has_force(force: [f64; 3]) -> bool {
+    force.iter().any(|&component| component != 0.0)
+}
+
+/// Even and odd (under `e_i → −e_i`) parts `(G_i⁺, G_i⁻)` of the undamped Guo source
+/// `G_i = w_i [ (e_i − u)/cs² + (e_i·u) e_i / cs⁴ ] · F` of direction `i`.
+///
+/// `G_i⁺ = w_i [ (e_i·u)(e_i·F)/cs⁴ − (u·F)/cs² ]` carries the momentum flux and
+/// `G_i⁻ = w_i (e_i·F)/cs²` carries the momentum (`Σ G_i⁻ e_i = F`, `Σ G_i = 0`).
+#[inline]
+fn guo_source_parts(i: usize, u: [f64; 3], force: [f64; 3]) -> (f64, f64) {
+    let e = [
+        f64::from(D3Q19_EX[i]),
+        f64::from(D3Q19_EY[i]),
+        f64::from(D3Q19_EZ[i]),
+    ];
+    let eu = e[0] * u[0] + e[1] * u[1] + e[2] * u[2];
+    let ef = e[0] * force[0] + e[1] * force[1] + e[2] * force[2];
+    let uf = u[0] * force[0] + u[1] * force[1] + u[2] * force[2];
+    (
+        D3Q19_WEIGHTS[i] * (eu * ef / (CS2 * CS2) - uf / CS2),
+        D3Q19_WEIGHTS[i] * ef / CS2,
+    )
+}
+
+/// Undamped Guo source `G_i` of direction `i` for the corrected velocity `u`.
+#[inline]
+fn guo_source(i: usize, u: [f64; 3], force: [f64; 3]) -> f64 {
+    let (even, odd) = guo_source_parts(i, u, force);
+    even + odd
+}
+
 /// Quantity prescribed on a Zou-He boundary face.
 #[derive(Debug, Clone, Copy)]
 enum ZouHeTarget {
@@ -100,6 +145,13 @@ pub struct D3q19Simulation {
     pub f: Vec<f64>,
     /// Solid/obstacle flags. `solid\[idx\] = true` → bounce-back applied at that node.
     pub solid: Vec<bool>,
+    /// Uniform body force per unit volume `[Fx, Fy, Fz]` (lattice units) acting on every fluid
+    /// node in each collision step; see the module documentation for the Guo scheme.
+    /// Zero by default; set it with [`Self::apply_body_force`].
+    pub body_force: [f64; 3],
+    /// Position-dependent force added to [`Self::body_force`], indexed like `solid`. Empty (the
+    /// default) means no extra force; filled by [`Self::apply_variable_body_force`].
+    pub force_field: Vec<[f64; 3]>,
 }
 
 impl D3q19Simulation {
@@ -120,6 +172,8 @@ impl D3q19Simulation {
             tau,
             f,
             solid: vec![false; n],
+            body_force: [0.0; 3],
+            force_field: Vec::new(),
         }
     }
 
@@ -129,10 +183,24 @@ impl D3q19Simulation {
         x + y * self.nx + z * self.nx * self.ny
     }
 
-    /// Compute macroscopic density and velocity at node `idx`.
-    ///
-    /// Returns `(rho, \[ux, uy, uz\])` where `rho = Σ f_i` and `u = Σ f_i * e_i / rho`.
-    pub fn macroscopic(&self, idx: usize) -> (f64, [f64; 3]) {
+    /// Body force `F` acting on node `idx`: [`Self::body_force`] plus the entry of
+    /// [`Self::force_field`]. Solid nodes carry no force.
+    #[inline]
+    fn node_force(&self, idx: usize) -> [f64; 3] {
+        if self.solid[idx] {
+            return [0.0; 3];
+        }
+        let mut force = self.body_force;
+        if let Some(extra) = self.force_field.get(idx) {
+            force[0] += extra[0];
+            force[1] += extra[1];
+            force[2] += extra[2];
+        }
+        force
+    }
+
+    /// Density and momentum `(Σ f_i, Σ f_i e_i)` of node `idx` (no force correction).
+    fn raw_moments(&self, idx: usize) -> (f64, [f64; 3]) {
         let base = idx * N_DIRS;
         let mut rho = 0.0_f64;
         let mut mx = 0.0_f64;
@@ -145,8 +213,44 @@ impl D3q19Simulation {
             my += fi * D3Q19_EY[i] as f64;
             mz += fi * D3Q19_EZ[i] as f64;
         }
+        (rho, [mx, my, mz])
+    }
+
+    /// Density and the *uncorrected* velocity `Σ f_i e_i / rho` of node `idx`.
+    ///
+    /// Used where the populations are post-collision, which already contain the full force
+    /// increment (the Guo `F/2` shift of [`Self::macroscopic`] is only valid before the
+    /// collision).
+    fn raw_macroscopic(&self, idx: usize) -> (f64, [f64; 3]) {
+        let (rho, momentum) = self.raw_moments(idx);
         if rho.abs() > 1e-15 {
-            (rho, [mx / rho, my / rho, mz / rho])
+            (
+                rho,
+                [momentum[0] / rho, momentum[1] / rho, momentum[2] / rho],
+            )
+        } else {
+            (0.0, [0.0, 0.0, 0.0])
+        }
+    }
+
+    /// Compute macroscopic density and velocity at node `idx`.
+    ///
+    /// Returns `(rho, \[ux, uy, uz\])` where `rho = Σ f_i` and
+    /// `u = (Σ f_i * e_i + F/2) / rho` is the Guo-corrected velocity for the body force `F`
+    /// acting on the node (see [`Self::apply_body_force`]); without a body force this is the
+    /// plain `Σ f_i * e_i / rho`. Evaluate it on pre-collision (post-streaming) populations.
+    pub fn macroscopic(&self, idx: usize) -> (f64, [f64; 3]) {
+        let (rho, momentum) = self.raw_moments(idx);
+        if rho.abs() > 1e-15 {
+            let force = self.node_force(idx);
+            (
+                rho,
+                [
+                    (momentum[0] + 0.5 * force[0]) / rho,
+                    (momentum[1] + 0.5 * force[1]) / rho,
+                    (momentum[2] + 0.5 * force[2]) / rho,
+                ],
+            )
         } else {
             (0.0, [0.0, 0.0, 0.0])
         }
@@ -166,19 +270,29 @@ impl D3q19Simulation {
 
     /// BGK collision step applied in-place to all fluid (non-solid) nodes.
     ///
-    /// `f_i ← f_i − (1/τ) * (f_i − feq_i)`
+    /// `f_i ← f_i − (1/τ) * (f_i − feq_i(ρ, u)) + (1 − 1/(2τ)) G_i(u, F)`
+    ///
+    /// `u` is the Guo-corrected velocity and `G_i` the Guo source of the body force `F` acting
+    /// on the node (see the module documentation). Without a body force the source vanishes and
+    /// `u` is the plain velocity, so this is the standard BGK collision.
     pub fn collide(&mut self) {
         let n = self.nx * self.ny * self.nz;
         let omega = 1.0 / self.tau;
+        let source_weight = 1.0 - 0.5 * omega;
         for k in 0..n {
             if self.solid[k] {
                 continue;
             }
             let (rho, u) = self.macroscopic(k);
+            let force = self.node_force(k);
+            let forced = has_force(force);
             let base = k * N_DIRS;
             for i in 0..N_DIRS {
                 let feq = Self::equilibrium(rho, u, i);
                 self.f[base + i] -= omega * (self.f[base + i] - feq);
+                if forced {
+                    self.f[base + i] += source_weight * guo_source(i, u, force);
+                }
             }
         }
     }
@@ -301,43 +415,31 @@ impl D3q19Simulation {
         max_sq.sqrt()
     }
 
-    /// Apply a uniform body force `(fx, fy, fz)` to all fluid nodes using
-    /// the Guo forcing scheme.
+    /// Set the uniform body force `(fx, fy, fz)` acting on all fluid nodes (Guo forcing scheme).
     ///
-    /// The force correction added to each distribution is:
-    /// `ΔF_i = w_i * (1 − 1/(2τ)) * \[ (e_i − u)/cs² + (e_i·u)*e_i/cs⁴ \] · F`
+    /// The force is stored in [`Self::body_force`] and applied by every subsequent collision
+    /// ([`Self::collide`], [`Self::collide_mrt`], [`Self::collide_trt`], hence also
+    /// [`Self::step`], [`Self::step_mrt`] and [`Self::step_trt`]). Per node and step the Guo
+    /// scheme
     ///
-    /// This is applied after collision and before streaming.
+    /// 1. evaluates the equilibrium at the corrected velocity `u = (Σ f_i e_i + F/2) / ρ`, and
+    /// 2. adds the source `(1 − ω/2) G_i` with
+    ///    `G_i = w_i [ (e_i − u)/cs² + (e_i·u) e_i/cs⁴ ] · F`,
+    ///
+    /// which injects exactly `F` of momentum for every relaxation rate; the `(1 − ω/2)` source
+    /// alone would inject only `(1 − 1/(2τ)) F`. The velocity reported by
+    /// [`Self::macroscopic`] and [`Self::velocity_field`] is the corrected `u`. Calling this
+    /// method every step with the same force is harmless; a force set after a collision first
+    /// acts in the next one.
     pub fn apply_body_force(&mut self, fx: f64, fy: f64, fz: f64) {
-        let n = self.nx * self.ny * self.nz;
-        let prefactor = 1.0 - 1.0 / (2.0 * self.tau);
-        for k in 0..n {
-            if self.solid[k] {
-                continue;
-            }
-            let (_, u) = self.macroscopic(k);
-            let base = k * N_DIRS;
-            for i in 0..N_DIRS {
-                let eix = D3Q19_EX[i] as f64;
-                let eiy = D3Q19_EY[i] as f64;
-                let eiz = D3Q19_EZ[i] as f64;
-                let eu = eix * u[0] + eiy * u[1] + eiz * u[2];
-                // Guo forcing term.
-                let fi_force = D3Q19_WEIGHTS[i]
-                    * prefactor
-                    * ((eix - u[0]) / CS2 + eu * eix / (CS2 * CS2))
-                    * fx
-                    + D3Q19_WEIGHTS[i]
-                        * prefactor
-                        * ((eiy - u[1]) / CS2 + eu * eiy / (CS2 * CS2))
-                        * fy
-                    + D3Q19_WEIGHTS[i]
-                        * prefactor
-                        * ((eiz - u[2]) / CS2 + eu * eiz / (CS2 * CS2))
-                        * fz;
-                self.f[base + i] += fi_force;
-            }
-        }
+        self.body_force = [fx, fy, fz];
+    }
+
+    /// Remove every body force: the uniform [`Self::body_force`] and the
+    /// position-dependent [`Self::force_field`].
+    pub fn clear_body_force(&mut self) {
+        self.body_force = [0.0; 3];
+        self.force_field.clear();
     }
 }
 
@@ -358,6 +460,10 @@ impl D3q19Simulation {
     /// entries in `s` are ignored, so mass and momentum are conserved to round-off for any `s`.
     /// Stability requires `0 < s\[k\] < 2` for the remaining moments. A uniform rate
     /// `s\[k\] = omega` reproduces BGK collision with `tau = 1/omega`.
+    ///
+    /// A body force enters in moment space as `M⁻¹ (I − S/2) M G` with the Guo source `G`
+    /// evaluated at the corrected velocity (see the module documentation), so exactly `F` of
+    /// momentum is injected per node and step.
     pub fn collide_mrt(&mut self, s: &[f64; 19]) {
         const CONSERVED_MODES: [usize; 4] = [0, 3, 5, 7];
         let mut rates = *s;
@@ -370,10 +476,16 @@ impl D3q19Simulation {
                 continue;
             }
             let (rho, u) = self.macroscopic(k);
+            let force = self.node_force(k);
             let base = k * N_DIRS;
             let mut cell = [0.0_f64; N_DIRS];
             cell.copy_from_slice(&self.f[base..base + N_DIRS]);
-            let post = crate::mrt3d::collide_mrt(&cell, rho, u, &rates);
+            let post = if has_force(force) {
+                let source: [f64; N_DIRS] = std::array::from_fn(|i| guo_source(i, u, force));
+                crate::mrt3d::collide_mrt_with_force(&cell, rho, u, &rates, &source)
+            } else {
+                crate::mrt3d::collide_mrt(&cell, rho, u, &rates)
+            };
             self.f[base..base + N_DIRS].copy_from_slice(&post);
         }
     }
@@ -841,6 +953,10 @@ impl D3q19Simulation {
     /// All 19 populations of a node are read from a snapshot taken before any of them is
     /// updated, so the result does not depend on the direction loop order and mass and momentum
     /// are conserved to round-off.
+    ///
+    /// A body force adds the Guo source with each parity relaxed at its own rate,
+    /// `(1 − ω⁺/2) G_i⁺ + (1 − ω⁻/2) G_i⁻` (see the module documentation): the momentum
+    /// (odd) part uses `omega_minus`, the momentum flux (even) part `omega_plus`.
     pub fn collide_trt(&mut self, omega_plus: f64, omega_minus: f64) {
         let n = self.nx * self.ny * self.nz;
         for k in 0..n {
@@ -848,6 +964,8 @@ impl D3q19Simulation {
                 continue;
             }
             let (rho, u) = self.macroscopic(k);
+            let force = self.node_force(k);
+            let forced = has_force(force);
             let base = k * N_DIRS;
 
             let mut f_old = [0.0_f64; N_DIRS];
@@ -863,8 +981,13 @@ impl D3q19Simulation {
                 let feq_sym = 0.5 * (feq[i] + feq[opp]);
                 let feq_anti = 0.5 * (feq[i] - feq[opp]);
 
-                self.f[base + i] =
+                let mut post =
                     f_old[i] - omega_plus * (f_sym - feq_sym) - omega_minus * (f_anti - feq_anti);
+                if forced {
+                    let (even, odd) = guo_source_parts(i, u, force);
+                    post += (1.0 - 0.5 * omega_plus) * even + (1.0 - 0.5 * omega_minus) * odd;
+                }
+                self.f[base + i] = post;
             }
         }
     }
@@ -902,7 +1025,10 @@ impl D3q19Simulation {
     ///
     /// `f_i = feq_i + alpha * (f_i - feq_i)`
     ///
-    /// where `alpha` is clamped to `[0, 2]` to prevent instability.
+    /// where `alpha` is clamped to `[0, 2]` to prevent instability. The equilibrium is taken at
+    /// the node's own momentum (`Σ f_i e_i / ρ`, without the Guo `F/2` shift, because the
+    /// post-collision populations already contain the full force increment), so the
+    /// rescaling conserves mass and momentum.
     pub fn apply_entropic_stabilisation(&mut self, alpha: f64) {
         let alpha_clamped = alpha.clamp(0.0, 2.0);
         let n = self.nx * self.ny * self.nz;
@@ -910,7 +1036,7 @@ impl D3q19Simulation {
             if self.solid[k] {
                 continue;
             }
-            let (rho, u) = self.macroscopic(k);
+            let (rho, u) = self.raw_macroscopic(k);
             let base = k * N_DIRS;
             for i in 0..N_DIRS {
                 let feq = Self::equilibrium(rho, u, i);
@@ -1147,7 +1273,8 @@ impl D3q19Simulation {
 
 impl D3q19Simulation {
     /// Set up a 3D Poiseuille channel: solid walls at y=0 and y=ny-1,
-    /// periodic in x and z, driven by a body force.
+    /// periodic in x and z, driven by the body force `fx` along x (stored in
+    /// [`Self::body_force`], where the collision operators pick it up).
     pub fn setup_poiseuille_channel(&mut self, fx: f64) {
         // Mark y=0 and y=ny-1 as solid walls
         let nx = self.nx;
@@ -1161,18 +1288,29 @@ impl D3q19Simulation {
                 self.solid[k_top] = true;
             }
         }
-        // Store force as a body force that must be applied each step
-        let _ = fx; // force applied externally via apply_body_force
+        self.apply_body_force(fx, 0.0, 0.0);
     }
 
-    /// Analytical Poiseuille x-velocity at grid position y.
+    /// Analytical Poiseuille x-velocity at grid position `y` for the channel of
+    /// [`Self::setup_poiseuille_channel`] driven by the body force `fx` at kinematic viscosity `nu`.
     ///
-    /// `u_x(y) = F * (ny-1)^2 / (8 * nu) * [1 - ((y - (ny-1)/2) / ((ny-1)/2))^2]`
+    /// The solid rows `y = 0` and `y = ny − 1` bounce the populations back on the node, which
+    /// places the no-slip planes half-way between the wall row and the first fluid row, at
+    /// `y = 1/2` and `y = ny − 3/2`. Between them the steady profile is
+    ///
+    /// `u_x(y) = F (y − 1/2)(ny − 3/2 − y) / (2 ν)`
+    ///
+    /// with the centreline value `F H² / (8 ν)` for the gap `H = ny − 2`. The velocity is zero on
+    /// and outside the wall planes and for `ny < 3` (no fluid row).
     pub fn poiseuille_velocity(y: f64, ny: usize, fx: f64, nu: f64) -> f64 {
-        let h = (ny - 1) as f64;
-        let yc = y - 0.5 * h;
-        let half = 0.5 * h;
-        fx * half * half / (2.0 * nu) * (1.0 - (yc / half) * (yc / half))
+        if ny < 3 {
+            return 0.0;
+        }
+        let (y_lo, y_hi) = (0.5, ny as f64 - 1.5);
+        if y <= y_lo || y >= y_hi {
+            return 0.0;
+        }
+        fx * (y - y_lo) * (y_hi - y) / (2.0 * nu)
     }
 }
 
@@ -1216,9 +1354,12 @@ impl D3q19Simulation {
 // ---------------------------------------------------------------------------
 
 impl D3q19Simulation {
-    /// Apply a spatially varying body force field.
+    /// Set a spatially varying body force field.
     ///
-    /// `force_fn(x, y, z)` returns `[fx, fy, fz]` for the Guo scheme.
+    /// `force_fn(x, y, z)` returns `[fx, fy, fz]` for the fluid node `(x, y, z)`; the values are
+    /// stored in [`Self::force_field`] (solid nodes get zero), replacing any earlier field, and
+    /// act in every subsequent collision on top of the uniform [`Self::body_force`] with the same
+    /// Guo scheme (see [`Self::apply_body_force`]).
     pub fn apply_variable_body_force<F>(&mut self, force_fn: F)
     where
         F: Fn(usize, usize, usize) -> [f64; 3],
@@ -1226,7 +1367,8 @@ impl D3q19Simulation {
         let nx = self.nx;
         let ny = self.ny;
         let nz = self.nz;
-        let prefactor = 1.0 - 1.0 / (2.0 * self.tau);
+        self.force_field.clear();
+        self.force_field.resize(nx * ny * nz, [0.0; 3]);
         for z in 0..nz {
             for y in 0..ny {
                 for x in 0..nx {
@@ -1234,21 +1376,7 @@ impl D3q19Simulation {
                     if self.solid[k] {
                         continue;
                     }
-                    let (_, u) = self.macroscopic(k);
-                    let force = force_fn(x, y, z);
-                    let base = k * N_DIRS;
-                    for i in 0..N_DIRS {
-                        let eix = D3Q19_EX[i] as f64;
-                        let eiy = D3Q19_EY[i] as f64;
-                        let eiz = D3Q19_EZ[i] as f64;
-                        let eu = eix * u[0] + eiy * u[1] + eiz * u[2];
-                        let fi_force = D3Q19_WEIGHTS[i]
-                            * prefactor
-                            * (((eix - u[0]) / CS2 + eu * eix / (CS2 * CS2)) * force[0]
-                                + ((eiy - u[1]) / CS2 + eu * eiy / (CS2 * CS2)) * force[1]
-                                + ((eiz - u[2]) / CS2 + eu * eiz / (CS2 * CS2)) * force[2]);
-                        self.f[base + i] += fi_force;
-                    }
+                    self.force_field[k] = force_fn(x, y, z);
                 }
             }
         }
@@ -1372,6 +1500,8 @@ impl D3q19Simulation {
     }
 }
 
+#[cfg(test)]
+mod forcing_tests;
 #[cfg(test)]
 mod regression_tests;
 

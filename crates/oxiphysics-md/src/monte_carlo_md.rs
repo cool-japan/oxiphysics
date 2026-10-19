@@ -11,21 +11,29 @@
 //! - Wang-Landau flat-histogram method
 //! - Radial distribution function g(r) from MC trajectory
 
-use rand::RngExt;
+use rand::{Rng, RngExt};
 // ---------------------------------------------------------------------------
 // McSystem
 // ---------------------------------------------------------------------------
 
 /// Monte Carlo particle system.
 ///
-/// Holds particle positions and accumulated energy for NVT or NpT Monte Carlo.
+/// Holds particle positions and the accumulated energy for NVT or NpT Monte Carlo.
+///
+/// The total energy is *not* known when the system is created: [`McSystem::new`]
+/// stores `NaN` in [`McSystem::energy`] to mark it as not yet evaluated.  The
+/// Metropolis and grand-canonical steps evaluate it from their energy function
+/// before the first trial; [`McSystem::recompute_energy`] does so explicitly and
+/// [`McSystem::has_energy`] reports whether a value is present.  (Starting from
+/// `0.0` would make the first trial move see the whole energy of the system as
+/// its energy change.)
 #[derive(Debug, Clone)]
 pub struct McSystem {
     /// Particle positions `[[x, y, z\], ...]`.
     pub positions: Vec<[f64; 3]>,
     /// Box lengths `[Lx, Ly, Lz]`.
     pub box_lengths: [f64; 3],
-    /// Current total potential energy.
+    /// Current total potential energy, `NaN` until it has been evaluated.
     pub energy: f64,
     /// Temperature in reduced units (kT).
     pub kt: f64,
@@ -38,19 +46,32 @@ pub struct McSystem {
 }
 
 impl McSystem {
-    /// Create a new MC system.
+    /// Create a new MC system whose energy is not yet evaluated (`NaN`).
     pub fn new(positions: Vec<[f64; 3]>, box_lengths: [f64; 3], kt: f64) -> Self {
-        let n = positions.len();
-        let _ = n;
         Self {
             positions,
             box_lengths,
-            energy: 0.0,
+            energy: f64::NAN,
             kt,
             max_disp: 0.1,
             n_accepted: 0,
             n_attempted: 0,
         }
+    }
+
+    /// `true` once the total energy has been evaluated or assigned.
+    pub fn has_energy(&self) -> bool {
+        !self.energy.is_nan()
+    }
+
+    /// Evaluate the total energy of the current configuration with `energy_fn`,
+    /// store it in [`McSystem::energy`] and return it.
+    pub fn recompute_energy<F>(&mut self, energy_fn: F) -> f64
+    where
+        F: Fn(&[[f64; 3]], &[f64; 3]) -> f64,
+    {
+        self.energy = energy_fn(&self.positions, &self.box_lengths);
+        self.energy
     }
 
     /// Number of particles.
@@ -84,11 +105,55 @@ impl McSystem {
         dr_pbc[0] * dr_pbc[0] + dr_pbc[1] * dr_pbc[1] + dr_pbc[2] * dr_pbc[2]
     }
 
+    /// Total energy of a pair-additive system from per-particle interaction
+    /// energies: every pair is counted once from each of its two particles.
+    fn pair_additive_energy<F>(&self, local_energy: &F) -> f64
+    where
+        F: Fn(&[[f64; 3]], usize, [f64; 3], &[f64; 3]) -> f64,
+    {
+        let doubled: f64 = self
+            .positions
+            .iter()
+            .enumerate()
+            .map(|(i, &pos)| local_energy(&self.positions, i, pos, &self.box_lengths))
+            .sum();
+        0.5 * doubled
+    }
+
+    /// Propose a displaced, box-wrapped position for particle `idx`.
+    fn trial_position<R: Rng + ?Sized>(&self, idx: usize, rng: &mut R) -> [f64; 3] {
+        let old = self.positions[idx];
+        let mut trial = old;
+        for (k, t) in trial.iter_mut().enumerate() {
+            let step = (rng.random::<f64>() - 0.5) * 2.0 * self.max_disp;
+            *t = (old[k] + step).rem_euclid(self.box_lengths[k]);
+        }
+        trial
+    }
+
+    /// Metropolis acceptance decision for an energy change `delta_e`.
+    fn accept_move<R: Rng + ?Sized>(&self, delta_e: f64, rng: &mut R) -> bool {
+        if delta_e <= 0.0 {
+            true
+        } else {
+            let prob = (-delta_e / self.kt.max(1e-30)).exp();
+            rng.random::<f64>() < prob
+        }
+    }
+
     /// Perform one Metropolis displacement move.
     ///
     /// Picks a random particle, proposes a random displacement, evaluates
     /// the energy change via the provided potential, and accepts/rejects
-    /// according to the Metropolis criterion.
+    /// according to the Metropolis criterion.  If the total energy has not been
+    /// evaluated yet (see [`McSystem::has_energy`]) it is computed with
+    /// `energy_fn` first.
+    ///
+    /// `energy_fn` is called with the full trial configuration, an `O(N²)` cost
+    /// for a pair potential; use [`McSystem::metropolis_step_local`] for the
+    /// `O(N)` single-particle energy.  The random numbers come from the
+    /// thread-local generator; [`McSystem::metropolis_step_with_rng`] takes a
+    /// generator for reproducible runs.
     ///
     /// # Arguments
     /// - `energy_fn`: function computing the total energy given positions and box
@@ -96,49 +161,85 @@ impl McSystem {
     where
         F: Fn(&[[f64; 3]], &[f64; 3]) -> f64,
     {
+        self.metropolis_step_with_rng(energy_fn, &mut rand::rng());
+    }
+
+    /// Same as [`McSystem::metropolis_step`] but draws its random numbers from `rng`.
+    pub fn metropolis_step_with_rng<F, R>(&mut self, energy_fn: F, rng: &mut R)
+    where
+        F: Fn(&[[f64; 3]], &[f64; 3]) -> f64,
+        R: Rng + ?Sized,
+    {
         let n = self.positions.len();
         if n == 0 {
             return;
         }
-        let mut rng = rand::rng();
+        if !self.has_energy() {
+            self.recompute_energy(&energy_fn);
+        }
         let idx = rng.random_range(0..n);
-
-        // Save old position
         let old_pos = self.positions[idx];
         let old_energy = self.energy;
 
-        // Propose displacement
-        let dx = (rng.random::<f64>() - 0.5) * 2.0 * self.max_disp;
-        let dy = (rng.random::<f64>() - 0.5) * 2.0 * self.max_disp;
-        let dz = (rng.random::<f64>() - 0.5) * 2.0 * self.max_disp;
-
-        self.positions[idx] = [old_pos[0] + dx, old_pos[1] + dy, old_pos[2] + dz];
-
-        // Wrap into box
-        for k in 0..3 {
-            let l = self.box_lengths[k];
-            self.positions[idx][k] = self.positions[idx][k].rem_euclid(l);
-        }
-
+        self.positions[idx] = self.trial_position(idx, rng);
         let new_energy = energy_fn(&self.positions, &self.box_lengths);
-        let delta_e = new_energy - old_energy;
-
         self.n_attempted += 1;
 
-        // Metropolis acceptance
-        let accept = if delta_e <= 0.0 {
-            true
-        } else {
-            let prob = (-delta_e / self.kt.max(1e-30)).exp();
-            rng.random::<f64>() < prob
-        };
-
-        if accept {
+        if self.accept_move(new_energy - old_energy, rng) {
             self.energy = new_energy;
             self.n_accepted += 1;
         } else {
-            // Reject: restore old position
             self.positions[idx] = old_pos;
+        }
+    }
+
+    /// Perform one Metropolis displacement move with a single-particle energy.
+    ///
+    /// `local_energy(positions, idx, pos, box_lengths)` must return the
+    /// interaction energy of particle `idx` placed at `pos` with every *other*
+    /// particle, so the energy change of the move is
+    /// `e_idx(new) − e_idx(old)` at `O(N)` cost.  While a trial is evaluated
+    /// `positions[idx]` still holds the old position, so the function must skip
+    /// `j == idx` itself (an `idx` equal to `positions.len()` denotes a particle
+    /// that is not part of the system).  This is exact for pair-additive
+    /// potentials only; use [`McSystem::metropolis_step`] for many-body ones.
+    ///
+    /// If the total energy has not been evaluated yet it is initialised as half
+    /// the sum of all single-particle energies (every pair is seen twice), and
+    /// afterwards [`McSystem::energy`] is advanced by the accepted `ΔE` values.
+    pub fn metropolis_step_local<F>(&mut self, local_energy: F)
+    where
+        F: Fn(&[[f64; 3]], usize, [f64; 3], &[f64; 3]) -> f64,
+    {
+        self.metropolis_step_local_with_rng(local_energy, &mut rand::rng());
+    }
+
+    /// Same as [`McSystem::metropolis_step_local`] but draws its random numbers
+    /// from `rng`.
+    pub fn metropolis_step_local_with_rng<F, R>(&mut self, local_energy: F, rng: &mut R)
+    where
+        F: Fn(&[[f64; 3]], usize, [f64; 3], &[f64; 3]) -> f64,
+        R: Rng + ?Sized,
+    {
+        let n = self.positions.len();
+        if n == 0 {
+            return;
+        }
+        if !self.has_energy() {
+            self.energy = self.pair_additive_energy(&local_energy);
+        }
+        let idx = rng.random_range(0..n);
+        let old_pos = self.positions[idx];
+        let new_pos = self.trial_position(idx, rng);
+        let old_local = local_energy(&self.positions, idx, old_pos, &self.box_lengths);
+        let new_local = local_energy(&self.positions, idx, new_pos, &self.box_lengths);
+        let delta_e = new_local - old_local;
+        self.n_attempted += 1;
+
+        if self.accept_move(delta_e, rng) {
+            self.positions[idx] = new_pos;
+            self.energy += delta_e;
+            self.n_accepted += 1;
         }
     }
 }
@@ -150,7 +251,18 @@ impl McSystem {
 /// Grand canonical Monte Carlo step (particle insertion or deletion).
 ///
 /// Attempts to insert a particle at a random position or delete a random
-/// existing particle, accepting according to the GCMC criterion.
+/// existing particle, accepting according to the GCMC criterion (thermal
+/// wavelength `Λ = 1`, `μ` in units of `kT`):
+///
+/// - insertion: `acc = min(1, V/(N+1) · exp(μ − ΔE/kT))`
+/// - deletion: `acc = min(1, N/V · exp(−μ − ΔE/kT))`
+///
+/// If the total energy has not been evaluated yet (see
+/// [`McSystem::has_energy`]) it is computed with `energy_fn` first.  The energy
+/// function sees the full trial configuration (`O(N²)` for a pair potential);
+/// [`grand_canonical_step_local`] uses single-particle energies instead.  The
+/// thread-local generator supplies the random numbers;
+/// [`grand_canonical_step_with_rng`] takes a generator for reproducible runs.
 ///
 /// # Arguments
 /// - `system`: the MC system (modified in place)
@@ -160,46 +272,117 @@ pub fn grand_canonical_step<F>(system: &mut McSystem, mu: f64, energy_fn: F)
 where
     F: Fn(&[[f64; 3]], &[f64; 3]) -> f64,
 {
-    let mut rng = rand::rng();
+    grand_canonical_step_with_rng(system, mu, energy_fn, &mut rand::rng());
+}
+
+/// Same as [`grand_canonical_step`] but draws its random numbers from `rng`.
+pub fn grand_canonical_step_with_rng<F, R>(
+    system: &mut McSystem,
+    mu: f64,
+    energy_fn: F,
+    rng: &mut R,
+) where
+    F: Fn(&[[f64; 3]], &[f64; 3]) -> f64,
+    R: Rng + ?Sized,
+{
+    if !system.has_energy() {
+        system.recompute_energy(&energy_fn);
+    }
     let n = system.positions.len();
     let volume = system.box_lengths[0] * system.box_lengths[1] * system.box_lengths[2];
+    let kt = system.kt.max(1e-30);
 
     // Choose insert or delete with equal probability
     let insert = rng.random::<f64>() < 0.5;
 
     if insert {
-        // Insert at random position
-        let new_pos = [
-            rng.random::<f64>() * system.box_lengths[0],
-            rng.random::<f64>() * system.box_lengths[1],
-            rng.random::<f64>() * system.box_lengths[2],
-        ];
+        let new_pos = random_position(&system.box_lengths, rng);
         system.positions.push(new_pos);
         let new_energy = energy_fn(&system.positions, &system.box_lengths);
         let delta_e = new_energy - system.energy;
-        // GCMC insertion criterion: acc = min(1, V/(N+1) * exp(mu - delta_E/kT))
-        let acc =
-            (volume / (n as f64 + 1.0) * (mu - delta_e / system.kt.max(1e-30)).exp()).min(1.0);
+        let acc = (volume / (n as f64 + 1.0) * (mu - delta_e / kt).exp()).min(1.0);
         if rng.random::<f64>() < acc {
             system.energy = new_energy;
         } else {
             system.positions.pop();
         }
     } else if n > 0 {
-        // Delete a random particle
         let idx = rng.random_range(0..n);
         let removed = system.positions.remove(idx);
         let new_energy = energy_fn(&system.positions, &system.box_lengths);
         let delta_e = new_energy - system.energy;
-        // GCMC deletion criterion: acc = min(1, N/V * exp(-mu - delta_E/kT)) ... simplified
-        let acc = (n as f64 / volume * (-mu - delta_e / system.kt.max(1e-30)).exp()).min(1.0);
+        let acc = (n as f64 / volume * (-mu - delta_e / kt).exp()).min(1.0);
         if rng.random::<f64>() < acc {
             system.energy = new_energy;
         } else {
-            // Restore removed particle
             system.positions.insert(idx, removed);
         }
     }
+}
+
+/// Grand canonical Monte Carlo step with single-particle energies.
+///
+/// Same moves and acceptance rules as [`grand_canonical_step`], but the energy
+/// change is `+e(new)` for an insertion and `−e(idx)` for a deletion, with
+/// `local_energy(positions, idx, pos, box_lengths)` the interaction energy of a
+/// particle at `pos` with every other particle (`O(N)`; the contract is that of
+/// [`McSystem::metropolis_step_local`], and an insertion is evaluated with
+/// `idx == positions.len()`).  Exact for pair-additive potentials only.  An
+/// unevaluated total energy is initialised as half the sum of all
+/// single-particle energies.
+pub fn grand_canonical_step_local<F>(system: &mut McSystem, mu: f64, local_energy: F)
+where
+    F: Fn(&[[f64; 3]], usize, [f64; 3], &[f64; 3]) -> f64,
+{
+    grand_canonical_step_local_with_rng(system, mu, local_energy, &mut rand::rng());
+}
+
+/// Same as [`grand_canonical_step_local`] but draws its random numbers from `rng`.
+pub fn grand_canonical_step_local_with_rng<F, R>(
+    system: &mut McSystem,
+    mu: f64,
+    local_energy: F,
+    rng: &mut R,
+) where
+    F: Fn(&[[f64; 3]], usize, [f64; 3], &[f64; 3]) -> f64,
+    R: Rng + ?Sized,
+{
+    if !system.has_energy() {
+        system.energy = system.pair_additive_energy(&local_energy);
+    }
+    let n = system.positions.len();
+    let volume = system.box_lengths[0] * system.box_lengths[1] * system.box_lengths[2];
+    let kt = system.kt.max(1e-30);
+
+    let insert = rng.random::<f64>() < 0.5;
+
+    if insert {
+        let new_pos = random_position(&system.box_lengths, rng);
+        let delta_e = local_energy(&system.positions, n, new_pos, &system.box_lengths);
+        let acc = (volume / (n as f64 + 1.0) * (mu - delta_e / kt).exp()).min(1.0);
+        if rng.random::<f64>() < acc {
+            system.positions.push(new_pos);
+            system.energy += delta_e;
+        }
+    } else if n > 0 {
+        let idx = rng.random_range(0..n);
+        let pos = system.positions[idx];
+        let delta_e = -local_energy(&system.positions, idx, pos, &system.box_lengths);
+        let acc = (n as f64 / volume * (-mu - delta_e / kt).exp()).min(1.0);
+        if rng.random::<f64>() < acc {
+            system.positions.remove(idx);
+            system.energy += delta_e;
+        }
+    }
+}
+
+/// Uniformly distributed position inside the box.
+fn random_position<R: Rng + ?Sized>(box_lengths: &[f64; 3], rng: &mut R) -> [f64; 3] {
+    [
+        rng.random::<f64>() * box_lengths[0],
+        rng.random::<f64>() * box_lengths[1],
+        rng.random::<f64>() * box_lengths[2],
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -213,12 +396,27 @@ where
 ///
 /// `acc = exp((1/kT_A - 1/kT_B) * (E_B - E_A))`
 ///
+/// Both replicas need an evaluated energy (see [`McSystem::has_energy`]; run
+/// a step or [`McSystem::recompute_energy`] first): without one nothing can be
+/// compared and no swap happens.
+///
 /// # Arguments
 /// - `sys_a`, `sys_b`: the two replicas (modified in place if swap accepted)
 ///
 /// Returns `true` if the swap was accepted.
 pub fn replica_exchange_mc(sys_a: &mut McSystem, sys_b: &mut McSystem) -> bool {
-    let mut rng = rand::rng();
+    replica_exchange_mc_with_rng(sys_a, sys_b, &mut rand::rng())
+}
+
+/// Same as [`replica_exchange_mc`] but draws its random number from `rng`.
+pub fn replica_exchange_mc_with_rng<R: Rng + ?Sized>(
+    sys_a: &mut McSystem,
+    sys_b: &mut McSystem,
+    rng: &mut R,
+) -> bool {
+    if !sys_a.has_energy() || !sys_b.has_energy() {
+        return false;
+    }
     let e_a = sys_a.energy;
     let e_b = sys_b.energy;
     let beta_a = 1.0 / sys_a.kt.max(1e-30);
@@ -773,5 +971,253 @@ mod tests {
         let (_r, g) = radial_distribution(&frames, &[l, l, l], 4.0, 20);
         // All g values should be finite and non-negative
         assert!(g.iter().all(|&v| v.is_finite() && v >= 0.0));
+    }
+
+    // --- energy initialisation, single-particle energies, seeded generators ---
+
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    const SOFT_BOX: [f64; 3] = [6.0, 6.0, 6.0];
+
+    /// Repulsive soft-sphere pair energy `u(r) = r^-6` (minimum image).
+    fn soft_pair(positions_a: [f64; 3], positions_b: [f64; 3], box_lengths: &[f64; 3]) -> f64 {
+        let mut r2 = 0.0;
+        for k in 0..3 {
+            let mut d = positions_a[k] - positions_b[k];
+            d -= box_lengths[k] * (d / box_lengths[k]).round();
+            r2 += d * d;
+        }
+        let r2 = r2.max(1e-12);
+        1.0 / (r2 * r2 * r2)
+    }
+
+    fn soft_energy(positions: &[[f64; 3]], box_lengths: &[f64; 3]) -> f64 {
+        let mut energy = 0.0;
+        for i in 0..positions.len() {
+            for j in (i + 1)..positions.len() {
+                energy += soft_pair(positions[i], positions[j], box_lengths);
+            }
+        }
+        energy
+    }
+
+    /// Interaction energy of a particle at `pos` with all particles but `idx`.
+    fn soft_local(
+        positions: &[[f64; 3]],
+        idx: usize,
+        pos: [f64; 3],
+        box_lengths: &[f64; 3],
+    ) -> f64 {
+        positions
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != idx)
+            .map(|(_, &other)| soft_pair(pos, other, box_lengths))
+            .sum()
+    }
+
+    /// 3 x 3 x 3 simple-cubic lattice with spacing 2 in the 6 x 6 x 6 box.
+    fn soft_lattice() -> Vec<[f64; 3]> {
+        let mut pos = Vec::new();
+        for ix in 0..3 {
+            for iy in 0..3 {
+                for iz in 0..3 {
+                    pos.push([
+                        (ix as f64 + 0.5) * 2.0,
+                        (iy as f64 + 0.5) * 2.0,
+                        (iz as f64 + 0.5) * 2.0,
+                    ]);
+                }
+            }
+        }
+        pos
+    }
+
+    #[test]
+    fn new_system_has_no_energy_until_it_is_evaluated() {
+        let mut sys = McSystem::new(soft_lattice(), SOFT_BOX, 0.02);
+        assert!(sys.energy.is_nan());
+        assert!(!sys.has_energy());
+        let e = sys.recompute_energy(soft_energy);
+        assert!(sys.has_energy());
+        assert_eq!(e, sys.energy);
+        assert!((e - soft_energy(&sys.positions, &SOFT_BOX)).abs() < 1e-14);
+        // 27 lattice sites with 6 neighbours at r = 2 and weaker outer shells.
+        assert!(e > 1.5 && e < 2.0, "lattice energy {e}");
+    }
+
+    #[test]
+    fn metropolis_step_evaluates_the_unset_total_energy_first() {
+        let mut sys = McSystem::new(soft_lattice(), SOFT_BOX, 0.02);
+        sys.max_disp = 0.0; // the trial equals the current position: dE = 0, accepted
+        let mut rng = StdRng::seed_from_u64(1);
+        sys.metropolis_step_with_rng(soft_energy, &mut rng);
+        assert!(sys.has_energy());
+        assert_eq!(sys.n_accepted, 1);
+        let expected = soft_energy(&sys.positions, &SOFT_BOX);
+        assert!(
+            (sys.energy - expected).abs() < 1e-12,
+            "{} vs {expected}",
+            sys.energy
+        );
+    }
+
+    #[test]
+    fn metropolis_accepts_moves_of_a_high_energy_system() {
+        // E / kT ~ 90: with the old initial energy of 0 the first trial saw
+        // dE = E_total and every move was rejected with probability 1 - e^-90.
+        let mut sys = McSystem::new(soft_lattice(), SOFT_BOX, 0.02);
+        let e0 = soft_energy(&sys.positions, &SOFT_BOX);
+        assert!(e0 / sys.kt > 50.0, "E/kT = {}", e0 / sys.kt);
+        let mut rng = StdRng::seed_from_u64(2024);
+        for _ in 0..1000 {
+            sys.metropolis_step_with_rng(soft_energy, &mut rng);
+        }
+        assert!(
+            sys.acceptance_ratio() > 0.2,
+            "acceptance {}",
+            sys.acceptance_ratio()
+        );
+        let recomputed = soft_energy(&sys.positions, &SOFT_BOX);
+        assert!(
+            (sys.energy - recomputed).abs() < 1e-9,
+            "{} vs {recomputed}",
+            sys.energy
+        );
+    }
+
+    #[test]
+    fn local_metropolis_step_keeps_the_running_energy_exact() {
+        let mut sys = McSystem::new(soft_lattice(), SOFT_BOX, 0.02);
+        let mut rng = StdRng::seed_from_u64(7);
+        sys.metropolis_step_local_with_rng(soft_local, &mut rng);
+        assert!(sys.has_energy());
+        for _ in 0..3000 {
+            sys.metropolis_step_local_with_rng(soft_local, &mut rng);
+        }
+        assert!(sys.acceptance_ratio() > 0.2, "{}", sys.acceptance_ratio());
+        let recomputed = soft_energy(&sys.positions, &SOFT_BOX);
+        assert!(
+            (sys.energy - recomputed).abs() < 1e-9,
+            "running energy {} vs recomputed {recomputed}",
+            sys.energy
+        );
+        for p in &sys.positions {
+            for (&coordinate, &length) in p.iter().zip(SOFT_BOX.iter()) {
+                assert!((0.0..length).contains(&coordinate), "{p:?} left the box");
+            }
+        }
+    }
+
+    #[test]
+    fn local_metropolis_step_initialises_an_unset_energy_from_pair_sums() {
+        let mut sys = McSystem::new(soft_lattice(), SOFT_BOX, 0.02);
+        sys.max_disp = 0.0;
+        let mut rng = StdRng::seed_from_u64(3);
+        sys.metropolis_step_local_with_rng(soft_local, &mut rng);
+        let expected = soft_energy(&sys.positions, &SOFT_BOX);
+        assert!(
+            (sys.energy - expected).abs() < 1e-12,
+            "{} vs {expected}",
+            sys.energy
+        );
+    }
+
+    #[test]
+    fn local_and_full_energy_steps_follow_the_same_trajectory() {
+        let mut full = McSystem::new(soft_lattice(), SOFT_BOX, 0.05);
+        let mut local = full.clone();
+        let mut rng_full = StdRng::seed_from_u64(55);
+        let mut rng_local = StdRng::seed_from_u64(55);
+        for _ in 0..400 {
+            full.metropolis_step_with_rng(soft_energy, &mut rng_full);
+            local.metropolis_step_local_with_rng(soft_local, &mut rng_local);
+        }
+        assert_eq!(full.positions, local.positions);
+        assert_eq!(full.n_accepted, local.n_accepted);
+        assert!(full.n_accepted > 50);
+        assert!((full.energy - local.energy).abs() < 1e-9);
+    }
+
+    #[test]
+    fn metropolis_step_on_an_empty_system_does_nothing() {
+        let mut sys = McSystem::new(vec![], SOFT_BOX, 1.0);
+        let mut rng = StdRng::seed_from_u64(1);
+        sys.metropolis_step_with_rng(soft_energy, &mut rng);
+        sys.metropolis_step_local_with_rng(soft_local, &mut rng);
+        assert_eq!(sys.n_attempted, 0);
+        assert!(!sys.has_energy());
+    }
+
+    #[test]
+    fn gcmc_ideal_gas_reproduces_the_grand_canonical_particle_number() {
+        // E = 0: N is Poisson distributed with mean V e^mu = 1000 * 0.02 = 20.
+        let mut sys = McSystem::new(vec![], [10.0, 10.0, 10.0], 1.0);
+        let mu = 0.02_f64.ln();
+        let zero = |_: &[[f64; 3]], _: &[f64; 3]| 0.0;
+        let mut rng = StdRng::seed_from_u64(99);
+        for _ in 0..2_000 {
+            grand_canonical_step_with_rng(&mut sys, mu, zero, &mut rng);
+        }
+        let (mut sum, mut sum_sq, steps) = (0.0, 0.0, 200_000);
+        for _ in 0..steps {
+            grand_canonical_step_with_rng(&mut sys, mu, zero, &mut rng);
+            let n = sys.n_particles() as f64;
+            sum += n;
+            sum_sq += n * n;
+        }
+        let mean = sum / steps as f64;
+        let variance = sum_sq / steps as f64 - mean * mean;
+        assert!((mean - 20.0).abs() < 0.6, "<N> = {mean}");
+        assert!((variance - 20.0).abs() < 3.0, "var(N) = {variance}");
+        assert!(sys.has_energy());
+    }
+
+    #[test]
+    fn gcmc_local_and_full_energy_steps_agree_and_track_the_energy() {
+        let mut full = McSystem::new(soft_lattice(), SOFT_BOX, 0.5);
+        let mut local = full.clone();
+        let mu = 0.125_f64.ln();
+        let mut rng_full = StdRng::seed_from_u64(314);
+        let mut rng_local = StdRng::seed_from_u64(314);
+        let (mut n_min, mut n_max) = (usize::MAX, 0);
+        for _ in 0..3000 {
+            grand_canonical_step_with_rng(&mut full, mu, soft_energy, &mut rng_full);
+            grand_canonical_step_local_with_rng(&mut local, mu, soft_local, &mut rng_local);
+            n_min = n_min.min(full.n_particles());
+            n_max = n_max.max(full.n_particles());
+        }
+        assert!(
+            n_min < 27 && n_max > 27,
+            "N stayed at 27 ({n_min}..{n_max})"
+        );
+        assert_eq!(full.positions, local.positions);
+        for sys in [&full, &local] {
+            let recomputed = soft_energy(&sys.positions, &SOFT_BOX);
+            assert!(
+                (sys.energy - recomputed).abs() < 1e-9,
+                "running energy {} vs recomputed {recomputed}",
+                sys.energy
+            );
+        }
+    }
+
+    #[test]
+    fn replica_exchange_needs_evaluated_energies() {
+        let mut a = McSystem::new(vec![[1.0; 3]], [10.0; 3], 2.0);
+        let mut b = McSystem::new(vec![[2.0; 3]], [10.0; 3], 0.5);
+        let mut rng = StdRng::seed_from_u64(1);
+        // Unevaluated energies: no comparison is possible, nothing is swapped.
+        assert!(!replica_exchange_mc_with_rng(&mut a, &mut b, &mut rng));
+        assert_eq!(a.positions, vec![[1.0; 3]]);
+        assert_eq!(b.positions, vec![[2.0; 3]]);
+        // exponent = (1/2 - 2) * (-5 - 5) = 15 > 0: always accepted.
+        a.energy = 5.0;
+        b.energy = -5.0;
+        assert!(replica_exchange_mc_with_rng(&mut a, &mut b, &mut rng));
+        assert_eq!(a.positions, vec![[2.0; 3]]);
+        assert_eq!(b.positions, vec![[1.0; 3]]);
+        assert_eq!((a.energy, b.energy), (-5.0, 5.0));
     }
 }

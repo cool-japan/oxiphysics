@@ -15,6 +15,11 @@ pub struct VolumeParticle {
     /// When `true` the particle is pinned and never moved by the solver.
     pub fixed: bool,
 }
+/// Orientation sign of a signed tetrahedron volume: `-1.0` for a negatively
+/// oriented (or inverted) tetrahedron, `1.0` otherwise.
+fn orientation_sign(signed_volume: f64) -> f64 {
+    if signed_volume < 0.0 { -1.0 } else { 1.0 }
+}
 /// PBD tetrahedral soft body.
 ///
 /// Simulation loop:
@@ -29,6 +34,16 @@ pub struct TetrahedralSoftBody {
     pub tetrahedra: Vec<[usize; 4]>,
     /// Rest volume for each tetrahedron (same order as `tetrahedra`).
     pub rest_volumes: Vec<f64>,
+    /// Orientation sign (`+1.0` or `-1.0`) of each tetrahedron in the rest
+    /// configuration, i.e. the sign of its rest signed volume (same order as
+    /// `tetrahedra`).
+    ///
+    /// The volume constraints use it to measure the *signed* volume
+    /// `s V` against `rest_volumes`, so that a tetrahedron that is squashed
+    /// through zero volume is pushed back towards its rest orientation instead
+    /// of being treated like its mirror image. A tetrahedron without an entry
+    /// (pushed onto `tetrahedra` by hand) takes the sign of its current volume.
+    pub rest_orientations: Vec<f64>,
     /// Stiffness coefficient for the volume constraint (0 = fully compliant, 1 = rigid).
     pub volume_stiffness: f64,
     /// Stiffness coefficient for edge distance constraints.
@@ -42,17 +57,21 @@ impl TetrahedralSoftBody {
     /// Rest volumes and edge rest lengths are computed automatically from the
     /// initial particle positions.
     pub fn new(particles: Vec<VolumeParticle>, tetrahedra: Vec<[usize; 4]>) -> Self {
-        let rest_volumes: Vec<f64> = tetrahedra
+        let rest_signed_volumes: Vec<f64> = tetrahedra
             .iter()
             .map(|tet| {
-                let v = tet_volume_signed(
+                tet_volume_signed(
                     particles[tet[0]].position,
                     particles[tet[1]].position,
                     particles[tet[2]].position,
                     particles[tet[3]].position,
-                );
-                v.abs()
+                )
             })
+            .collect();
+        let rest_volumes: Vec<f64> = rest_signed_volumes.iter().map(|v| v.abs()).collect();
+        let rest_orientations: Vec<f64> = rest_signed_volumes
+            .iter()
+            .map(|&v| orientation_sign(v))
             .collect();
         use std::collections::HashSet;
         let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
@@ -81,6 +100,7 @@ impl TetrahedralSoftBody {
             particles,
             tetrahedra,
             rest_volumes,
+            rest_orientations,
             volume_stiffness: 0.5,
             edge_stiffness: 0.5,
             rest_lengths,
@@ -103,69 +123,73 @@ impl TetrahedralSoftBody {
             .map(|tet| Self::tet_volume(&self.particles, tet))
             .sum()
     }
+    /// Inverse masses of the four particles of a tetrahedron (zero for fixed
+    /// particles).
+    fn tet_inverse_masses(&self, tet: &[usize; 4]) -> [f64; 4] {
+        tet.map(|index| {
+            let particle = &self.particles[index];
+            if particle.fixed {
+                0.0
+            } else {
+                1.0 / particle.mass
+            }
+        })
+    }
+    /// Orientation sign of tetrahedron `tet_index`: the rest orientation, or the
+    /// sign of the current signed volume when no rest orientation is recorded.
+    fn tet_orientation(&self, tet_index: usize, current_signed_volume: f64) -> f64 {
+        self.rest_orientations
+            .get(tet_index)
+            .copied()
+            .unwrap_or_else(|| orientation_sign(current_signed_volume))
+    }
+    /// Signed-volume constraint value and gradients of tetrahedron `tet_index`
+    /// for the current positions.
+    ///
+    /// With the orientation sign `s` of the rest configuration the constraint is
+    /// `C = s V − V_rest`, where `V` is the signed volume; its gradients are
+    /// `s ∂V/∂p_i` ([`tet_volume_gradient`]) and sum to zero.
+    fn tet_volume_constraint(&self, tet_index: usize) -> (f64, [[f64; 3]; 4]) {
+        let tet = self.tetrahedra[tet_index];
+        let p0 = self.particles[tet[0]].position;
+        let p1 = self.particles[tet[1]].position;
+        let p2 = self.particles[tet[2]].position;
+        let p3 = self.particles[tet[3]].position;
+        let signed_volume = tet_volume_signed(p0, p1, p2, p3);
+        let orientation = self.tet_orientation(tet_index, signed_volume);
+        let constraint = orientation * signed_volume - self.rest_volumes[tet_index];
+        let gradients = tet_volume_gradient(p0, p1, p2, p3).map(|g| scale3(g, orientation));
+        (constraint, gradients)
+    }
     /// Project volume constraints for all tetrahedra.
     ///
-    /// Constraint: `C = V_current - V_rest = 0`.
+    /// Constraint: `C = s V − V_rest = 0`, with the signed volume `V` and the
+    /// rest orientation sign `s` ([`TetrahedralSoftBody::rest_orientations`]).
+    /// Measuring the signed volume keeps the projection pointing the right way
+    /// for tetrahedra of either orientation, and lets it recover a tetrahedron
+    /// that has been inverted.
     ///
-    /// Gradient (Green's theorem): each vertex gradient is `±(1/6) * (e_j × e_k)`.
+    /// The gradients are `s ∂V/∂p_i` ([`tet_volume_gradient`]); they sum to
+    /// zero, so each projection conserves linear momentum (`Σ mᵢ Δpᵢ = 0`).
     pub fn solve_volume_constraints(&mut self) {
         for (idx, &tet) in self.tetrahedra.iter().enumerate() {
-            let v_rest = self.rest_volumes[idx];
-            let p0 = self.particles[tet[0]].position;
-            let p1 = self.particles[tet[1]].position;
-            let p2 = self.particles[tet[2]].position;
-            let p3 = self.particles[tet[3]].position;
-            let v_cur = tet_volume_signed(p0, p1, p2, p3).abs();
-            let c = v_cur - v_rest;
+            let (c, grads) = self.tet_volume_constraint(idx);
             if c.abs() < 1e-15 {
                 continue;
             }
-            let e1 = sub3(p1, p0);
-            let e2 = sub3(p2, p0);
-            let e3 = sub3(p3, p0);
-            let g0 = cross3(sub3(p2, p1), sub3(p3, p1));
-            let g1 = cross3(e2, e3);
-            let g2 = cross3(e3, e1);
-            let g3 = cross3(e1, e2);
-            let inv6 = 1.0 / 6.0;
-            let g0 = scale3(g0, inv6);
-            let g1 = scale3(g1, inv6);
-            let g2 = scale3(g2, inv6);
-            let g3 = scale3(g3, inv6);
-            let w = [
-                if self.particles[tet[0]].fixed {
-                    0.0
-                } else {
-                    1.0 / self.particles[tet[0]].mass
-                },
-                if self.particles[tet[1]].fixed {
-                    0.0
-                } else {
-                    1.0 / self.particles[tet[1]].mass
-                },
-                if self.particles[tet[2]].fixed {
-                    0.0
-                } else {
-                    1.0 / self.particles[tet[2]].mass
-                },
-                if self.particles[tet[3]].fixed {
-                    0.0
-                } else {
-                    1.0 / self.particles[tet[3]].mass
-                },
-            ];
-            let denom = w[0] * dot3(g0, g0)
-                + w[1] * dot3(g1, g1)
-                + w[2] * dot3(g2, g2)
-                + w[3] * dot3(g3, g3);
+            let w = self.tet_inverse_masses(&tet);
+            let denom: f64 = grads
+                .iter()
+                .zip(w.iter())
+                .map(|(g, &wk)| wk * dot3(*g, *g))
+                .sum();
             if denom < 1e-15 {
                 continue;
             }
             let lambda = -self.volume_stiffness * c / denom;
-            let gs = [g0, g1, g2, g3];
             for (k, &ti) in tet.iter().enumerate() {
                 if !self.particles[ti].fixed {
-                    let dp = scale3(gs[k], lambda * w[k]);
+                    let dp = scale3(grads[k], lambda * w[k]);
                     self.particles[ti].position = add3(self.particles[ti].position, dp);
                 }
             }
@@ -249,41 +273,20 @@ impl TetrahedralSoftBody {
 /// when compressed.
 impl TetrahedralSoftBody {
     /// Project volume constraints with an additional internal pressure correction.
+    ///
+    /// The signed-volume constraint and (oriented) gradients are those of
+    /// [`TetrahedralSoftBody::solve_volume_constraints`]. The pressure term
+    /// acts along the same gradients, so it expands a compressed tetrahedron of
+    /// either orientation, and helps to turn an inverted one back, instead of
+    /// squeezing it further.
     pub fn solve_volume_with_pressure(&mut self, pressure: f64) {
         for (idx, &tet) in self.tetrahedra.iter().enumerate() {
             let v_rest = self.rest_volumes[idx];
-            let p0 = self.particles[tet[0]].position;
-            let p1 = self.particles[tet[1]].position;
-            let p2 = self.particles[tet[2]].position;
-            let p3 = self.particles[tet[3]].position;
-            let v_cur = tet_volume_signed(p0, p1, p2, p3).abs();
-            let c = v_cur - v_rest;
-            let grads = tet_volume_gradient(p0, p1, p2, p3);
-            let w = [
-                if self.particles[tet[0]].fixed {
-                    0.0
-                } else {
-                    1.0 / self.particles[tet[0]].mass
-                },
-                if self.particles[tet[1]].fixed {
-                    0.0
-                } else {
-                    1.0 / self.particles[tet[1]].mass
-                },
-                if self.particles[tet[2]].fixed {
-                    0.0
-                } else {
-                    1.0 / self.particles[tet[2]].mass
-                },
-                if self.particles[tet[3]].fixed {
-                    0.0
-                } else {
-                    1.0 / self.particles[tet[3]].mass
-                },
-            ];
+            let (c, grads) = self.tet_volume_constraint(idx);
+            let w = self.tet_inverse_masses(&tet);
             let lambda = volume_constraint_lambda(&grads, &w, c, self.volume_stiffness);
-            let pressure_correction = if v_cur < v_rest {
-                pressure * (v_rest - v_cur) / v_rest
+            let pressure_correction = if c < 0.0 && v_rest > 0.0 {
+                pressure * (-c) / v_rest
             } else {
                 0.0
             };

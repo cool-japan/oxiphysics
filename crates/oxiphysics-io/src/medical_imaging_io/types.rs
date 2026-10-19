@@ -2,6 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::dicom_parse::{PixelData, parse_dicom};
 use super::functions::*;
 use std::collections::VecDeque;
 
@@ -121,6 +122,14 @@ pub enum ValueRepresentation {
     LT,
     /// Other Byte
     OB,
+    /// Other Double
+    OD,
+    /// Other Float
+    OF,
+    /// Other Long
+    OL,
+    /// Other 64-bit Very Long
+    OV,
     /// Other Word
     OW,
     /// Person Name
@@ -135,18 +144,26 @@ pub enum ValueRepresentation {
     SS,
     /// Short Text
     ST,
+    /// Signed 64-bit Very Long
+    SV,
     /// Time
     TM,
+    /// Unlimited Characters
+    UC,
     /// Unique Identifier (UID)
     UI,
     /// Unsigned Long
     UL,
     /// Unknown
     UN,
+    /// Universal Resource Identifier (URI)
+    UR,
     /// Unsigned Short
     US,
     /// Unlimited Text
     UT,
+    /// Unsigned 64-bit Very Long
+    UV,
 }
 impl ValueRepresentation {
     /// Parses a two-character VR code.
@@ -165,6 +182,10 @@ impl ValueRepresentation {
             (b'L', b'O') => Some(Self::LO),
             (b'L', b'T') => Some(Self::LT),
             (b'O', b'B') => Some(Self::OB),
+            (b'O', b'D') => Some(Self::OD),
+            (b'O', b'F') => Some(Self::OF),
+            (b'O', b'L') => Some(Self::OL),
+            (b'O', b'V') => Some(Self::OV),
             (b'O', b'W') => Some(Self::OW),
             (b'P', b'N') => Some(Self::PN),
             (b'S', b'H') => Some(Self::SH),
@@ -172,20 +193,40 @@ impl ValueRepresentation {
             (b'S', b'Q') => Some(Self::SQ),
             (b'S', b'S') => Some(Self::SS),
             (b'S', b'T') => Some(Self::ST),
+            (b'S', b'V') => Some(Self::SV),
             (b'T', b'M') => Some(Self::TM),
+            (b'U', b'C') => Some(Self::UC),
             (b'U', b'I') => Some(Self::UI),
             (b'U', b'L') => Some(Self::UL),
             (b'U', b'N') => Some(Self::UN),
+            (b'U', b'R') => Some(Self::UR),
             (b'U', b'S') => Some(Self::US),
             (b'U', b'T') => Some(Self::UT),
+            (b'U', b'V') => Some(Self::UV),
             _ => None,
         }
     }
-    /// Returns true if this VR uses a 4-byte length field (explicit VR).
+    /// Returns true if this VR uses the long form of an explicit-VR element header:
+    /// two reserved bytes followed by a 4-byte length (the other VRs have a 2-byte length).
+    ///
+    /// These are `OB`, `OD`, `OF`, `OL`, `OV`, `OW`, `SQ`, `SV`, `UC`, `UN`, `UR`, `UT`
+    /// and `UV` (DICOM PS3.5 table 7.1-1); in particular `LT` has a 2-byte length.
     pub fn has_extended_length(&self) -> bool {
         matches!(
             self,
-            Self::OB | Self::OW | Self::SQ | Self::UN | Self::UT | Self::LT
+            Self::OB
+                | Self::OD
+                | Self::OF
+                | Self::OL
+                | Self::OV
+                | Self::OW
+                | Self::SQ
+                | Self::SV
+                | Self::UC
+                | Self::UN
+                | Self::UR
+                | Self::UT
+                | Self::UV
         )
     }
     /// Returns the two-character VR code as a string.
@@ -204,6 +245,10 @@ impl ValueRepresentation {
             Self::LO => "LO",
             Self::LT => "LT",
             Self::OB => "OB",
+            Self::OD => "OD",
+            Self::OF => "OF",
+            Self::OL => "OL",
+            Self::OV => "OV",
             Self::OW => "OW",
             Self::PN => "PN",
             Self::SH => "SH",
@@ -211,12 +256,16 @@ impl ValueRepresentation {
             Self::SQ => "SQ",
             Self::SS => "SS",
             Self::ST => "ST",
+            Self::SV => "SV",
             Self::TM => "TM",
+            Self::UC => "UC",
             Self::UI => "UI",
             Self::UL => "UL",
             Self::UN => "UN",
+            Self::UR => "UR",
             Self::US => "US",
             Self::UT => "UT",
+            Self::UV => "UV",
         }
     }
 }
@@ -224,7 +273,8 @@ impl ValueRepresentation {
 pub struct NiftiReader {
     /// The parsed header.
     pub header: NiftiHeader,
-    /// The parsed voxel data as f32.
+    /// The parsed voxel data as f32: the stored values, not scaled by
+    /// `header.scl_slope` / `header.scl_inter` (see [`NiftiReader::parse`]).
     pub voxels: Vec<f32>,
 }
 impl NiftiReader {
@@ -237,54 +287,124 @@ impl NiftiReader {
     }
     /// Parses a NIfTI-1 (.nii) byte buffer.
     ///
-    /// Reads the 348-byte header and interprets the voxel data based on
-    /// the datatype field (supports float32=16, int16=4, uint8=2, float64=64).
+    /// Reads the 348-byte header and decodes the voxel data that starts at
+    /// `vox_offset`, whatever the scalar datatype: uint8 (2), int16 (4),
+    /// int32 (8), float32 (16), float64 (64), int8 (256), uint16 (512),
+    /// uint32 (768), int64 (1024) or uint64 (1280).  The voxels are stored as
+    /// `f32` in [`NiftiReader::voxels`]; integers wider than 24 bits and doubles
+    /// are rounded to the nearest `f32`.
+    ///
+    /// The stored values are returned as they are: `scl_slope` and `scl_inter`
+    /// of the header are not applied (`value = slope * stored + inter`, a slope
+    /// of zero meaning "unscaled").  For data with more than three dimensions
+    /// only the first 3-D volume is decoded; the trailing sizes stay in
+    /// `header.dim`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, and leaves the reader unchanged, when the buffer is
+    /// shorter than the header, `sizeof_hdr` is not 348 (a byte-swapped header
+    /// is reported as such), `dim[0]` is outside `1..=7` or a size
+    /// `dim[1..=dim[0]]` is not positive, the datatype has no scalar reading
+    /// (complex, RGB, ... or an unknown code: no zero volume is made up for
+    /// it), `bitpix` disagrees with the datatype, `vox_offset` is not a whole
+    /// number of bytes between 348 and the end of the buffer, or fewer voxels
+    /// than the dimensions call for follow the offset.
     pub fn parse(&mut self, data: &[u8]) -> Result<(), String> {
         if data.len() < 348 {
             return Err("Data too short for NIfTI header".into());
         }
         let sizeof_hdr = read_i32_le(data, 0);
         if sizeof_hdr != 348 {
+            if sizeof_hdr.swap_bytes() == 348 {
+                return Err("byte-swapped (big-endian) NIfTI-1 files are not supported".into());
+            }
             return Err(format!("Invalid sizeof_hdr: {} (expected 348)", sizeof_hdr));
         }
-        self.header.sizeof_hdr = sizeof_hdr;
+        let mut header = NiftiHeader::new();
+        header.sizeof_hdr = sizeof_hdr;
         for i in 0..8 {
-            self.header.dim[i] = read_i16_le(data, 40 + i * 2);
+            header.dim[i] = read_i16_le(data, 40 + i * 2);
         }
-        self.header.datatype = read_i16_le(data, 70);
-        self.header.bitpix = read_i16_le(data, 72);
+        header.datatype = read_i16_le(data, 70);
+        header.bitpix = read_i16_le(data, 72);
         for i in 0..8 {
-            self.header.pixdim[i] = read_f32_le(data, 76 + i * 4);
+            header.pixdim[i] = read_f32_le(data, 76 + i * 4);
         }
-        self.header.vox_offset = read_f32_le(data, 108);
-        self.header.scl_slope = read_f32_le(data, 112);
-        self.header.scl_inter = read_f32_le(data, 116);
-        self.header.qform_code = read_i16_le(data, 252);
-        self.header.sform_code = read_i16_le(data, 254);
-        self.header.quatern_b = read_f32_le(data, 256);
-        self.header.quatern_c = read_f32_le(data, 260);
-        self.header.quatern_d = read_f32_le(data, 264);
-        self.header.qoffset_x = read_f32_le(data, 268);
-        self.header.qoffset_y = read_f32_le(data, 272);
-        self.header.qoffset_z = read_f32_le(data, 276);
+        header.vox_offset = read_f32_le(data, 108);
+        header.scl_slope = read_f32_le(data, 112);
+        header.scl_inter = read_f32_le(data, 116);
+        let description = &data[148..228];
+        let description_len = description
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(description.len());
+        header.descrip = String::from_utf8_lossy(&description[..description_len])
+            .trim_end()
+            .to_string();
+        header.qform_code = read_i16_le(data, 252);
+        header.sform_code = read_i16_le(data, 254);
+        header.quatern_b = read_f32_le(data, 256);
+        header.quatern_c = read_f32_le(data, 260);
+        header.quatern_d = read_f32_le(data, 264);
+        header.qoffset_x = read_f32_le(data, 268);
+        header.qoffset_y = read_f32_le(data, 272);
+        header.qoffset_z = read_f32_le(data, 276);
         for i in 0..4 {
-            self.header.srow_x[i] = read_f32_le(data, 280 + i * 4);
-            self.header.srow_y[i] = read_f32_le(data, 296 + i * 4);
-            self.header.srow_z[i] = read_f32_le(data, 312 + i * 4);
+            header.srow_x[i] = read_f32_le(data, 280 + i * 4);
+            header.srow_y[i] = read_f32_le(data, 296 + i * 4);
+            header.srow_z[i] = read_f32_le(data, 312 + i * 4);
         }
-        if data.len() >= 348 {
-            let magic_bytes = &data[344..347.min(data.len())];
-            self.header.magic = String::from_utf8_lossy(magic_bytes).to_string();
+        header.magic = String::from_utf8_lossy(&data[344..347]).to_string();
+        let ndim = header.dim[0];
+        if !(1..=7).contains(&ndim) {
+            return Err(format!("NIfTI dim[0] = {ndim} is outside 1..=7"));
         }
-        let offset = self.header.vox_offset as usize;
-        if offset < data.len() {
-            let voxel_data = &data[offset..];
-            self.voxels =
-                parse_nifti_voxels(voxel_data, self.header.datatype, self.header.num_voxels());
+        for axis in 1..=ndim as usize {
+            if header.dim[axis] < 1 {
+                return Err(format!(
+                    "NIfTI dim[{axis}] = {} is not positive",
+                    header.dim[axis]
+                ));
+            }
         }
+        let kind = voxel_kind(header.datatype)?;
+        if header.bitpix != kind.bitpix() {
+            return Err(format!(
+                "NIfTI bitpix {} does not match datatype {} ({} bits per voxel)",
+                header.bitpix,
+                header.datatype,
+                kind.bitpix()
+            ));
+        }
+        let [nx, ny, nz] = header.volume_dims();
+        let num_voxels = nx
+            .checked_mul(ny)
+            .and_then(|n| n.checked_mul(nz))
+            .ok_or_else(|| "NIfTI volume dimensions overflow".to_string())?;
+        let vox_offset = header.vox_offset;
+        if !vox_offset.is_finite() || vox_offset < 348.0 || vox_offset.fract() != 0.0 {
+            return Err(format!(
+                "invalid NIfTI vox_offset {vox_offset}: it must be a whole number of bytes, \
+                 at least 348"
+            ));
+        }
+        let voxel_bytes = data.get(vox_offset as usize..).ok_or_else(|| {
+            format!(
+                "NIfTI vox_offset {vox_offset} lies beyond the end of the {} byte buffer",
+                data.len()
+            )
+        })?;
+        let voxels = parse_nifti_voxels(voxel_bytes, header.datatype, num_voxels)?;
+        self.header = header;
+        self.voxels = voxels;
         Ok(())
     }
     /// Converts parsed data into a `VoxelVolume`.
+    ///
+    /// Call it after a successful [`NiftiReader::parse`].  A reader that holds
+    /// no voxels for the header's dimensions (it was never parsed) gives an
+    /// empty volume with dimensions `[0, 0, 0]`, not a volume of made-up zeros.
     pub fn to_volume(&self) -> VoxelVolume {
         let dims = self.header.volume_dims();
         let spacing = self.header.voxel_spacing();
@@ -293,10 +413,24 @@ impl NiftiReader {
             self.header.qoffset_y as f64,
             self.header.qoffset_z as f64,
         ];
-        let mut vol = VoxelVolume::new(dims, spacing, origin);
-        let n = vol.num_voxels().min(self.voxels.len());
-        vol.data[..n].copy_from_slice(&self.voxels[..n]);
-        vol
+        let expected = dims[0]
+            .checked_mul(dims[1])
+            .and_then(|n| n.checked_mul(dims[2]));
+        if expected == Some(self.voxels.len()) {
+            VoxelVolume {
+                data: self.voxels.clone(),
+                dims,
+                spacing,
+                origin,
+            }
+        } else {
+            VoxelVolume {
+                data: Vec::new(),
+                dims: [0, 0, 0],
+                spacing,
+                origin,
+            }
+        }
     }
 }
 /// Volume processing operations for medical imaging data.
@@ -938,7 +1072,7 @@ impl NiftiHeader {
     /// Returns the total number of voxels.
     pub fn num_voxels(&self) -> usize {
         let d = self.volume_dims();
-        d[0] * d[1] * d[2]
+        d[0].saturating_mul(d[1]).saturating_mul(d[2])
     }
     /// Returns the sform affine as a 4x4 matrix in row-major order.
     pub fn sform_affine(&self) -> [[f32; 4]; 4] {
@@ -972,13 +1106,28 @@ impl NiftiHeader {
         ]
     }
 }
-/// DICOM file reader that parses the preamble, magic number, and data elements.
+/// DICOM file reader: parses the preamble, the magic number, the file meta
+/// information and the data elements of a Part 10 file.
 ///
-/// Supports Explicit VR Little Endian transfer syntax.
+/// The data set is read in the transfer syntax announced by the Transfer Syntax
+/// UID `(0002,0010)`: Implicit VR Little Endian, Explicit VR Little Endian (also
+/// assumed when the UID is absent), Deflated Explicit VR Little Endian or
+/// Encapsulated Uncompressed Explicit VR Little Endian (whose pixel data
+/// fragments are joined into [`DicomReader::pixel_data`]).
+/// Sequences and items of undefined length are walked to their delimiters, so
+/// elements and pixel data after them are found.
+///
+/// Big-endian data is rejected, and so is *compressed* pixel data (JPEG, JPEG
+/// 2000, RLE, ...): [`DicomReader::parse`] only returns native pixel samples.
+/// [`DicomReader::parse_header`] reads the header of any little-endian file.
 pub struct DicomReader {
-    /// All parsed data elements.
+    /// The parsed top-level data elements in file order, file meta information
+    /// first.  A sequence (`SQ`) element holds its raw encoded items.  Pixel
+    /// Data is not listed; it is in [`DicomReader::pixel_data`].
     pub elements: Vec<DicomElement>,
-    /// Pixel data bytes (7FE0,0010).
+    /// Pixel data bytes (7FE0,0010): the native samples exactly as stored.
+    /// Empty when the file has no pixel data and after
+    /// [`DicomReader::parse_header`].
     pub pixel_data: Vec<u8>,
     /// Current read position in the byte stream.
     pub(super) _position: usize,
@@ -994,85 +1143,45 @@ impl DicomReader {
     }
     /// Parses a DICOM byte stream.
     ///
-    /// The stream must start with a 128-byte preamble followed by "DICM".
-    /// Data elements are read as Explicit VR Little Endian.
+    /// The stream must start with a 128-byte preamble followed by "DICM".  The
+    /// data elements are read in the transfer syntax of the file (see
+    /// [`DicomReader`]); an absent transfer syntax means Explicit VR Little
+    /// Endian.  Unlike a partial read, every length is checked: a value that
+    /// runs past the end of the data, a sequence without its delimiter and
+    /// bytes that cannot form an element are errors.
+    ///
+    /// # Errors
+    ///
+    /// Besides malformed data, fails for the Explicit VR Big Endian transfer
+    /// syntax and for transfer syntaxes whose pixel data is compressed
+    /// (encapsulated), which cannot be returned as raw samples.  The reader is
+    /// left unchanged on error.
     pub fn parse(&mut self, data: &[u8]) -> Result<DicomHeader, String> {
-        if data.len() < 132 {
-            return Err("Data too short for DICOM preamble + magic".into());
-        }
-        if &data[128..132] != b"DICM" {
-            return Err("Missing DICM magic number at offset 128".into());
-        }
-        self._position = 132;
-        self.elements.clear();
-        self.pixel_data.clear();
+        self.parse_with(data, PixelData::Keep)
+    }
+    /// Parses a DICOM byte stream like [`DicomReader::parse`] but never keeps
+    /// the pixel data, which is skipped whatever its encoding.
+    ///
+    /// This reads the header of files whose pixel data is compressed;
+    /// [`DicomReader::pixel_data`] is left empty.  The transfer syntax is in
+    /// the `(0002,0010)` element.
+    ///
+    /// # Errors
+    ///
+    /// Fails for malformed data and for the Explicit VR Big Endian transfer
+    /// syntax.  The reader is left unchanged on error.
+    pub fn parse_header(&mut self, data: &[u8]) -> Result<DicomHeader, String> {
+        self.parse_with(data, PixelData::Skip)
+    }
+    fn parse_with(&mut self, data: &[u8], pixels: PixelData) -> Result<DicomHeader, String> {
+        let parsed = parse_dicom(data, pixels)?;
         let mut header = DicomHeader::new();
-        while self._position + 8 <= data.len() {
-            let group = read_u16_le(data, self._position);
-            let element = read_u16_le(data, self._position + 2);
-            if group == 0x7FE0 && element == 0x0010 {
-                self._position += 4;
-                if self._position + 2 > data.len() {
-                    break;
-                }
-                let vr =
-                    ValueRepresentation::from_bytes(data[self._position], data[self._position + 1]);
-                self._position += 2;
-                let length = if vr.is_none_or(|v| v.has_extended_length()) {
-                    self._position += 2;
-                    if self._position + 4 > data.len() {
-                        break;
-                    }
-                    let len = read_u32_le(data, self._position) as usize;
-                    self._position += 4;
-                    len
-                } else {
-                    if self._position + 2 > data.len() {
-                        break;
-                    }
-                    let len = read_u16_le(data, self._position) as usize;
-                    self._position += 2;
-                    len
-                };
-                let end = (self._position + length).min(data.len());
-                self.pixel_data = data[self._position..end].to_vec();
-                self._position = end;
-                continue;
-            }
-            if self._position + 4 > data.len() {
-                break;
-            }
-            let vr_opt =
-                ValueRepresentation::from_bytes(data[self._position + 4], data[self._position + 5]);
-            let vr = vr_opt.unwrap_or(ValueRepresentation::UN);
-            self._position += 6;
-            let length = if vr.has_extended_length() {
-                self._position += 2;
-                if self._position + 4 > data.len() {
-                    break;
-                }
-                let len = read_u32_le(data, self._position) as usize;
-                self._position += 4;
-                len
-            } else {
-                if self._position + 2 > data.len() {
-                    break;
-                }
-                let len = read_u16_le(data, self._position) as usize;
-                self._position += 2;
-                len
-            };
-            if length == 0xFFFFFFFF {
-                break;
-            }
-            let end = (self._position + length).min(data.len());
-            let value = data[self._position..end].to_vec();
-            self._position = end;
-            let tag = DicomTag::new(group, element, vr);
-            let elem = DicomElement::new(tag, value);
-            Self::populate_header(&elem, &mut header);
-            self.elements.push(elem);
+        for element in &parsed.elements {
+            Self::populate_header(element, &mut header);
         }
+        self.elements = parsed.elements;
+        self.pixel_data = parsed.pixel_data;
+        self._position = data.len();
         Ok(header)
     }
     /// Populates header fields from a parsed element.

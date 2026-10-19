@@ -929,7 +929,9 @@ mod extended_cell_tests {
     fn test_update_incremental_no_move() {
         let positions = vec![[1.0, 1.0, 1.0], [3.0, 3.0, 3.0]];
         let mut cl = CellList::build(&positions);
-        let relocated = cl.update_incremental(&positions, &positions, 0.1);
+        let relocated = cl
+            .update_incremental(&positions, &positions, 0.1)
+            .expect("matching lengths");
         assert_eq!(relocated, 0, "no particle moved");
     }
     #[test]
@@ -937,7 +939,9 @@ mod extended_cell_tests {
         let old = vec![[1.0, 1.0, 1.0], [3.0, 3.0, 3.0]];
         let new_pos = vec![[1.0, 1.0, 1.0], [6.0, 6.0, 6.0]];
         let mut cl = CellList::build(&old);
-        let relocated = cl.update_incremental(&new_pos, &old, 0.5);
+        let relocated = cl
+            .update_incremental(&new_pos, &old, 0.5)
+            .expect("matching lengths");
         assert!(relocated >= 1, "at least one particle relocated");
     }
     #[test]
@@ -945,8 +949,291 @@ mod extended_cell_tests {
         let old = vec![[0.0, 0.0, 0.0], [5.0, 5.0, 5.0]];
         let new_pos = vec![[0.05, 0.0, 0.0], [8.0, 8.0, 8.0]];
         let mut cl = CellList::build(&old);
-        let relocated = cl.update_incremental(&new_pos, &old, 1.0);
+        let relocated = cl
+            .update_incremental(&new_pos, &old, 1.0)
+            .expect("matching lengths");
         assert_eq!(relocated, 1);
+    }
+    /// Sorted indices returned by a radius query large enough to cover the grid.
+    fn all_atoms(cl: &CellList, positions: &[[f64; 3]]) -> Vec<usize> {
+        let mut found = cl.find_neighbors(positions[0], 1.0e6);
+        found.sort_unstable();
+        found
+    }
+    /// Brute-force neighbour set, the oracle of the query tests.
+    fn brute_force_neighbors(positions: &[[f64; 3]], query: [f64; 3], radius: f64) -> Vec<usize> {
+        (0..positions.len())
+            .filter(|&i| {
+                let d = [
+                    positions[i][0] - query[0],
+                    positions[i][1] - query[1],
+                    positions[i][2] - query[2],
+                ];
+                d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= radius * radius
+            })
+            .collect()
+    }
+    #[test]
+    fn test_update_incremental_move_into_occupied_cell_keeps_every_atom() {
+        // Cells 0, 1 and 2 along x; atoms 2 and 3 share cell 2.  The grid is
+        // a single row (3 x 1 x 1) with unit cells.
+        let old = vec![
+            [0.5, 0.5, 0.5],
+            [1.5, 0.5, 0.5],
+            [2.5, 0.5, 0.5],
+            [2.6, 0.5, 0.5],
+        ];
+        let mut cl = CellList::build(&old);
+        assert_eq!(all_atoms(&cl, &old), vec![0, 1, 2, 3]);
+        // Atom 0 leaves cell 0 for the occupied cell 1.  The CSR layout has no
+        // slack, so an in-place insert used to overwrite atom 2, the first atom
+        // of cell 2, and list atom 0 twice.
+        let mut new_pos = old.clone();
+        new_pos[0] = [1.4, 0.5, 0.5];
+        let moved = cl
+            .update_incremental(&new_pos, &old, 0.5)
+            .expect("matching lengths");
+        assert_eq!(moved, 1);
+        let mut in_cell_2 = cl.find_neighbors([2.55, 0.5, 0.5], 0.2);
+        in_cell_2.sort_unstable();
+        assert_eq!(in_cell_2, vec![2, 3], "cell 2 must keep both of its atoms");
+        let mut in_cell_1 = cl.find_neighbors([1.45, 0.5, 0.5], 0.2);
+        in_cell_1.sort_unstable();
+        assert_eq!(in_cell_1, vec![0, 1], "atom 0 now lives in cell 1");
+        assert_eq!(
+            all_atoms(&cl, &new_pos),
+            vec![0, 1, 2, 3],
+            "every atom must appear exactly once"
+        );
+        assert_eq!(cl.inner.cell_counts, vec![0, 2, 2]);
+        assert_eq!(cl.inner.cell_starts, vec![0, 0, 2]);
+        assert_eq!(cl.inner.sorted_indices.len(), 4);
+    }
+    #[test]
+    fn test_update_incremental_move_out_of_last_cell_into_first() {
+        // Moving the atom with the highest slot index back to the first cell
+        // exercises the opposite direction of the shift.
+        let old = vec![
+            [0.5, 0.5, 0.5],
+            [1.5, 0.5, 0.5],
+            [1.6, 0.5, 0.5],
+            [2.5, 0.5, 0.5],
+        ];
+        let mut cl = CellList::build(&old);
+        let mut new_pos = old.clone();
+        new_pos[3] = [0.45, 0.5, 0.5];
+        let moved = cl
+            .update_incremental(&new_pos, &old, 0.5)
+            .expect("matching lengths");
+        assert_eq!(moved, 1);
+        assert_eq!(all_atoms(&cl, &new_pos), vec![0, 1, 2, 3]);
+        let mut first = cl.find_neighbors([0.5, 0.5, 0.5], 0.2);
+        first.sort_unstable();
+        assert_eq!(first, vec![0, 3]);
+        let mut middle = cl.find_neighbors([1.55, 0.5, 0.5], 0.2);
+        middle.sort_unstable();
+        assert_eq!(middle, vec![1, 2]);
+    }
+    #[test]
+    fn test_update_incremental_subthreshold_cell_crossing_is_rebinned() {
+        // Atom 0 moves 0.05, far below the threshold of 1.0, but crosses the
+        // plane x = 1.0 between cell 0 and cell 1.  A tight query at its new
+        // location must still find it.
+        let old = vec![[0.98, 0.5, 0.5], [1.5, 0.5, 0.5]];
+        let mut cl = CellList::build(&old);
+        let new_pos = vec![[1.03, 0.5, 0.5], [1.5, 0.5, 0.5]];
+        let moved = cl
+            .update_incremental(&new_pos, &old, 1.0)
+            .expect("matching lengths");
+        assert_eq!(moved, 0, "the displacement is below the threshold");
+        assert_eq!(cl.find_neighbors([1.03, 0.5, 0.5], 0.01), vec![0]);
+        assert!(
+            cl.find_neighbors([0.98, 0.5, 0.5], 0.01).is_empty(),
+            "the old location is empty now"
+        );
+    }
+    #[test]
+    fn test_update_incremental_refreshes_positions_within_a_cell() {
+        // No atom changes cell: the layout is kept, the coordinates are not stale.
+        let old = vec![[0.2, 0.5, 0.5], [1.5, 0.5, 0.5]];
+        let mut cl = CellList::build(&old);
+        let new_pos = vec![[0.6, 0.5, 0.5], [1.5, 0.5, 0.5]];
+        let moved = cl
+            .update_incremental(&new_pos, &old, 0.3)
+            .expect("matching lengths");
+        assert_eq!(moved, 1);
+        assert_eq!(cl.find_neighbors([0.6, 0.5, 0.5], 0.05), vec![0]);
+        assert!(cl.find_neighbors([0.2, 0.5, 0.5], 0.05).is_empty());
+    }
+    #[test]
+    fn test_update_incremental_length_mismatch_is_an_error_and_changes_nothing() {
+        use crate::cell_list::CellListError;
+        let old = vec![[0.5, 0.5, 0.5], [1.5, 0.5, 0.5], [2.5, 0.5, 0.5]];
+        let mut cl = CellList::build(&old);
+        let moved_one = vec![[2.4, 0.5, 0.5]];
+        let moved_all = vec![[2.4, 0.5, 0.5], [2.4, 0.5, 0.5], [2.4, 0.5, 0.5]];
+        assert_eq!(
+            cl.update_incremental(&moved_one, &old, 0.1),
+            Err(CellListError::LengthMismatch {
+                expected: 3,
+                got: 1
+            }),
+            "new positions of the wrong length"
+        );
+        assert_eq!(
+            cl.update_incremental(&moved_all, &old[..2], 0.1),
+            Err(CellListError::LengthMismatch {
+                expected: 3,
+                got: 2
+            }),
+            "old positions of the wrong length"
+        );
+        assert_eq!(
+            cl.update_incremental(&[], &[], 0.1),
+            Err(CellListError::LengthMismatch {
+                expected: 3,
+                got: 0
+            })
+        );
+        // Neither failed call touched the list.
+        assert_eq!(cl.find_neighbors([0.5, 0.5, 0.5], 0.05), vec![0]);
+        assert_eq!(all_atoms(&cl, &old), vec![0, 1, 2]);
+        let message = CellListError::LengthMismatch {
+            expected: 3,
+            got: 1,
+        }
+        .to_string();
+        assert!(message.contains('3') && message.contains('1'), "{message}");
+    }
+    #[test]
+    fn test_update_incremental_empty_list_accepts_empty_updates() {
+        let mut cl = CellList::new([4.0, 4.0, 4.0], 1.0);
+        assert_eq!(cl.update_incremental(&[], &[], 0.5), Ok(0));
+        assert!(
+            cl.update_incremental(&[[1.0, 1.0, 1.0]], &[[1.0, 1.0, 1.0]], 0.5)
+                .is_err(),
+            "an empty list has no atom to update"
+        );
+    }
+    #[test]
+    fn test_update_incremental_matches_brute_force_after_random_motion() {
+        // Deterministic pseudo-random motion over several rounds: after every
+        // update each query must agree with the brute-force oracle, so no atom is
+        // lost or listed twice, whatever mix of cell crossings occurs.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let n = 120usize;
+        let mut positions: Vec<[f64; 3]> = (0..n)
+            .map(|_| [next() * 6.0, next() * 6.0, next() * 6.0])
+            .collect();
+        // A guaranteed maximum in every direction pins the grid at 6 x 6 x 6.
+        positions[0] = [5.99, 5.99, 5.99];
+        let mut cl = CellList::build(&positions);
+        for round in 0..12 {
+            let old = positions.clone();
+            for p in positions.iter_mut() {
+                for c in p.iter_mut() {
+                    let step = (next() - 0.5) * if round % 3 == 0 { 2.5 } else { 0.3 };
+                    *c = (*c + step).clamp(0.0, 5.99);
+                }
+            }
+            let moved = cl
+                .update_incremental(&positions, &old, 0.25)
+                .expect("matching lengths");
+            assert!(moved <= n);
+            assert_eq!(all_atoms(&cl, &positions), (0..n).collect::<Vec<_>>());
+            assert_eq!(cl.inner.sorted_indices.len(), n);
+            assert_eq!(cl.inner.cell_counts.iter().sum::<i32>() as usize, n);
+            for q in 0..10 {
+                let query = positions[(q * 11) % n];
+                let radius = 0.4 + 0.3 * q as f64;
+                let mut found = cl.find_neighbors(query, radius);
+                found.sort_unstable();
+                assert_eq!(
+                    found,
+                    brute_force_neighbors(&positions, query, radius),
+                    "round {round}, query {q}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_update_incremental_atoms_leaving_the_grid_are_binned_into_boundary_cells() {
+        // Three unit cells along x.  Atom 0 jumps far beyond the last cell and
+        // atom 2 moves 4 units past it: both are binned into the nearest boundary
+        // cell instead of being dropped, and queries around their new positions
+        // still find them.
+        let old = vec![[0.5, 0.5, 0.5], [1.5, 0.5, 0.5], [2.5, 0.5, 0.5]];
+        let mut cl = CellList::build(&old);
+        let mut new_pos = old.clone();
+        new_pos[0] = [9.0, 0.5, 0.5];
+        new_pos[2] = [6.5, 0.5, 0.5];
+        let moved = cl
+            .update_incremental(&new_pos, &old, 0.5)
+            .expect("matching lengths");
+        assert_eq!(moved, 2);
+        assert_eq!(all_atoms(&cl, &new_pos), vec![0, 1, 2]);
+        assert_eq!(cl.find_neighbors([9.0, 0.5, 0.5], 0.1), vec![0]);
+        assert_eq!(cl.find_neighbors([6.5, 0.5, 0.5], 0.1), vec![2]);
+        assert_eq!(cl.find_neighbors([1.5, 0.5, 0.5], 0.1), vec![1]);
+        assert!(
+            cl.find_neighbors([0.5, 0.5, 0.5], 0.1).is_empty(),
+            "atom 0 left the first cell"
+        );
+    }
+    #[test]
+    fn test_update_incremental_keeps_the_verlet_list_exact() {
+        // The Verlet builder walks the layout cell by cell: after every update its
+        // pairs must equal the brute-force pair set, since an atom that the layout
+        // lost or listed twice would drop or duplicate pairs.
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let n = 90usize;
+        let mut positions: Vec<[f64; 3]> = (0..n)
+            .map(|_| [next() * 5.0, next() * 5.0, next() * 5.0])
+            .collect();
+        // A guaranteed maximum in every direction pins the grid at 5 x 5 x 5.
+        positions[0] = [4.99, 4.99, 4.99];
+        let mut cl = CellList::build(&positions);
+        let (cutoff, skin) = (0.8, 0.2);
+        let reach = cutoff + skin;
+        for round in 0..8 {
+            let old = positions.clone();
+            for p in positions.iter_mut() {
+                for c in p.iter_mut() {
+                    *c = (*c + (next() - 0.5) * 1.6).clamp(0.0, 4.99);
+                }
+            }
+            cl.update_incremental(&positions, &old, 0.3)
+                .expect("matching lengths");
+            let mut reference = Vec::new();
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let dx = positions[i][0] - positions[j][0];
+                    let dy = positions[i][1] - positions[j][1];
+                    let dz = positions[i][2] - positions[j][2];
+                    if dx * dx + dy * dy + dz * dz <= reach * reach {
+                        reference.push((i, j));
+                    }
+                }
+            }
+            assert!(!reference.is_empty(), "round {round}: the oracle is empty");
+            assert_eq!(
+                cl.build_neighbor_list_verlet(cutoff, skin),
+                reference,
+                "round {round}"
+            );
+        }
     }
     #[test]
     fn test_pair_density_single_bin() {

@@ -211,17 +211,17 @@ Verified: 232 (critical 1, high 82, medium 119, low 30); 65 further raw findings
 - [x] **F2858** (high, bug, easy/trivial) `composite.rs:507` — Mori-Tanaka shear denominator omits G_m (uses ζ_m, not G_m+ζ_m)
 - [x] **F2859** (high, bug, medium/small) `composite.rs:753` — puck_failure transverse compression effort can never reach 1
 - [x] **F2861** (high, fabrication, medium/medium) `composite.rs:1082` — interlaminar_shear_estimate returns mean σx proxy, not τxz
-- [ ] **F2862** (high, bug, easy/small) `composite_failure.rs:246` — Tsai-Hill interaction term uses σ1σ2/(F1F2) instead of σ1σ2/F1²
-- [ ] **F2864** (high, bug, medium/small) `composite_failure.rs:499` — Puck IFF Mode C absent: pure transverse compression never fails
-- [ ] **F2866** (high, bug, medium/medium) `composite_failure.rs:735` — progressive_failure_sweep: strain N/(A·t), uncoupled, λ capped at 2
-- [ ] **F2870** (high, bug, easy/trivial) `composites_advanced.rs:472` — Tsai-Wu F12 divides by sqrt(F11*F22) instead of multiplying
-- [ ] **F2889** (high, bug, easy/small) `crystal_plasticity.rs:147` — FCC and BCC slip tables pair non-orthogonal planes and directions
-- [ ] **F2899** (high, bug, easy/trivial) `elastic.rs:299` — Transversely isotropic compliance matrix is non-symmetric (wrong reciprocity)
-- [ ] **F2900** (high, bug, easy/trivial) `elastic.rs:573` — inv_transpose3 has a wrong cofactor (2,1), corrupting NeoHookean PK1 stress
-- [ ] **F2904** (high, bug, easy/trivial) `electrochemistry/functions.rs:72` — Corrosion penetration rate is 1000x too low (A/m² to µA/cm² conversion)
-- [ ] **F2907** (high, bug, easy/small) `electrochemistry/types.rs:368` — Randles z_imag has spurious −X_C term; z_real drops Warburg reactance
-- [ ] **F2910** (high, bug, medium/medium) `electromagnetic.rs:831` — Jiles-Atherton descending branch drives M away from anhysteretic
-- [ ] **F2918** (high, bug, medium/small) `eos/miegruneiseneos_traits.rs:26` — Mie-Grüneisen sound speed adds a pressure to c² (dimension error)
+- [x] **F2862** (high, bug, easy/small) `composite_failure.rs:246` — Tsai-Hill interaction term uses σ1σ2/(F1F2) instead of σ1σ2/F1²
+- [x] **F2864** (high, bug, medium/small) `composite_failure.rs:499` — Puck IFF Mode C absent: pure transverse compression never fails
+- [x] **F2866** (high, bug, medium/medium) `composite_failure.rs:735` — progressive_failure_sweep: strain N/(A·t), uncoupled, λ capped at 2
+- [x] **F2870** (high, bug, easy/trivial) `composites_advanced.rs:472` — Tsai-Wu F12 divides by sqrt(F11*F22) instead of multiplying
+- [x] **F2889** (high, bug, easy/small) `crystal_plasticity.rs:147` — FCC and BCC slip tables pair non-orthogonal planes and directions
+- [x] **F2899** (high, bug, easy/trivial) `elastic.rs:299` — Transversely isotropic compliance matrix is non-symmetric (wrong reciprocity)
+- [x] **F2900** (high, bug, easy/trivial) `elastic.rs:573` — inv_transpose3 has a wrong cofactor (2,1), corrupting NeoHookean PK1 stress
+- [x] **F2904** (high, bug, easy/trivial) `electrochemistry/functions.rs:72` — Corrosion penetration rate is 1000x too low (A/m² to µA/cm² conversion)
+- [x] **F2907** (high, bug, easy/small) `electrochemistry/types.rs:368` — Randles z_imag has spurious −X_C term; z_real drops Warburg reactance
+- [x] **F2910** (high, bug, medium/medium) `electromagnetic.rs:831` — Jiles-Atherton descending branch drives M away from anhysteretic
+- [x] **F2918** (high, bug, medium/small) `eos/miegruneiseneos_traits.rs:26` — Mie-Grüneisen sound speed adds a pressure to c² (dimension error)
 - [ ] **F2920** (high, bug, easy/small) `eos/stiffenedgaseos_traits.rs:16` — Stiffened-gas pressure hardcodes e and uses −p∞ instead of −γp∞
 - [ ] **F2923** (high, bug, easy/small) `eos/types.rs:569` — Mie-Grüneisen Hugoniot uses μ in η-form formula: wrong pressures
 - [ ] **F2924** (high, bug, medium/small) `eos/types.rs:578` — Mie-Grüneisen Hugoniot mixes μ with an η-form denominator
@@ -244,8 +244,8 @@ Verified: 232 (critical 1, high 82, medium 119, low 30); 65 further raw findings
 - [ ] **F2969** (high, fabrication, medium/medium) `hyperelastic/types.rs:630` — Plane-stress return mapping claims iteration but leaves σzz≠0
 - [ ] **F2978** (high, bug, easy/small) `lib.rs:591` — Hashin-Shtrikman lower bulk bound always equals the upper bound
 - [ ] **F2980** (high, fabrication, easy/small) `magnetocaloric_materials.rs:184` — numerical_maxwell_entropy returns ΔM, not ΔS; μ0 missing
-- [ ] **F2983** (high, fabrication, hard/large) `metamaterials/functions.rs:56` — "SIMP topology optimisation" is a neighbour-count automaton ignoring target
-- [ ] **F2984** (high, bug, easy/trivial) `metamaterials/functions.rs:113` — Masters–Evans Poisson ratio has wrong sign
+- [x] **F2983** (high, fabrication, hard/large) `metamaterials/functions.rs:56` — "SIMP topology optimisation" is a neighbour-count automaton ignoring target
+- [x] **F2984** (high, bug, easy/trivial) `metamaterials/functions.rs:113` — Masters–Evans Poisson ratio has wrong sign
 - [ ] **F2989** (high, bug, easy/small) `metamaterials/types.rs:710` — Re-entrant honeycomb Poisson ratio sign inverted at three sites
 - [ ] **F2990** (high, fabrication, medium/small) `metamaterials/types.rs:940` — Acoustic cloak shell matches neither ideal nor reduced Cummer–Schurig parameters
 - [ ] **F2992** (high, bug, easy/trivial) `multiphysics.rs:582` — SMA cooling martensite fraction is non-monotone and discontinuous
@@ -255,26 +255,26 @@ Verified: 232 (critical 1, high 82, medium 119, low 30); 65 further raw findings
 - [ ] **F3000** (high, bug, easy/trivial) `nano/types.rs:544` — Taylor hardening off by 1e6 (GPa×1e9 labelled MPa)
 - [ ] **F3003** (high, fabrication, hard/medium) `nanocomposites.rs:157` — "Mori-Tanaka" nanocomposite moduli use arbitrary fudge factors
 - [ ] **F3005** (high, fabrication, easy/small) `nuclear_materials.rs:114` — nrt_dpa is dimensionally meaningless
-- [ ] **F3008** (high, fabrication, medium/medium) `nuclear_materials_advanced.rs:569` — RG 1.99 chemistry factor and USE drop are invented fits
-- [ ] **F3011** (high, fabrication, easy/small) `optical.rs:379` — CIE 1931 colour-matching fits mis-transcribed; x̄ uses ȳ lobe
-- [ ] **F3014** (high, bug, medium/small) `optical_materials.rs:836` — Bragg mirror TMM drops imaginary unit; reflectance wrong off quarter-wave
-- [ ] **F3016** (high, bug, easy/trivial) `phase_transform/types.rs:172` — BainiteTransformation::time_to_fraction always returns NaN
-- [ ] **F3019** (high, fabrication, hard/medium) `phase_transform/types.rs:1135` — Brinson SMA: ξ_s never evolves, fudge 0.1 term, compounding heating
-- [ ] **F3021** (high, bug, easy/trivial) `phase_transform/types.rs:1375` — CalphadModel::gibbs_energy adds T·S_mix instead of subtracting
-- [ ] **F3026** (high, bug, medium/small) `phase_transform/types.rs:1895` — Phase-field solidification has no melting point; liquid always solidifies
-- [ ] **F3027** (high, bug, easy/trivial) `plasticity.rs:360` — J2 return_map stores tensorial shear plastic strain in engineering-shear state
-- [ ] **F3028** (high, bug, medium/small) `plasticity.rs:839` — J2 consistent tangent dimensionally wrong; missing 3/2 and cross terms
-- [ ] **F3029** (high, bug, medium/small) `plasticity.rs:908` — Drucker-Prager apex check inverted; cone multiplier denominator wrong
-- [ ] **F3039** (high, bug, easy/small) `radiation/functions.rs:423` — Perpendicular-rectangle view factor formula wrong: 0.093 vs exact 0.200
-- [ ] **F3043** (high, bug, easy/small) `radiation/types.rs:245` — MC RNG maps to [0,0.5): view factor and transport biased
-- [ ] **F3046** (high, fabrication, medium/small) `radiation/types.rs:797` — Slab MC transport ignores direction and weight; scattering only kills photons
-- [ ] **F3048** (high, bug, easy/trivial) `radiation_shielding.rs:251` — Saturation activity multiplied by decay constant (units Bq/s)
-- [ ] **F3049** (high, bug, easy/small) `semiconductor.rs:204` — fermi_dirac_half up to 161% wrong, discontinuous at eta=5
-- [ ] **F3054** (high, bug, easy/small) `shape_memory_alloy.rs:219` — Tanaka stress coefficients wrong sign; a_M doubled; hysteresis window erased
-- [ ] **F3057** (high, stub, medium/medium) `shape_memory_alloy.rs:472` — Brinson detwinning never occurs; shape-memory recovery ratio always 0
-- [ ] **F3072** (high, bug, medium/small) `superconductor.rs:171` — GL solver mixes xi in metres with unit grid; profile never forms
-- [ ] **F3083** (high, bug, easy/trivial) `tribology/types.rs:443` — Gear Hertz contact stress misses zone factor 2/sinφ (~2.4× low)
-- [ ] **F3096** (high, bug, medium/medium) `viscoelastic/types.rs:1139` — Generalized Maxwell update relaxes toward E_a·ε: stiffens instead of relaxing
+- [x] **F3008** (high, fabrication, medium/medium) `nuclear_materials_advanced.rs:569` — RG 1.99 chemistry factor and USE drop are invented fits
+- [x] **F3011** (high, fabrication, easy/small) `optical.rs:379` — CIE 1931 colour-matching fits mis-transcribed; x̄ uses ȳ lobe
+- [x] **F3014** (high, bug, medium/small) `optical_materials.rs:836` — Bragg mirror TMM drops imaginary unit; reflectance wrong off quarter-wave
+- [x] **F3016** (high, bug, easy/trivial) `phase_transform/types.rs:172` — BainiteTransformation::time_to_fraction always returns NaN
+- [x] **F3019** (high, fabrication, hard/medium) `phase_transform/types.rs:1135` — Brinson SMA: ξ_s never evolves, fudge 0.1 term, compounding heating
+- [x] **F3021** (high, bug, easy/trivial) `phase_transform/types.rs:1375` — CalphadModel::gibbs_energy adds T·S_mix instead of subtracting
+- [x] **F3026** (high, bug, medium/small) `phase_transform/types.rs:1895` — Phase-field solidification has no melting point; liquid always solidifies
+- [x] **F3027** (high, bug, easy/trivial) `plasticity.rs:360` — J2 return_map stores tensorial shear plastic strain in engineering-shear state
+- [x] **F3028** (high, bug, medium/small) `plasticity.rs:839` — J2 consistent tangent dimensionally wrong; missing 3/2 and cross terms
+- [x] **F3029** (high, bug, medium/small) `plasticity.rs:908` — Drucker-Prager apex check inverted; cone multiplier denominator wrong
+- [x] **F3039** (high, bug, easy/small) `radiation/functions.rs:423` — Perpendicular-rectangle view factor formula wrong: 0.093 vs exact 0.200
+- [x] **F3043** (high, bug, easy/small) `radiation/types.rs:245` — MC RNG maps to [0,0.5): view factor and transport biased
+- [x] **F3046** (high, fabrication, medium/small) `radiation/types.rs:797` — Slab MC transport ignores direction and weight; scattering only kills photons
+- [x] **F3048** (high, bug, easy/trivial) `radiation_shielding.rs:251` — Saturation activity multiplied by decay constant (units Bq/s)
+- [x] **F3049** (high, bug, easy/small) `semiconductor.rs:204` — fermi_dirac_half up to 161% wrong, discontinuous at eta=5
+- [x] **F3054** (high, bug, easy/small) `shape_memory_alloy.rs:219` — Tanaka stress coefficients wrong sign; a_M doubled; hysteresis window erased
+- [x] **F3057** (high, stub, medium/medium) `shape_memory_alloy.rs:472` — Brinson detwinning never occurs; shape-memory recovery ratio always 0
+- [x] **F3072** (high, bug, medium/small) `superconductor.rs:171` — GL solver mixes xi in metres with unit grid; profile never forms
+- [x] **F3083** (high, bug, easy/trivial) `tribology/types.rs:443` — Gear Hertz contact stress misses zone factor 2/sinφ (~2.4× low)
+- [x] **F3096** (high, bug, medium/medium) `viscoelastic/types.rs:1139` — Generalized Maxwell update relaxes toward E_a·ε: stiffens instead of relaxing
 
 ### Medium (119)
 - [ ] **F2803** (medium, bug, easy/trivial) `acoustics/functions.rs:265` — Matching-layer reflection sums imaginary terms as reals

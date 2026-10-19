@@ -236,6 +236,12 @@ pub use coupling::{
     md_continuum_adapter::{MdContinuumAdapter, MockContinuumDomain, MockMdDomain},
 };
 
+/// Compiles and runs the code blocks of this crate's `README.md` as doctests, so
+/// the examples on the crates.io landing page cannot silently go stale.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
+
 #[cfg(test)]
 mod tests {
 

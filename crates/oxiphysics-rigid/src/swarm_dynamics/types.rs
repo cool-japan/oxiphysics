@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use crate::rng_util::uniform;
 use rand::RngExt;
 
 /// A single PSO particle tracking its own best-known position.
@@ -1052,9 +1053,9 @@ impl ParticleSwarmOptimizer {
         let mut rng = rand::rng();
         let particles: Vec<PsoParticle> = (0..n_particles)
             .map(|_| {
-                let pos: Vec<f64> = (0..dim).map(|_| rng.random_range(lo..hi)).collect();
+                let pos: Vec<f64> = (0..dim).map(|_| uniform(&mut rng, lo, hi)).collect();
                 let vel: Vec<f64> = (0..dim)
-                    .map(|_| rng.random_range(-(hi - lo) * 0.1..(hi - lo) * 0.1))
+                    .map(|_| uniform(&mut rng, -(hi - lo) * 0.1, (hi - lo) * 0.1))
                     .collect();
                 let mut p = PsoParticle::new(pos);
                 p.velocity = vel;

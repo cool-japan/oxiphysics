@@ -2,8 +2,10 @@
 
 pub mod functions;
 pub mod functions_2;
+pub mod lattice_response;
 pub mod types;
 
 // Re-export all types
 pub use functions::*;
+pub use lattice_response::*;
 pub use types::*;

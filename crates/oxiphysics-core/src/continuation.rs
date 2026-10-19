@@ -8,7 +8,9 @@
 //! bifurcation point detection, branch switching, turning-point location,
 //! stability analysis, and generic path-following with event detection.
 
-use nalgebra::{DMatrix, SVD};
+use nalgebra::{DMatrix, DVector, SVD};
+
+use crate::numerical_linear_algebra::general_eigen::real_matrix_eigenvalues_rows;
 
 /// Residual function F(u, λ) → ℝⁿ.
 pub type ResidualFn = dyn Fn(&[f64], f64) -> Vec<f64>;
@@ -22,7 +24,7 @@ pub type JacobianFn = dyn Fn(&[f64], f64) -> Vec<Vec<f64>>;
 /// State along a continuation branch.
 ///
 /// Stores the current parameter value `lambda`, the solution vector `u`, the
-/// previous tangent direction used for the arclength predictor, and the
+/// tangent direction of the branch used for the arclength predictor, and the
 /// accumulated arc length `s`.
 #[derive(Debug, Clone)]
 pub struct ContinuationState {
@@ -30,7 +32,13 @@ pub struct ContinuationState {
     pub lambda: f64,
     /// Solution vector u ∈ ℝⁿ.
     pub u: Vec<f64>,
-    /// Tangent direction \[du/ds, dλ/ds\] from the previous step.
+    /// Unit tangent \[du/ds, dλ/ds\] of the branch at this state.
+    ///
+    /// States returned by [`PseudoArcLengthContinuation::step`] carry the true
+    /// branch tangent (the normalised secant from the previous state in the
+    /// rare case that the bordered system defining it is singular).
+    /// [`ContinuationState::new`] starts with the pure-λ direction
+    /// `[0, …, 0, 1]`, which is a placeholder rather than a measured tangent.
     pub tangent: Vec<f64>,
     /// Accumulated arc length along the branch.
     pub arc_length: f64,
@@ -294,11 +302,12 @@ pub fn matrix_determinant(mat: &[Vec<f64>]) -> f64 {
 // detect_fold_point
 // ---------------------------------------------------------------------------
 
-/// Detect a fold (limit) point by checking for a sign change in the
-/// determinant of the Jacobian along two consecutive states.
+/// Detect a singular point of the Jacobian by checking for a sign change in
+/// its determinant along two consecutive states.
 ///
 /// Returns `true` if the determinants at `state_a` and `state_b` have opposite
-/// signs (or one of them is zero), indicating a fold between them.
+/// signs (or one of them is zero), indicating a fold *or a branch point*
+/// between them; [`classify_bifurcation`] tells the two apart.
 pub fn detect_fold_point(
     state_a: &ContinuationState,
     state_b: &ContinuationState,
@@ -313,62 +322,93 @@ pub fn detect_fold_point(
 // stability_index
 // ---------------------------------------------------------------------------
 
-/// Count the number of eigenvalues with positive real part (unstable
-/// eigenvalues) of a square real matrix.
+/// Relative tolerance (times the largest matrix entry) below which the real
+/// part of an eigenvalue counts as zero when unstable eigenvalues are counted.
 ///
-/// Uses exact formulas for 1×1 and 2×2 matrices, and the Gershgorin circle
-/// theorem for larger matrices.
-pub fn stability_index(mat: &[Vec<f64>]) -> usize {
-    let n = mat.len();
-    if n == 0 {
-        return 0;
+/// Computed eigenvalues on the imaginary axis (a Hopf point) carry real parts
+/// of the order of the rounding error; they must not be counted as unstable.
+const EIGENVALUE_SIGN_TOLERANCE: f64 = 1e-12;
+
+/// Largest absolute entry of `mat`.
+fn max_abs_entry(mat: &[Vec<f64>]) -> f64 {
+    mat.iter()
+        .flatten()
+        .fold(0.0_f64, |acc, value| acc.max(value.abs()))
+}
+
+/// Eigenvalues `(re, im)` of `[[a, b], [c, d]]`, sorted by real part.
+///
+/// The eigenvalue of larger magnitude is computed first and its partner from
+/// the determinant, which avoids the cancellation of `(tr ± √disc) / 2` for an
+/// eigenvalue that is small next to the trace.
+fn eigenvalues_2x2(a: f64, b: f64, c: f64, d: f64) -> [(f64, f64); 2] {
+    let half_trace = 0.5 * (a + d);
+    let half_difference = 0.5 * (a - d);
+    let discriminant = half_difference * half_difference + b * c;
+    if discriminant < 0.0 {
+        let imaginary = (-discriminant).sqrt();
+        return [(half_trace, -imaginary), (half_trace, imaginary)];
     }
-    if n == 1 {
-        return if mat[0][0] > 0.0 { 1 } else { 0 };
-    }
-    if n == 2 {
-        let tr = mat[0][0] + mat[1][1];
-        let det = mat[0][0] * mat[1][1] - mat[0][1] * mat[1][0];
-        let disc = tr * tr - 4.0 * det;
-        if disc < 0.0 {
-            if tr > 0.0 { 2 } else { 0 }
-        } else {
-            let sqrt_d = disc.sqrt();
-            let e1 = (tr + sqrt_d) / 2.0;
-            let e2 = (tr - sqrt_d) / 2.0;
-            let mut count = 0;
-            if e1 > 0.0 {
-                count += 1;
-            }
-            if e2 > 0.0 {
-                count += 1;
-            }
-            count
-        }
+    let root = discriminant.sqrt();
+    let larger = if half_trace >= 0.0 {
+        half_trace + root
     } else {
-        let mut count = 0;
-        for (i, row) in mat.iter().enumerate() {
-            let center = row[i];
-            let radius: f64 = row
-                .iter()
-                .enumerate()
-                .filter(|&(jj, _)| jj != i)
-                .map(|(_, &v)| v.abs())
-                .sum();
-            if center - radius > 0.0 {
-                count += 1;
-            }
-        }
-        count
+        half_trace - root
+    };
+    let smaller = if larger == 0.0 {
+        0.0
+    } else {
+        (a * d - b * c) / larger
+    };
+    if smaller <= larger {
+        [(smaller, 0.0), (larger, 0.0)]
+    } else {
+        [(larger, 0.0), (smaller, 0.0)]
     }
+}
+
+/// Spectrum `(re, im)` of the square Jacobian `mat`: closed form for `n <= 2`,
+/// real Schur form beyond.
+///
+/// Returns `None` when `mat` is not square, holds a non-finite entry, or the
+/// eigenvalue iteration does not converge.
+fn jacobian_spectrum(mat: &[Vec<f64>]) -> Option<Vec<(f64, f64)>> {
+    let n = mat.len();
+    if mat.iter().any(|row| row.len() != n) || mat.iter().flatten().any(|v| !v.is_finite()) {
+        return None;
+    }
+    match n {
+        0 => Some(Vec::new()),
+        1 => Some(vec![(mat[0][0], 0.0)]),
+        2 => Some(eigenvalues_2x2(mat[0][0], mat[0][1], mat[1][0], mat[1][1]).to_vec()),
+        _ => real_matrix_eigenvalues_rows(mat),
+    }
+}
+
+/// Count the eigenvalues with positive real part (unstable eigenvalues) of a
+/// square real matrix.
+///
+/// The eigenvalues are exact: closed form for 1×1 and 2×2 matrices and the real
+/// Schur form for larger ones.  An eigenvalue counts as unstable when its real
+/// part exceeds `1e-12` times the largest matrix entry, so the rounding noise of
+/// an eigenvalue on the imaginary axis is not counted.  Returns `0` for an empty
+/// matrix and for input without a computable spectrum (not square, non-finite
+/// entries, or an eigenvalue iteration that fails to converge).
+pub fn stability_index(mat: &[Vec<f64>]) -> usize {
+    let Some(spectrum) = jacobian_spectrum(mat) else {
+        return 0;
+    };
+    let threshold = EIGENVALUE_SIGN_TOLERANCE * max_abs_entry(mat);
+    spectrum.iter().filter(|&&(re, _)| re > threshold).count()
 }
 
 // ---------------------------------------------------------------------------
 // detect_bifurcation
 // ---------------------------------------------------------------------------
 
-/// Detect a bifurcation point by checking whether any eigenvalue of the
-/// Jacobian changes sign between two consecutive states.
+/// Detect a bifurcation point by checking whether the number of Jacobian
+/// eigenvalues with positive real part ([`stability_index`]) differs between
+/// two consecutive states.
 ///
 /// Returns `true` if a bifurcation is detected.
 pub fn detect_bifurcation(
@@ -390,13 +430,20 @@ pub fn detect_bifurcation(
 /// Classification of a detected bifurcation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BifurcationType {
-    /// Fold (saddle-node / limit) point: determinant changes sign.
+    /// Fold (saddle-node / limit) point: the determinant of the Jacobian changes
+    /// sign and the branch turns back in λ (the λ-component of its tangent
+    /// changes sign).
     Fold,
-    /// Pitchfork bifurcation: determinant vanishes with odd symmetry.
+    /// Branch point (pitchfork or transcritical): the determinant of the
+    /// Jacobian changes sign while the branch keeps running in the same λ
+    /// direction, so a second branch crosses it.
     Pitchfork,
-    /// Hopf bifurcation: a complex-conjugate pair crosses the imaginary axis.
+    /// Hopf bifurcation: a complex-conjugate pair crosses the imaginary axis,
+    /// changing the number of unstable eigenvalues without a determinant sign
+    /// change.
     Hopf,
-    /// Unclassified bifurcation.
+    /// Unclassified bifurcation: the determinant changes sign but the states
+    /// carry no usable branch tangent to separate a fold from a branch point.
     Unknown,
 }
 
@@ -411,63 +458,95 @@ pub struct BifurcationPoint {
     pub det_j: f64,
 }
 
-/// Classify the bifurcation between two consecutive continuation states.
-///
-/// Checks determinant sign change (fold / pitchfork) and trace-vs-determinant
-/// relationship (Hopf) for the Jacobian at the midpoint between `state_a`
-/// and `state_b`.
-pub fn classify_bifurcation(
-    state_a: &ContinuationState,
-    state_b: &ContinuationState,
-    jac: &JacobianFn,
-) -> Option<BifurcationPoint> {
-    let det_a = matrix_determinant(&jac(&state_a.u, state_a.lambda));
-    let det_b = matrix_determinant(&jac(&state_b.u, state_b.lambda));
-    if det_a * det_b > 0.0 {
-        // No fold or pitchfork detected — check stability change for Hopf
-        let idx_a = stability_index(&jac(&state_a.u, state_a.lambda));
-        let idx_b = stability_index(&jac(&state_b.u, state_b.lambda));
-        if idx_a == idx_b {
-            return None;
-        }
-        // Interpolate midpoint
-        let u_mid: Vec<f64> = state_a
-            .u
-            .iter()
-            .zip(&state_b.u)
-            .map(|(a, b)| 0.5 * (a + b))
-            .collect();
-        let lam_mid = 0.5 * (state_a.lambda + state_b.lambda);
-        let mid_state = ContinuationState::new(lam_mid, u_mid, state_a.ds);
-        let j_mid = jac(&mid_state.u, lam_mid);
-        let det_mid = matrix_determinant(&j_mid);
-        return Some(BifurcationPoint {
-            state: mid_state,
-            bif_type: BifurcationType::Hopf,
-            det_j: det_mid,
-        });
-    }
+/// Direction of the branch in λ at `state`: the λ-component of its tangent, if
+/// the tangent has the expected length `n + 1` and is finite.
+fn lambda_tangent(state: &ContinuationState) -> Option<f64> {
+    state
+        .tangent
+        .get(state.u.len())
+        .copied()
+        .filter(|component| component.is_finite())
+}
 
-    // Determinant sign change → fold or pitchfork
+/// Midpoint of two states with the (normalised) mean of their tangents.
+///
+/// For a fold the two λ-components have opposite signs and cancel, so the mean
+/// tangent at the turning point lies in the `u` directions, as it should.
+fn midpoint_state(state_a: &ContinuationState, state_b: &ContinuationState) -> ContinuationState {
     let u_mid: Vec<f64> = state_a
         .u
         .iter()
         .zip(&state_b.u)
         .map(|(a, b)| 0.5 * (a + b))
         .collect();
-    let lam_mid = 0.5 * (state_a.lambda + state_b.lambda);
-    let mid_state = ContinuationState::new(lam_mid, u_mid, state_a.ds);
-    let j_mid = jac(&mid_state.u, lam_mid);
-    let det_mid = matrix_determinant(&j_mid);
+    let lambda_mid = 0.5 * (state_a.lambda + state_b.lambda);
+    let n = u_mid.len();
+    let mut mid_state = ContinuationState::new(lambda_mid, u_mid, state_a.ds);
+    if state_a.tangent.len() == n + 1 && state_b.tangent.len() == n + 1 {
+        let mean: Vec<f64> = state_a
+            .tangent
+            .iter()
+            .zip(&state_b.tangent)
+            .map(|(a, b)| a + b)
+            .collect();
+        let norm = mean.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm.is_finite() && norm > 1e-14 {
+            mid_state.tangent = mean.iter().map(|x| x / norm).collect();
+        }
+    }
+    mid_state
+}
 
-    // Simple heuristic: if trace changes sign simultaneously → pitchfork candidate
-    let tr_mid: f64 = j_mid.iter().enumerate().map(|(i, row)| row[i]).sum();
-    let bif_type = if tr_mid.abs() < 1e-6 {
-        BifurcationType::Pitchfork
+/// Classify the bifurcation between two consecutive continuation states.
+///
+/// A bifurcation lies between the states when the determinant of the Jacobian
+/// changes sign (a real eigenvalue crosses zero) or, without a sign change,
+/// when the number of unstable eigenvalues ([`stability_index`]) changes (a
+/// complex-conjugate pair crosses the imaginary axis).  The type follows from
+/// the branch tangents stored in the two states:
+///
+/// * determinant changes sign and the λ-component of the tangent changes sign
+///   (or vanishes): the branch turns back in λ, a [`BifurcationType::Fold`];
+/// * determinant changes sign while the tangent keeps running in the same λ
+///   direction: the branch passes straight through the singular point, a
+///   branch point, reported as [`BifurcationType::Pitchfork`];
+/// * determinant keeps its sign but the stability index changes:
+///   [`BifurcationType::Hopf`];
+/// * determinant changes sign but a state has no usable tangent:
+///   [`BifurcationType::Unknown`].
+///
+/// States returned by [`PseudoArcLengthContinuation::step`] carry the tangent of
+/// the branch.  A state built with [`ContinuationState::new`] holds the placeholder
+/// `[0, …, 0, 1]` (pure λ direction), so a pair of such states is never
+/// classified as a fold.
+///
+/// Returns `None` when neither the determinant sign nor the stability index
+/// differs between the states.  The returned state is the midpoint of the pair.
+pub fn classify_bifurcation(
+    state_a: &ContinuationState,
+    state_b: &ContinuationState,
+    jac: &JacobianFn,
+) -> Option<BifurcationPoint> {
+    let jac_a = jac(&state_a.u, state_a.lambda);
+    let jac_b = jac(&state_b.u, state_b.lambda);
+    let det_a = matrix_determinant(&jac_a);
+    let det_b = matrix_determinant(&jac_b);
+    let determinant_changes_sign = det_a * det_b <= 0.0;
+    if !determinant_changes_sign && stability_index(&jac_a) == stability_index(&jac_b) {
+        return None;
+    }
+
+    let mid_state = midpoint_state(state_a, state_b);
+    let det_mid = matrix_determinant(&jac(&mid_state.u, mid_state.lambda));
+    let bif_type = if !determinant_changes_sign {
+        BifurcationType::Hopf
     } else {
-        BifurcationType::Fold
+        match (lambda_tangent(state_a), lambda_tangent(state_b)) {
+            (Some(before), Some(after)) if before * after <= 0.0 => BifurcationType::Fold,
+            (Some(_), Some(_)) => BifurcationType::Pitchfork,
+            _ => BifurcationType::Unknown,
+        }
     };
-
     Some(BifurcationPoint {
         state: mid_state,
         bif_type,
@@ -737,8 +816,8 @@ pub enum StabilityLabel {
 
 /// Stability analysis along a continuation branch.
 ///
-/// Evaluates the Jacobian eigenvalue structure at each `ContinuationState`
-/// in a sequence and assigns a stability label.
+/// Evaluates the Jacobian eigenvalues at each `ContinuationState` in a
+/// sequence and assigns a stability label.
 pub struct StabilityAnalysis {
     /// Tolerance for detecting marginal (near-zero real part) eigenvalues.
     pub marginal_tol: f64,
@@ -750,73 +829,34 @@ impl StabilityAnalysis {
         Self { marginal_tol }
     }
 
-    /// Assign a stability label to a single state.
+    /// Assign a stability label to a single state from the eigenvalues of its
+    /// Jacobian (closed form for 1×1 and 2×2, real Schur form beyond):
     ///
-    /// Uses the exact 2×2 formula and Gershgorin for larger systems.
+    /// * [`StabilityLabel::Unstable`] if any eigenvalue has a real part above
+    ///   `marginal_tol`;
+    /// * otherwise [`StabilityLabel::Marginal`] if any eigenvalue has a real part
+    ///   within `marginal_tol` of the imaginary axis;
+    /// * otherwise [`StabilityLabel::Stable`].
+    ///
+    /// A Jacobian without a well-defined spectrum (not square, non-finite
+    /// entries) cannot be certified stable and is labelled
+    /// [`StabilityLabel::Unstable`].  A negative or NaN `marginal_tol` acts as
+    /// zero.
     pub fn label(&self, state: &ContinuationState, jac: &JacobianFn) -> StabilityLabel {
-        let j = jac(&state.u, state.lambda);
-        let n = j.len();
-        if n == 0 {
-            return StabilityLabel::Stable;
-        }
-        if n == 1 {
-            let e = j[0][0];
-            if e.abs() < self.marginal_tol {
-                return StabilityLabel::Marginal;
-            }
-            return if e < 0.0 {
-                StabilityLabel::Stable
-            } else {
-                StabilityLabel::Unstable
-            };
-        }
-        if n == 2 {
-            let tr = j[0][0] + j[1][1];
-            let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
-            let disc = tr * tr - 4.0 * det;
-            if disc < 0.0 {
-                // Complex pair — check real part = tr/2
-                if tr.abs() < self.marginal_tol {
-                    return StabilityLabel::Marginal;
-                }
-                return if tr < 0.0 {
-                    StabilityLabel::Stable
-                } else {
-                    StabilityLabel::Unstable
-                };
-            }
-            let sqrt_d = disc.sqrt();
-            let e1 = (tr + sqrt_d) / 2.0;
-            let e2 = (tr - sqrt_d) / 2.0;
-            if e1.abs() < self.marginal_tol || e2.abs() < self.marginal_tol {
-                return StabilityLabel::Marginal;
-            }
-            if e1 > 0.0 || e2 > 0.0 {
+        let Some(spectrum) = jacobian_spectrum(&jac(&state.u, state.lambda)) else {
+            return StabilityLabel::Unstable;
+        };
+        let tolerance = self.marginal_tol.max(0.0);
+        let mut near_axis = false;
+        for &(re, _) in &spectrum {
+            if re > tolerance {
                 return StabilityLabel::Unstable;
             }
-            return StabilityLabel::Stable;
-        }
-        // Gershgorin for n > 2
-        let mut any_unstable = false;
-        let mut any_marginal = false;
-        for (i, row) in j.iter().enumerate() {
-            let center = row[i];
-            let radius: f64 = row
-                .iter()
-                .enumerate()
-                .filter(|&(jj, _)| jj != i)
-                .map(|(_, &v)| v.abs())
-                .sum();
-            if center - radius > 0.0 {
-                any_unstable = true;
-            }
-            if center.abs() <= radius {
-                any_marginal = true;
+            if re >= -tolerance {
+                near_axis = true;
             }
         }
-        if any_unstable {
-            StabilityLabel::Unstable
-        } else if any_marginal {
+        if near_axis {
             StabilityLabel::Marginal
         } else {
             StabilityLabel::Stable
@@ -831,6 +871,99 @@ impl StabilityAnalysis {
     ) -> Vec<StabilityLabel> {
         states.iter().map(|s| self.label(s, jac)).collect()
     }
+}
+
+// ---------------------------------------------------------------------------
+// branch_tangent
+// ---------------------------------------------------------------------------
+
+/// Relative size of the central-difference step in λ used for `F_λ`.
+const LAMBDA_DIFFERENCE_STEP: f64 = 1e-6;
+
+/// Largest value of `‖τ̃‖‖t‖ = 1 / cos(angle)` between consecutive branch
+/// tangents for which the bordered tangent is trusted (a turn of about 89.94°);
+/// a sharper turn means the step was too long to resolve the branch direction.
+const MAX_TANGENT_TURN: f64 = 1e3;
+
+/// Unit tangent of the solution branch of `F(u, λ) = 0` at `(u, λ)`, oriented
+/// along `reference`.
+///
+/// Solves the bordered system
+///
+/// ```text
+/// [ J(u, λ)   F_λ(u, λ) ] [τ̃]   [0]
+/// [      tᵀ             ]      = [1]
+/// ```
+///
+/// (`t` is `reference`, `F_λ` a central difference) and normalises `τ̃`.  The
+/// system stays regular at a fold, where `J` alone is singular, so the tangent
+/// is exact there, unlike a secant between two states.  Returns `None` if the
+/// dimensions are inconsistent, the system is (numerically) singular, as at a
+/// branch point, or the branch turned too sharply since `reference`.
+fn branch_tangent(
+    u: &[f64],
+    lambda: f64,
+    reference: &[f64],
+    f: &ResidualFn,
+    jac: &JacobianFn,
+) -> Option<Vec<f64>> {
+    let n = u.len();
+    let m = n + 1;
+    if reference.len() != m {
+        return None;
+    }
+    let j = jac(u, lambda);
+    if j.len() != n || j.iter().any(|row| row.len() != n) {
+        return None;
+    }
+    let h = LAMBDA_DIFFERENCE_STEP * lambda.abs().max(1.0);
+    let f_plus = f(u, lambda + h);
+    let f_minus = f(u, lambda - h);
+    if f_plus.len() != n || f_minus.len() != n {
+        return None;
+    }
+    let matrix = DMatrix::from_fn(m, m, |row, col| match (row < n, col < n) {
+        (true, true) => j[row][col],
+        (true, false) => (f_plus[row] - f_minus[row]) / (2.0 * h),
+        (false, _) => reference[col],
+    });
+    if matrix.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    let mut rhs = DVector::<f64>::zeros(m);
+    rhs[n] = 1.0;
+    let solution = matrix.clone().full_piv_lu().solve(&rhs)?;
+    let norm = solution.norm();
+    let reference_norm = reference.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if !norm.is_finite() || norm * reference_norm > MAX_TANGENT_TURN {
+        return None;
+    }
+    // A numerically singular matrix yields a solution of huge components whose
+    // residual is not small relative to its size: reject it.
+    let residual = (&matrix * &solution - &rhs).norm();
+    let solves_the_system = residual <= 1e-8 * (1.0 + norm * matrix.norm());
+    if !solves_the_system {
+        return None;
+    }
+    Some(solution.iter().map(|x| x / norm).collect())
+}
+
+/// Normalised secant `(u − u_prev, λ − λ_prev)` between two states (left
+/// unnormalised if the two states coincide).
+fn secant_tangent(prev: &ContinuationState, u: &[f64], lambda: f64) -> Vec<f64> {
+    let n = prev.u.len();
+    let mut tangent = vec![0.0_f64; n + 1];
+    for (ti, (ri, si)) in tangent[..n].iter_mut().zip(u.iter().zip(prev.u.iter())) {
+        *ti = ri - si;
+    }
+    tangent[n] = lambda - prev.lambda;
+    let norm: f64 = tangent.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm > 1e-14 {
+        for x in &mut tangent {
+            *x /= norm;
+        }
+    }
+    tangent
 }
 
 // ---------------------------------------------------------------------------
@@ -870,6 +1003,9 @@ impl PseudoArcLengthContinuation {
 
     /// Advance `state` by one step, returning the accepted corrected state.
     ///
+    /// The accepted state carries the unit tangent of the branch at the new
+    /// point, oriented along the tangent of `state`.
+    ///
     /// Returns `None` if the corrector fails to converge even after halving `ds`.
     pub fn step(
         &self,
@@ -883,22 +1019,11 @@ impl PseudoArcLengthContinuation {
             let predicted = pseudo_arclength_step(state);
             let result = corrector_newton(&predicted, state, f, jac, self.tol, self.max_iter);
             if result.converged {
-                // Update tangent via finite difference between states
-                let n = state.u.len();
-                let mut new_tangent = vec![0.0_f64; n + 1];
-                for (ti, (ri, si)) in new_tangent[..n]
-                    .iter_mut()
-                    .zip(result.u.iter().zip(state.u.iter()))
-                {
-                    *ti = ri - si;
-                }
-                new_tangent[n] = result.lambda - state.lambda;
-                let t_norm: f64 = new_tangent.iter().map(|x| x * x).sum::<f64>().sqrt();
-                if t_norm > 1e-14 {
-                    for x in &mut new_tangent {
-                        *x /= t_norm;
-                    }
-                }
+                // Tangent of the branch at the accepted point, oriented along the
+                // previous tangent.  Fall back to the secant from the previous
+                // state where the bordered tangent system is singular.
+                let new_tangent = branch_tangent(&result.u, result.lambda, &state.tangent, f, jac)
+                    .unwrap_or_else(|| secant_tangent(state, &result.u, result.lambda));
 
                 let mut accepted = ContinuationState {
                     lambda: result.lambda,
@@ -933,9 +1058,11 @@ impl PseudoArcLengthContinuation {
 pub struct PathStep {
     /// The accepted continuation state.
     pub state: ContinuationState,
-    /// Whether a fold was detected between this and the previous step.
+    /// Whether the Jacobian determinant changed sign between this and the
+    /// previous step (a fold or a branch point; see [`classify_bifurcation`]).
     pub fold_detected: bool,
-    /// Whether a bifurcation was detected between this and the previous step.
+    /// Whether the number of unstable eigenvalues changed between this and the
+    /// previous step.
     pub bifurcation_detected: bool,
 }
 
@@ -1240,25 +1367,6 @@ mod tests {
     fn test_tangent_length_matches_n_plus_1() {
         let s = ContinuationState::new(0.0, vec![1.0, 2.0, 3.0], 0.1);
         assert_eq!(s.tangent.len(), 4);
-    }
-
-    #[test]
-    fn test_classify_bifurcation_detects_fold() {
-        // 1D: F(u, λ) = u² - λ, sign change in det(J) between u=1.0 and u=-1.0.
-        // jac1d = [[2u]]; at u=1 → det=2 > 0; at u=-1 → det=-2 < 0.
-        // Midpoint u=0 → trace=0, classified as Pitchfork by the trace heuristic
-        // (degenerate case). Test that a bifurcation point is detected (type Fold
-        // or Pitchfork) — the key requirement is detection, not strict type.
-        let sa = ContinuationState::new(1.0, vec![1.0], 0.1);
-        let sb = ContinuationState::new(1.0, vec![-1.0], 0.1);
-        let bif = classify_bifurcation(&sa, &sb, &jac1d);
-        assert!(bif.is_some(), "a bifurcation should be detected");
-        let bp = bif.unwrap();
-        assert!(
-            bp.bif_type == BifurcationType::Fold || bp.bif_type == BifurcationType::Pitchfork,
-            "expected Fold or Pitchfork, got {:?}",
-            bp.bif_type
-        );
     }
 
     #[test]
@@ -1611,3 +1719,7 @@ mod tests {
         assert!(res[1].abs() < 1e-12);
     }
 }
+
+#[cfg(test)]
+#[path = "continuation_bifurcation_tests.rs"]
+mod bifurcation_tests;

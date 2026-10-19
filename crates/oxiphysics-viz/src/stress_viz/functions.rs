@@ -4,6 +4,7 @@
 
 use crate::colormap::{Colormap, map_scalar};
 use crate::primitives::{Color, LinePrimitive};
+use crate::tensor_visualization::eig3;
 use oxiphysics_core::math::Vec3;
 use std::f64::consts::PI;
 
@@ -132,8 +133,11 @@ pub fn stress_invariant_colors(
 }
 /// Generate tensor glyphs from a set of stress tensors.
 ///
-/// Each glyph uses the principal stresses as axis lengths and
-/// approximate eigenvectors as axis directions.
+/// Each glyph uses the absolute principal stresses (times `scale`) as axis
+/// lengths and the matching unit principal directions as axis directions;
+/// both come from one eigen-decomposition, so `directions[k]` is the
+/// eigenvector belonging to `magnitudes[k]`, in descending order of the signed
+/// principal stress.
 pub fn generate_tensor_glyphs(
     stresses: &[StressTensor],
     positions: &[[f64; 3]],
@@ -149,13 +153,8 @@ pub fn generate_tensor_glyphs(
     let vm_max = vm_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let mut glyphs = Vec::with_capacity(n);
     for i in 0..n {
-        let principals = stresses[i].principal_stresses();
-        let magnitudes = [
-            principals[0].abs() * scale,
-            principals[1].abs() * scale,
-            principals[2].abs() * scale,
-        ];
-        let directions = approximate_eigenvectors(stresses[i].voigt);
+        let (principals, directions) = principal_frame(stresses[i].voigt);
+        let magnitudes = principals.map(|principal| principal.abs() * scale);
         let color = map_scalar(vm_values[i], vm_min, vm_max, colormap);
         glyphs.push(TensorGlyph {
             position: positions[i],
@@ -166,55 +165,30 @@ pub fn generate_tensor_glyphs(
     }
     glyphs
 }
-/// Approximate eigenvectors of a symmetric 3x3 matrix from Voigt notation.
+/// Principal stresses and the matching unit principal directions of a
+/// symmetric Voigt tensor `[σxx, σyy, σzz, σxy, σyz, σxz]` from one Jacobi
+/// eigen-decomposition.
 ///
-/// Uses a simple approach: for near-diagonal tensors, returns coordinate axes;
-/// otherwise uses cross-product based approach.
-pub(super) fn approximate_eigenvectors(s: [f64; 6]) -> [[f64; 3]; 3] {
-    let off_diag = s[3].abs() + s[4].abs() + s[5].abs();
-    if off_diag < 1e-10 {
-        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    }
-    let mat = [[s[0], s[3], s[5]], [s[3], s[1], s[4]], [s[5], s[4], s[2]]];
-    let v1 = power_iteration(&mat, [1.0, 0.0, 0.0], 20);
-    let seed2 = if v1[0].abs() < 0.9 {
-        [1.0, 0.0, 0.0]
+/// The stresses are sorted in descending order `σ₁ ≥ σ₂ ≥ σ₃` and
+/// `directions[k]` is the unit eigenvector belonging to `stresses[k]`
+/// (`T·directions[k] = stresses[k]·directions[k]`).  Repeated eigenvalues
+/// still yield an orthonormal frame.  Directions are only defined up to sign.
+pub(super) fn principal_frame(voigt: [f64; 6]) -> ([f64; 3], [[f64; 3]; 3]) {
+    let eigen = eig3(&voigt);
+    (eigen.values, eigen.vectors)
+}
+/// Flip `direction` if it points against `reference`.
+///
+/// Eigenvectors carry an arbitrary sign that can differ between neighbouring
+/// nodes; aligning each one with the previous step keeps a trajectory
+/// marching the same way instead of doubling back.
+pub(super) fn orient_along(direction: [f64; 3], reference: [f64; 3]) -> [f64; 3] {
+    let dot =
+        direction[0] * reference[0] + direction[1] * reference[1] + direction[2] * reference[2];
+    if dot < 0.0 {
+        [-direction[0], -direction[1], -direction[2]]
     } else {
-        [0.0, 1.0, 0.0]
-    };
-    let ortho = cross3(v1, seed2);
-    let v2 = normalize3_arr(ortho);
-    let v3 = cross3(v1, v2);
-    [v1, v2, normalize3_arr(v3)]
-}
-/// Power iteration to find the dominant eigenvector.
-pub(super) fn power_iteration(mat: &[[f64; 3]; 3], mut v: [f64; 3], iterations: usize) -> [f64; 3] {
-    for _ in 0..iterations {
-        let new_v = mat_vec_3(mat, v);
-        v = normalize3_arr(new_v);
-    }
-    v
-}
-pub(super) fn mat_vec_3(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
-    [
-        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
-        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
-        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
-    ]
-}
-pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-pub(super) fn normalize3_arr(v: [f64; 3]) -> [f64; 3] {
-    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if len < 1e-15 {
-        [1.0, 0.0, 0.0]
-    } else {
-        [v[0] / len, v[1] / len, v[2] / len]
+        direction
     }
 }
 /// Interpolate a stress tensor within a tetrahedral element using barycentric coordinates.
@@ -245,8 +219,7 @@ pub fn principal_stress_arrows(
     let n = stresses.len().min(positions.len());
     let mut lines = Vec::with_capacity(n * 3);
     for i in 0..n {
-        let principals = stresses[i].principal_stresses();
-        let dirs = approximate_eigenvectors(stresses[i].voigt);
+        let (principals, dirs) = principal_frame(stresses[i].voigt);
         for (j, &dir) in dirs.iter().enumerate() {
             let half_len = principals[j].abs() * scale;
             let color = if principals[j] >= 0.0 {
@@ -319,7 +292,8 @@ pub fn principal_stress_glyphs(
 ///
 /// Advances `steps` times by `step_size` in the direction of the
 /// `principal_index`-th principal eigenvector at each point. Uses nearest-node
-/// lookup in the field.
+/// lookup in the field.  Each direction is flipped, if necessary, to point the
+/// same way as the previous step, because eigenvectors have an arbitrary sign.
 pub fn trace_stress_trajectory(
     field: &StressField,
     node_positions: &[[f64; 3]],
@@ -330,6 +304,7 @@ pub fn trace_stress_trajectory(
 ) -> StressTrajectory {
     let mut points = vec![seed];
     let mut pos = seed;
+    let mut previous_dir: Option<[f64; 3]> = None;
     for _ in 0..steps {
         let nearest = node_positions.iter().enumerate().min_by(|(_, a), (_, b)| {
             let da = vec3_sq_dist(pos, **a);
@@ -345,11 +320,15 @@ pub fn trace_stress_trajectory(
             if principal_index >= 3 {
                 break;
             }
-            let dir = eigvecs[principal_index];
+            let mut dir = eigvecs[principal_index];
             let norm = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
             if norm < 1e-12 {
                 break;
             }
+            if let Some(previous) = previous_dir {
+                dir = orient_along(dir, previous);
+            }
+            previous_dir = Some(dir);
             pos = [
                 pos[0] + dir[0] / norm * step_size,
                 pos[1] + dir[1] / norm * step_size,
@@ -371,12 +350,14 @@ pub(super) fn vec3_sq_dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dz = a[2] - b[2];
     dx * dx + dy * dy + dz * dz
 }
-/// Compute the three principal eigenvectors of a symmetric Voigt tensor
-/// using the power iteration approximation (3 axes of the rotation-free frame).
+/// Compute the three unit principal directions of a symmetric Voigt tensor
+/// `[σxx, σyy, σzz, σxy, σyz, σxz]`.
+///
+/// Row `k` is the eigenvector belonging to the `k`-th principal stress in the
+/// descending order of [`principal_stresses`]; the vectors are orthonormal
+/// (also for repeated eigenvalues) and defined up to sign.
 pub fn principal_eigenvectors(voigt: [f64; 6]) -> [[f64; 3]; 3] {
-    let ps = principal_stresses(voigt);
-    let _ = ps;
-    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    principal_frame(voigt).1
 }
 /// Stress concentration factor Kt at each field node.
 ///
@@ -1012,6 +993,277 @@ mod tests {
                 "eigenvector should be unit: {norm}"
             );
         }
+        assert_orthonormal(&vecs, 1e-12);
+    }
+
+    // ---- principal directions pair with the principal stresses ----
+
+    /// `T·v` for the symmetric tensor `[xx, yy, zz, xy, yz, xz]`.
+    fn tensor_times(t: [f64; 6], v: [f64; 3]) -> [f64; 3] {
+        [
+            t[0] * v[0] + t[3] * v[1] + t[5] * v[2],
+            t[3] * v[0] + t[1] * v[1] + t[4] * v[2],
+            t[5] * v[0] + t[4] * v[1] + t[2] * v[2],
+        ]
+    }
+    fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+    fn assert_orthonormal(vectors: &[[f64; 3]; 3], tol: f64) {
+        for (i, &vi) in vectors.iter().enumerate() {
+            for (j, &vj) in vectors.iter().enumerate() {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (dot(vi, vj) - expected).abs() < tol,
+                    "vectors {i} and {j} not orthonormal: {vectors:?}"
+                );
+            }
+        }
+    }
+    /// Assert `T·v_k = σ_k·v_k` for every principal pair.
+    fn assert_eigenpairs(t: [f64; 6], sigma: [f64; 3], vectors: &[[f64; 3]; 3], tol: f64) {
+        for (k, (&sigma_k, &v)) in sigma.iter().zip(vectors.iter()).enumerate() {
+            let tv = tensor_times(t, v);
+            for i in 0..3 {
+                assert!(
+                    (tv[i] - sigma_k * v[i]).abs() < tol,
+                    "T·v{k} component {i}: {} vs {} (σ = {sigma_k}, v = {v:?})",
+                    tv[i],
+                    sigma_k * v[i]
+                );
+            }
+        }
+    }
+    /// Uniform pseudo-random number in `[0, 1)` from a 64-bit LCG.
+    fn next_unit(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (*state >> 11) as f64 / (1_u64 << 53) as f64
+    }
+
+    #[test]
+    fn test_principal_eigenvectors_follow_the_sorted_principal_stresses() {
+        // diag(1, 5, 3): σ = (5, 3, 1) along y, z, x.  The old stub returned
+        // the identity axes, i.e. x, y, z.
+        let t = [1.0, 5.0, 3.0, 0.0, 0.0, 0.0];
+        for (got, want) in principal_stresses(t).iter().zip([5.0, 3.0, 1.0]) {
+            assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+        }
+        let v = principal_eigenvectors(t);
+        assert!((v[0][1].abs() - 1.0).abs() < 1e-12, "{v:?}");
+        assert!((v[1][2].abs() - 1.0).abs() < 1e-12, "{v:?}");
+        assert!((v[2][0].abs() - 1.0).abs() < 1e-12, "{v:?}");
+        assert_orthonormal(&v, 1e-12);
+    }
+    #[test]
+    fn test_principal_eigenvectors_of_an_in_plane_shear_state() {
+        // [[3, 1], [1, 1]] in the xy-plane: σ = 2 ± √2 with the major axis
+        // tilted by atan(√2 - 1) = 22.5° from x.
+        let t = [3.0, 1.0, 0.0, 1.0, 0.0, 0.0];
+        let sigma = principal_stresses(t);
+        let v = principal_eigenvectors(t);
+        let (c, s) = (
+            std::f64::consts::FRAC_PI_8.cos(),
+            std::f64::consts::FRAC_PI_8.sin(),
+        );
+        let sign = v[0][0].signum();
+        assert!((sign * v[0][0] - c).abs() < 1e-10, "{:?}", v[0]);
+        assert!((sign * v[0][1] - s).abs() < 1e-10, "{:?}", v[0]);
+        assert!(v[0][2].abs() < 1e-10, "{:?}", v[0]);
+        assert_eigenpairs(t, sigma, &v, 1e-10);
+        assert_orthonormal(&v, 1e-10);
+    }
+    #[test]
+    fn test_principal_eigenvectors_satisfy_the_eigen_equation_for_random_tensors() {
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        for case in 0..200 {
+            let t: [f64; 6] = std::array::from_fn(|_| 20.0 * next_unit(&mut state) - 10.0);
+            let sigma = principal_stresses(t);
+            let v = principal_eigenvectors(t);
+            assert_orthonormal(&v, 1e-9);
+            let tol = 1e-8;
+            // Pairing: row k belongs to the k-th (descending) principal stress.
+            assert_eigenpairs(t, sigma, &v, tol);
+            assert!(
+                sigma[0] >= sigma[1] && sigma[1] >= sigma[2],
+                "case {case}: {sigma:?}"
+            );
+        }
+    }
+    #[test]
+    fn test_principal_eigenvectors_stay_orthonormal_for_repeated_eigenvalues() {
+        // Hydrostatic, uniaxial, and I + 𝟙𝟙ᵀ (σ = 4, 1, 1) with shear.
+        for t in [
+            [2.0, 2.0, 2.0, 0.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [2.0, 2.0, 2.0, 1.0, 1.0, 1.0],
+        ] {
+            let (sigma, v) = principal_frame(t);
+            assert_orthonormal(&v, 1e-9);
+            assert_eigenpairs(t, sigma, &v, 1e-9);
+        }
+        let (sigma, v) = principal_frame([2.0, 2.0, 2.0, 1.0, 1.0, 1.0]);
+        assert!(
+            (sigma[0] - 4.0).abs() < 1e-9 && (sigma[1] - 1.0).abs() < 1e-9,
+            "{sigma:?}"
+        );
+        let third = 1.0 / 3.0_f64.sqrt();
+        for component in v[0] {
+            assert!((component.abs() - third).abs() < 1e-9, "{:?}", v[0]);
+        }
+    }
+    #[test]
+    fn test_generate_tensor_glyphs_pair_magnitudes_with_directions() {
+        let tensors = [
+            [200.0, -100.0, 50.0, 30.0, 10.0, -20.0],
+            [3.0, 1.0, 0.0, 1.0, 0.0, 0.0],
+            [2.0, -3.0, 0.0, 1.5, 0.0, 0.0],
+        ];
+        let stresses: Vec<StressTensor> = tensors.iter().map(|&t| StressTensor::new(t)).collect();
+        let positions = vec![[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        let scale = 0.25;
+        let glyphs = generate_tensor_glyphs(&stresses, &positions, scale, Colormap::Viridis);
+        assert_eq!(glyphs.len(), 3);
+        for (glyph, &t) in glyphs.iter().zip(tensors.iter()) {
+            let sigma = principal_stresses(t);
+            for k in 0..3 {
+                assert!(
+                    (glyph.magnitudes[k] - sigma[k].abs() * scale).abs() < 1e-8,
+                    "{:?} vs {sigma:?}",
+                    glyph.magnitudes
+                );
+            }
+            assert_orthonormal(&glyph.directions, 1e-9);
+            assert_eigenpairs(t, sigma, &glyph.directions, 1e-7);
+        }
+    }
+    #[test]
+    fn test_principal_stress_arrows_run_along_the_principal_directions() {
+        // σ = (2.415, 1, -3.415): two tensile (red) arrows and a compressive (blue) one.
+        let t = [2.0, -3.0, 1.0, 1.5, 0.0, 0.0];
+        let scale = 0.5;
+        let arrows = principal_stress_arrows(&[StressTensor::new(t)], &[[1.0, 2.0, 3.0]], scale);
+        assert_eq!(arrows.len(), 3);
+        let sigma = principal_stresses(t);
+        for (k, arrow) in arrows.iter().enumerate() {
+            let centre = (arrow.start + arrow.end) * 0.5;
+            assert!((centre - Vec3::new(1.0, 2.0, 3.0)).norm() < 1e-12);
+            let span = arrow.end - arrow.start;
+            let length = span.norm();
+            assert!(
+                (length - 2.0 * sigma[k].abs() * scale).abs() < 1e-8,
+                "arrow {k}"
+            );
+            let direction = [span.x / length, span.y / length, span.z / length];
+            let tv = tensor_times(t, direction);
+            for i in 0..3 {
+                assert!(
+                    (tv[i] - sigma[k] * direction[i]).abs() < 1e-8,
+                    "arrow {k}: {direction:?}"
+                );
+            }
+            let expected = if sigma[k] >= 0.0 {
+                Color::red()
+            } else {
+                Color::blue()
+            };
+            assert_eq!(arrow.color, expected, "arrow {k}");
+        }
+    }
+    #[test]
+    fn test_superquadric_glyph_axes_are_the_principal_directions() {
+        let t = [3.0, 1.0, 0.0, 1.0, 0.0, 0.0];
+        let glyph =
+            SuperquadricGlyph::from_stress(&StressTensor::new(t), [0.0; 3], 1.0, Colormap::Viridis);
+        let sigma = principal_stresses(t);
+        for (&semi_axis, &s) in glyph.semi_axes.iter().zip(sigma.iter()) {
+            assert!((semi_axis - s.abs().max(1e-6)).abs() < 1e-8);
+        }
+        assert_orthonormal(&glyph.axes, 1e-10);
+        assert_eigenpairs(t, sigma, &glyph.axes, 1e-10);
+    }
+    #[test]
+    fn test_trace_stress_trajectory_follows_the_selected_principal_direction() {
+        // diag(1, 5, 3): index 0 → y, 1 → z, 2 → x; the old stub always marched along x.
+        let field = StressField::new(
+            vec![StressTensor::new([1.0, 5.0, 3.0, 0.0, 0.0, 0.0])],
+            vec![],
+        );
+        let nodes = [[0.0; 3]];
+        for (index, axis) in [(0_usize, 1_usize), (1, 2), (2, 0)] {
+            let traj = trace_stress_trajectory(&field, &nodes, [0.0; 3], index, 4, 0.1);
+            assert_eq!(traj.points.len(), 5);
+            for (k, p) in traj.points.iter().enumerate() {
+                for i in 0..3 {
+                    let expected = if i == axis { 0.1 * k as f64 } else { 0.0 };
+                    assert!(
+                        (p[i].abs() - expected).abs() < 1e-12,
+                        "index {index}, point {k}: {p:?}"
+                    );
+                }
+            }
+        }
+        // Out-of-range index: only the seed.
+        let traj = trace_stress_trajectory(&field, &nodes, [0.5; 3], 3, 4, 0.1);
+        assert_eq!(traj.points, vec![[0.5; 3]]);
+    }
+    #[test]
+    fn test_trace_stress_trajectory_follows_an_oblique_principal_direction() {
+        let t = [3.0, 1.0, 0.0, 1.0, 0.0, 0.0];
+        let field = StressField::new(vec![StressTensor::new(t)], vec![]);
+        let traj = trace_stress_trajectory(&field, &[[0.0; 3]], [0.0; 3], 0, 3, 0.2);
+        let major = principal_eigenvectors(t)[0];
+        let end = traj.points[3];
+        // Three steps of 0.2 along the (signed) major axis.
+        for i in 0..3 {
+            assert!(
+                (end[i] - 0.6 * major[i]).abs() < 1e-12,
+                "{end:?} vs {major:?}"
+            );
+        }
+        assert!((major[1] / major[0] - std::f64::consts::FRAC_PI_8.tan()).abs() < 1e-9);
+    }
+    #[test]
+    fn test_orient_along_flips_only_opposing_directions() {
+        assert_eq!(
+            orient_along([1.0, 0.0, 0.0], [2.0, 1.0, 0.0]),
+            [1.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            orient_along([1.0, 0.0, 0.0], [-2.0, 1.0, 0.0]),
+            [-1.0, 0.0, 0.0]
+        );
+        // Perpendicular reference: left unchanged.
+        assert_eq!(
+            orient_along([0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+            [0.0, 1.0, 0.0]
+        );
+    }
+    #[test]
+    fn test_trace_stress_trajectory_keeps_its_heading_across_flipped_eigenvector_signs() {
+        // Two nearly identical tensors (yz differs by 1e-3) whose major
+        // eigenvectors come back from the Jacobi solver with opposite signs.
+        let t_a = [-2.0, -2.0, -2.0, -2.0, -2.0, 2.0];
+        let t_b = [-2.0, -2.0, -2.0, -2.0, -2.001, 2.0];
+        let u = principal_eigenvectors(t_a)[0];
+        let node_b = [2.4 * u[0], 2.4 * u[1], 2.4 * u[2]];
+        let field = StressField::new(vec![StressTensor::new(t_a), StressTensor::new(t_b)], vec![]);
+        let traj = trace_stress_trajectory(&field, &[[0.0; 3], node_b], [0.0; 3], 0, 8, 0.5);
+        assert_eq!(traj.points.len(), 9);
+        for pair in traj.points.windows(2) {
+            let step = [
+                pair[1][0] - pair[0][0],
+                pair[1][1] - pair[0][1],
+                pair[1][2] - pair[0][2],
+            ];
+            assert!(
+                dot(step, u) > 0.49,
+                "the trajectory doubled back at {pair:?} (heading {u:?})"
+            );
+        }
+        // Without the sign alignment the marcher oscillates between 1.0 and 1.5.
+        assert!(dot(traj.points[8], u) > 3.9, "{:?}", traj.points[8]);
     }
 }
 /// Strain energy density at a material point.

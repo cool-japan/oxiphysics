@@ -650,11 +650,14 @@ impl EwaldEnergy {
 // ---------------------------------------------------------------------------
 
 impl EwaldSummation {
-    /// Compute total Ewald energy (kJ mol^-1) AND forces (kJ mol^-1 Å^-1)
-    /// in a single pass.
+    /// Compute total Ewald energy (kJ mol^-1) AND forces (kJ mol^-1 Å^-1).
     ///
-    /// Equivalent to calling `total_energy` and `total_forces` separately but
-    /// avoids the redundant structure-factor loops.
+    /// Convenience wrapper that returns [`Self::total_energy`] and
+    /// [`Self::total_forces`] together.  Each of the two is evaluated by its own
+    /// loops over the pairs and the k-vectors, so this costs the same as calling
+    /// them one after the other.  The forces are the negative gradient of the
+    /// returned energy, up to the accuracy of the `erfc` approximation
+    /// ([`erfc_approx`], about 1.5e-7) and the real-space cutoff.
     ///
     /// # Returns
     /// `(energy, forces)` where energy includes real, reciprocal, and self terms.

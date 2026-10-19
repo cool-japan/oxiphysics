@@ -19,6 +19,7 @@
 //! - Shear-band detection from incremental strain localisation
 //! - DEM → FEM homogenisation for continuum stress fields
 
+use oxiphysics_geometry::spatial_hash::SpatialHashPos3D;
 use rand::Rng;
 
 use rand::RngExt;
@@ -316,6 +317,25 @@ impl DemParams {
 // Hertz-Mindlin contact force
 // ---------------------------------------------------------------------------
 
+/// Geometry of two touching grains: the centre-to-centre vector `A -> B`, its
+/// length and the penetration depth. `None` when the spheres do not overlap or
+/// the geometry is degenerate (coincident centres, non-finite coordinates).
+///
+/// This is the single contact predicate shared by [`hertz_mindlin_force`] and the
+/// contact detection of [`DemFemSystem`], so the tangential history can only
+/// ever belong to pairs that really touch.
+fn pair_overlap(ga: &Grain, gb: &Grain) -> Option<(Vec3, f64, f64)> {
+    let r_ab = gb.position - ga.position;
+    let dist = r_ab.norm();
+    let overlap = ga.radius + gb.radius - dist;
+    // Written positively so that NaN geometry never counts as a contact.
+    if overlap > 0.0 && dist >= 1e-15 {
+        Some((r_ab, dist, overlap))
+    } else {
+        None
+    }
+}
+
 /// Compute Hertz-Mindlin contact forces between two grains.
 ///
 /// Returns `(force_on_a, torque_on_a, force_on_b, torque_on_b)`.
@@ -325,13 +345,9 @@ pub fn hertz_mindlin_force(
     delta_t: &mut Vec3,
     params: &DemParams,
 ) -> (Vec3, Vec3, Vec3, Vec3) {
-    let r_ab = gb.position - ga.position;
-    let dist = r_ab.norm();
-    let sum_r = ga.radius + gb.radius;
-    let overlap = sum_r - dist;
-    if overlap <= 0.0 || dist < 1e-15 {
+    let Some((r_ab, dist, overlap)) = pair_overlap(ga, gb) else {
         return (Vec3::zero(), Vec3::zero(), Vec3::zero(), Vec3::zero());
-    }
+    };
 
     let n = r_ab.scale(1.0 / dist);
     let e_eff = ga.effective_young(gb);
@@ -349,11 +365,13 @@ pub fn hertz_mindlin_force(
     let fn_total = (fn_hertz + fn_damp).max(0.0);
     let f_normal = n.scale(fn_total);
 
-    // Tangential displacement update (Mindlin)
+    // Tangential displacement update (Mindlin). The normal n points from A to
+    // B, so the contact point lies +r_a n from the centre of A and -r_b n from
+    // the centre of B; the surface velocity there is v + omega x (lever arm).
     let r_a = ga.radius;
     let r_b = gb.radius;
-    let contact_vel_a = ga.velocity + ga.omega.cross(n.scale(-r_a));
-    let contact_vel_b = gb.velocity + gb.omega.cross(n.scale(r_b));
+    let contact_vel_a = ga.velocity + ga.omega.cross(n.scale(r_a));
+    let contact_vel_b = gb.velocity + gb.omega.cross(n.scale(-r_b));
     let v_tang_full = contact_vel_b - contact_vel_a;
     let v_t = v_tang_full - n.scale(v_tang_full.dot(n));
 
@@ -390,7 +408,9 @@ pub fn hertz_mindlin_force(
 
     let f_total = f_normal + ft_limited;
 
-    // Torques: tau = r x F_t
+    // Torques about the grain centres, tau = lever arm x force. The tangential
+    // force on B is +ft and on A is -ft, applied at +r_a n (A) and -r_b n (B):
+    // tau_a = (r_a n) x (-ft) = (-r_a n) x ft and tau_b = (-r_b n) x ft.
     let ta = n.scale(-r_a).cross(ft_limited);
     let tb = n.scale(r_b).cross(ft_limited.scale(-1.0));
 
@@ -980,6 +1000,11 @@ impl FemTriangle {
     }
 }
 
+/// Largest distance from the origin, in cells of the contact-detection hash, at
+/// which a grain is still binned (see [`DemFemSystem::touching_pairs`]). Far below
+/// the `i32` range of the hash's cell indices, so `index + 1` can never overflow.
+const MAX_HASH_CELL_INDEX: f64 = 1.0e9;
+
 /// DEM-FEM coupled system.
 #[derive(Debug, Clone)]
 pub struct DemFemSystem {
@@ -989,7 +1014,8 @@ pub struct DemFemSystem {
     pub fem_elements: Vec<FemTriangle>,
     /// Current active contacts: (ia, ib, normal, fn_magnitude).
     pub contacts: Vec<(usize, usize, Vec3, f64)>,
-    /// Tangential displacement history per grain pair (keyed by sorted pair).
+    /// Tangential spring displacement of every pair currently in contact
+    /// (keyed by the sorted pair `(i, j)`, `i < j`).
     tangential_cache: std::collections::HashMap<(usize, usize), Vec3>,
     /// DEM parameters.
     pub params: DemParams,
@@ -1025,36 +1051,98 @@ impl DemFemSystem {
         self.fem_elements.push(element);
     }
 
+    /// Grain pairs `(i, j)` with `i < j` whose spheres overlap, in ascending
+    /// order.
+    ///
+    /// The live (not crushed, finite) grains are binned into a uniform-grid
+    /// spatial hash whose cell is twice the largest radius, and each grain only
+    /// tests the grains in the neighbouring cells instead of all
+    /// `n (n - 1) / 2` pairs.
+    ///
+    /// The hash addresses its cells with 32-bit indices. A grain further than
+    /// [`MAX_HASH_CELL_INDEX`] cells from the origin (a diverged simulation) is
+    /// left out instead of overflowing the neighbour-cell arithmetic of the hash;
+    /// such coordinates carry no usable contact geometry anyway.
+    fn touching_pairs(&self) -> Vec<(usize, usize)> {
+        let live = |g: &Grain| {
+            !g.crushed
+                && g.radius.is_finite()
+                && g.position.x.is_finite()
+                && g.position.y.is_finite()
+                && g.position.z.is_finite()
+        };
+        let r_max = self
+            .grains
+            .iter()
+            .filter(|g| live(g))
+            .fold(0.0_f64, |acc, g| acc.max(g.radius));
+        if r_max <= 0.0 {
+            // No grain has a positive radius: nothing can touch (and a hash with
+            // a zero cell size would be meaningless).
+            return Vec::new();
+        }
+
+        let cell_size = 2.0 * r_max;
+        let binnable = |g: &Grain| {
+            live(g)
+                && [g.position.x, g.position.y, g.position.z]
+                    .iter()
+                    .all(|c| (c / cell_size).abs() < MAX_HASH_CELL_INDEX)
+        };
+        let mut hash: SpatialHashPos3D<()> = SpatialHashPos3D::new(cell_size);
+        for (i, g) in self.grains.iter().enumerate() {
+            if binnable(g) {
+                hash.insert(i, [g.position.x, g.position.y, g.position.z], ());
+            }
+        }
+
+        let mut pairs = Vec::new();
+        for (i, ga) in self.grains.iter().enumerate() {
+            if !binnable(ga) {
+                continue;
+            }
+            let centre = [ga.position.x, ga.position.y, ga.position.z];
+            for (j, _) in hash.query_radius(centre, ga.radius + r_max) {
+                if j > i && pair_overlap(ga, &self.grains[j]).is_some() {
+                    pairs.push((i, j));
+                }
+            }
+        }
+        // Deterministic order, identical to the i-major all-pairs loop.
+        pairs.sort_unstable();
+        pairs
+    }
+
     /// Detect all grain-grain contacts and compute forces.
+    ///
+    /// Only pairs that touch are visited. Their Mindlin tangential spring
+    /// displacement is carried over from the previous call; the history of pairs
+    /// that no longer touch is discarded, so a new contact starts with an
+    /// unstretched spring and the cache never holds more entries than there are
+    /// active contacts.
     fn compute_contacts(&mut self) {
         self.contacts.clear();
-        let n = self.grains.len();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                if self.grains[i].crushed || self.grains[j].crushed {
-                    continue;
-                }
-                let key = (i.min(j), i.max(j));
-                let entry = self.tangential_cache.entry(key).or_insert(Vec3::zero());
-                let ga = self.grains[i].clone();
-                let gb = self.grains[j].clone();
-                let (fa, ta, fb, tb) = hertz_mindlin_force(&ga, &gb, entry, &self.params);
-                let fn_mag = fa.norm();
-                if fn_mag > 0.0 {
-                    let r = gb.position - ga.position;
-                    let dist = r.norm();
-                    let normal = if dist > 1e-15 {
-                        r.scale(1.0 / dist)
-                    } else {
-                        Vec3::new(0.0, 1.0, 0.0)
-                    };
-                    self.contacts.push((i, j, normal, fn_mag));
-                }
-                self.grains[i].apply_force(fa);
-                self.grains[i].apply_torque(ta);
-                self.grains[j].apply_force(fb);
-                self.grains[j].apply_torque(tb);
+        let mut previous_history = std::mem::take(&mut self.tangential_cache);
+        for (i, j) in self.touching_pairs() {
+            let mut delta_t = previous_history.remove(&(i, j)).unwrap_or_else(Vec3::zero);
+            let (fa, ta, fb, tb) =
+                hertz_mindlin_force(&self.grains[i], &self.grains[j], &mut delta_t, &self.params);
+            self.tangential_cache.insert((i, j), delta_t);
+            let fn_mag = fa.norm();
+            if fn_mag > 0.0 {
+                let r = self.grains[j].position - self.grains[i].position;
+                let dist = r.norm();
+                let normal = if dist > 1e-15 {
+                    r.scale(1.0 / dist)
+                } else {
+                    Vec3::new(0.0, 1.0, 0.0)
+                };
+                self.contacts.push((i, j, normal, fn_mag));
             }
+            self.grains[i].apply_force(fa);
+            self.grains[i].apply_torque(ta);
+            self.grains[j].apply_force(fb);
+            self.grains[j].apply_torque(tb);
         }
     }
 
@@ -1332,6 +1420,9 @@ impl FabricTensor {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod contact_tests;
 
 #[cfg(test)]
 mod tests {

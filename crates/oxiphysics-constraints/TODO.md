@@ -155,8 +155,8 @@ Exit gate: conformance matrix published, joint suite green over 60 s scenarios, 
 Verified: 182 (critical 2, high 46, medium 101, low 33); 30 further raw findings pending second-round verification. IDs refer to the audit ledger; `[x]` = fixed.
 
 ### Critical (2)
-- [ ] **F0381** (critical, bug, medium/small) `joints/fixedjoint_traits.rs:136` — Joint orientation correction has inverted sign and wrong units
-- [ ] **F0481** (critical, bug, easy/small) `six_dof_constraint.rs:610` — SixDof solve_position correction has wrong sign, amplifies error
+- [x] **F0381** (critical, bug, medium/small) `joints/fixedjoint_traits.rs:136` — Joint orientation correction has inverted sign and wrong units
+- [x] **F0481** (critical, bug, easy/small) `six_dof_constraint.rs:610` — SixDof solve_position correction has wrong sign, amplifies error
 
 ### High (46)
 - [x] **F0312** (high, bug, easy/small) `contact_constraints.rs:285` — Baumgarte bias sign inverted: penetration correction drives bodies together
@@ -167,14 +167,14 @@ Verified: 182 (critical 2, high 46, medium 101, low 33); 30 further raw findings
 - [x] **F0334** (high, stub, medium/small) `deformable_coupling.rs:336` — CoupledSimulation couples everything to rigid body 0, one-way, single pass
 - [x] **F0346** (high, bug, easy/small) `game_physics_constraints.rs:737` — RopeConstraint never reconciles velocity with projected positions
 - [x] **F0363** (high, bug, medium/small) `holonomic_constraints.rs:713` — dae_step_index1 applies velocity-level λ as a force scaled by dt
-- [ ] **F0380** (high, bug, easy/small) `joints/breakablejoint_traits.rs:56` — BreakableJoint accumulates impulse forever and reapplies spring per iteration
-- [ ] **F0384** (high, bug, medium/medium) `joints/revolutejoint_traits.rs:45` — Joint point constraints use wrong effective mass (linear-only or inconsistent)
-- [ ] **F0385** (high, bug, medium/small) `joints/springjoint_traits.rs:57` — SpringJoint reapplies explicit spring impulse every PGS iteration
-- [ ] **F0387** (high, stub, medium/medium) `joints/types.rs:218` — RevoluteJoint::with_limits stores limits the solver never enforces
-- [ ] **F0389** (high, bug, medium/small) `joints/xpbdjoint_traits.rs:55` — XpbdJoint velocity pass applies 1e9 explicit spring and pollutes lambda
-- [ ] **F0393** (high, bug, easy/trivial) `locomotion.rs:613` — BalanceController::zmp uses CoM velocity instead of acceleration
-- [ ] **F0394** (high, fabrication, hard/medium) `locomotion.rs:850` — ORCA implementations are simplified fakes; overlap case pushes agents together
-- [ ] **F0401** (high, bug, easy/trivial) `mechanism/types.rs:461` — FourBarLinkage::follower_angle swaps Freudenstein constants K1 and K2
+- [x] **F0380** (high, bug, easy/small) `joints/breakablejoint_traits.rs:56` — BreakableJoint accumulates impulse forever and reapplies spring per iteration
+- [x] **F0384** (high, bug, medium/medium) `joints/revolutejoint_traits.rs:45` — Joint point constraints use wrong effective mass (linear-only or inconsistent)
+- [x] **F0385** (high, bug, medium/small) `joints/springjoint_traits.rs:57` — SpringJoint reapplies explicit spring impulse every PGS iteration
+- [x] **F0387** (high, stub, medium/medium) `joints/types.rs:218` — RevoluteJoint::with_limits stores limits the solver never enforces
+- [x] **F0389** (high, bug, medium/small) `joints/xpbdjoint_traits.rs:55` — XpbdJoint velocity pass applies 1e9 explicit spring and pollutes lambda
+- [x] **F0393** (high, bug, easy/trivial) `locomotion.rs:613` — BalanceController::zmp uses CoM velocity instead of acceleration
+- [x] **F0394** (high, fabrication, hard/medium) `locomotion.rs:850` — ORCA implementations are simplified fakes; overlap case pushes agents together
+- [x] **F0401** (high, bug, easy/trivial) `mechanism/types.rs:461` — FourBarLinkage::follower_angle swaps Freudenstein constants K1 and K2
 - [ ] **F0403** (high, bug, easy/small) `motion_planning.rs:620` — PRM build can loop forever and never collision-checks edges
 - [ ] **F0404** (high, bug, easy/small) `motion_planning.rs:627` — PRM links nodes without edge collision checks; build can loop forever
 - [ ] **F0407** (high, bug, easy/small) `motion_planning.rs:932` — CBiRRT returns goal-to-start path on odd iterations; edges unchecked
@@ -182,28 +182,28 @@ Verified: 182 (critical 2, high 46, medium 101, low 33); 30 further raw findings
 - [ ] **F0416** (high, fabrication, medium/small) `multibody.rs:953` — CRBA sums child composite inertia without spatial transform
 - [ ] **F0420** (high, fabrication, hard/medium) `multibody.rs:1303` — hybrid_dynamics runs ABA and RNEA independently, not coupled
 - [ ] **F0421** (high, fabrication, easy/small) `multibody.rs:1367` — pseudo_inverse_fat / operational_space_inertia skip inversion for m>2
-- [ ] **F0424** (high, fabrication, medium/medium) `optimal_control/types.rs:143` — iLQR hardcodes identity cost Hessians; DDP is just iLQR
-- [ ] **F0425** (high, perf, medium/medium) `optimal_control/types.rs:494` — MPC: finite-difference gradient, fixed step, unenforced state bounds
-- [ ] **F0430** (high, fabrication, hard/medium) `optimal_control/types.rs:970` — h_inf_upper_bound returns DC-gain Frobenius norm, not H∞ bound
-- [ ] **F0431** (high, fabrication, hard/medium) `optimal_control/types.rs:985` — h_inf_upper_bound returns DC Frobenius norm, a lower bound
+- [x] **F0424** (high, fabrication, medium/medium) `optimal_control/types.rs:143` — iLQR hardcodes identity cost Hessians; DDP is just iLQR
+- [x] **F0425** (high, perf, medium/medium) `optimal_control/types.rs:494` — MPC: finite-difference gradient, fixed step, unenforced state bounds
+- [x] **F0430** (high, fabrication, hard/medium) `optimal_control/types.rs:970` — h_inf_upper_bound returns DC-gain Frobenius norm, not H∞ bound
+- [x] **F0431** (high, fabrication, hard/medium) `optimal_control/types.rs:985` — h_inf_upper_bound returns DC Frobenius norm, a lower bound
 - [x] **F0436** (high, fabrication, medium/small) `pbd/types.rs:182` — XpbdDihedralBending::project rigidly translates all vertices along −Y
 - [x] **F0439** (high, fabrication, easy/small) `pbd/types.rs:552` — PbdSimulation::add_volume_constraint builds then discards the constraint
 - [x] **F0441** (high, fabrication, easy/small) `pbd/types.rs:764` — XpbdPressureConstraint uses edge lengths and one normal as gradients
-- [ ] **F0442** (high, fabrication, medium/small) `pbd/types.rs:1428` — XpbdBendingConstraint gradient is not dθ/dp; momentum not conserved
+- [x] **F0442** (high, fabrication, medium/small) `pbd/types.rs:1428` — XpbdBendingConstraint gradient is not dθ/dp; momentum not conserved
 - [x] **F0443** (high, bug, easy/small) `pbd/types.rs:1460` — PbdSubstepSolver never updates velocities or applies forces
 - [x] **F0445** (high, fabrication, medium/medium) `pgs_solver.rs:307` — PgsSolver residual is a constraint count; trait hooks never honoured
 - [x] **F0446** (high, bug, medium/medium) `pgs_solver.rs:354` — PGS warm start applies same-sign linear impulse to both bodies
 - [x] **F0447** (high, fabrication, medium/medium) `pgs_solver.rs:869` — SorPgsSolver fakes SOR by scaling all body velocities by omega
 - [x] **F0448** (high, fabrication, medium/small) `pgs_solver.rs:883` — SorPgsSolver 'SOR' multiplies absolute body velocities by omega
-- [ ] **F0461** (high, bug, easy/small) `robot_control/types/types_impl.rs:171` — Safety monitor overwrites Warning with Normal; NaN passes
-- [ ] **F0462** (high, bug, easy/small) `robot_control/types/types_impl.rs:392` — Jacobian::manipulability multiplies JJᵀ diagonal instead of determinant
-- [ ] **F0468** (high, fabrication, medium/small) `servo_constraints.rs:394` — Relay auto-tune ultimate gain is constant 4/π
-- [ ] **F0474** (high, fabrication, medium/medium) `simd_pgs.rs:369` — Batch PGS ignores lever arms and angular velocity entirely
-- [ ] **F0476** (high, bug, easy/small) `simd_pgs.rs:499` — SoA PGS never applies warm-start λ; builder fabricates warm value
-- [ ] **F0478** (high, stub, medium/medium) `six_dof_constraint.rs:426` — 6-DOF angular lock/limit uses hardcoded zero orientation error
-- [ ] **F0479** (high, bug, hard/medium) `six_dof_constraint.rs:492` — 6-DOF limits clamp impulses by position bounds; no angular error
-- [ ] **F0491** (high, fabrication, medium/small) `tgs_solver/types.rs:587` — TGS always reports converged and passes dt=0 to solve_position
-- [ ] **F0494** (high, bug, easy/trivial) `tgs_solver/types.rs:682` — TGS passes dt=0 to solve_position, disabling XPBD joints
+- [x] **F0461** (high, bug, easy/small) `robot_control/types/types_impl.rs:171` — Safety monitor overwrites Warning with Normal; NaN passes
+- [x] **F0462** (high, bug, easy/small) `robot_control/types/types_impl.rs:392` — Jacobian::manipulability multiplies JJᵀ diagonal instead of determinant
+- [x] **F0468** (high, fabrication, medium/small) `servo_constraints.rs:394` — Relay auto-tune ultimate gain is constant 4/π
+- [x] **F0474** (high, fabrication, medium/medium) `simd_pgs.rs:369` — Batch PGS ignores lever arms and angular velocity entirely
+- [x] **F0476** (high, bug, easy/small) `simd_pgs.rs:499` — SoA PGS never applies warm-start λ; builder fabricates warm value
+- [x] **F0478** (high, stub, medium/medium) `six_dof_constraint.rs:426` — 6-DOF angular lock/limit uses hardcoded zero orientation error
+- [x] **F0479** (high, bug, hard/medium) `six_dof_constraint.rs:492` — 6-DOF limits clamp impulses by position bounds; no angular error
+- [x] **F0491** (high, fabrication, medium/small) `tgs_solver/types.rs:587` — TGS always reports converged and passes dt=0 to solve_position
+- [x] **F0494** (high, bug, easy/trivial) `tgs_solver/types.rs:682` — TGS passes dt=0 to solve_position, disabling XPBD joints
 - [ ] **F0503** (high, bug, easy/small) `trajectory_optimization/functions.rs:375` — sqp_step finite-difference gradient corrupted by in-place updates
 
 ### Medium (101)

@@ -2,6 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
 use super::functions::*;
@@ -50,20 +51,34 @@ impl GranularSimExtended {
     pub fn is_empty(&self) -> bool {
         self.sim.is_empty()
     }
-    /// Advance one step with rolling resistance.
+    /// Advance one step with tangential friction and rolling resistance.
+    ///
+    /// The contacts are resolved with the particles' current spin, so tangential
+    /// slip drives Coulomb-limited friction forces whose torques spin the particles
+    /// up.  The rolling-resistance torque then acts on the relative spin of each
+    /// contact using that contact's own normal force.
     pub fn step(&mut self, dt: f64) {
         let contacts = self.sim.detect_contacts();
-        self.sim.resolve_contacts(&contacts);
+        let loads = self
+            .sim
+            .resolve_contacts_with_spin(&contacts, dt, &self.angular_velocities);
         let n = self.len();
         for t in self.torques.iter_mut().take(n) {
             *t = [0.0; 3];
         }
-        for c in &contacts {
+        for (c, load) in contacts.iter().zip(loads.iter()) {
             let r_i = self.sim.radii[c.i];
             let r_j = self.sim.radii[c.j];
-            let fn_mag = self.sim.forces[c.i][0] * c.normal[0]
-                + self.sim.forces[c.i][1] * c.normal[1]
-                + self.sim.forces[c.i][2] * c.normal[2];
+            // Friction acts at the midpoint of the overlap region, a distance
+            // r − δ/2 from each centre.  `c.normal` points from j to i, so the
+            // contact point lies at −lever·n from i and at +lever·n from j and the
+            // friction force F_t on i (−F_t on j) produces
+            // τᵢ = −leverᵢ n × F_t and τⱼ = −leverⱼ n × F_t.
+            let lever_i = r_i - 0.5 * c.overlap;
+            let lever_j = r_j - 0.5 * c.overlap;
+            let n_cross_ft = cross3(c.normal, load.tangential);
+            add_scaled(&mut self.torques[c.i], -lever_i, n_cross_ft);
+            add_scaled(&mut self.torques[c.j], -lever_j, n_cross_ft);
             let omega_rel = [
                 self.angular_velocities[c.i][0] - self.angular_velocities[c.j][0],
                 self.angular_velocities[c.i][1] - self.angular_velocities[c.j][1],
@@ -72,15 +87,13 @@ impl GranularSimExtended {
             let torque = rolling_resistance_torque(
                 r_i,
                 r_j,
-                fn_mag.abs(),
+                load.normal,
                 omega_rel,
                 self.mu_r,
                 self.rolling_model,
             );
-            for (k, &tv) in torque.iter().enumerate() {
-                self.torques[c.i][k] += tv;
-                self.torques[c.j][k] -= tv;
-            }
+            add_scaled(&mut self.torques[c.i], 1.0, torque);
+            add_scaled(&mut self.torques[c.j], -1.0, torque);
         }
         for i in 0..n {
             let inv_m = 1.0 / self.sim.masses[i].max(1e-30);
@@ -121,6 +134,21 @@ pub struct Contact {
     pub overlap: f64,
     /// Contact normal (from j to i, unit vector).
     pub normal: [f64; 3],
+}
+/// Force produced by one contact of [`GranularSim::resolve_contacts`], listed in
+/// the order of the [`Contact`] slice that was resolved.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContactForce {
+    /// Index of the first particle (`Contact::i`).
+    pub i: usize,
+    /// Index of the second particle (`Contact::j`).
+    pub j: usize,
+    /// Normal force magnitude `F_n ≥ 0` \[N\], repulsive along `Contact::normal`
+    /// (from j to i).
+    pub normal: f64,
+    /// Tangential (friction) force on particle `i` \[N\]; particle `j` receives the
+    /// reaction `−tangential`.
+    pub tangential: [f64; 3],
 }
 /// Forces and geometry produced by a DEM contact calculation.
 #[derive(Debug, Clone)]
@@ -172,6 +200,11 @@ impl DemGranularParticle {
     }
 }
 /// Simple granular (DEM) simulation with contact detection and resolution.
+///
+/// Every contact carries a normal force (spring-dashpot or Hertz) and a
+/// Coulomb-limited tangential friction force with a per-contact spring history
+/// ([`tangential_springs`](Self::tangential_springs)).  The spheres themselves are
+/// translational only; [`GranularSimExtended`] adds their spin.
 pub struct GranularSim {
     /// Particle positions.
     pub positions: Vec<[f64; 3]>,
@@ -189,6 +222,14 @@ pub struct GranularSim {
     pub mu: f64,
     /// Gravity vector.
     pub gravity: [f64; 3],
+    /// Tangential spring displacement `δ_t` \[m\] of every persisting contact, keyed
+    /// by the particle pair `(i, j)` with `i < j`.
+    ///
+    /// Each [`resolve_contacts`](Self::resolve_contacts) call advances the entry of
+    /// every contact it is given and drops the pairs that are no longer in contact.
+    /// The keys are particle indices: call `tangential_springs.clear()` after
+    /// reordering or removing particles.
+    pub tangential_springs: BTreeMap<(usize, usize), [f64; 3]>,
 }
 impl GranularSim {
     /// Create a new simulation with the given contact model.
@@ -202,6 +243,7 @@ impl GranularSim {
             contact_model,
             mu,
             gravity,
+            tangential_springs: BTreeMap::new(),
         }
     }
     /// Add a particle.
@@ -244,8 +286,34 @@ impl GranularSim {
         }
         contacts
     }
+    /// Resolve detected contacts by computing and applying contact forces, for
+    /// spheres without spin.
+    ///
+    /// Equivalent to [`resolve_contacts_with_spin`](Self::resolve_contacts_with_spin)
+    /// with zero angular velocities.  `dt` advances the tangential springs.
+    pub fn resolve_contacts(&mut self, contacts: &[Contact], dt: f64) -> Vec<ContactForce> {
+        self.resolve_contacts_with_spin(contacts, dt, &[])
+    }
     /// Resolve detected contacts by computing and applying contact forces.
-    pub fn resolve_contacts(&mut self, contacts: &[Contact]) {
+    ///
+    /// The forces are reset to gravity first.  For every contact:
+    /// - the normal force `F_n` comes from the contact model;
+    /// - the sliding velocity is the tangential part of the contact-point velocity
+    ///   of `i` relative to `j`, including the spin
+    ///   (see [`contact_point_relative_velocity`]; missing entries of
+    ///   `angular_velocities` count as zero);
+    /// - the friction force `F_t = −k_t δ_t − γ_t v_t`, limited to `μ F_n`, is
+    ///   applied to `i` and its reaction to `j`.  `k_t` and `γ_t` are the
+    ///   `SpringDashpot` parameters; the `Hertzian` model uses the Mindlin
+    ///   stiffness `k_t = 8 G* √(R* δ_n)` without damping.
+    ///
+    /// Returns one [`ContactForce`] per contact, in the order of `contacts`.
+    pub fn resolve_contacts_with_spin(
+        &mut self,
+        contacts: &[Contact],
+        dt: f64,
+        angular_velocities: &[[f64; 3]],
+    ) -> Vec<ContactForce> {
         for i in 0..self.len() {
             self.forces[i] = [
                 self.masses[i] * self.gravity[0],
@@ -253,32 +321,76 @@ impl GranularSim {
                 self.masses[i] * self.gravity[2],
             ];
         }
+        let mut previous = std::mem::take(&mut self.tangential_springs);
+        let mut current = BTreeMap::new();
+        let mut loads = Vec::with_capacity(contacts.len());
         for c in contacts {
-            let rel_vel = [
-                self.velocities[c.i][0] - self.velocities[c.j][0],
-                self.velocities[c.i][1] - self.velocities[c.j][1],
-                self.velocities[c.i][2] - self.velocities[c.j][2],
-            ];
-            let vn = rel_vel[0] * c.normal[0] + rel_vel[1] * c.normal[1] + rel_vel[2] * c.normal[2];
+            let omega_i = angular_velocities.get(c.i).copied().unwrap_or([0.0; 3]);
+            let omega_j = angular_velocities.get(c.j).copied().unwrap_or([0.0; 3]);
+            let lever_i = self.radii[c.i] - 0.5 * c.overlap;
+            let lever_j = self.radii[c.j] - 0.5 * c.overlap;
+            // `c.normal` points from j to i; the contact-point velocity is
+            // expressed with the normal from i to j.
+            let normal_ij = [-c.normal[0], -c.normal[1], -c.normal[2]];
+            let slip = contact_point_relative_velocity(
+                self.velocities[c.i],
+                self.velocities[c.j],
+                omega_i,
+                omega_j,
+                lever_i,
+                lever_j,
+                normal_ij,
+            );
+            // Spin is perpendicular to the normal, so this is the translational
+            // normal velocity (positive = separating).
+            let vn = dot3(slip, c.normal);
             let fn_mag = match &self.contact_model {
                 ContactModel::SpringDashpot { kn, gamma_n, .. } => {
                     spring_dashpot_normal(c.overlap, vn, *kn, *gamma_n)
                 }
-                ContactModel::Hertzian { e_star, r_star } => {
+                ContactModel::Hertzian { e_star, r_star, .. } => {
                     hertz_normal_force(c.overlap, *e_star, *r_star)
                 }
             };
-            for k in 0..3 {
-                let f = fn_mag * c.normal[k];
-                self.forces[c.i][k] += f;
-                self.forces[c.j][k] -= f;
-            }
+            let law = match &self.contact_model {
+                ContactModel::SpringDashpot { kt, gamma_t, .. } => TangentialContactLaw {
+                    kt: *kt,
+                    gamma_t: *gamma_t,
+                    mu: self.mu,
+                },
+                ContactModel::Hertzian { g_star, r_star, .. } => TangentialContactLaw {
+                    kt: 8.0 * g_star * (r_star * c.overlap).sqrt(),
+                    gamma_t: 0.0,
+                    mu: self.mu,
+                },
+            };
+            let mut spring = previous.remove(&(c.i, c.j)).unwrap_or([0.0; 3]);
+            let ft = law.force(
+                &mut spring,
+                c.normal,
+                tangential_component(slip, c.normal),
+                fn_mag,
+                dt,
+            );
+            current.insert((c.i, c.j), spring);
+            let mut force_on_i = ft;
+            add_scaled(&mut force_on_i, fn_mag, c.normal);
+            add_scaled(&mut self.forces[c.i], 1.0, force_on_i);
+            add_scaled(&mut self.forces[c.j], -1.0, force_on_i);
+            loads.push(ContactForce {
+                i: c.i,
+                j: c.j,
+                normal: fn_mag,
+                tangential: ft,
+            });
         }
+        self.tangential_springs = current;
+        loads
     }
     /// Advance one step: detect contacts, resolve, integrate.
     pub fn step(&mut self, dt: f64) {
         let contacts = self.detect_contacts();
-        self.resolve_contacts(&contacts);
+        self.resolve_contacts(&contacts, dt);
         for i in 0..self.len() {
             let inv_m = 1.0 / self.masses[i].max(1e-30);
             for k in 0..3 {
@@ -439,9 +551,12 @@ impl HertzContact {
     }
     /// Mindlin tangential (shear) contact force vector (no-slip regime).
     ///
-    /// `F_t = 8 * G* * sqrt(R* * δ_n) * δ_t`
+    /// `F_t = −k_t δ_t` with `k_t = 8 * G* * sqrt(R* * δ_n)`
+    /// (see [`tangential_stiffness`](Self::tangential_stiffness)).
     ///
-    /// The force is clamped to the Coulomb cone `|F_t| ≤ μ * |F_n|`.
+    /// The force is clamped to the Coulomb cone `|F_t| ≤ μ * |F_n|`.  It acts on the
+    /// particle whose contact point has been displaced by `delta_t` relative to its
+    /// partner and opposes that displacement.
     ///
     /// # Arguments
     /// * `r_star`   – Effective contact radius R* \[m\].
@@ -460,7 +575,7 @@ impl HertzContact {
         if delta_n <= 0.0 {
             return [0.0; 3];
         }
-        let kt = 8.0 * self.g_star * (r_star * delta_n).sqrt();
+        let kt = self.tangential_stiffness(r_star, delta_n);
         let ft_raw = [-kt * delta_t[0], -kt * delta_t[1], -kt * delta_t[2]];
         let ft_mag = (ft_raw[0] * ft_raw[0] + ft_raw[1] * ft_raw[1] + ft_raw[2] * ft_raw[2]).sqrt();
         let limit = mu * fn_mag.abs();
@@ -470,6 +585,15 @@ impl HertzContact {
         } else {
             ft_raw
         }
+    }
+    /// Mindlin no-slip tangential stiffness `k_t = 8 G* √(R* δ_n)` \[N/m\].
+    ///
+    /// Returns 0 for non-positive overlap.
+    pub fn tangential_stiffness(&self, r_star: f64, delta_n: f64) -> f64 {
+        if delta_n <= 0.0 {
+            return 0.0;
+        }
+        8.0 * self.g_star * (r_star * delta_n).sqrt()
     }
     /// Compute the Hertz contact stiffness `k_n = 2 * E* * sqrt(R* * δ_n)`.
     pub fn stiffness(&self, r_star: f64, delta_n: f64) -> f64 {
@@ -632,6 +756,12 @@ pub struct GranularSimulation {
     pub gamma_n: f64,
     /// Integration time step \[s\].
     pub dt: f64,
+    /// Tangential spring displacement `δ_t` \[m\] of every persisting contact,
+    /// keyed by the particle pair `(i, j)` with `i < j`.
+    ///
+    /// Advanced by [`step`](Self::step), which drops the pairs that separated.
+    /// Call `tangential_springs.clear()` after reordering or removing particles.
+    pub tangential_springs: BTreeMap<(usize, usize), [f64; 3]>,
 }
 impl GranularSimulation {
     /// Create a new `GranularSimulation`.
@@ -650,6 +780,7 @@ impl GranularSimulation {
             mu,
             gamma_n,
             dt,
+            tangential_springs: BTreeMap::new(),
         }
     }
     /// Add a sphere particle.
@@ -700,12 +831,16 @@ impl GranularSimulation {
         }
         contacts
     }
-    /// Advance by one time step `dt` using velocity Verlet (symplectic Euler).
+    /// Advance by one time step `dt` using symplectic Euler.
     ///
     /// Pipeline:
     /// 1. Clear force/torque accumulators.
     /// 2. Apply gravity.
-    /// 3. Detect contacts → accumulate Hertz + Mindlin forces and torques.
+    /// 3. Detect contacts → accumulate the Hertz normal force and the Mindlin
+    ///    tangential force.  The tangential spring integrates the sliding velocity
+    ///    of the contact point (translation plus spin, see
+    ///    [`contact_point_relative_velocity`]) per contact pair, so friction opposes
+    ///    the slip, is capped by `μ F_n`, and its torques spin the particles.
     /// 4. Integrate: `v += (F/m)*dt`, `x += v*dt`, `ω += (τ/I)*dt`.
     pub fn step(&mut self, dt: f64) {
         let n = self.len();
@@ -713,40 +848,56 @@ impl GranularSimulation {
         let mut torques = vec![[0.0_f64; 3]; n];
         self.apply_gravity(&mut forces);
         let contacts = self.detect_contacts();
+        let mut previous = std::mem::take(&mut self.tangential_springs);
+        let mut current = BTreeMap::new();
         for (i, j, normal, delta_n, r_star) in contacts {
+            let (particle_i, particle_j) = (&self.particles[i], &self.particles[j]);
+            // `normal` points from i to j.
             let rel_v = [
-                self.particles[j].velocity[0] - self.particles[i].velocity[0],
-                self.particles[j].velocity[1] - self.particles[i].velocity[1],
-                self.particles[j].velocity[2] - self.particles[i].velocity[2],
+                particle_j.velocity[0] - particle_i.velocity[0],
+                particle_j.velocity[1] - particle_i.velocity[1],
+                particle_j.velocity[2] - particle_i.velocity[2],
             ];
-            let vn = rel_v[0] * normal[0] + rel_v[1] * normal[1] + rel_v[2] * normal[2];
+            let vn = dot3(rel_v, normal);
             let fn_hertz = self.contact.normal_force(r_star, delta_n);
             let fn_damp = -self.gamma_n * vn;
             let fn_total = (fn_hertz + fn_damp).max(0.0);
-            let vt = [
-                rel_v[0] - vn * normal[0],
-                rel_v[1] - vn * normal[1],
-                rel_v[2] - vn * normal[2],
-            ];
-            let delta_t = [vt[0] * dt, vt[1] * dt, vt[2] * dt];
-            let ft = self
-                .contact
-                .tangential_force(r_star, delta_n, delta_t, self.mu, fn_total);
-            for k in 0..3 {
-                forces[i][k] -= fn_total * normal[k];
-                forces[j][k] += fn_total * normal[k];
-                forces[i][k] += ft[k];
-                forces[j][k] -= ft[k];
-            }
-            let ri = self.particles[i].radius;
-            let rj = self.particles[j].radius;
-            torques[i][0] += ri * (normal[1] * ft[2] - normal[2] * ft[1]);
-            torques[i][1] += ri * (normal[2] * ft[0] - normal[0] * ft[2]);
-            torques[i][2] += ri * (normal[0] * ft[1] - normal[1] * ft[0]);
-            torques[j][0] -= rj * (normal[1] * ft[2] - normal[2] * ft[1]);
-            torques[j][1] -= rj * (normal[2] * ft[0] - normal[0] * ft[2]);
-            torques[j][2] -= rj * (normal[0] * ft[1] - normal[1] * ft[0]);
+            let lever_i = particle_i.radius - 0.5 * delta_n;
+            let lever_j = particle_j.radius - 0.5 * delta_n;
+            let slip = contact_point_relative_velocity(
+                particle_i.velocity,
+                particle_j.velocity,
+                particle_i.angular_velocity,
+                particle_j.angular_velocity,
+                lever_i,
+                lever_j,
+                normal,
+            );
+            let law = TangentialContactLaw {
+                kt: self.contact.tangential_stiffness(r_star, delta_n),
+                gamma_t: 0.0,
+                mu: self.mu,
+            };
+            let mut spring = previous.remove(&(i, j)).unwrap_or([0.0; 3]);
+            let ft = law.force(
+                &mut spring,
+                normal,
+                tangential_component(slip, normal),
+                fn_total,
+                dt,
+            );
+            current.insert((i, j), spring);
+            add_scaled(&mut forces[i], -fn_total, normal);
+            add_scaled(&mut forces[j], fn_total, normal);
+            add_scaled(&mut forces[i], 1.0, ft);
+            add_scaled(&mut forces[j], -1.0, ft);
+            // Contact point at +lever_i·n from i and −lever_j·n from j, force ft on
+            // i and −ft on j: both torques are lever·(n × ft).
+            let n_cross_ft = cross3(normal, ft);
+            add_scaled(&mut torques[i], lever_i, n_cross_ft);
+            add_scaled(&mut torques[j], lever_j, n_cross_ft);
         }
+        self.tangential_springs = current;
         for i in 0..n {
             let inv_m = 1.0 / self.particles[i].mass;
             let inv_i = 1.0 / self.particles[i].moment_of_inertia.max(1e-30);
@@ -925,6 +1076,12 @@ pub struct DemSimulation {
     pub contact_model: GranularContactModel,
     /// Effective modulus for Hertz model \[Pa\].
     pub e_eff: f64,
+    /// Tangential spring displacement `δ_t` \[m\] of every persisting contact,
+    /// keyed by the particle pair `(i, j)` with `i < j`.
+    ///
+    /// Advanced by [`step`](Self::step), which drops the pairs that separated.
+    /// Call `tangential_springs.clear()` after reordering or removing particles.
+    pub tangential_springs: BTreeMap<(usize, usize), [f64; 3]>,
 }
 impl DemSimulation {
     /// Create a new `DemSimulation`.
@@ -948,6 +1105,7 @@ impl DemSimulation {
             mu,
             contact_model,
             e_eff,
+            tangential_springs: BTreeMap::new(),
         }
     }
     /// Add a particle to the simulation.
@@ -958,8 +1116,12 @@ impl DemSimulation {
     ///
     /// 1. Clears forces/torques.
     /// 2. Applies gravity.
-    /// 3. Detects contacts and accumulates contact forces.
-    /// 4. Integrates positions and velocities (forward Euler).
+    /// 3. Detects contacts and accumulates the normal forces and the
+    ///    Coulomb-limited tangential forces.  The tangential spring `kt`
+    ///    integrates the sliding velocity of the contact point (translation plus
+    ///    spin, see [`contact_point_relative_velocity`]) per contact pair, so the
+    ///    friction force opposes the slip and its torques spin the particles.
+    /// 4. Integrates positions, velocities and spins (semi-implicit Euler).
     pub fn step(&mut self) {
         let n = self.particles.len();
         let mut forces = vec![[0.0_f64; 3]; n];
@@ -969,6 +1131,8 @@ impl DemSimulation {
                 *fk += self.particles[i].mass * self.gravity[k];
             }
         }
+        let mut previous = std::mem::take(&mut self.tangential_springs);
+        let mut current = BTreeMap::new();
         for i in 0..n {
             for j in (i + 1)..n {
                 let dx = self.particles[j].position[0] - self.particles[i].position[0];
@@ -980,9 +1144,8 @@ impl DemSimulation {
                 if dist >= sum_r || dist < 1e-20 {
                     continue;
                 }
-                let nx = dx / dist;
-                let ny = dy / dist;
-                let nz = dz / dist;
+                // Unit normal from i to j.
+                let normal = [dx / dist, dy / dist, dz / dist];
                 let delta_n = sum_r - dist;
                 let fn_mag = match self.contact_model {
                     GranularContactModel::Hertz | GranularContactModel::Mindlin => {
@@ -991,39 +1154,52 @@ impl DemSimulation {
                     }
                     GranularContactModel::LinearSpring => linear_spring_normal(self.kn, delta_n),
                 };
-                let dvx = self.particles[j].velocity[0] - self.particles[i].velocity[0];
-                let dvy = self.particles[j].velocity[1] - self.particles[i].velocity[1];
-                let dvz = self.particles[j].velocity[2] - self.particles[i].velocity[2];
-                let vn = dvx * nx + dvy * ny + dvz * nz;
+                let (particle_i, particle_j) = (&self.particles[i], &self.particles[j]);
+                let rel_v = [
+                    particle_j.velocity[0] - particle_i.velocity[0],
+                    particle_j.velocity[1] - particle_i.velocity[1],
+                    particle_j.velocity[2] - particle_i.velocity[2],
+                ];
+                let vn = dot3(rel_v, normal);
                 let fn_damp = self.gamma_n * vn;
                 let fn_total = (fn_mag - fn_damp).max(0.0);
-                forces[i][0] -= fn_total * nx;
-                forces[i][1] -= fn_total * ny;
-                forces[i][2] -= fn_total * nz;
-                forces[j][0] += fn_total * nx;
-                forces[j][1] += fn_total * ny;
-                forces[j][2] += fn_total * nz;
-                let vt_x = dvx - vn * nx;
-                let vt_y = dvy - vn * ny;
-                let vt_z = dvz - vn * nz;
-                let delta_t = [vt_x * self.dt, vt_y * self.dt, vt_z * self.dt];
-                let ft = tangential_friction_force(self.kt, delta_t, self.mu, fn_total);
-                forces[i][0] += ft[0];
-                forces[i][1] += ft[1];
-                forces[i][2] += ft[2];
-                forces[j][0] -= ft[0];
-                forces[j][1] -= ft[1];
-                forces[j][2] -= ft[2];
-                let ri = self.particles[i].radius;
-                let rj = self.particles[j].radius;
-                torques[i][0] += ri * (ny * ft[2] - nz * ft[1]);
-                torques[i][1] += ri * (nz * ft[0] - nx * ft[2]);
-                torques[i][2] += ri * (nx * ft[1] - ny * ft[0]);
-                torques[j][0] -= rj * (ny * ft[2] - nz * ft[1]);
-                torques[j][1] -= rj * (nz * ft[0] - nx * ft[2]);
-                torques[j][2] -= rj * (nx * ft[1] - ny * ft[0]);
+                let lever_i = particle_i.radius - 0.5 * delta_n;
+                let lever_j = particle_j.radius - 0.5 * delta_n;
+                let slip = contact_point_relative_velocity(
+                    particle_i.velocity,
+                    particle_j.velocity,
+                    particle_i.angular_velocity,
+                    particle_j.angular_velocity,
+                    lever_i,
+                    lever_j,
+                    normal,
+                );
+                let law = TangentialContactLaw {
+                    kt: self.kt,
+                    gamma_t: 0.0,
+                    mu: self.mu,
+                };
+                let mut spring = previous.remove(&(i, j)).unwrap_or([0.0; 3]);
+                let ft = law.force(
+                    &mut spring,
+                    normal,
+                    tangential_component(slip, normal),
+                    fn_total,
+                    self.dt,
+                );
+                current.insert((i, j), spring);
+                add_scaled(&mut forces[i], -fn_total, normal);
+                add_scaled(&mut forces[j], fn_total, normal);
+                add_scaled(&mut forces[i], 1.0, ft);
+                add_scaled(&mut forces[j], -1.0, ft);
+                // Contact point at +lever_i·n from i and −lever_j·n from j, force
+                // ft on i and −ft on j: both torques are lever·(n × ft).
+                let n_cross_ft = cross3(normal, ft);
+                add_scaled(&mut torques[i], lever_i, n_cross_ft);
+                add_scaled(&mut torques[j], lever_j, n_cross_ft);
             }
         }
+        self.tangential_springs = current;
         let dt = self.dt;
         for i in 0..n {
             let inv_m = 1.0 / self.particles[i].mass;
@@ -1100,11 +1276,96 @@ pub enum ContactModel {
         /// Tangential damping coefficient \[N·s/m\].
         gamma_t: f64,
     },
-    /// Hertzian contact (nonlinear).
+    /// Hertz–Mindlin contact (nonlinear): normal force `(4/3) E* √R* δ^{3/2}`,
+    /// tangential stiffness `k_t = 8 G* √(R* δ)`.
     Hertzian {
         /// Effective Young's modulus E* \[Pa\].
         e_star: f64,
+        /// Effective shear modulus G* \[Pa\]:
+        /// `1/G* = (2 − ν₁)/G₁ + (2 − ν₂)/G₂`.
+        g_star: f64,
         /// Effective radius R* \[m\].
         r_star: f64,
     },
+}
+/// Coulomb-limited tangential contact law with a history spring.
+///
+/// The friction force on particle `i` of a contact is
+/// `F_t = −k_t δ_t − γ_t v_t` with the sliding velocity `v_t` of `i` relative to
+/// `j` (see [`contact_point_relative_velocity`]) and the spring displacement
+/// `δ_t`, which accumulates `v_t Δt` for as long as the contact lasts.  `|F_t|` is
+/// capped at `μ F_n`; during slip the spring is rescaled so that the stored force
+/// stays on the Coulomb cone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TangentialContactLaw {
+    /// Tangential spring stiffness `k_t` \[N/m\].
+    pub kt: f64,
+    /// Tangential damping coefficient `γ_t` \[N·s/m\].
+    pub gamma_t: f64,
+    /// Coulomb friction coefficient `μ`.
+    pub mu: f64,
+}
+impl TangentialContactLaw {
+    /// Advance the spring displacement of one contact by `v_t Δt` and return the
+    /// friction force on particle `i`.
+    ///
+    /// # Arguments
+    /// * `spring` – stored tangential displacement `δ_t` (in/out) \[m\]; it is first
+    ///   carried into the tangent plane of the current `normal` (keeping its
+    ///   length), is left on the Coulomb cone after a slip and is cleared when the
+    ///   contact cannot transmit a tangential force (`μ F_n = 0`).
+    /// * `normal` – unit contact normal (its sign is irrelevant).
+    /// * `v_t`    – tangential sliding velocity of `i` relative to `j` \[m/s\].
+    /// * `fn_mag` – normal force magnitude `F_n ≥ 0` \[N\].
+    /// * `dt`     – time step \[s\].
+    pub fn force(
+        &self,
+        spring: &mut [f64; 3],
+        normal: [f64; 3],
+        v_t: [f64; 3],
+        fn_mag: f64,
+        dt: f64,
+    ) -> [f64; 3] {
+        let kt = self.kt.max(0.0);
+        let gamma_t = self.gamma_t.max(0.0);
+        let limit = self.mu.max(0.0) * fn_mag.max(0.0);
+        if limit <= 0.0 {
+            // Nothing can be transmitted without a normal load (or without
+            // friction): no force, and no history is kept, damper or not.
+            *spring = [0.0; 3];
+            return [0.0; 3];
+        }
+
+        // The contact normal turns during the contact: carry the spring into the
+        // current tangent plane without changing its length.
+        let old_length = dot3(*spring, *spring).sqrt();
+        let projected = tangential_component(*spring, normal);
+        let projected_length = dot3(projected, projected).sqrt();
+        let mut delta = [0.0_f64; 3];
+        if projected_length > 1e-300 {
+            add_scaled(&mut delta, old_length / projected_length, projected);
+        }
+        add_scaled(&mut delta, dt, v_t);
+
+        let mut force = [0.0_f64; 3];
+        add_scaled(&mut force, -kt, delta);
+        add_scaled(&mut force, -gamma_t, v_t);
+        let force_length = dot3(force, force).sqrt();
+        if force_length > limit {
+            // Slip: scale the force onto the cone and move the spring so that
+            // k_t δ_t + γ_t v_t carries the same scale factor.
+            let scale = limit / force_length;
+            let mut slipped = [0.0_f64; 3];
+            if kt > 0.0 {
+                let damping_offset = gamma_t / kt;
+                add_scaled(&mut slipped, scale, delta);
+                add_scaled(&mut slipped, (scale - 1.0) * damping_offset, v_t);
+            }
+            *spring = slipped;
+            return [force[0] * scale, force[1] * scale, force[2] * scale];
+        }
+        // Without a spring there is no history to keep (a pure dashpot).
+        *spring = if kt > 0.0 { delta } else { [0.0; 3] };
+        force
+    }
 }

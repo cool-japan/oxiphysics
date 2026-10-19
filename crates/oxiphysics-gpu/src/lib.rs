@@ -14,6 +14,7 @@ pub mod bvh;
 pub mod cell_list;
 pub mod compute;
 pub mod compute_pipeline;
+pub mod compute_preference;
 pub mod flux_compute;
 pub mod gpu_bench;
 pub mod grid_reduce;

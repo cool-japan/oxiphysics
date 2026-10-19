@@ -13,6 +13,26 @@ use crate::solvers::amg::{
 };
 
 /// Smoothed-aggregation AMG builder.
+///
+/// Two kinds of problems are supported:
+///
+/// * **Scalar** operators (one DOF per node; Poisson-type): the near-null space
+///   is the constant vector.
+/// * **3-D elasticity** (three displacement DOFs per node, ordered
+///   `(u_x, u_y, u_z)` per node): the near-null space is the six rigid-body
+///   modes (three translations, three rotations).  Selected by passing the node
+///   coordinates to [`build`](Self::build).
+///
+/// The hierarchy follows Vaněk, Mandel and Brezina (1996).  At every level the
+/// nodes are aggregated on the node graph; for each aggregate the restriction
+/// of the near-null-space matrix `B` to the aggregate's DOFs is factored
+/// `B_agg = Q R` (thin QR with rank detection).  `Q` becomes the aggregate's
+/// block of the tentative prolongator, and the factor `R` is passed down as the
+/// near-null space of the coarse level, so that `P_tent B_coarse = B` holds
+/// exactly and every level reproduces the rigid-body modes.  Aggregates may
+/// contribute fewer than six coarse DOFs (a single node carries only the three
+/// translations, two nodes five modes), so the coarse levels have a variable
+/// number of DOFs per node.
 #[derive(Debug, Clone)]
 pub struct SmoothedAggregationAmg {
     /// Maximum number of hierarchy levels.
@@ -21,7 +41,9 @@ pub struct SmoothedAggregationAmg {
     pub coarse_cutoff: usize,
     /// Strength-of-connection threshold (default 0.08).
     pub sa_theta: f64,
-    /// Jacobi smoothing factor for prolongator (default 4/3 / rho, computed per level).
+    /// Numerator of the Jacobi prolongator-smoothing factor (default 4/3); the
+    /// damping used at each level is `jacobi_omega / ρ(D⁻¹A)` with the spectral
+    /// radius estimated per level.
     pub jacobi_omega: f64,
 }
 
@@ -44,52 +66,57 @@ impl SmoothedAggregationAmg {
 
     /// Build the SA-AMG hierarchy.
     ///
-    /// `coords` is optional per-node coordinates for 3D elasticity near-null-space.
+    /// `coords` selects the near-null space.  With `None`, or if
+    /// `3 * coords.len() != a.nrows`, the operator is treated as a scalar one
+    /// (constant near-null space, one DOF per node).  With one coordinate per
+    /// node and `a.nrows == 3 * coords.len()` the operator is a 3-D elasticity
+    /// matrix with DOFs ordered `(u_x, u_y, u_z)` per node, and the six
+    /// rigid-body modes generated from the coordinates are the near-null space.
+    ///
+    /// Nodes that have no strong connection (for example DOFs eliminated by
+    /// Dirichlet conditions with an identity row) are not aggregated: their
+    /// rows of the prolongator are zero.
     pub fn build(&self, a: &CsrMatrix, coords: Option<&[[f64; 3]]>) -> AmgHierarchy {
         let mut levels: Vec<AmgLevel> = Vec::new();
         let mut current_a = a.clone();
-        let mut current_coords: Option<Vec<[f64; 3]>> = coords.map(|c| c.to_vec());
+        let (mut node_offsets, mut null_space) = initial_node_structure(a.nrows, coords);
 
         while levels.len() < self.max_levels && current_a.nrows > self.coarse_cutoff {
-            // 1. SA strength of connection
-            let strong = sa_strong_connections(&current_a, self.sa_theta);
-
-            // 2. Greedy aggregation
             let n = current_a.nrows;
-            let aggregate_ids = greedy_aggregate(&strong, n);
-            let n_aggs = aggregate_ids.iter().max().copied().unwrap_or(0) + 1;
+            let n_nodes = node_offsets.len() - 1;
 
-            if n_aggs == 0 || n_aggs >= n {
-                break; // Degenerate — stop coarsening
+            // 1. Node-level strength of connection (Frobenius norm of blocks)
+            let dof_to_node = dof_to_node_map(&node_offsets);
+            let strong =
+                node_strong_connections(&current_a, &node_offsets, &dof_to_node, self.sa_theta);
+
+            // 2. Greedy aggregation of the nodes that have strong connections
+            let node_aggregate = aggregate_connected_nodes(&strong, n_nodes);
+            let n_aggs = node_aggregate
+                .iter()
+                .filter(|&&agg| agg != NO_AGGREGATE)
+                .max()
+                .map_or(0, |&top| top + 1);
+            if n_aggs == 0 {
+                break; // Nothing to aggregate
             }
 
-            // 3. Tentative prolongator
-            let n_dof_per_node = if current_coords.is_some() { 3 } else { 1 };
-            let p_tent = build_tentative_prolongator(
-                &aggregate_ids,
-                n_aggs,
-                n,
-                current_coords.as_deref(),
-                n_dof_per_node,
-            );
-
-            if p_tent.ncols == 0 {
-                break; // Nothing to coarsen to
+            // 3. Tentative prolongator and coarse near-null space (thin QR)
+            let tent =
+                build_tentative_prolongator(&node_aggregate, n_aggs, &node_offsets, &null_space);
+            let n_coarse = tent.p.ncols;
+            if n_coarse == 0 || n_coarse >= n {
+                break; // Degenerate: coarsening would not reduce the problem
             }
 
             // 4. Jacobi-smoothed prolongator
             let rho = power_iteration_spectral_radius(&current_a, 20);
-            let omega = 4.0 / (3.0 * rho.max(1e-10));
-            let p = jacobi_smooth_prolongator(&current_a, &p_tent, omega);
+            let omega = self.jacobi_omega / rho.max(1e-10);
+            let p = jacobi_smooth_prolongator(&current_a, &tent.p, omega);
             let pt = csr_transpose(&p);
 
             // 5. Galerkin coarse operator
             let a_coarse = galerkin_coarse(&current_a, &p);
-
-            // 6. Coarsen coordinates
-            let coarse_coords = current_coords
-                .as_deref()
-                .map(|coords_slice| aggregate_centroids(&aggregate_ids, n_aggs, coords_slice));
 
             let diag = extract_diagonal(&current_a);
             levels.push(AmgLevel {
@@ -100,7 +127,8 @@ impl SmoothedAggregationAmg {
             });
 
             current_a = a_coarse;
-            current_coords = coarse_coords;
+            node_offsets = tent.coarse_node_offsets;
+            null_space = tent.coarse_null_space;
         }
 
         // Final coarse level
@@ -150,100 +178,300 @@ pub fn sa_strong_connections(a: &CsrMatrix, theta: f64) -> Vec<Vec<usize>> {
     strong
 }
 
-/// Build the tentative prolongator from aggregate assignments.
-///
-/// For each aggregate, collect the node DOFs and compute near-null-space vectors.
-/// The tentative prolongator is block-diagonal over aggregates.
-fn build_tentative_prolongator(
-    aggregate_ids: &[usize],
-    n_aggs: usize,
-    n_fine: usize,
-    coords: Option<&[[f64; 3]]>,
-    n_dof_per_node: usize,
-) -> CsrMatrix {
-    // For scalar case, n_dof_per_node = 1.
-    // Coarse DOF count = n_aggs * n_rbm_per_agg
-    // For simplicity, use n_dof_per_node = 1 always for scalar (1 mode per agg).
-    let n_modes = if n_dof_per_node == 3 { 6 } else { 1 };
+/// Marker for a node that belongs to no aggregate.
+const NO_AGGREGATE: usize = usize::MAX;
 
-    // Group nodes by aggregate
-    let mut agg_nodes: Vec<Vec<usize>> = vec![Vec::new(); n_aggs];
-    for (i, &agg) in aggregate_ids.iter().enumerate() {
-        agg_nodes[agg].push(i);
-    }
+/// Near-null-space matrix `B` (rows = DOFs, `k` columns) stored row-major.
+#[derive(Debug, Clone)]
+struct NullSpace {
+    /// Number of near-null-space vectors.
+    k: usize,
+    /// `values[dof * k + c]` is the entry of vector `c` at DOF `dof`.
+    values: Vec<f64>,
+}
 
-    // Compute near-null-space vectors per aggregate and build columns of P_tent
-    // P_tent is (n_fine) x (n_aggs * n_modes)
-    // Row i, column (agg * n_modes + m) = <node i's contribution to mode m of agg>
+/// Tentative prolongator together with the coarse-level node structure.
+struct TentativeProlongator {
+    /// `P_tent` (`n_fine × n_coarse`) with orthonormal columns per aggregate.
+    p: CsrMatrix,
+    /// DOF offsets of the coarse nodes (one per non-empty aggregate).
+    coarse_node_offsets: Vec<usize>,
+    /// Near-null space of the coarse level: the `R` factors of the QR steps.
+    coarse_null_space: NullSpace,
+}
 
-    let n_coarse = n_aggs * n_modes;
-    let mut row_offsets = vec![0usize; n_fine + 1];
-    let mut col_indices: Vec<usize> = Vec::new();
-    let mut values: Vec<f64> = Vec::new();
-
-    for i in 0..n_fine {
-        let agg = aggregate_ids[i];
-        let nodes_in_agg = &agg_nodes[agg];
-
-        // Find position of node i within the aggregate
-        let local_idx = nodes_in_agg.iter().position(|&nd| nd == i).unwrap_or(0);
-
-        // Get near-null-space vectors for this aggregate
-        let node_coords: Vec<[f64; 3]> = if let Some(c) = coords {
-            nodes_in_agg.iter().map(|&nd| c[nd]).collect()
-        } else {
-            nodes_in_agg
-                .iter()
-                .enumerate()
-                .map(|(k, _)| [k as f64, 0.0, 0.0])
-                .collect()
-        };
-
-        let rbms = rigid_body_modes_3d(&node_coords, n_dof_per_node);
-        let actual_modes = rbms.len().min(n_modes);
-
-        // Each RBM vector has length n_nodes_in_agg * n_dof_per_node
-        // For node i (local_idx), its contribution to mode m is rbms[m][local_idx * n_dof_per_node..]
-        // For scalar (n_dof_per_node=1): rbms[0][local_idx]
-        for m in 0..actual_modes {
-            let entry_start = local_idx * n_dof_per_node;
-            // For scalar, just use rbms[m][local_idx]
-            if n_dof_per_node == 1 {
-                let val = if m < rbms.len() && entry_start < rbms[m].len() {
-                    rbms[m][entry_start]
-                } else {
-                    0.0
-                };
-                if val.abs() > 1e-300 {
-                    col_indices.push(agg * n_modes + m);
-                    values.push(val);
+/// DOF offsets of the nodes and the near-null space of the finest level.
+fn initial_node_structure(n: usize, coords: Option<&[[f64; 3]]>) -> (Vec<usize>, NullSpace) {
+    if let Some(c) = coords
+        && !c.is_empty()
+        && 3 * c.len() == n
+    {
+        // Rigid-body modes of the whole mesh, orthonormalised; dependent
+        // modes (planar or collinear node sets) have been removed.
+        let modes = rigid_body_modes_3d(c, 3);
+        if !modes.is_empty() {
+            let k = modes.len();
+            let mut values = vec![0.0_f64; n * k];
+            for (col, mode) in modes.iter().enumerate() {
+                for (dof, &entry) in mode.iter().enumerate() {
+                    values[dof * k + col] = entry;
                 }
-            } else {
-                // For 3D elasticity: each DOF of node i contributes to a column
-                // But we're treating fine DOFs as nodes here (scalar indexing)
-                // In general: fine DOF index = node * 3 + dof_component
-                // For now, handle scalar assumption
-                let val = if m < rbms.len() && entry_start < rbms[m].len() {
-                    rbms[m][entry_start]
-                } else {
-                    0.0
-                };
-                if val.abs() > 1e-300 {
-                    col_indices.push(agg * n_modes + m);
-                    values.push(val);
+            }
+            let node_offsets = (0..=c.len()).map(|node| 3 * node).collect();
+            return (node_offsets, NullSpace { k, values });
+        }
+    }
+    let node_offsets = (0..=n).collect();
+    (
+        node_offsets,
+        NullSpace {
+            k: 1,
+            values: vec![1.0; n],
+        },
+    )
+}
+
+/// Node index of every DOF, from the node DOF offsets.
+fn dof_to_node_map(node_offsets: &[usize]) -> Vec<usize> {
+    let n_dofs = node_offsets.last().copied().unwrap_or(0);
+    let mut map = vec![0usize; n_dofs];
+    for (node, window) in node_offsets.windows(2).enumerate() {
+        for entry in &mut map[window[0]..window[1]] {
+            *entry = node;
+        }
+    }
+    map
+}
+
+/// Node-level strength of connection for a matrix whose DOFs are grouped into
+/// nodes (`node_offsets`).
+///
+/// Node `J` is strongly connected to node `I` if
+/// `‖A_IJ‖_F² ≥ θ² ‖A_II‖_F ‖A_JJ‖_F`, the block analogue of the scalar test of
+/// [`sa_strong_connections`].  Neighbour lists are sorted by node index.
+fn node_strong_connections(
+    a: &CsrMatrix,
+    node_offsets: &[usize],
+    dof_to_node: &[usize],
+    theta: f64,
+) -> Vec<Vec<usize>> {
+    let n_nodes = node_offsets.len() - 1;
+    let theta_sq = theta * theta;
+    let row_range = |row: usize| a.row_offsets[row]..a.row_offsets[row + 1];
+
+    let mut diag_block_norm = vec![0.0_f64; n_nodes];
+    for (node, window) in node_offsets.windows(2).enumerate() {
+        let mut sum_sq = 0.0;
+        for row in window[0]..window[1] {
+            for k in row_range(row) {
+                if dof_to_node[a.col_indices[k]] == node {
+                    sum_sq += a.values[k] * a.values[k];
                 }
             }
         }
-
-        row_offsets[i + 1] = col_indices.len();
+        diag_block_norm[node] = sum_sq.sqrt();
     }
 
-    CsrMatrix {
-        nrows: n_fine,
-        ncols: n_coarse,
-        row_offsets,
-        col_indices,
-        values,
+    let mut strong = vec![Vec::new(); n_nodes];
+    let mut block_sq = vec![0.0_f64; n_nodes];
+    let mut stamp = vec![usize::MAX; n_nodes];
+    let mut touched: Vec<usize> = Vec::new();
+    for (node, window) in node_offsets.windows(2).enumerate() {
+        for row in window[0]..window[1] {
+            for k in row_range(row) {
+                let other = dof_to_node[a.col_indices[k]];
+                if other == node {
+                    continue;
+                }
+                if stamp[other] != node {
+                    stamp[other] = node;
+                    block_sq[other] = 0.0;
+                    touched.push(other);
+                }
+                block_sq[other] += a.values[k] * a.values[k];
+            }
+        }
+        touched.sort_unstable();
+        for &other in &touched {
+            if block_sq[other] > 0.0
+                && block_sq[other] >= theta_sq * diag_block_norm[node] * diag_block_norm[other]
+            {
+                strong[node].push(other);
+            }
+        }
+        touched.clear();
+    }
+    strong
+}
+
+/// Greedy aggregation of the nodes that have at least one strong connection.
+///
+/// Returns the aggregate id of every node, or [`NO_AGGREGATE`] for isolated
+/// nodes (no strong neighbour, typically DOFs eliminated by an identity row).
+fn aggregate_connected_nodes(strong: &[Vec<usize>], n_nodes: usize) -> Vec<usize> {
+    let mut compact = vec![NO_AGGREGATE; n_nodes];
+    let mut active: Vec<usize> = Vec::new();
+    for (node, neighbours) in strong.iter().enumerate() {
+        if !neighbours.is_empty() {
+            compact[node] = active.len();
+            active.push(node);
+        }
+    }
+    if active.is_empty() {
+        return vec![NO_AGGREGATE; n_nodes];
+    }
+    let compact_strong: Vec<Vec<usize>> = active
+        .iter()
+        .map(|&node| {
+            strong[node]
+                .iter()
+                .map(|&other| compact[other])
+                .filter(|&c| c != NO_AGGREGATE)
+                .collect()
+        })
+        .collect();
+    let compact_aggregate = greedy_aggregate(&compact_strong, active.len());
+    let mut aggregate = vec![NO_AGGREGATE; n_nodes];
+    for (c, &node) in active.iter().enumerate() {
+        aggregate[node] = compact_aggregate[c];
+    }
+    aggregate
+}
+
+/// Thin QR factorisation `B = Q R` with rank detection, by modified
+/// Gram-Schmidt with one re-orthogonalisation pass.
+///
+/// `columns` are the `k` columns of `B` (each of length `m`).  Returns the `r`
+/// orthonormal columns of `Q` (each of length `m`) and the `r × k` factor `R`
+/// (`R[i][c]` is the coefficient of `Q[i]` in column `c`).  A column whose
+/// component outside the span of the previous ones is below `1e-10` of its own
+/// norm is dependent and contributes no `Q` column (so `r ≤ min(m, k)`).
+fn thin_qr(columns: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    const RANK_TOLERANCE: f64 = 1.0e-10;
+    let k = columns.len();
+    let mut q: Vec<Vec<f64>> = Vec::with_capacity(k);
+    let mut r: Vec<Vec<f64>> = Vec::with_capacity(k);
+    for (c, column) in columns.iter().enumerate() {
+        let original_norm = column.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let mut v = column.clone();
+        let mut coefficients = vec![0.0_f64; q.len()];
+        for _pass in 0..2 {
+            for (qi, coefficient) in q.iter().zip(coefficients.iter_mut()) {
+                let projection: f64 = qi.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
+                for (vj, qj) in v.iter_mut().zip(qi.iter()) {
+                    *vj -= projection * qj;
+                }
+                *coefficient += projection;
+            }
+        }
+        for (row, coefficient) in r.iter_mut().zip(coefficients.iter()) {
+            row[c] = *coefficient;
+        }
+        let residual = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if original_norm > 0.0 && residual > RANK_TOLERANCE * original_norm {
+            for entry in v.iter_mut() {
+                *entry /= residual;
+            }
+            let mut row = vec![0.0_f64; k];
+            row[c] = residual;
+            q.push(v);
+            r.push(row);
+        }
+    }
+    (q, r)
+}
+
+/// Build the tentative prolongator from the node aggregates.
+///
+/// For every aggregate the rows of the near-null-space matrix `B` belonging to
+/// its DOFs are factored `B_agg = Q R` ([`thin_qr`]); the orthonormal `Q` forms
+/// the aggregate's block of `P_tent`, whose columns are numbered consecutively
+/// over the aggregates, and the rows of `R` become the rows of the coarse
+/// near-null space, so that `P_tent B_coarse = B` on the aggregated nodes.
+/// Each aggregate with `r > 0` becomes one coarse node of `r` DOFs.  DOFs of
+/// nodes without an aggregate have empty rows.
+fn build_tentative_prolongator(
+    node_aggregate: &[usize],
+    n_aggs: usize,
+    node_offsets: &[usize],
+    null_space: &NullSpace,
+) -> TentativeProlongator {
+    let n_fine = node_offsets.last().copied().unwrap_or(0);
+    let k = null_space.k;
+
+    let mut agg_nodes: Vec<Vec<usize>> = vec![Vec::new(); n_aggs];
+    for (node, &agg) in node_aggregate.iter().enumerate() {
+        if agg != NO_AGGREGATE {
+            agg_nodes[agg].push(node);
+        }
+    }
+
+    let mut agg_dofs: Vec<Vec<usize>> = Vec::with_capacity(n_aggs);
+    let mut agg_q: Vec<Vec<Vec<f64>>> = Vec::with_capacity(n_aggs);
+    let mut agg_first_col: Vec<usize> = Vec::with_capacity(n_aggs);
+    let mut coarse_node_offsets: Vec<usize> = vec![0];
+    let mut coarse_values: Vec<f64> = Vec::new();
+    let mut n_coarse = 0usize;
+    for nodes in &agg_nodes {
+        let dofs: Vec<usize> = nodes
+            .iter()
+            .flat_map(|&node| node_offsets[node]..node_offsets[node + 1])
+            .collect();
+        let columns: Vec<Vec<f64>> = (0..k)
+            .map(|c| {
+                dofs.iter()
+                    .map(|&dof| null_space.values[dof * k + c])
+                    .collect()
+            })
+            .collect();
+        let (q, r) = thin_qr(&columns);
+        agg_first_col.push(n_coarse);
+        if !q.is_empty() {
+            n_coarse += q.len();
+            coarse_node_offsets.push(n_coarse);
+            for row in &r {
+                coarse_values.extend_from_slice(row);
+            }
+        }
+        agg_dofs.push(dofs);
+        agg_q.push(q);
+    }
+
+    let mut row_offsets = vec![0usize; n_fine + 1];
+    for (dofs, q) in agg_dofs.iter().zip(agg_q.iter()) {
+        for &dof in dofs {
+            row_offsets[dof + 1] = q.len();
+        }
+    }
+    for i in 0..n_fine {
+        row_offsets[i + 1] += row_offsets[i];
+    }
+    let nnz = row_offsets[n_fine];
+    let mut col_indices = vec![0usize; nnz];
+    let mut values = vec![0.0_f64; nnz];
+    for ((dofs, q), &first_col) in agg_dofs.iter().zip(agg_q.iter()).zip(agg_first_col.iter()) {
+        for (local, &dof) in dofs.iter().enumerate() {
+            let base = row_offsets[dof];
+            for (j, q_col) in q.iter().enumerate() {
+                col_indices[base + j] = first_col + j;
+                values[base + j] = q_col[local];
+            }
+        }
+    }
+
+    TentativeProlongator {
+        p: CsrMatrix {
+            nrows: n_fine,
+            ncols: n_coarse,
+            row_offsets,
+            col_indices,
+            values,
+        },
+        coarse_node_offsets,
+        coarse_null_space: NullSpace {
+            k,
+            values: coarse_values,
+        },
     }
 }
 
@@ -374,6 +602,11 @@ pub fn jacobi_smooth_prolongator(a: &CsrMatrix, p_tent: &CsrMatrix, omega: f64) 
 }
 
 /// Compute aggregate centroids from node coordinates.
+///
+/// `aggregate_ids[i]` is the aggregate of *node* `i` and `coords[i]` its
+/// position (one entry per node, not per DOF).  Nodes with an aggregate id
+/// `>= n_aggs` (for example unaggregated nodes) are ignored, and so are
+/// surplus entries when the two slices differ in length.
 pub fn aggregate_centroids(
     aggregate_ids: &[usize],
     n_aggs: usize,
@@ -382,10 +615,13 @@ pub fn aggregate_centroids(
     let mut centroids = vec![[0.0f64; 3]; n_aggs];
     let mut counts = vec![0usize; n_aggs];
 
-    for (i, &agg) in aggregate_ids.iter().enumerate() {
-        centroids[agg][0] += coords[i][0];
-        centroids[agg][1] += coords[i][1];
-        centroids[agg][2] += coords[i][2];
+    for (&agg, coord) in aggregate_ids.iter().zip(coords.iter()) {
+        if agg >= n_aggs {
+            continue;
+        }
+        centroids[agg][0] += coord[0];
+        centroids[agg][1] += coord[1];
+        centroids[agg][2] += coord[2];
         counts[agg] += 1;
     }
 
@@ -457,8 +693,6 @@ mod tests {
     }
 
     #[test]
-    // slow test — run with --include-ignored
-    #[ignore]
     fn test_sa_build_converges() {
         // 64-node 1D problem
         let n = 64;
@@ -485,6 +719,21 @@ mod tests {
     }
 
     #[test]
+    fn test_aggregate_centroids_ignores_unaggregated_and_surplus_nodes() {
+        let coords = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 3.0, 0.0],
+            [9.0, 9.0, 9.0],
+        ];
+        // Node 3 is unaggregated; the id list is longer than the coordinates.
+        let ids = [0, 0, 1, NO_AGGREGATE, 1, 0];
+        let centroids = aggregate_centroids(&ids, 2, &coords);
+        assert_eq!(centroids[0], [1.0, 0.0, 0.0]);
+        assert_eq!(centroids[1], [0.0, 3.0, 0.0]);
+    }
+
+    #[test]
     fn test_power_iteration_simple() {
         // For a diagonal matrix with values [2, 4, 6], spectral radius of D^{-1}A = 1.0
         let a = CsrMatrix {
@@ -500,5 +749,418 @@ mod tests {
             (rho - 1.0).abs() < 0.1,
             "Spectral radius of identity should be ~1.0, got {rho}"
         );
+    }
+
+    // ── Block (elasticity) near-null-space tests ─────────────────────────────
+
+    use crate::assembly::{apply_dirichlet_bc, assemble_stiffness};
+    use crate::constitutive::LinearElasticMaterial;
+    use crate::mesh::TetrahedralMesh;
+    use crate::parallel_solver::{ParallelPcgSolver, PcgWithPrecond};
+    use crate::solvers::CholeskyDense;
+    use crate::solvers::amg::preconditioner::AmgPreconditioner;
+
+    /// Convert the assembler's CSR format to the AMG module's CSR format.
+    fn to_parallel_csr(k: &crate::sparse::CsrMatrix) -> CsrMatrix {
+        CsrMatrix {
+            nrows: k.nrows,
+            ncols: k.ncols,
+            row_offsets: k.row_ptr.clone(),
+            col_indices: k.col_indices.clone(),
+            values: k.values.clone(),
+        }
+    }
+
+    /// Linear-elasticity stiffness matrix of the unit cube meshed with
+    /// `cells³` hexahedral cells (5 tetrahedra each), with node coordinates.
+    /// If `clamp_bottom`, all DOFs of the `z = 0` face are eliminated by
+    /// identity rows (the matrix keeps its size `3 · n_nodes`).
+    fn cube_elasticity(cells: usize, clamp_bottom: bool) -> (CsrMatrix, Vec<[f64; 3]>, Vec<usize>) {
+        let mesh = TetrahedralMesh::generate_beam(1.0, 1.0, 1.0, cells, cells, cells);
+        let material = LinearElasticMaterial::new(1.0e3, 0.3);
+        let mut k = assemble_stiffness(&mesh, &material);
+        let coords: Vec<[f64; 3]> = mesh.nodes.iter().map(|p| [p.x, p.y, p.z]).collect();
+        let mut fixed: Vec<usize> = Vec::new();
+        if clamp_bottom {
+            for (node, c) in coords.iter().enumerate() {
+                if c[2] == 0.0 {
+                    fixed.extend([3 * node, 3 * node + 1, 3 * node + 2]);
+                }
+            }
+            let mut f = vec![0.0_f64; k.nrows];
+            apply_dirichlet_bc(&mut k, &mut f, &fixed).expect("fixed DOFs are in range");
+        }
+        (to_parallel_csr(&k), coords, fixed)
+    }
+
+    fn dense_row(a: &CsrMatrix, i: usize) -> Vec<(usize, f64)> {
+        (a.row_offsets[i]..a.row_offsets[i + 1])
+            .map(|k| (a.col_indices[k], a.values[k]))
+            .collect()
+    }
+
+    /// Least-squares residual `‖b − P c‖ / ‖b‖` of the best `c` (normal equations).
+    fn range_residual(p: &CsrMatrix, b: &[f64]) -> f64 {
+        let nc = p.ncols;
+        let mut gram = vec![0.0_f64; nc * nc];
+        let mut rhs = vec![0.0_f64; nc];
+        for (i, &b_i) in b.iter().enumerate().take(p.nrows) {
+            let row = dense_row(p, i);
+            for &(c1, v1) in &row {
+                rhs[c1] += v1 * b_i;
+                for &(c2, v2) in &row {
+                    gram[c1 * nc + c2] += v1 * v2;
+                }
+            }
+        }
+        let chol = CholeskyDense::new(nc);
+        let factor = chol.factorize(&gram).expect("P has full column rank");
+        let coeff = chol.solve(&factor, &rhs);
+        let mut res_sq = 0.0;
+        for (i, &b_i) in b.iter().enumerate().take(p.nrows) {
+            let fit: f64 = dense_row(p, i).iter().map(|&(c, v)| v * coeff[c]).sum();
+            res_sq += (b_i - fit).powi(2);
+        }
+        res_sq.sqrt() / b.iter().map(|v| v * v).sum::<f64>().sqrt()
+    }
+
+    #[test]
+    fn test_thin_qr_reproduces_columns_and_drops_dependent_ones() {
+        // Columns: a, b, a + 2b (dependent), a zero column, and a new direction.
+        let a = vec![1.0, 2.0, 0.0, 1.0];
+        let b = vec![0.0, 1.0, 1.0, -1.0];
+        let dep: Vec<f64> = a.iter().zip(b.iter()).map(|(x, y)| x + 2.0 * y).collect();
+        let zero = vec![0.0; 4];
+        let fresh = vec![1.0, 0.0, 0.0, 0.0];
+        let columns = vec![a, b, dep, zero, fresh];
+        let (q, r) = thin_qr(&columns);
+        assert_eq!(q.len(), 3, "rank of the column set is 3");
+        assert_eq!(r.len(), 3);
+        for i in 0..3 {
+            for j in 0..3 {
+                let d: f64 = q[i].iter().zip(q[j].iter()).map(|(x, y)| x * y).sum();
+                let want = if i == j { 1.0 } else { 0.0 };
+                assert!((d - want).abs() < 1e-14, "Q^T Q[{i}][{j}] = {d}");
+            }
+        }
+        for (c, column) in columns.iter().enumerate() {
+            for row in 0..4 {
+                let rebuilt: f64 = (0..3).map(|i| q[i][row] * r[i][c]).sum();
+                assert!(
+                    (rebuilt - column[row]).abs() < 1e-13,
+                    "column {c}, row {row}: {rebuilt} vs {}",
+                    column[row]
+                );
+            }
+        }
+        // R is upper triangular: q_i does not appear in columns before it.
+        assert_eq!(r[2][0], 0.0);
+        assert_eq!(r[2][1], 0.0);
+        assert_eq!(r[1][0], 0.0);
+    }
+
+    #[test]
+    fn test_node_strong_connections_use_block_frobenius_norms() {
+        // Three nodes with 2 DOFs each: nodes 0-1 coupled strongly, 1-2 weakly.
+        let mut triplets: Vec<(usize, usize, f64)> = Vec::new();
+        for dof in 0..6 {
+            triplets.push((dof, dof, 4.0));
+        }
+        for (r, c, v) in [(0, 2, -1.0), (1, 3, -1.0), (2, 0, -1.0), (3, 1, -1.0)] {
+            triplets.push((r, c, v));
+        }
+        for (r, c, v) in [(2, 4, -0.01), (3, 5, -0.01), (4, 2, -0.01), (5, 3, -0.01)] {
+            triplets.push((r, c, v));
+        }
+        let mut row_offsets = vec![0usize; 7];
+        let mut col_indices = Vec::new();
+        let mut values = Vec::new();
+        for row in 0..6 {
+            let mut entries: Vec<(usize, f64)> = triplets
+                .iter()
+                .filter(|t| t.0 == row)
+                .map(|t| (t.1, t.2))
+                .collect();
+            entries.sort_by_key(|e| e.0);
+            for (c, v) in entries {
+                col_indices.push(c);
+                values.push(v);
+            }
+            row_offsets[row + 1] = col_indices.len();
+        }
+        let a = CsrMatrix {
+            nrows: 6,
+            ncols: 6,
+            row_offsets,
+            col_indices,
+            values,
+        };
+        let node_offsets = vec![0, 2, 4, 6];
+        let dof_to_node = dof_to_node_map(&node_offsets);
+        assert_eq!(dof_to_node, vec![0, 0, 1, 1, 2, 2]);
+        let strong = node_strong_connections(&a, &node_offsets, &dof_to_node, 0.08);
+        // ||A_01||_F^2 = 2, ||A_00||_F = ||A_11||_F = ||A_22||_F = sqrt(32):
+        // 2 >= 0.0064 * sqrt(32) * sqrt(32); ||A_12||_F^2 = 2e-4 < 0.0064 * 32.
+        assert_eq!(strong, vec![vec![1], vec![0], vec![]]);
+        let aggregate = aggregate_connected_nodes(&strong, 3);
+        assert_eq!(aggregate[0], aggregate[1]);
+        assert_eq!(
+            aggregate[2], NO_AGGREGATE,
+            "an isolated node is not aggregated"
+        );
+    }
+
+    #[test]
+    fn test_tentative_prolongator_reproduces_the_near_null_space() {
+        // 5 nodes with 3 DOFs, rigid-body modes from coordinates, two aggregates.
+        let coords: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.2],
+            [0.3, 0.2, 1.0],
+            [1.2, 1.1, 0.9],
+        ];
+        let (node_offsets, null_space) = initial_node_structure(15, Some(&coords));
+        assert_eq!(null_space.k, 6);
+        let node_aggregate = vec![0, 0, 0, 1, 1];
+        let tent = build_tentative_prolongator(&node_aggregate, 2, &node_offsets, &null_space);
+        // Aggregate 0 has three non-collinear nodes (rank 6), aggregate 1 two
+        // nodes (rank 5: the rotation about their connecting line vanishes).
+        assert_eq!(tent.p.nrows, 15);
+        assert_eq!(tent.p.ncols, 11);
+        assert_eq!(tent.coarse_node_offsets, vec![0, 6, 11]);
+        assert_eq!(tent.coarse_null_space.k, 6);
+        assert_eq!(tent.coarse_null_space.values.len(), 11 * 6);
+        // P_tent B_coarse = B exactly.
+        for dof in 0..15 {
+            for c in 0..6 {
+                let mut sum = 0.0;
+                for (col, value) in dense_row(&tent.p, dof) {
+                    sum += value * tent.coarse_null_space.values[col * 6 + c];
+                }
+                assert!(
+                    (sum - null_space.values[dof * 6 + c]).abs() < 1e-13,
+                    "dof {dof}, mode {c}: {sum} vs {}",
+                    null_space.values[dof * 6 + c]
+                );
+            }
+        }
+        // Orthonormal columns: P_tent^T P_tent = I.
+        for c1 in 0..11 {
+            for c2 in 0..11 {
+                let mut dot = 0.0;
+                for dof in 0..15 {
+                    let row = dense_row(&tent.p, dof);
+                    let v1 = row.iter().find(|e| e.0 == c1).map_or(0.0, |e| e.1);
+                    let v2 = row.iter().find(|e| e.0 == c2).map_or(0.0, |e| e.1);
+                    dot += v1 * v2;
+                }
+                let want = if c1 == c2 { 1.0 } else { 0.0 };
+                assert!((dot - want).abs() < 1e-13, "PtP[{c1}][{c2}] = {dot}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_scalar_tentative_prolongator_is_normalised_piecewise_constant() {
+        let (node_offsets, null_space) = initial_node_structure(7, None);
+        assert_eq!(null_space.k, 1);
+        let node_aggregate = vec![0, 0, 0, 1, 1, NO_AGGREGATE, 2];
+        let tent = build_tentative_prolongator(&node_aggregate, 3, &node_offsets, &null_space);
+        assert_eq!(tent.p.ncols, 3);
+        assert_eq!(tent.coarse_node_offsets, vec![0, 1, 2, 3]);
+        let s3 = 1.0 / 3.0_f64.sqrt();
+        let s2 = 1.0 / 2.0_f64.sqrt();
+        let expected = [
+            vec![(0, s3)],
+            vec![(0, s3)],
+            vec![(0, s3)],
+            vec![(1, s2)],
+            vec![(1, s2)],
+            vec![],
+            vec![(2, 1.0)],
+        ];
+        for (i, want) in expected.iter().enumerate() {
+            let got = dense_row(&tent.p, i);
+            assert_eq!(got.len(), want.len(), "row {i}");
+            for (g, w) in got.iter().zip(want.iter()) {
+                assert_eq!(g.0, w.0);
+                assert!((g.1 - w.1).abs() < 1e-14, "row {i}: {} vs {}", g.1, w.1);
+            }
+        }
+        // The coarse "constant" is sqrt(aggregate size): P_tent B_c = 1.
+        let b_c = &tent.coarse_null_space.values;
+        assert!((b_c[0] - 3.0_f64.sqrt()).abs() < 1e-14);
+        assert!((b_c[1] - 2.0_f64.sqrt()).abs() < 1e-14);
+        assert!((b_c[2] - 1.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_sa_elasticity_prolongators_reproduce_rigid_body_modes_on_every_level() {
+        // Free-floating cube: A B = 0 exactly, so every smoothed prolongator
+        // keeps the (coarse) rigid-body modes in its range.  Seeing the six
+        // fine-level modes in the range of P_0 P_1 requires that the coarse
+        // near-null space R of level 0 was carried to level 1.
+        let (a, coords, _) = cube_elasticity(6, false);
+        assert_eq!(a.nrows, 3 * coords.len());
+        let sa = SmoothedAggregationAmg {
+            coarse_cutoff: 80,
+            ..SmoothedAggregationAmg::new()
+        };
+        let hier = sa.build(&a, Some(&coords));
+        assert!(hier.levels.len() >= 3, "levels: {}", hier.levels.len());
+        let modes = rigid_body_modes_3d(&coords, 3);
+        assert_eq!(modes.len(), 6);
+        let p0 = &hier.levels[0].p;
+        let composite = spmm(p0, &hier.levels[1].p);
+        for (m, mode) in modes.iter().enumerate() {
+            let r0 = range_residual(p0, mode);
+            assert!(r0 < 1e-9, "mode {m} not in range(P0): residual {r0}");
+            let r01 = range_residual(&composite, mode);
+            assert!(r01 < 1e-9, "mode {m} not in range(P0 P1): residual {r01}");
+        }
+    }
+
+    #[test]
+    fn test_sa_elasticity_path_is_taken_with_six_dofs_per_coarse_node() {
+        let (a, coords, _) = cube_elasticity(5, false);
+        let sa = SmoothedAggregationAmg::new();
+        let hier = sa.build(&a, Some(&coords));
+        assert!(hier.levels.len() >= 2);
+        // Recompute the first-level aggregation independently.
+        let node_offsets: Vec<usize> = (0..=coords.len()).map(|i| 3 * i).collect();
+        let dof_to_node = dof_to_node_map(&node_offsets);
+        let strong = node_strong_connections(&a, &node_offsets, &dof_to_node, sa.sa_theta);
+        let aggregate = aggregate_connected_nodes(&strong, coords.len());
+        let n_aggs = aggregate.iter().max().map_or(0, |m| m + 1);
+        let n_coarse = hier.levels[1].a.nrows;
+        // The scalar path would produce one coarse DOF per (DOF) aggregate.
+        assert_eq!(n_coarse, hier.levels[0].p.ncols);
+        assert!(n_aggs >= 4 && n_aggs * 3 <= n_coarse && n_coarse <= n_aggs * 6);
+        assert!(
+            n_coarse * 10 >= n_aggs * 50,
+            "most aggregates should carry all six rigid-body modes: {n_coarse} coarse DOFs for {n_aggs} aggregates"
+        );
+        assert!(
+            n_coarse < a.nrows / 2,
+            "level 1 has {n_coarse} of {} DOFs",
+            a.nrows
+        );
+    }
+
+    #[test]
+    fn test_sa_elasticity_dirichlet_nodes_get_empty_prolongator_rows() {
+        let (a, coords, fixed) = cube_elasticity(5, true);
+        let sa = SmoothedAggregationAmg::new();
+        let hier = sa.build(&a, Some(&coords));
+        assert!(hier.levels.len() >= 2);
+        let p = &hier.levels[0].p;
+        assert!(!fixed.is_empty());
+        for &dof in &fixed {
+            assert!(
+                dense_row(p, dof).iter().all(|e| e.1 == 0.0),
+                "clamped DOF {dof} must not be interpolated"
+            );
+        }
+        // Every free DOF is interpolated, and the coarse operators are SPD-like.
+        let free_rows_with_entries = (0..p.nrows)
+            .filter(|i| !fixed.contains(i))
+            .filter(|&i| p.row_offsets[i + 1] > p.row_offsets[i])
+            .count();
+        assert_eq!(free_rows_with_entries, p.nrows - fixed.len());
+        for level in &hier.levels {
+            assert!(level.diag.iter().all(|d| *d > 0.0 && d.is_finite()));
+        }
+    }
+
+    #[test]
+    fn test_sa_elasticity_pcg_converges_in_few_iterations() {
+        let (a, coords, _) = cube_elasticity(6, true);
+        let n = a.nrows;
+        // Load: unit force in x on the top face nodes.
+        let mut b = vec![0.0_f64; n];
+        for (node, c) in coords.iter().enumerate() {
+            if c[2] == 1.0 {
+                b[3 * node] = 1.0;
+                b[3 * node + 2] = -0.5;
+            }
+        }
+        let sa = SmoothedAggregationAmg::new();
+        let hierarchy = sa.build(&a, Some(&coords));
+        assert!(hierarchy.levels.len() >= 2);
+        let precond = AmgPreconditioner {
+            hierarchy,
+            cycle_kind: crate::solvers::amg::cycle::CycleKind::V,
+            pcg: ParallelPcgSolver::new(500, 1e-10),
+        };
+        let solver = PcgWithPrecond::new(precond, 100, 1e-8);
+        let mut x = vec![0.0_f64; n];
+        let stats = solver.solve(&a, &b, &mut x);
+        assert!(stats.converged, "PCG+SA-AMG did not converge: {stats:?}");
+        assert!(stats.iterations < 50, "iterations = {}", stats.iterations);
+        // True residual check.
+        let mut ax = vec![0.0_f64; n];
+        a.spmv(&x, &mut ax);
+        let res: f64 = ax
+            .iter()
+            .zip(b.iter())
+            .map(|(p, q)| (p - q).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let b_norm: f64 = b.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!(res / b_norm < 1e-7, "relative residual {}", res / b_norm);
+        // A plain Jacobi-PCG needs many more iterations.
+        let jacobi = ParallelPcgSolver::new(2000, 1e-8);
+        let mut x_j = vec![0.0_f64; n];
+        let jac_stats = jacobi.solve(&a, &b, &mut x_j);
+        assert!(
+            stats.iterations * 3 < jac_stats.iterations,
+            "SA-AMG: {}, Jacobi: {}",
+            stats.iterations,
+            jac_stats.iterations
+        );
+    }
+
+    #[test]
+    fn test_sa_mismatched_coordinates_fall_back_to_the_scalar_path() {
+        let (a, coords, _) = cube_elasticity(4, true);
+        let sa = SmoothedAggregationAmg::new();
+        let scalar = sa.build(&a, None);
+        // One coordinate too few: 3 * len != nrows, so no elasticity path (and
+        // no out-of-bounds indexing, which the old code hit).
+        let short = &coords[..coords.len() - 1];
+        let fallback = sa.build(&a, Some(short));
+        assert_eq!(scalar.levels.len(), fallback.levels.len());
+        for (l1, l2) in scalar.levels.iter().zip(fallback.levels.iter()) {
+            assert_eq!(l1.a.nrows, l2.a.nrows);
+        }
+        let empty: Vec<[f64; 3]> = Vec::new();
+        assert_eq!(sa.build(&a, Some(&empty)).levels.len(), scalar.levels.len());
+    }
+
+    #[test]
+    fn test_sa_jacobi_omega_zero_gives_the_orthonormal_tentative_prolongator() {
+        let a = make_1d_poisson(40);
+        let sa = SmoothedAggregationAmg {
+            coarse_cutoff: 8,
+            jacobi_omega: 0.0,
+            ..SmoothedAggregationAmg::new()
+        };
+        let hier = sa.build(&a, None);
+        let p = &hier.levels[0].p;
+        let nc = p.ncols;
+        for c1 in 0..nc {
+            for c2 in 0..nc {
+                let mut dot = 0.0;
+                for i in 0..p.nrows {
+                    let row = dense_row(p, i);
+                    let v1 = row.iter().find(|e| e.0 == c1).map_or(0.0, |e| e.1);
+                    let v2 = row.iter().find(|e| e.0 == c2).map_or(0.0, |e| e.1);
+                    dot += v1 * v2;
+                }
+                let want = if c1 == c2 { 1.0 } else { 0.0 };
+                assert!((dot - want).abs() < 1e-13, "PtP[{c1}][{c2}] = {dot}");
+            }
+        }
     }
 }

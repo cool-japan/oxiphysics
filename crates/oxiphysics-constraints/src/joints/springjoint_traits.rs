@@ -13,11 +13,13 @@ use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::Vec3;
 use oxiphysics_rigid::RigidBodySet;
 
-use super::functions::{apply_pair_impulse, read_body};
+use super::constraint_math::{SoftRow, spring_softness};
+use super::functions::read_body;
 use super::types::SpringJoint;
 
 impl Constraint for SpringJoint {
-    fn prepare(&mut self, bodies: &RigidBodySet, _dt: f64) {
+    fn prepare(&mut self, bodies: &RigidBodySet, dt: f64) {
+        self.spring_row = SoftRow::inactive();
         let a = match read_body(bodies, self.body_a) {
             Some(p) => p,
             None => return,
@@ -37,32 +39,37 @@ impl Constraint for SpringJoint {
         } else {
             self.direction = Vec3::new(1.0, 0.0, 0.0);
         }
-    }
-    fn solve_velocity(&mut self, bodies: &mut RigidBodySet, dt: f64) {
-        let a = match read_body(bodies, self.body_a) {
-            Some(p) => p,
-            None => return,
-        };
-        let b = match read_body(bodies, self.body_b) {
-            Some(p) => p,
-            None => return,
-        };
+        // Implicit spring-damper: one soft row whose accumulated impulse is the
+        // impulse of the whole step, however many iterations the solver runs.
         let stretch = self.current_distance - self.rest_length;
-        let spring_force = self.stiffness * stretch;
-        let va = a.vel + a.ang_vel.cross(&self.r_a);
-        let vb = b.vel + b.ang_vel.cross(&self.r_b);
-        let rel_v = (vb - va).dot(&self.direction);
-        let damping_force = self.damping * rel_v;
-        let total_force = spring_force + damping_force;
-        let impulse = self.direction * (total_force * dt);
-        apply_pair_impulse(
+        if let Some((gamma, bias_scale)) = spring_softness(self.stiffness, self.damping, dt) {
+            self.spring_row = SoftRow::new(
+                &a,
+                &b,
+                &self.r_a,
+                &self.r_b,
+                self.direction,
+                gamma,
+                stretch * bias_scale,
+            );
+        }
+    }
+    fn solve_velocity(&mut self, bodies: &mut RigidBodySet, _dt: f64) {
+        self.spring_row
+            .iterate(bodies, self.body_a, self.body_b, &self.r_a, &self.r_b, 1.0);
+    }
+    fn solve_velocity_relaxed(&mut self, bodies: &mut RigidBodySet, _dt: f64, omega: f64) -> f64 {
+        self.spring_row.iterate(
             bodies,
             self.body_a,
             self.body_b,
-            impulse,
             &self.r_a,
             &self.r_b,
-        );
+            omega,
+        )
+    }
+    fn residual(&self) -> f64 {
+        self.spring_row.last_update()
     }
     fn solve_position(&mut self, _bodies: &mut RigidBodySet, _dt: f64) {}
     fn body_handles(&self) -> Vec<BodyHandle> {

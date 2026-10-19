@@ -3,6 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
+use crate::random::log_gamma;
 use std::collections::VecDeque;
 
 /// Beta distribution with shape parameters `alpha` and `beta`.
@@ -19,14 +20,14 @@ impl BetaDistribution {
     }
     /// Probability density function evaluated at `x` ∈ (0, 1).
     ///
-    /// The normalisation constant is computed via the log-gamma (Stirling)
-    /// approximation for the beta function.
+    /// The normalisation constant `B(α, β)` is computed from the log-gamma
+    /// function (a Lanczos approximation, relative error about 1e-15).
     pub fn pdf(&self, x: f64) -> f64 {
         if x <= 0.0 || x >= 1.0 {
             return 0.0;
         }
-        let log_b = log_gamma_stirling(self.alpha) + log_gamma_stirling(self.beta)
-            - log_gamma_stirling(self.alpha + self.beta);
+        let log_b =
+            log_gamma(self.alpha) + log_gamma(self.beta) - log_gamma(self.alpha + self.beta);
         ((self.alpha - 1.0) * x.ln() + (self.beta - 1.0) * (1.0 - x).ln() - log_b).exp()
     }
     /// Mean of the distribution: α / (α + β).

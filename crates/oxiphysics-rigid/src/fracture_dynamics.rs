@@ -7,6 +7,7 @@
 //!
 //! All vector math uses `[f64; 3]` arrays — no external linear-algebra crate.
 
+use crate::error::{Error, Result};
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -333,6 +334,9 @@ impl FragmentSet {
             ];
             let pos = v3_add(origin, seed);
             let mut frag = VoronoiFragment::new(i, frag_mass, inertia, pos, seed);
+            // `VoronoiFragment::new` assumes a default density; the fragment's
+            // real volume follows from the density of the body being split.
+            frag.volume = frag_vol;
             // Assign outward velocity along the crack normal (positive side) or opposite
             let side = if crack_plane.is_positive_side(pos) {
                 1.0
@@ -649,13 +653,65 @@ pub struct AggregateBody {
     pub fractured: bool,
     /// Sub-body masses (kg) — one per connected component.
     pub sub_masses: Vec<f64>,
+    /// Material density (kg/m³), used to size the fragments produced when the
+    /// body fractures.
+    pub density: f64,
+    /// Half-extents of the body's bounding box (m), used to spread the
+    /// fragment seeds over the body when it fractures.
+    pub half_extents: [f64; 3],
+    /// Area (m²) of the load-carrying cross-section over which an applied
+    /// force is converted to a nominal stress, see [`AggregateBody::stress`].
+    pub cross_section_area: f64,
 }
 
 impl AggregateBody {
-    /// Create an aggregate body from a total mass and sub-mass list.
-    pub fn new(id: usize, position: [f64; 3], sub_masses: Vec<f64>) -> Self {
+    /// Create an aggregate body.
+    ///
+    /// * `sub_masses` — the mass (kg) of every connected component; their sum
+    ///   is the body's total mass.
+    /// * `density` — material density (kg/m³) of the fragments.
+    /// * `half_extents` — half-extents (m) of the body's bounding box.
+    /// * `cross_section_area` — area (m²) of the load-carrying cross-section
+    ///   that turns an applied force into stress.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NonPositiveMass`] when `sub_masses` is empty or holds a
+    /// non-positive or non-finite mass, and [`Error::General`] when the
+    /// density, a half-extent or the cross-section area is not a positive
+    /// finite number.
+    pub fn new(
+        id: usize,
+        position: [f64; 3],
+        sub_masses: Vec<f64>,
+        density: f64,
+        half_extents: [f64; 3],
+        cross_section_area: f64,
+    ) -> Result<Self> {
+        if sub_masses.is_empty() {
+            return Err(Error::non_positive_mass(0.0));
+        }
+        if let Some(&bad) = sub_masses.iter().find(|m| !(m.is_finite() && **m > 0.0)) {
+            return Err(Error::non_positive_mass(bad));
+        }
+        let positive_finite = |x: f64| x.is_finite() && x > 0.0;
+        if !positive_finite(density) {
+            return Err(Error::general(format!(
+                "aggregate body density must be positive and finite, got {density}"
+            )));
+        }
+        if !half_extents.iter().all(|&h| positive_finite(h)) {
+            return Err(Error::general(format!(
+                "aggregate body half-extents must be positive and finite, got {half_extents:?}"
+            )));
+        }
+        if !positive_finite(cross_section_area) {
+            return Err(Error::general(format!(
+                "aggregate body cross-section area must be positive and finite, got {cross_section_area}"
+            )));
+        }
         let total_mass = sub_masses.iter().sum();
-        Self {
+        Ok(Self {
             id,
             total_mass,
             position,
@@ -664,6 +720,27 @@ impl AggregateBody {
             joints: Vec::new(),
             fractured: false,
             sub_masses,
+            density,
+            half_extents,
+            cross_section_area,
+        })
+    }
+
+    /// Nominal stress (Pa) that `force` (N) produces over the body's
+    /// load-carrying [`cross_section_area`](Self::cross_section_area):
+    /// `σ = |F| / A`.
+    ///
+    /// The stress does not depend on the body's mass.  A zero force never
+    /// stresses the body, and a non-zero force on a section without a positive
+    /// finite area stresses it infinitely.
+    pub fn stress(&self, force: [f64; 3]) -> f64 {
+        let force_mag = v3_norm(force);
+        if force_mag == 0.0 {
+            0.0
+        } else if self.cross_section_area.is_finite() && self.cross_section_area > 0.0 {
+            force_mag / self.cross_section_area
+        } else {
+            f64::INFINITY
         }
     }
 
@@ -748,6 +825,12 @@ impl FractureSimulation {
     /// Step the simulation by `dt` seconds, applying `external_force` to every
     /// body.  Detects fracture events and logs them.
     ///
+    /// The force accelerates each body (`a = g + F / m`).  Its nominal stress
+    /// is `|F| / A`, with `A` the body's
+    /// [`cross_section_area`](AggregateBody::cross_section_area), and a body
+    /// whose stress reaches the threshold has its joints loaded.  The
+    /// fragments of a broken body take its density and bounding-box extents.
+    ///
     /// Returns the number of fracture events that occurred this step.
     pub fn step(
         &mut self,
@@ -762,14 +845,19 @@ impl FractureSimulation {
             if body.fractured {
                 continue;
             }
-            // Semi-implicit Euler: update velocity
-            let dv = v3_scale(self.gravity, dt);
+            // Semi-implicit Euler: gravity and the applied force update the velocity
+            let applied_acceleration = if body.total_mass > 0.0 {
+                v3_scale(external_force, 1.0 / body.total_mass)
+            } else {
+                [0.0; 3]
+            };
+            let dv = v3_scale(v3_add(self.gravity, applied_acceleration), dt);
             body.velocity = v3_add(body.velocity, dv);
             // Update position
             body.position = v3_add(body.position, v3_scale(body.velocity, dt));
 
             let force_mag = v3_norm(external_force);
-            let stress = force_mag / (body.total_mass.max(1e-6) * 0.001); // stress = F/A, assume A=1mm²
+            let stress = body.stress(external_force);
 
             if threshold.is_exceeded(stress) {
                 let torque = [0.0_f64; 3];
@@ -791,8 +879,8 @@ impl FractureSimulation {
                     // Produce fragment set
                     let fset = FragmentSet::voronoi_split(
                         body.total_mass,
-                        2500.0,
-                        [0.1, 0.1, 0.1],
+                        body.density,
+                        body.half_extents,
                         threshold.voronoi_seeds,
                         plane,
                         self.time,
@@ -829,6 +917,12 @@ impl FractureSimulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Aggregate body with a concrete-like density and a 0.2 m cube section.
+    fn aggregate(id: usize, sub_masses: Vec<f64>) -> AggregateBody {
+        AggregateBody::new(id, [0.0; 3], sub_masses, 2500.0, [0.1; 3], 0.04)
+            .expect("valid aggregate body")
+    }
 
     // --- FractureThreshold ---
 
@@ -1156,19 +1250,19 @@ mod tests {
 
     #[test]
     fn aggregate_body_total_mass_correct() {
-        let body = AggregateBody::new(0, [0.0; 3], vec![1.0, 2.0, 3.0]);
+        let body = aggregate(0, vec![1.0, 2.0, 3.0]);
         assert!((body.total_mass - 6.0).abs() < 1e-10);
     }
 
     #[test]
     fn aggregate_body_no_fracture_initially() {
-        let body = AggregateBody::new(0, [0.0; 3], vec![1.0, 1.0]);
+        let body = aggregate(0, vec![1.0, 1.0]);
         assert!(!body.fractured);
     }
 
     #[test]
     fn aggregate_body_joints_break_on_force() {
-        let mut body = AggregateBody::new(0, [0.0; 3], vec![1.0, 1.0]);
+        let mut body = aggregate(0, vec![1.0, 1.0]);
         let joint = BreakableJoint::new(0, 0, 1, 10.0, 10.0, 1e9);
         body.add_joint(joint);
         let broke = body.apply_force_step([100.0, 0.0, 0.0], [0.0; 3], 0.01);
@@ -1178,7 +1272,7 @@ mod tests {
 
     #[test]
     fn aggregate_body_fractured_when_all_joints_break() {
-        let mut body = AggregateBody::new(0, [0.0; 3], vec![1.0, 1.0]);
+        let mut body = aggregate(0, vec![1.0, 1.0]);
         let j1 = BreakableJoint::new(0, 0, 1, 10.0, 10.0, 1e9);
         let j2 = BreakableJoint::new(1, 1, 0, 10.0, 10.0, 1e9);
         body.add_joint(j1);
@@ -1189,7 +1283,7 @@ mod tests {
 
     #[test]
     fn aggregate_body_ke_positive_when_moving() {
-        let mut body = AggregateBody::new(0, [0.0; 3], vec![2.0]);
+        let mut body = aggregate(0, vec![2.0]);
         body.velocity = [3.0, 0.0, 0.0];
         // KE = 0.5 * 2 * 9 = 9
         assert!((body.kinetic_energy() - 9.0).abs() < 1e-10);
@@ -1200,7 +1294,7 @@ mod tests {
     #[test]
     fn fracture_simulation_no_event_below_threshold() {
         let mut sim = FractureSimulation::new();
-        let body = AggregateBody::new(0, [0.0; 3], vec![1.0]);
+        let body = aggregate(0, vec![1.0]);
         sim.add_body(body);
         let threshold = FractureThreshold::glass();
         // Very small force — well below glass 50 MPa threshold
@@ -1211,7 +1305,7 @@ mod tests {
     #[test]
     fn fracture_simulation_event_above_threshold() {
         let mut sim = FractureSimulation::new();
-        let mut body = AggregateBody::new(0, [0.0; 3], vec![1.0, 1.0]);
+        let mut body = aggregate(0, vec![1.0, 1.0]);
         let joint = BreakableJoint::new(0, 0, 1, 0.001, 1e9, 1e9); // very low threshold
         body.add_joint(joint);
         sim.add_body(body);
@@ -1232,7 +1326,7 @@ mod tests {
     #[test]
     fn fracture_simulation_fragments_produced() {
         let mut sim = FractureSimulation::new();
-        let mut body = AggregateBody::new(0, [0.0; 3], vec![1.0, 1.0]);
+        let mut body = aggregate(0, vec![1.0, 1.0]);
         let joint = BreakableJoint::new(0, 0, 1, 0.001, 1e9, 1e9);
         body.add_joint(joint);
         sim.add_body(body);
@@ -1246,7 +1340,7 @@ mod tests {
     #[test]
     fn fracture_simulation_clear_events() {
         let mut sim = FractureSimulation::new();
-        let mut body = AggregateBody::new(0, [0.0; 3], vec![1.0, 1.0]);
+        let mut body = aggregate(0, vec![1.0, 1.0]);
         let joint = BreakableJoint::new(0, 0, 1, 0.001, 1e9, 1e9);
         body.add_joint(joint);
         sim.add_body(body);

@@ -4,59 +4,10 @@
 
 /// Trajectory data: `(time_steps, frames)` where `frames[frame][atom] = [x, y, z]`.
 type TrajectoryData = (Vec<f64>, Vec<Vec<[f64; 3]>>);
+use crate::netcdf::classic::NcType;
 use crate::netcdf::types::*;
 
-/// Create an AMBER-convention NetCDF trajectory file.
-///
-/// AMBER trajectories use:
-/// - dimensions: frame (unlimited), atom, spatial (3)
-/// - variables: coordinates(frame, atom, spatial), cell_lengths(frame, spatial),
-///   cell_angles(frame, spatial), time(frame)
-pub fn create_amber_trajectory(
-    n_atoms: usize,
-    n_frames: usize,
-    coordinates: Vec<f64>,
-    time: Vec<f64>,
-    cell_lengths: Option<Vec<f64>>,
-    cell_angles: Option<Vec<f64>>,
-) -> NetCdfFile {
-    let mut file = NetCdfFile::new();
-    file.add_unlimited_dimension("frame", n_frames);
-    file.add_dimension("atom", n_atoms);
-    file.add_dimension("spatial", 3);
-    file.add_attribute("Conventions", "AMBER");
-    file.add_attribute("ConventionVersion", "1.0");
-    file.add_attribute("program", "OxiPhysics");
-    let mut coords_var = NetCdfVariable::new(
-        "coordinates",
-        vec!["frame".into(), "atom".into(), "spatial".into()],
-        coordinates,
-    );
-    coords_var.add_attribute("units", "angstrom");
-    file.add_variable(coords_var);
-    let mut time_var = NetCdfVariable::new("time", vec!["frame".into()], time);
-    time_var.add_attribute("units", "picosecond");
-    file.add_variable(time_var);
-    if let Some(lengths) = cell_lengths {
-        let mut var = NetCdfVariable::new(
-            "cell_lengths",
-            vec!["frame".into(), "spatial".into()],
-            lengths,
-        );
-        var.add_attribute("units", "angstrom");
-        file.add_variable(var);
-    }
-    if let Some(angles) = cell_angles {
-        let mut var = NetCdfVariable::new(
-            "cell_angles",
-            vec!["frame".into(), "spatial".into()],
-            angles,
-        );
-        var.add_attribute("units", "degree");
-        file.add_variable(var);
-    }
-    file
-}
+pub use super::amber::create_amber_trajectory;
 /// Extract coordinates for a specific frame from an AMBER trajectory.
 pub fn extract_frame_coordinates(file: &NetCdfFile, frame_idx: usize) -> Option<Vec<[f64; 3]>> {
     let coords_var = file.get_variable("coordinates")?;
@@ -97,8 +48,13 @@ pub fn write_ncf_text(file: &NetCdfFile) -> String {
     }
     out.push_str("variables:\n");
     for var in &file.variables {
-        let dims = var.dims.join(", ");
-        out.push_str(&format!("\tdouble {}({}) ;\n", var.name, dims));
+        let type_name = var.nc_type.cdl_name();
+        if var.dims.is_empty() {
+            out.push_str(&format!("\t{type_name} {} ;\n", var.name));
+        } else {
+            let dims = var.dims.join(", ");
+            out.push_str(&format!("\t{type_name} {}({dims}) ;\n", var.name));
+        }
         for attr in &var.attributes {
             out.push_str(&format!(
                 "\t\t{}:{} = \"{}\" ;\n",
@@ -114,8 +70,9 @@ pub fn write_ncf_text(file: &NetCdfFile) -> String {
     }
     out.push_str("data:\n");
     for var in &file.variables {
-        let values: Vec<String> = var.data.iter().map(|v| format!("{v}")).collect();
-        out.push_str(&format!("\t{} = {} ;\n", var.name, values.join(", ")));
+        let row_len = var.dims.last().and_then(|d| file.get_dimension_size(d));
+        let values = super::cdl_values::format_cdl_values(var, row_len);
+        out.push_str(&format!("\t{} = {values} ;\n", var.name));
     }
     out.push_str("}\n");
     out
@@ -125,7 +82,7 @@ pub fn write_ncf_text(file: &NetCdfFile) -> String {
 /// Returns `Err(String)` on the first parse failure.
 pub fn parse_ncf_text(cdl: &str) -> Result<NetCdfFile, String> {
     let mut dimensions: Vec<(String, usize)> = Vec::new();
-    let mut variable_headers: Vec<(String, Vec<String>)> = Vec::new();
+    let mut variable_headers: Vec<(String, Vec<String>, NcType)> = Vec::new();
     let mut variable_attrs: std::collections::HashMap<String, Vec<VariableAttribute>> =
         std::collections::HashMap::new();
     let mut attributes: Vec<(String, String)> = Vec::new();
@@ -177,7 +134,14 @@ pub fn parse_ncf_text(cdl: &str) -> Result<NetCdfFile, String> {
                 let dim_name = parts[0].trim().to_string();
                 let size_str = parts[1].trim();
                 if size_str == "UNLIMITED" {
-                    dimensions.push((dim_name.clone(), 0));
+                    // write_ncf_text records the current length as
+                    // "// (N currently)".
+                    let current = line
+                        .split_once("// (")
+                        .and_then(|(_, c)| c.split_whitespace().next())
+                        .and_then(|n| n.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    dimensions.push((dim_name.clone(), current));
                     unlimited_dim = Some(dim_name);
                 } else {
                     let dim_size = size_str
@@ -187,7 +151,12 @@ pub fn parse_ncf_text(cdl: &str) -> Result<NetCdfFile, String> {
                 }
             }
             Section::Variables => {
-                if line_clean.contains(':') && !line_clean.starts_with("double ") {
+                if let Some(decl) = super::cdl_values::parse_cdl_declaration(line_clean) {
+                    let decl = decl.map_err(|e| format!("Bad variable line: {raw} ({e})"))?;
+                    variable_headers.push((decl.name, decl.dims, decl.nc_type));
+                    continue;
+                }
+                if line_clean.contains(':') {
                     let parts: Vec<&str> = line_clean.splitn(2, ':').collect();
                     if parts.len() == 2 {
                         let var_name = parts[0].trim().to_string();
@@ -201,24 +170,8 @@ pub fn parse_ncf_text(cdl: &str) -> Result<NetCdfFile, String> {
                                 .push(VariableAttribute { key, value: val });
                         }
                     }
-                    continue;
                 }
-                if !line_clean.starts_with("double ") {
-                    continue;
-                }
-                let rest = line_clean["double ".len()..].trim();
-                if let Some(paren) = rest.find('(') {
-                    let var_name = rest[..paren].trim().to_string();
-                    let dims_str = rest[paren + 1..].trim_end_matches(')').trim();
-                    let dims: Vec<String> = if dims_str.is_empty() {
-                        Vec::new()
-                    } else {
-                        dims_str.split(',').map(|s| s.trim().to_string()).collect()
-                    };
-                    variable_headers.push((var_name, dims));
-                } else {
-                    return Err(format!("Bad variable line: {raw}"));
-                }
+                // Comment-only and unrecognised lines carry no declaration.
             }
             Section::Attributes => {
                 if !line_clean.starts_with(":data:") {
@@ -239,12 +192,8 @@ pub fn parse_ncf_text(cdl: &str) -> Result<NetCdfFile, String> {
                     return Err(format!("Bad data line: {raw}"));
                 }
                 let var_name = parts[0].trim().to_string();
-                let values: Result<Vec<f64>, _> = parts[1]
-                    .split(',')
-                    .map(|s| s.trim().parse::<f64>())
-                    .collect();
-                let values =
-                    values.map_err(|_| format!("Bad numeric data in variable '{var_name}'"))?;
+                let values = super::cdl_values::parse_cdl_values(parts[1])
+                    .map_err(|e| format!("Bad data in variable '{var_name}': {e}"))?;
                 data_map.insert(var_name, values);
             }
             Section::None => {}
@@ -252,7 +201,7 @@ pub fn parse_ncf_text(cdl: &str) -> Result<NetCdfFile, String> {
     }
     let variables: Vec<NetCdfVariable> = variable_headers
         .into_iter()
-        .map(|(name, dims)| {
+        .map(|(name, dims, nc_type)| {
             let data = data_map.remove(&name).unwrap_or_default();
             let attrs = variable_attrs.remove(&name).unwrap_or_default();
             NetCdfVariable {
@@ -260,6 +209,7 @@ pub fn parse_ncf_text(cdl: &str) -> Result<NetCdfFile, String> {
                 dims,
                 data,
                 attributes: attrs,
+                nc_type,
             }
         })
         .collect();
@@ -424,12 +374,14 @@ mod tests {
                     dims: vec!["time".to_string(), "space".to_string()],
                     data: vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
                     attributes: Vec::new(),
+                    nc_type: NcType::Double,
                 },
                 NetCdfVariable {
                     name: "pressure".to_string(),
                     dims: vec!["time".to_string()],
                     data: vec![101.3, 100.8, 99.5],
                     attributes: Vec::new(),
+                    nc_type: NcType::Double,
                 },
             ],
             attributes: vec![

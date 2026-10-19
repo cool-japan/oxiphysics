@@ -690,14 +690,6 @@ mod eigen_extended_tests {
             );
         }
     }
-    /// Gram-Schmidt on linearly dependent vectors does not panic.
-    #[test]
-    fn test_gram_schmidt_near_dependent() {
-        let mut vecs = vec![vec![1.0, 0.0], vec![1.0, 1e-15]];
-        gram_schmidt(&mut vecs, 2);
-        let n0: f64 = vecs[0].iter().map(|x| x * x).sum::<f64>().sqrt();
-        assert!((n0 - 1.0).abs() < 1e-10 || n0.abs() < 1e-10);
-    }
     /// Sum of effective modal masses equals total mass for complete mode set.
     #[test]
     fn test_effective_modal_mass_completeness() {

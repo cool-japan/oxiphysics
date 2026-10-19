@@ -614,14 +614,223 @@ fn test_blackman_harris_range() {
     }
 }
 
+// --- Daubechies db2 ---
+
+/// Deterministic pseudo-random samples in `[-1, 1)` (64-bit LCG, high bits).
+fn pseudo_random_signal(n: usize, seed: u64) -> Vec<f64> {
+    let mut state = seed;
+    (0..n)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+        })
+        .collect()
+}
+
+fn max_abs_difference(a: &[f64], b: &[f64]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f64::max)
+}
+
 #[test]
-fn test_db2_decompose_reconstruct() {
-    let signal = vec![1.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 0.0];
-    let (approx, detail) = db2_decompose(&signal);
-    assert!(!approx.is_empty());
-    assert!(!detail.is_empty());
-    let recon = db2_reconstruct(&approx, &detail);
-    assert!(!recon.is_empty());
+fn test_db2_reconstruct_inverts_decompose_on_a_random_signal() {
+    // Regression: synthesis used the time-reversed filters, so the interior
+    // round-trip error of a random length-64 signal was about 1.1.
+    let x = pseudo_random_signal(64, 7);
+    let (approx, detail) = db2_decompose(&x);
+    assert_eq!(approx.len(), 32);
+    assert_eq!(detail.len(), 32);
+    let y = db2_reconstruct(&approx, &detail);
+    assert_eq!(y.len(), 64);
+    let error = max_abs_difference(&x, &y);
+    assert!(error < 1e-12, "round-trip error {error}");
+}
+
+#[test]
+fn test_db2_roundtrip_is_exact_for_every_even_length() {
+    // Lengths 2 and 4 are not longer than the 4-tap filter: the periodic wrap
+    // must still give an orthonormal transform.
+    for n in (2..=64).step_by(2).chain([128, 1000]) {
+        let x = pseudo_random_signal(n, n as u64);
+        let (approx, detail) = db2_decompose(&x);
+        let y = db2_reconstruct(&approx, &detail);
+        let error = max_abs_difference(&x, &y);
+        assert!(error < 1e-12, "n={n}: round-trip error {error}");
+    }
+}
+
+#[test]
+fn test_db2_decompose_preserves_energy() {
+    for n in [2usize, 4, 16, 64, 130] {
+        let x = pseudo_random_signal(n, 1000 + n as u64);
+        let (approx, detail) = db2_decompose(&x);
+        let signal_energy: f64 = x.iter().map(|v| v * v).sum();
+        let band_energy: f64 = approx.iter().chain(detail.iter()).map(|v| v * v).sum();
+        assert!(
+            (band_energy - signal_energy).abs() < 1e-12 * signal_energy,
+            "n={n}: {band_energy} vs {signal_energy}"
+        );
+    }
+}
+
+#[test]
+fn test_db2_impulse_response_matches_the_analytic_filters() {
+    // x = δ at index 0 of a length-8 signal: only the windows k = 0 (tap 0) and
+    // k = 3 (tap 2, wrapped) touch it, so a = [h0, 0, 0, h2] and d = [g0, 0, 0, g2]
+    // with h = [1+√3, 3+√3, 3-√3, 1-√3] / (4√2) and g = [h3, -h2, h1, -h0].
+    let mut x = [0.0; 8];
+    x[0] = 1.0;
+    let (approx, detail) = db2_decompose(&x);
+    let s3 = 3.0f64.sqrt();
+    let norm = 4.0 * 2.0f64.sqrt();
+    let expected_approx = [(1.0 + s3) / norm, 0.0, 0.0, (3.0 - s3) / norm];
+    let expected_detail = [(1.0 - s3) / norm, 0.0, 0.0, (3.0 + s3) / norm];
+    assert!(max_abs_difference(&approx, &expected_approx) < 1e-15);
+    assert!(max_abs_difference(&detail, &expected_detail) < 1e-15);
+}
+
+#[test]
+fn test_db2_matches_reference_values() {
+    // Orthonormal periodised db2 transform computed with an explicit 8 x 8 matrix.
+    let x = [3.0, -1.0, 4.0, 1.0, -5.0, 9.0, 2.0, -6.0];
+    let expected_approx = [
+        1.3795383853125878,
+        0.4829629131445341,
+        6.338577039309188,
+        -3.2513308694604777,
+    ];
+    let expected_detail = [
+        2.699017602194929,
+        -9.271029695236901,
+        3.200562886721001,
+        4.078555987507517,
+    ];
+    let (approx, detail) = db2_decompose(&x);
+    assert!(max_abs_difference(&approx, &expected_approx) < 1e-13);
+    assert!(max_abs_difference(&detail, &expected_detail) < 1e-13);
+}
+
+#[test]
+fn test_db2_constant_signal_has_exactly_zero_detail() {
+    for value in [2.5, -7.0, 1.0e6] {
+        let x = [value; 16];
+        let (approx, detail) = db2_decompose(&x);
+        assert!(
+            detail.iter().all(|&d| d == 0.0),
+            "value {value}: {detail:?}"
+        );
+        let expected = value * 2.0f64.sqrt();
+        for a in &approx {
+            assert!(
+                (a - expected).abs() <= 1e-14 * expected.abs(),
+                "{a} vs {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_db2_has_two_vanishing_moments() {
+    // A linear ramp has no detail wherever the 4-tap window does not wrap around;
+    // the window k = 15 spans x[30], x[31], x[0], x[1] and sees the jump.
+    let ramp: Vec<f64> = (0..32).map(|i| 0.5 * i as f64 - 3.0).collect();
+    let (_, detail) = db2_decompose(&ramp);
+    for (k, d) in detail.iter().take(15).enumerate() {
+        assert!(d.abs() < 1e-13, "ramp detail[{k}] = {d}");
+    }
+    assert!(
+        (detail[15] + 4.0 * 2.0f64.sqrt()).abs() < 1e-12,
+        "{}",
+        detail[15]
+    );
+    // A quadratic is not annihilated: its interior detail is Σ g_j j² = -√(3/2).
+    let parabola: Vec<f64> = (0..32).map(|i| (i * i) as f64).collect();
+    let (_, detail) = db2_decompose(&parabola);
+    for (k, d) in detail.iter().take(14).enumerate() {
+        assert!(
+            (d + 1.5f64.sqrt()).abs() < 1e-11,
+            "parabola detail[{k}] = {d}"
+        );
+    }
+}
+
+#[test]
+fn test_db2_odd_length_signal_is_padded_with_its_last_sample() {
+    let x = [1.0, -2.0, 0.5, 4.0, 3.0];
+    let padded = [1.0, -2.0, 0.5, 4.0, 3.0, 3.0];
+    let (approx, detail) = db2_decompose(&x);
+    assert_eq!(approx.len(), 3);
+    assert_eq!(detail.len(), 3);
+    let (padded_approx, padded_detail) = db2_decompose(&padded);
+    assert_eq!(approx, padded_approx);
+    assert_eq!(detail, padded_detail);
+    let y = db2_reconstruct(&approx, &detail);
+    assert_eq!(y.len(), 6);
+    assert!(max_abs_difference(&y, &padded) < 1e-13);
+}
+
+#[test]
+fn test_db2_handles_empty_and_single_sample_signals() {
+    let (approx, detail) = db2_decompose(&[]);
+    assert!(approx.is_empty() && detail.is_empty());
+    assert!(db2_reconstruct(&[], &[]).is_empty());
+    let (approx, detail) = db2_decompose(&[3.0]);
+    assert_eq!(detail, vec![0.0]);
+    assert!((approx[0] - 3.0 * 2.0f64.sqrt()).abs() < 1e-14);
+    let y = db2_reconstruct(&approx, &detail);
+    assert!(max_abs_difference(&y, &[3.0, 3.0]) < 1e-14);
+}
+
+#[test]
+fn test_db2_reconstruct_treats_missing_coefficients_as_zero() {
+    let approx = [1.0, 2.0, 3.0];
+    let y = db2_reconstruct(&approx, &[0.5, -0.5]);
+    assert_eq!(y.len(), 6);
+    assert_eq!(y, db2_reconstruct(&approx, &[0.5, -0.5, 0.0]));
+    let only_approx = db2_reconstruct(&approx, &[]);
+    assert_eq!(only_approx.len(), 6);
+    assert_eq!(only_approx, db2_reconstruct(&approx, &[0.0, 0.0, 0.0]));
+    let only_detail = db2_reconstruct(&[], &[1.0, -1.0]);
+    assert_eq!(only_detail.len(), 4);
+    assert_eq!(only_detail, db2_reconstruct(&[0.0, 0.0], &[1.0, -1.0]));
+}
+
+// --- resample ---
+
+#[test]
+fn test_resample_keeps_the_amplitude_of_a_sine() {
+    // Regression: the old resampler lost the zero-stuffing gain and returned a
+    // 50 Hz sine at about 0.4 % of its amplitude, misaligned and under-filtered.
+    let (fs_in, fs_out) = (1000.0, 441.0);
+    let signal = generate_sine(50.0, fs_in, 2000, 1.0, 0.0);
+    let out = resample(&signal, fs_in, fs_out);
+    assert_eq!(out.len(), 882);
+    for (m, v) in out.iter().enumerate().skip(40).take(out.len() - 80) {
+        let expected = (2.0 * PI * 50.0 * m as f64 / fs_out).sin();
+        assert!((v - expected).abs() < 2e-3, "m={m}: {v} vs {expected}");
+    }
+    let peak = out[40..out.len() - 40]
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
+    assert!((peak - 1.0).abs() < 0.01, "peak {peak}");
+}
+
+#[test]
+fn test_resample_keeps_constants_and_handles_degenerate_input() {
+    let out = resample(&[1.0; 500], 1000.0, 441.0);
+    assert_eq!(out.len(), 221);
+    assert!(out.iter().all(|v| (v - 1.0).abs() < 1e-3));
+    assert!(resample(&[], 1000.0, 441.0).is_empty());
+    assert!(resample(&[1.0, 2.0], 0.0, 441.0).is_empty());
+    assert_eq!(
+        resample(&[1.0, 2.0, 3.0], 100.0, 100.0),
+        vec![1.0, 2.0, 3.0]
+    );
 }
 
 #[test]

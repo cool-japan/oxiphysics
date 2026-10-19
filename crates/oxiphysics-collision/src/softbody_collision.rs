@@ -800,11 +800,23 @@ impl CcdDeformable {
     /// Each edge is a pair of vertex indices into the position arrays of its
     /// mesh; `verts0_*` hold the positions at the start of the step, `verts1_*`
     /// the positions at its end, and every vertex moves linearly in between.
-    /// The time of impact of an edge pair is exact: the earliest root of the
-    /// coplanarity cubic of the four end points at which the closest points of
-    /// the two edges are within `edge_radius` (Provot 1997, Bridson et al.
-    /// 2002), or the first time the edges enter the `edge_radius` shell without
-    /// ever becoming coplanar. `toi` is in `[0, 1]`.
+    /// For edges that become coplanar during the step the time of impact is
+    /// found analytically: it is the earliest root of the coplanarity cubic of
+    /// the four end points at which the closest points of the two edges are
+    /// within `edge_radius` (Provot 1997, Bridson et al. 2002). A pair that only
+    /// grazes the `edge_radius` shell without ever becoming coplanar has no
+    /// closed form; its first shell entry is bracketed on 128 uniform time
+    /// samples and refined by bisection to about `1e-8` of the step (see
+    /// [`crate::deformable_collision::ccd_edge_edge_analytic`]). `toi` is in
+    /// `[0, 1]`.
+    ///
+    /// An `edge_radius` of zero detects exact crossings (the radius used for a
+    /// pair is never smaller than a rounding floor of `1e-10 * (1 + max
+    /// |coordinate|)`; a larger radius is used as given); a negative or NaN
+    /// `edge_radius` reports nothing. Every pair is evaluated in a local
+    /// frame whose unit of length is the longest edge vector of the pair, so
+    /// scaling the mesh and the radius together does not change the result
+    /// (other than through the rounding floor above).
     ///
     /// Every colliding pair `(edge_a, edge_b)` yields one [`EdgeCcdResult`]
     /// whose indices refer to `edges_a` and `edges_b`; `normal` points from
@@ -1075,7 +1087,8 @@ pub struct VertexImpulse {
     pub vertex_index: usize,
     /// Position correction vector (apply to vertex position).
     pub correction: [f64; 3],
-    /// Velocity impulse to apply.
+    /// Velocity impulse to apply, as a momentum change (mass times velocity
+    /// change): divide by the vertex mass to obtain the velocity change.
     pub impulse: [f64; 3],
 }
 

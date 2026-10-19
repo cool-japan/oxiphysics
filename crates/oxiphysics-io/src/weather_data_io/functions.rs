@@ -312,13 +312,15 @@ mod tests {
         buf.extend_from_slice(&20u64.to_be_bytes());
         buf.extend_from_slice(b"7777");
         let mut reader = GribReader::new(&buf);
-        let msg = reader.next_message();
-        assert!(msg.is_some());
-        let msg = msg.unwrap();
-        assert_eq!(msg.discipline, 0);
+        // An indicator plus "7777" splits into sections but is not a usable
+        // GRIB2 message: it carries no identification, grid or data field.
+        let error = reader.next_message().unwrap_err();
+        assert!(error.contains("no data section"), "{error}");
         let sec_types: Vec<_> = reader.sections().iter().map(|s| s.section_type).collect();
         assert!(sec_types.contains(&GribSectionType::Indicator));
         assert!(sec_types.contains(&GribSectionType::End));
+        // The reader moved past the message: nothing follows.
+        assert!(matches!(reader.next_message(), Ok(None)));
     }
     #[test]
     fn test_grib_lambert_grid_point_count() {

@@ -49,9 +49,12 @@ impl InterfacialZone {
         self.strength * (1.0 - delta_ratio)
     }
 }
-/// Classical Laminate Theory: computes the ABD stiffness matrix.
+/// Classical Laminate Theory: computes the xx-components of the ABD stiffness matrix.
 ///
-/// The ABD matrix relates mid-plane strains/curvatures to in-plane forces/moments.
+/// The ABD matrix relates mid-plane strains/curvatures to in-plane forces/moments;
+/// [`CompositeLaminate::a11`], [`CompositeLaminate::b11`] and
+/// [`CompositeLaminate::d11`] give its extensional, coupling and bending entries,
+/// all integrated through the thickness from the laminate mid-plane.
 #[derive(Debug, Clone)]
 pub struct CompositeLaminate {
     /// Stack of plies (bottom to top).
@@ -75,14 +78,40 @@ impl CompositeLaminate {
             .map(|p| p.transformed_q11() * p.thickness)
             .sum()
     }
-    /// Computes the D11 bending stiffness component (simplified: assumes symmetric laminate).
+    /// Computes the D11 bending stiffness component.
     ///
-    /// D11 = (1/12) * Σ Qbar11_k * t_k^3.
+    /// D11 = (1/3) * Σ Qbar11_k * (z_k^3 - z_{k-1}^3), where `z_k` is the
+    /// distance of the upper face of ply `k` from the laminate mid-plane
+    /// (plies are stacked bottom to top, so the lowest face sits at
+    /// `z = -h/2`).  The `z` offsets carry the parallel-axis contribution of
+    /// each ply, so D11 of `n` identical plies is the stiffness `Qbar11 * (n t)^3 / 12`
+    /// of the equivalent single layer, not `n` times the stiffness of one ply
+    /// about its own centroid.
     pub fn d11(&self) -> f64 {
-        self.plies
-            .iter()
-            .map(|p| p.transformed_q11() * p.thickness.powi(3) / 12.0)
-            .sum()
+        let mut z_lower = -0.5 * self.total_thickness();
+        let mut d11 = 0.0;
+        for ply in &self.plies {
+            let z_upper = z_lower + ply.thickness;
+            d11 += ply.transformed_q11() * (z_upper.powi(3) - z_lower.powi(3)) / 3.0;
+            z_lower = z_upper;
+        }
+        d11
+    }
+    /// Computes the B11 bending-extension coupling component.
+    ///
+    /// B11 = (1/2) * Σ Qbar11_k * (z_k^2 - z_{k-1}^2) with `z` measured from the
+    /// laminate mid-plane as in [`CompositeLaminate::d11`].  B11 vanishes for a
+    /// laminate that is symmetric about its mid-plane and is generally non-zero
+    /// otherwise (for example a `[0/90]` cross-ply).
+    pub fn b11(&self) -> f64 {
+        let mut z_lower = -0.5 * self.total_thickness();
+        let mut b11 = 0.0;
+        for ply in &self.plies {
+            let z_upper = z_lower + ply.thickness;
+            b11 += ply.transformed_q11() * (z_upper.powi(2) - z_lower.powi(2)) / 2.0;
+            z_lower = z_upper;
+        }
+        b11
     }
     /// Checks Tsai-Wu failure criterion for the first ply.
     ///
@@ -580,16 +609,17 @@ impl DislocationMechanics {
         const M: f64 = 3.06;
         M * self.shear_modulus * self.burgers_nm / obstacle_spacing_nm * 1000.0
     }
-    /// Taylor hardening: Δσ = M * α * G * b * sqrt(ρ).
+    /// Taylor hardening Δσ (MPa): Δσ = M * α * G * b * sqrt(ρ).
+    ///
+    /// `dislocation_density_m2` is the forest dislocation density ρ in m⁻².  The
+    /// shear modulus (stored in GPa) is converted to MPa and the Burgers vector
+    /// (stored in nm) to m, so G (in MPa) · b (in m) · √ρ (in 1/m) is a stress in MPa.
     pub fn taylor_hardening_mpa(&self, dislocation_density_m2: f64) -> f64 {
         const M: f64 = 3.06;
         const ALPHA: f64 = 0.3;
-        M * ALPHA
-            * self.shear_modulus
-            * self.burgers_nm
-            * 1.0e-9
-            * dislocation_density_m2.sqrt()
-            * 1.0e9
+        let shear_modulus_mpa = self.shear_modulus * 1.0e3;
+        let burgers_m = self.burgers_nm * 1.0e-9;
+        M * ALPHA * shear_modulus_mpa * burgers_m * dislocation_density_m2.sqrt()
     }
     /// Dislocation line energy per unit length (J/m).
     pub fn line_energy(&self) -> f64 {

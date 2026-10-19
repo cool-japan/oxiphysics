@@ -111,7 +111,7 @@ mod tests {
     fn test_compression_round_trip() {
         let data = vec![1.0f32, 1.0, 1.0, 1.0, 2.0, 2.0, 3.125];
         let compressed = CompressionStream::compress_f32(&data);
-        let decompressed = CompressionStream::decompress_f32(&compressed);
+        let decompressed = CompressionStream::decompress_f32(&compressed).unwrap();
         assert_eq!(decompressed.len(), data.len());
         for (a, b) in decompressed.iter().zip(data.iter()) {
             assert!((a - b).abs() < 1e-6);
@@ -377,7 +377,7 @@ mod streaming_extension_tests {
     fn test_rle_encode_decode_roundtrip() {
         let data = vec![0u8, 0, 0, 0, 1, 2, 2, 2, 3];
         let enc = RleEncoder::encode(&data);
-        let dec = RleEncoder::decode(&enc);
+        let dec = RleEncoder::decode(&enc).unwrap();
         assert_eq!(dec, data);
     }
     #[test]
@@ -392,7 +392,7 @@ mod streaming_extension_tests {
     #[test]
     fn test_rle_empty() {
         assert!(RleEncoder::encode(&[]).is_empty());
-        assert!(RleEncoder::decode(&[]).is_empty());
+        assert!(RleEncoder::decode(&[]).unwrap().is_empty());
     }
     #[test]
     fn test_csv_parser_basic() {
@@ -581,14 +581,22 @@ pub fn chunk_to_bytes(chunk: &SimulationChunk) -> Vec<u8> {
     buf
 }
 /// Deserialise a `SimulationChunk` from bytes.
+///
+/// Returns `None` if `data` is shorter than the 24-byte header, if the header
+/// declares more particles than `data` can hold (including counts whose byte
+/// size does not fit in `usize`), or if a header field does not fit in `usize`.
+/// Nothing is allocated before the declared size has been checked against the
+/// actual length, so a corrupt particle count cannot trigger a huge
+/// allocation.
 pub fn chunk_from_bytes(data: &[u8]) -> Option<SimulationChunk> {
     if data.len() < 24 {
         return None;
     }
-    let frame_id = u64::from_le_bytes(data[0..8].try_into().ok()?) as usize;
-    let n = u64::from_le_bytes(data[8..16].try_into().ok()?) as usize;
+    let frame_id = usize::try_from(u64::from_le_bytes(data[0..8].try_into().ok()?)).ok()?;
+    let n = usize::try_from(u64::from_le_bytes(data[8..16].try_into().ok()?)).ok()?;
     let time = f64::from_le_bytes(data[16..24].try_into().ok()?);
-    let needed = 24 + n * 2 * 3 * 4;
+    // 24-byte header + n particles x (3 position + 3 velocity components) x 4 bytes.
+    let needed = n.checked_mul(24)?.checked_add(24)?;
     if data.len() < needed {
         return None;
     }

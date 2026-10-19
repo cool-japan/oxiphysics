@@ -1009,11 +1009,20 @@ impl MemsActuator {
 ///
 /// Assembles the full global stiffness matrix from a list of elements.
 /// DOF ordering: `[u1,v1,w1,φ1, u2,v2,w2,φ2, …]` (4 DOFs per node).
+///
+/// The linear system is `k_global · x = rhs`.  Essential (Dirichlet) boundary
+/// conditions are imposed by [`GlobalPiezoAssembler::apply_dirichlet`], which
+/// eliminates the prescribed DOF symmetrically and moves its coupling into
+/// `rhs`.
 pub struct GlobalPiezoAssembler {
     /// Inner element-level assembler.
     pub local: PiezoFemAssembler,
     /// Global stiffness matrix (n_dof × n_dof, dense).
     pub k_global: Vec<Vec<f64>>,
+    /// Global right-hand side (length `n_dof`): nodal forces and charges, plus
+    /// the contributions of prescribed DOFs added by
+    /// [`GlobalPiezoAssembler::apply_dirichlet`].  Zero after construction.
+    pub rhs: Vec<f64>,
     /// Total number of DOFs (4 per node).
     pub n_dof: usize,
 }
@@ -1023,9 +1032,11 @@ impl GlobalPiezoAssembler {
         let n_nodes = local.nodes.len();
         let n_dof = n_nodes * 4;
         let k_global = vec![vec![0.0; n_dof]; n_dof];
+        let rhs = vec![0.0; n_dof];
         Self {
             local,
             k_global,
+            rhs,
             n_dof,
         }
     }
@@ -1052,16 +1063,60 @@ impl GlobalPiezoAssembler {
             }
         }
     }
-    /// Apply a Dirichlet boundary condition: set DOF `idx` to value `val`.
-    pub fn apply_dirichlet(&mut self, idx: usize, _val: f64) {
-        if idx >= self.n_dof {
-            return;
+    /// Apply a Dirichlet boundary condition: prescribe DOF `idx` to the value
+    /// `val` (a displacement component or an electric potential).
+    ///
+    /// The system `k_global · x = rhs` is condensed symmetrically: the coupling
+    /// of the prescribed DOF to every other equation is moved to the right-hand
+    /// side (`rhs[j] -= k_global[j][idx] * val`), the row and column of `idx`
+    /// are zeroed, the diagonal is set to one and `rhs[idx]` to `val`.  Solving
+    /// the modified system therefore returns `x[idx] == val` and the correct
+    /// response of all remaining DOFs.  Several conditions may be applied one
+    /// after another.
+    ///
+    /// # Errors
+    ///
+    /// - [`crate::Error::DofOutOfRange`] if `idx >= n_dof`,
+    /// - [`crate::Error::InvalidInput`] if `val` is not finite, or if
+    ///   `k_global` / `rhs` do not match `n_dof`.
+    ///
+    /// The system is left untouched when an error is returned.
+    pub fn apply_dirichlet(&mut self, idx: usize, val: f64) -> Result<(), crate::Error> {
+        let n = self.n_dof;
+        if idx >= n {
+            return Err(crate::Error::DofOutOfRange { dof: idx, n });
         }
-        for j in 0..self.n_dof {
-            self.k_global[idx][j] = 0.0;
-            self.k_global[j][idx] = 0.0;
+        if !val.is_finite() {
+            return Err(crate::Error::InvalidInput(format!(
+                "prescribed value for DOF {idx} must be finite, got {val}"
+            )));
         }
-        self.k_global[idx][idx] = 1.0;
+        if self.k_global.len() != n || self.k_global.iter().any(|row| row.len() != n) {
+            return Err(crate::Error::InvalidInput(format!(
+                "k_global must be a {n} x {n} matrix"
+            )));
+        }
+        if self.rhs.len() != n {
+            return Err(crate::Error::InvalidInput(format!(
+                "rhs has length {} but the system has {n} DOFs",
+                self.rhs.len()
+            )));
+        }
+        for (j, (rhs_j, row)) in self.rhs.iter_mut().zip(self.k_global.iter()).enumerate() {
+            if j != idx {
+                *rhs_j -= row[idx] * val;
+            }
+        }
+        for (j, row) in self.k_global.iter_mut().enumerate() {
+            if j == idx {
+                row.iter_mut().for_each(|v| *v = 0.0);
+                row[idx] = 1.0;
+            } else {
+                row[idx] = 0.0;
+            }
+        }
+        self.rhs[idx] = val;
+        Ok(())
     }
     /// Extract the mechanical sub-block K_uu from the global matrix.
     ///

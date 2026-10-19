@@ -7,9 +7,11 @@
 //!
 //! - **EntropicD2Q9**: Standard entropic LBM with adaptive relaxation parameter α
 //!   determined by enforcing the discrete H-theorem (H-stability).
-//! - **KbcD2Q9**: Karlin–Bösch–Chikatamarla (KBC) variant that decomposes the
-//!   equilibrium into symmetric (s) and antisymmetric (h) parts and relaxes them
-//!   independently.
+//! - **KbcD2Q9**: Karlin–Bösch–Chikatamarla (KBC) multi-relaxation variant that
+//!   splits the non-equilibrium part into shear (s) and higher-order (h)
+//!   natural moments, relaxes the shear part with the requested viscosity and
+//!   the higher-order part with an entropic stabiliser `γ` (see [`kbc_split`]
+//!   and [`kbc_stabiliser`]).
 //!
 //! Also provides:
 //! - ELBM diagnostics (entropy monitoring, alpha statistics)
@@ -18,7 +20,8 @@
 //!
 //! ## Relaxation and viscosity
 //!
-//! Every collision of this module relaxes the populations towards the local
+//! The entropic collisions ([`EntropicD2Q9`], [`EntropyOverRelaxation`]) relax
+//! the populations towards the local
 //! equilibrium `f_eq` as `f' = f + α β (f_eq − f)` with the physical
 //! relaxation parameter `β = 1/(2τ) = 1/(6ν + 1)` (`τ = 3ν + 1/2` for the
 //! kinematic viscosity `ν` in lattice units).  The entropic parameter `α` is
@@ -26,6 +29,9 @@
 //! equilibrium `α = 2 − O(|f − f_eq|)`, so the scheme reduces to BGK with
 //! `ω = 2β = 1/τ` and reproduces exactly the requested viscosity `ν`.  Far
 //! from equilibrium `α` adapts so that the H-theorem `H(f') ≤ H(f)` holds.
+//! The KBC collision ([`KbcD2Q9`]) uses the same `β` for its shear moments,
+//! `f' = f − β (2 Δs + γ Δh)`, so it too reproduces the requested shear
+//! viscosity.
 //!
 //! The collision target is the *entropic* equilibrium, i.e. the minimiser of
 //! `H` for the cell's density and momentum (see [`d2q9_equilibrium`]); with a
@@ -38,6 +44,13 @@
 //! - Karlin, Bösch & Chikatamarla (2014), Phys. Rev. E 90, 031302.
 
 use crate::error::{Error, Result};
+
+mod kbc;
+
+pub use kbc::{
+    KBC_H_NOISE_FLOOR, entropic_scalar_product, kbc_collide_populations, kbc_shear_part, kbc_split,
+    kbc_stabiliser,
+};
 
 // ---------------------------------------------------------------------------
 // D2Q9 constants
@@ -414,7 +427,7 @@ fn safeguarded_newton(
 /// the largest positivity-preserving value, backed off by a relative `1e-6`.
 ///
 /// `α = 2` (standard BGK over-relaxation) is returned when
-/// - the state is within [`NEAR_EQUILIBRIUM_REL_TOL`] (relative) of
+/// - the state is within a relative `1e-5` of
 ///   equilibrium, where the root is `2 − O(δ)` and cannot be resolved in
 ///   floating point, or
 /// - `H(f_eq) ≥ H(f)` or `H` is undefined (non-positive populations), where
@@ -749,19 +762,27 @@ impl ElbmDiagnostics {
 // KbcD2Q9
 // ---------------------------------------------------------------------------
 
-/// KBC-style variant of entropic LBM for D2Q9.
+/// Karlin–Bösch–Chikatamarla (KBC) entropic multi-relaxation LBM for D2Q9.
 ///
-/// The deviation from equilibrium is split into its symmetric (even under
-/// `i ↔ opp(i)`, carrying the stress) part `Δs` and antisymmetric (odd) part
-/// `Δh`.  The collision is `f' = f + β (α Δs + 2 Δh)` with the physical
-/// relaxation parameter `β = 1/(6ν + 1)`: the odd part is mirrored (factor 2)
-/// and α is the entropic parameter of the even part, determined with the odd
-/// part already mirrored.  For `α = 2` (near equilibrium) this is exactly BGK
-/// with `τ = 3ν + 1/2`, so the requested viscosity is recovered.
+/// The non-equilibrium deviation `Δ = f − f_eq` is split in the natural-moment
+/// basis into its shear part `Δs` (deviatoric stress `N = M_20 − M_02` and
+/// `Π_xy`) and its higher-order part `Δh` (trace `T`, third-order moments
+/// `Q_xyy`, `Q_yxx` and fourth-order moment `A`); see [`kbc_split`].  The
+/// collision is
 ///
-/// Note: this is not the full Karlin–Bösch–Chikatamarla moment split into
-/// shear and higher-order (ghost) parts with a stabiliser `γ` on the latter;
-/// that refinement is tracked separately.
+/// ```text
+/// f' = f − β (2 Δs + γ Δh),   β = 1/(2τ) = 1/(6ν + 1),
+/// γ  = 1/β − (2 − 1/β) ⟨Δs|Δh⟩ / ⟨Δh|Δh⟩,   ⟨x|y⟩ = Σ_i x_i y_i / f_eq,i.
+/// ```
+///
+/// The shear moments are relaxed with the BGK frequency `1/τ`, so the shear
+/// viscosity is exactly the requested `nu`; the stabiliser `γ` (see
+/// [`kbc_stabiliser`]) minimises the quadratic entropy estimate of the
+/// post-collision state over the relaxation of the higher-order moments,
+/// which damps the ghost modes responsible for the instability of BGK at
+/// `τ → 1/2`.  Since the trace `T` is part of `Δh`, the bulk viscosity is
+/// governed by `γ` (bulk relaxation frequency `βγ`, equal to 1 for orthogonal
+/// shear and higher-order parts).
 pub struct KbcD2Q9 {
     /// Domain width.
     pub nx: usize,
@@ -774,13 +795,14 @@ pub struct KbcD2Q9 {
 }
 
 impl KbcD2Q9 {
-    /// Decompose f_eq into symmetric (s) and antisymmetric (h) parts.
+    /// Parity decomposition of `f_eq` into its even and odd parts under the
+    /// velocity reversal `i ↔ opp(i)`:
+    /// - s_i = (f_eq_i + f_eq_{opp(i)}) / 2   (even: density, stress, `A`)
+    /// - h_i = f_eq_i − s_i                    (odd: momentum, third-order moments)
     ///
-    /// The decomposition follows Karlin et al. (2014):
-    /// - s_i = (f_eq_i + f_eq_{opp(i)}) / 2   (symmetric under i ↔ opp(i))
-    /// - h_i = f_eq_i − s_i                    (antisymmetric)
-    ///
-    /// Returns `(s, h)` where `s + h = f_eq`.
+    /// Returns `(s, h)` where `s + h = f_eq`.  This is *not* the KBC
+    /// natural-moment split used by [`collide_kbc`](Self::collide_kbc); that
+    /// one is [`kbc_split`].
     pub fn decompose_feq(f_eq: &[f64; 9]) -> ([f64; 9], [f64; 9]) {
         let mut s = [0.0; 9];
         let mut h = [0.0; 9];
@@ -791,7 +813,8 @@ impl KbcD2Q9 {
         (s, h)
     }
 
-    /// Decompose an arbitrary distribution into symmetric and antisymmetric parts.
+    /// Parity decomposition of an arbitrary distribution into its even and odd
+    /// parts under `i ↔ opp(i)` (see [`decompose_feq`](Self::decompose_feq)).
     pub fn decompose_general(f: &[f64; 9]) -> ([f64; 9], [f64; 9]) {
         let mut s = [0.0; 9];
         let mut h = [0.0; 9];
@@ -844,53 +867,26 @@ impl KbcD2Q9 {
         (rho, [mx * inv_rho, my * inv_rho])
     }
 
-    /// Perform KBC collision at every cell.
+    /// Perform the KBC collision at every cell.
     ///
-    /// The update rule is:
-    /// Δs = s_eq − s_f  (symmetric deviation)
-    /// Δh = h_eq − h_f  (antisymmetric deviation)
+    /// With `Δ = f − f_eq` split into shear and higher-order parts
+    /// (`Δ = Δs + Δh`, see [`kbc_split`]) the update is
     ///
-    /// f_new = f + β (α_kbc Δs + 2 Δh),  β = 1/(6ν + 1)
+    /// ```text
+    /// f_new = f − β (2 Δs + γ Δh),   β = 1/(6ν + 1),
+    /// ```
     ///
-    /// where α_kbc is the entropic parameter of the s-component, found with
-    /// the h-component already fully mirrored (`f + 2 Δh`): it is the root of
-    /// `H(f + 2 Δh + α Δs) = H(f + 2 Δh)`.  Near equilibrium `α_kbc = 2` and
-    /// the update is exactly BGK, `f + 2β (f_eq − f)`; α_kbc is capped at
-    /// `2/β` so that the shear relaxation frequency never exceeds 2.
+    /// where `γ` is the entropic stabiliser of [`kbc_stabiliser`].  The shear
+    /// stress relaxes as `Π' − Π_eq = (1 − 1/τ)(Π − Π_eq)` with
+    /// `τ = 3ν + 1/2`; density and momentum are conserved.
     pub fn collide_kbc(&mut self) {
         let beta = self.beta();
-        let alpha_cap = 2.0 / beta;
         let n = self.nx * self.ny;
         for k in 0..n {
-            let f = self.f[k];
             let (rho, u) = self.macros(k);
-
             let f_eq = EntropicD2Q9::equilibrium(rho, u);
-            let (s_eq, h_eq) = Self::decompose_feq(&f_eq);
-            let (s_f, h_f) = Self::decompose_general(&f);
-
-            // Compute Δs and Δh.
-            let mut ds = [0.0; 9];
-            let mut dh = [0.0; 9];
-            for i in 0..9 {
-                ds[i] = s_eq[i] - s_f[i];
-                dh[i] = h_eq[i] - h_f[i];
-            }
-
-            // Entropic α for the s-component deviation, with the h-component
-            // already relaxed by the mirror factor 2.
-            let mut f_h_mirrored = f;
-            let mut f_target = f;
-            for i in 0..9 {
-                f_h_mirrored[i] += 2.0 * dh[i];
-                f_target[i] += 2.0 * dh[i] + ds[i];
-            }
-            let alpha_kbc = find_entropic_alpha(&f_h_mirrored, &f_target, 50).min(alpha_cap);
-
-            let f_new = &mut self.f[k];
-            for i in 0..9 {
-                f_new[i] += beta * (alpha_kbc * ds[i] + 2.0 * dh[i]);
-            }
+            let (post, _gamma) = kbc_collide_populations(&self.f[k], &f_eq, beta);
+            self.f[k] = post;
         }
     }
 
@@ -932,6 +928,17 @@ impl KbcD2Q9 {
     pub fn total_density(&self) -> f64 {
         let n = self.nx * self.ny;
         (0..n).map(|k| self.macros(k).0).sum()
+    }
+
+    /// Compute the maximum velocity magnitude in the domain.
+    pub fn max_velocity(&self) -> f64 {
+        let n = self.nx * self.ny;
+        (0..n)
+            .map(|k| {
+                let (_, u) = self.macros(k);
+                (u[0] * u[0] + u[1] * u[1]).sqrt()
+            })
+            .fold(0.0_f64, f64::max)
     }
 }
 
@@ -1699,3 +1706,6 @@ mod extra_entropic_tests {
 
 #[cfg(test)]
 mod solver_tests;
+
+#[cfg(test)]
+mod kbc_tests;

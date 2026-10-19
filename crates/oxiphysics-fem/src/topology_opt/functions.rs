@@ -5,6 +5,7 @@
 #[cfg(test)]
 use super::types::OcOptimizer;
 use super::types::{BesoParams, SimpParams, TopologyGrid};
+use crate::topology_filter::{FilterKernel, SparseFilter};
 
 /// Fraction of 2×2 patches exhibiting a checkerboard pattern.
 ///
@@ -130,34 +131,17 @@ pub fn beta_continuation(current_beta: f64, factor: f64, max_beta: f64) -> f64 {
 /// Compute a distance-weighted sensitivity filter with normalization.
 ///
 /// This is an improved version of the hat-function filter that uses a
-/// Gaussian kernel instead of a tent function for smoother sensitivity fields.
+/// Gaussian kernel (`σ = radius / 3`, truncated at `radius`) instead of a tent
+/// function for smoother sensitivity fields.  The weights come from a uniform
+/// cell list ([`SparseFilter`]): cost `O(n · k)`, not `O(n²)`.
 pub fn filter_sensitivities_gaussian(
     grid: &TopologyGrid,
     sensitivities: &[f64],
     radius: f64,
 ) -> Vec<f64> {
-    let n = grid.elements.len();
-    let sigma = radius / 3.0;
-    let mut filtered = vec![0.0f64; n];
-    for (i, filt_i) in filtered.iter_mut().enumerate() {
-        let ei = &grid.elements[i];
-        let mut num = 0.0f64;
-        let mut den = 0.0f64;
-        for (j, ej) in grid.elements.iter().enumerate() {
-            let dist_sq = (ei.x0 - ej.x0).powi(2) + (ei.y0 - ej.y0).powi(2);
-            if dist_sq < (radius * radius) {
-                let w = (-dist_sq / (2.0 * sigma * sigma)).exp();
-                num += w * ej.rho * sensitivities[j];
-                den += w * ej.rho;
-            }
-        }
-        *filt_i = if den.abs() > 1e-30 {
-            num / den
-        } else {
-            sensitivities[i]
-        };
-    }
-    filtered
+    let rho: Vec<f64> = grid.elements.iter().map(|e| e.rho).collect();
+    SparseFilter::new(&grid.centroids(), radius, FilterKernel::Gaussian)
+        .density_weighted_average(sensitivities, &rho)
 }
 /// Compute a PDE-based (Helmholtz) smoothed sensitivity field.
 ///
@@ -879,35 +863,28 @@ mod tests {
 }
 /// Filter sensitivities using a weighted average over elements within radius r_min.
 ///
-/// `mesh` is a list of element centroid (x, y) coordinates.
+/// `mesh` is a list of element centroid (x, y) coordinates.  The neighbours are
+/// found with a uniform cell list ([`SparseFilter`]): cost `O(n · k)`, not `O(n²)`.
 pub fn filter_sensitivities_mesh(
     sensitivities: &[f64],
     mesh: &[(f64, f64)],
     r_min: f64,
 ) -> Vec<f64> {
     assert_eq!(sensitivities.len(), mesh.len());
-    let n = sensitivities.len();
-    let mut filtered = vec![0.0_f64; n];
-    for i in 0..n {
-        let (xi, yi) = mesh[i];
-        let mut weight_sum = 0.0_f64;
-        let mut sens_sum = 0.0_f64;
-        for j in 0..n {
-            let (xj, yj) = mesh[j];
-            let dx = xi - xj;
-            let dy = yi - yj;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let w = (r_min - dist).max(0.0);
-            weight_sum += w;
-            sens_sum += w * sensitivities[j];
-        }
-        filtered[i] = if weight_sum > 0.0 {
-            sens_sum / weight_sum
-        } else {
-            sensitivities[i]
-        };
-    }
-    filtered
+    let filter = SparseFilter::hat(mesh, r_min);
+    let weighted = filter.apply(sensitivities);
+    weighted
+        .iter()
+        .zip(filter.row_sum.iter())
+        .zip(sensitivities.iter())
+        .map(|((&sens_sum, &weight_sum), &own)| {
+            if weight_sum > 0.0 {
+                sens_sum / weight_sum
+            } else {
+                own
+            }
+        })
+        .collect()
 }
 /// Compliance objective C = u^T * K * u computed from sparse triplets.
 ///

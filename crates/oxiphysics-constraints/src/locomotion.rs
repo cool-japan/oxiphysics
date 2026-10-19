@@ -8,6 +8,10 @@
 
 use std::f64::consts::{PI, TAU};
 
+use crate::multi_agent_constraints::{
+    OrcaDisc, orca_compute_new_velocity, orca_half_plane as rvo2_half_plane,
+};
+
 // ---------------------------------------------------------------------------
 // Vector helpers (no nalgebra)
 // ---------------------------------------------------------------------------
@@ -584,6 +588,9 @@ pub struct BalanceController {
     pub com_pos: [f64; 3],
     /// Current centre-of-mass velocity.
     pub com_vel: [f64; 3],
+    /// Current centre-of-mass acceleration (m/s²); the ZMP depends on it, not
+    /// on the velocity.
+    pub com_acc: [f64; 3],
     /// Support polygon vertices (XZ plane), convex hull.
     pub support_polygon: Vec<[f64; 2]>,
     /// Tipping threshold: ZMP distance outside polygon (metres).
@@ -599,19 +606,29 @@ impl BalanceController {
             kd: 8.0,
             com_pos: [0.0; 3],
             com_vel: [0.0; 3],
+            com_acc: [0.0; 3],
             support_polygon: vec![[-0.1, -0.1], [0.1, -0.1], [0.1, 0.1], [-0.1, 0.1]],
             tipping_threshold: 0.05,
         }
     }
 
     /// Compute the Zero-Moment Point (ZMP) in the XZ plane.
+    ///
+    /// Uses the linear inverted pendulum model
+    /// `ZMP = CoM_xz − (h / g) · CoM_acc_xz`, where `h` is
+    /// [`com_height`](Self::com_height) and `g = |gravity|`.  A CoM that does not
+    /// accelerate horizontally therefore has its ZMP under the CoM, whatever its
+    /// velocity.  Without gravity (`g < 1e-9`) the pendulum model is singular
+    /// and the CoM projection is returned.
     pub fn zmp(&self, gravity: f64) -> [f64; 2] {
-        // ZMP = CoM_xz - h/g * CoM_accel_xz  (linearised pendulum)
-        // Without external accel, ZMP ≈ CoM projection
         let g = gravity.abs();
+        if g < 1e-9 {
+            return [self.com_pos[0], self.com_pos[2]];
+        }
+        let lean = self.com_height / g;
         [
-            self.com_pos[0] - (self.com_height / g) * self.com_vel[0],
-            self.com_pos[2] - (self.com_height / g) * self.com_vel[2],
+            self.com_pos[0] - lean * self.com_acc[0],
+            self.com_pos[2] - lean * self.com_acc[2],
         ]
     }
 
@@ -744,6 +761,7 @@ pub fn vault_arc_position(start: [f64; 3], end: [f64; 3], arc_height: f64, t: f6
 // ---------------------------------------------------------------------------
 
 /// A single agent in an ORCA-based crowd simulation.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CrowdAgent {
     /// Agent radius (metres).
     pub radius: f64,
@@ -772,51 +790,74 @@ impl CrowdAgent {
         }
     }
 
-    /// Compute new velocity respecting ORCA half-planes from `neighbors`.
+    /// The agent as a disc for the ORCA solver.
+    fn as_orca_disc(&self) -> OrcaDisc {
+        OrcaDisc {
+            position: self.position,
+            velocity: self.velocity,
+            radius: self.radius,
+        }
+    }
+
+    /// The ORCA velocity of this agent for the time step `dt`, without moving it.
+    ///
+    /// Every neighbour contributes the reciprocal half-plane of RVO2 (see
+    /// [`velocity_obstacle`]); the result is the velocity closest to
+    /// [`preferred_velocity`](Self::preferred_velocity) that lies inside all of
+    /// them and inside the [`max_speed`](Self::max_speed) disc.  When the
+    /// half-planes cannot all be met, the velocity that violates the worst of
+    /// them least is returned.  Computing the velocity of every agent before
+    /// moving any of them keeps the reciprocal collision-free guarantee.
+    pub fn orca_velocity(&self, neighbors: &[CrowdAgent], dt: f64) -> [f64; 2] {
+        let others: Vec<OrcaDisc> = neighbors.iter().map(CrowdAgent::as_orca_disc).collect();
+        orca_compute_new_velocity(
+            &self.as_orca_disc(),
+            self.preferred_velocity,
+            self.max_speed,
+            self.time_horizon,
+            dt,
+            &others,
+        )
+    }
+
+    /// Compute the new ORCA velocity respecting `neighbors` and advance the
+    /// position by `dt`.
+    ///
+    /// The neighbours are read as they are now (positions and velocities), so
+    /// when several agents are stepped in one frame, step each against a
+    /// snapshot (clones) of the others, or use [`orca_velocity`](Self::orca_velocity)
+    /// for all agents first and move them afterwards.
     pub fn orca_step(&mut self, neighbors: &[CrowdAgent], dt: f64) {
-        let half_planes: Vec<OrcaHalfPlane> = neighbors
-            .iter()
-            .filter_map(|other| {
-                velocity_obstacle(
-                    self.position,
-                    self.velocity,
-                    self.radius,
-                    other.position,
-                    other.velocity,
-                    other.radius,
-                    self.time_horizon,
-                )
-            })
-            .collect();
-
-        // Project preferred velocity onto feasible region (simplified LP)
-        let mut new_vel = self.preferred_velocity;
-        for hp in &half_planes {
-            let pen = dot2(new_vel, hp.normal) - hp.offset;
-            if pen < 0.0 {
-                new_vel = add2(new_vel, scale2(hp.normal, -pen));
-            }
-        }
-
-        // Clamp to max speed
-        let spd = len2(new_vel);
-        if spd > self.max_speed {
-            new_vel = scale2(norm2(new_vel), self.max_speed);
-        }
-        self.velocity = new_vel;
+        self.velocity = self.orca_velocity(neighbors, dt);
         self.position = add2(self.position, scale2(self.velocity, dt));
     }
 }
 
-/// An ORCA half-plane constraint: `dot(v, normal) >= offset`.
+/// An ORCA half-plane constraint: the permitted velocities `v` satisfy
+/// `dot(v, normal) >= offset`.
+///
+/// `normal` is the unit normal pointing into the permitted side.  The frame of
+/// `v` is named by the function that produced the half-plane:
+/// [`velocity_obstacle`] constrains the agent's own (absolute) velocity,
+/// [`orca_half_plane`] its velocity relative to the neighbour.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OrcaHalfPlane {
-    /// Outward normal of the half-plane.
+    /// Unit normal pointing into the permitted side of the half-plane.
     pub normal: [f64; 2],
-    /// Offset along the normal.
+    /// Offset along the normal: the boundary is `dot(v, normal) = offset`.
     pub offset: f64,
 }
 
-/// Compute the velocity obstacle and return an ORCA half-plane for `agent` w.r.t. `other`.
+/// Compute the ORCA half-plane for agent A with respect to agent B.
+///
+/// This is the per-neighbour step of RVO2: the half-plane bounds the new
+/// absolute velocity of agent A so that, if B takes the matching half-plane
+/// from its own point of view, the pair is free of collisions for at least
+/// `time_horizon` seconds.  Overlapping agents are separated within
+/// `time_step` seconds (the normal then points away from the neighbour).
+///
+/// Returns `None` when `time_horizon` or `time_step` is not positive or an
+/// input is not finite.
 pub fn velocity_obstacle(
     pos_a: [f64; 2],
     vel_a: [f64; 2],
@@ -825,54 +866,63 @@ pub fn velocity_obstacle(
     vel_b: [f64; 2],
     rad_b: f64,
     time_horizon: f64,
+    time_step: f64,
 ) -> Option<OrcaHalfPlane> {
-    let rel_pos = sub2(pos_b, pos_a);
-    let rel_vel = sub2(vel_a, vel_b);
-    let combined_radius = rad_a + rad_b;
-    let dist_sq = dot2(rel_pos, rel_pos);
-    let dist = dist_sq.sqrt();
-
-    if dist < 1e-6 {
+    let finite = pos_a
+        .iter()
+        .chain(&vel_a)
+        .chain(&pos_b)
+        .chain(&vel_b)
+        .chain(&[rad_a, rad_b, time_horizon, time_step])
+        .all(|c| c.is_finite());
+    if !finite || time_horizon <= 0.0 || time_step <= 0.0 {
         return None;
     }
-
-    // Truncated velocity obstacle
-    let inv_tau = 1.0 / time_horizon;
-    let w = sub2(rel_vel, scale2(rel_pos, inv_tau));
-    let w_len = len2(w);
-
-    if w_len < 1e-9 {
-        return None;
-    }
-
-    let dot_w_rel = dot2(w, rel_pos);
-    let leg = (dist_sq - combined_radius * combined_radius * inv_tau * inv_tau).sqrt();
-    let _ = leg; // used in full ORCA but omitted in simplified version
-
-    let normal = if dot_w_rel < 0.0 {
-        norm2(scale2(w, -1.0))
-    } else {
-        let perp = [-rel_pos[1] / dist, rel_pos[0] / dist];
-        norm2(perp)
-    };
-
-    let offset = dot2(normal, rel_vel) - combined_radius * inv_tau;
-    Some(OrcaHalfPlane { normal, offset })
+    let half_plane = rvo2_half_plane(
+        pos_a,
+        vel_a,
+        rad_a,
+        pos_b,
+        vel_b,
+        rad_b,
+        time_horizon,
+        time_step,
+    );
+    Some(OrcaHalfPlane {
+        normal: half_plane.normal,
+        offset: dot2(half_plane.normal, half_plane.point),
+    })
 }
 
-/// Compute an ORCA half-plane from a velocity obstacle cone.
+/// Compute an ORCA half-plane from the relative state of two agents.
+///
+/// `rel_pos` is the position of B relative to A, `rel_vel` the velocity of A
+/// relative to B and `combined_radius` the sum of the two radii.  The returned
+/// half-plane bounds the *new velocity of A relative to B*: `dot(v, normal) >=
+/// offset`.  It is the same half-plane as [`velocity_obstacle`] produces, seen
+/// in the frame that moves with B: adding `dot(normal, vel_b)` to `offset`
+/// turns it into the half-plane on A's absolute velocity.
 pub fn orca_half_plane(
     rel_pos: [f64; 2],
     rel_vel: [f64; 2],
     combined_radius: f64,
     time_horizon: f64,
+    time_step: f64,
 ) -> OrcaHalfPlane {
-    let inv_tau = 1.0 / time_horizon;
-    let w = sub2(rel_vel, scale2(rel_pos, inv_tau));
-    let w_len = len2(w);
-    let normal = if w_len > 1e-9 { norm2(w) } else { [1.0, 0.0] };
-    let offset = dot2(normal, rel_vel) - combined_radius * inv_tau;
-    OrcaHalfPlane { normal, offset }
+    let half_plane = rvo2_half_plane(
+        [0.0, 0.0],
+        rel_vel,
+        combined_radius,
+        rel_pos,
+        [0.0, 0.0],
+        0.0,
+        time_horizon,
+        time_step,
+    );
+    OrcaHalfPlane {
+        normal: half_plane.normal,
+        offset: dot2(half_plane.normal, half_plane.point),
+    }
 }
 
 /// Check capsule–ground contact: returns penetration depth (positive = penetrating).
@@ -1269,6 +1319,68 @@ mod tests {
         assert!((zmp[0] - 0.1).abs() < 1e-6);
     }
 
+    // 20b. BalanceController: the ZMP follows CoM acceleration (linear inverted pendulum)
+    #[test]
+    fn test_zmp_uses_com_acceleration() {
+        let g = 9.81;
+        let mut bc = BalanceController::new(1.0);
+        bc.com_pos = [0.0, 1.0, 0.0];
+        bc.com_acc = [g / bc.com_height * 0.1, 0.0, -g / bc.com_height * 0.2];
+        let zmp = bc.zmp(g);
+        assert!(
+            (zmp[0] + 0.1).abs() < 1e-12,
+            "zmp x should be -0.1, got {}",
+            zmp[0]
+        );
+        assert!(
+            (zmp[1] - 0.2).abs() < 1e-12,
+            "zmp z should be 0.2, got {}",
+            zmp[1]
+        );
+    }
+
+    // 20c. BalanceController: a moving but non-accelerating CoM has its ZMP under the CoM
+    #[test]
+    fn test_zmp_ignores_com_velocity() {
+        let mut bc = BalanceController::new(0.9);
+        bc.com_pos = [0.05, 0.9, -0.03];
+        bc.com_vel = [3.0, 0.0, -2.0];
+        bc.com_acc = [0.0; 3];
+        let zmp = bc.zmp(9.81);
+        assert_eq!(zmp, [0.05, -0.03]);
+        assert!(
+            !bc.is_tipping(9.81),
+            "a steady glide must not read as tipping"
+        );
+    }
+
+    // 20d. BalanceController: without gravity the pendulum model is singular, ZMP is the projection
+    #[test]
+    fn test_zmp_without_gravity_is_com_projection() {
+        let mut bc = BalanceController::new(1.0);
+        bc.com_pos = [0.2, 1.0, -0.1];
+        bc.com_acc = [4.0, 0.0, 4.0];
+        let zmp = bc.zmp(0.0);
+        assert_eq!(zmp, [0.2, -0.1]);
+        let torque = bc.corrective_torque(0.0);
+        assert!(torque.iter().all(|t| t.is_finite()));
+    }
+
+    // 20e. BalanceController: tipping is decided by acceleration pushing the ZMP out of the polygon
+    #[test]
+    fn test_is_tipping_follows_com_acceleration() {
+        let g = 9.81;
+        let mut bc = BalanceController::new(1.0);
+        bc.com_pos = [0.0, 1.0, 0.0];
+        bc.com_acc = [g * 0.05, 0.0, 0.0];
+        assert!(
+            !bc.is_tipping(g),
+            "zmp at x=-0.05 is inside the +-0.1 polygon"
+        );
+        bc.com_acc = [g * 0.5, 0.0, 0.0];
+        assert!(bc.is_tipping(g), "zmp at x=-0.5 is outside the polygon");
+    }
+
     // 21. VaultController: can_vault check
     #[test]
     fn test_vault_can_vault() {
@@ -1326,8 +1438,177 @@ mod tests {
             [0.0, 0.0],
             0.3,
             2.0,
+            0.1,
         );
         assert!(hp.is_some());
+    }
+
+    // 27b. velocity_obstacle: invalid horizons and non-finite inputs give no half-plane
+    #[test]
+    fn test_velocity_obstacle_rejects_invalid_inputs() {
+        let call = |horizon: f64, step: f64, x: f64| {
+            velocity_obstacle(
+                [0.0, 0.0],
+                [1.0, 0.0],
+                0.3,
+                [x, 0.0],
+                [0.0, 0.0],
+                0.3,
+                horizon,
+                step,
+            )
+        };
+        assert!(call(2.0, 0.1, 3.0).is_some());
+        assert!(call(0.0, 0.1, 3.0).is_none());
+        assert!(call(2.0, 0.0, 3.0).is_none());
+        assert!(call(2.0, 0.1, f64::NAN).is_none());
+    }
+
+    // 27c. velocity_obstacle: hand-computed head-on cut-off-circle case
+    #[test]
+    fn test_velocity_obstacle_head_on_matches_rvo2() {
+        // p = (10, 0), v = (2, 0), R = 1, tau = 2: the nearest boundary of the
+        // truncated obstacle is the cut-off circle, u = (2.5, 0), so agent A
+        // is limited to vx <= 1 + 2.5 / 2 = 2.25, i.e. dot(v, (-1, 0)) >= -2.25.
+        let hp = velocity_obstacle(
+            [-5.0, 0.0],
+            [1.0, 0.0],
+            0.5,
+            [5.0, 0.0],
+            [-1.0, 0.0],
+            0.5,
+            2.0,
+            0.1,
+        )
+        .expect("valid inputs");
+        assert!((hp.normal[0] + 1.0).abs() < 1e-12 && hp.normal[1].abs() < 1e-12);
+        assert!((hp.offset + 2.25).abs() < 1e-12, "offset {}", hp.offset);
+        assert!(dot2([1.0, 0.0], hp.normal) >= hp.offset);
+        assert!(dot2([3.0, 0.0], hp.normal) < hp.offset);
+    }
+
+    // 27d. velocity_obstacle: overlapping agents are never pushed together
+    #[test]
+    fn test_velocity_obstacle_overlap_points_away_from_the_neighbour() {
+        let hp = velocity_obstacle(
+            [0.0, 0.0],
+            [0.0, 0.0],
+            0.5,
+            [0.8, 0.0],
+            [0.0, 0.0],
+            0.5,
+            2.0,
+            0.1,
+        )
+        .expect("valid inputs");
+        assert!(hp.normal[0] < -0.99, "normal {:?}", hp.normal);
+        // Moving towards the neighbour violates the constraint.
+        assert!(dot2([1.0, 0.0], hp.normal) < hp.offset);
+        // Retreating satisfies it.
+        assert!(dot2([-2.0, 0.0], hp.normal) >= hp.offset);
+    }
+
+    // 27e. CrowdAgent: an overlapped agent retreats instead of advancing
+    #[test]
+    fn test_orca_step_overlap_separates_agents() {
+        let mut a = CrowdAgent::new(0.5, 3.0);
+        a.preferred_velocity = [1.0, 0.0];
+        let mut b = CrowdAgent::new(0.5, 3.0);
+        b.position = [0.8, 0.0];
+        b.preferred_velocity = [-1.0, 0.0];
+        let snapshot_a = a.clone();
+        let snapshot_b = b.clone();
+        a.orca_step(&[snapshot_b], 0.1);
+        b.orca_step(&[snapshot_a], 0.1);
+        assert!(a.velocity[0] < 0.0, "A must back off, got {:?}", a.velocity);
+        assert!(b.velocity[0] > 0.0, "B must back off, got {:?}", b.velocity);
+        let gap = len2(sub2(b.position, a.position));
+        assert!(gap > 0.8, "the agents must move apart, gap {gap}");
+    }
+
+    // 27f. CrowdAgent: head-on agents never overlap over 200 steps
+    #[test]
+    fn test_crowd_agents_head_on_never_overlap() {
+        let mut a = CrowdAgent::new(0.5, 1.5);
+        a.position = [-5.0, 0.0];
+        a.preferred_velocity = [1.0, 0.0];
+        a.time_horizon = 5.0;
+        let mut b = CrowdAgent::new(0.5, 1.5);
+        b.position = [5.0, 0.0];
+        b.preferred_velocity = [-1.0, 0.0];
+        b.time_horizon = 5.0;
+        let dt = 0.1;
+        let mut smallest_gap = f64::MAX;
+        for _ in 0..200 {
+            let new_a = a.orca_velocity(std::slice::from_ref(&b), dt);
+            let new_b = b.orca_velocity(std::slice::from_ref(&a), dt);
+            a.velocity = new_a;
+            b.velocity = new_b;
+            a.position = add2(a.position, scale2(a.velocity, dt));
+            b.position = add2(b.position, scale2(b.velocity, dt));
+            smallest_gap = smallest_gap.min(len2(sub2(b.position, a.position)) - 1.0);
+        }
+        assert!(
+            smallest_gap >= -1e-6,
+            "agents overlapped by {}",
+            -smallest_gap
+        );
+        // Perfect symmetry makes ORCA brake the pair rather than swerve it.
+        assert!(
+            len2(sub2(b.position, a.position)) < 3.0,
+            "they must have closed in"
+        );
+    }
+
+    // 27f'. CrowdAgent: a slightly offset head-on pair swerves and passes
+    #[test]
+    fn test_crowd_agents_with_lateral_offset_pass_each_other() {
+        let mut a = CrowdAgent::new(0.5, 1.5);
+        a.position = [-5.0, 0.0];
+        a.preferred_velocity = [1.0, 0.0];
+        a.time_horizon = 5.0;
+        let mut b = CrowdAgent::new(0.5, 1.5);
+        b.position = [5.0, 0.3];
+        b.preferred_velocity = [-1.0, 0.0];
+        b.time_horizon = 5.0;
+        let dt = 0.1;
+        let mut smallest_gap = f64::MAX;
+        for _ in 0..300 {
+            let snapshot_a = a.clone();
+            let snapshot_b = b.clone();
+            a.orca_step(std::slice::from_ref(&snapshot_b), dt);
+            b.orca_step(std::slice::from_ref(&snapshot_a), dt);
+            smallest_gap = smallest_gap.min(len2(sub2(b.position, a.position)) - 1.0);
+        }
+        assert!(
+            smallest_gap >= -1e-6,
+            "agents overlapped by {}",
+            -smallest_gap
+        );
+        assert!(
+            a.position[0] > b.position[0] + 10.0,
+            "they must have passed each other: {:?} {:?}",
+            a.position,
+            b.position
+        );
+    }
+
+    // 27g. CrowdAgent: orca_step is orca_velocity followed by a position update
+    #[test]
+    fn test_orca_step_matches_orca_velocity() {
+        let mut a = CrowdAgent::new(0.4, 2.0);
+        a.position = [0.0, 0.0];
+        a.velocity = [0.5, 0.0];
+        a.preferred_velocity = [1.0, 0.0];
+        let mut b = CrowdAgent::new(0.4, 2.0);
+        b.position = [3.0, 0.2];
+        b.velocity = [-0.5, 0.0];
+        let expected = a.orca_velocity(std::slice::from_ref(&b), 0.05);
+        a.orca_step(std::slice::from_ref(&b), 0.05);
+        assert_eq!(a.velocity, expected);
+        assert!((a.position[0] - expected[0] * 0.05).abs() < 1e-15);
+        assert!((a.position[1] - expected[1] * 0.05).abs() < 1e-15);
+        assert!(len2(a.velocity) <= 2.0 + 1e-12);
     }
 
     // 28. capsule_ground_contact: positive when penetrating
@@ -1369,8 +1650,33 @@ mod tests {
     // 33. orca_half_plane: normal is unit
     #[test]
     fn test_orca_half_plane_unit_normal() {
-        let hp = orca_half_plane([1.0, 0.0], [0.5, 0.0], 0.5, 2.0);
+        let hp = orca_half_plane([1.0, 0.0], [0.5, 0.0], 0.5, 2.0, 0.1);
         let l = len2(hp.normal);
         assert!((l - 1.0).abs() < 1e-9);
+    }
+
+    // 34. orca_half_plane: the relative-frame half-plane matches velocity_obstacle
+    #[test]
+    fn test_orca_half_plane_matches_velocity_obstacle_in_the_relative_frame() {
+        let (vel_a, vel_b) = ([1.0, 0.3], [-0.4, 0.1]);
+        let absolute = velocity_obstacle([0.0, 0.0], vel_a, 0.4, [4.0, 1.0], vel_b, 0.4, 3.0, 0.1)
+            .expect("valid inputs");
+        let relative = orca_half_plane([4.0, 1.0], sub2(vel_a, vel_b), 0.8, 3.0, 0.1);
+        assert!((absolute.normal[0] - relative.normal[0]).abs() < 1e-12);
+        assert!((absolute.normal[1] - relative.normal[1]).abs() < 1e-12);
+        let shifted = relative.offset + dot2(relative.normal, vel_b);
+        assert!(
+            (absolute.offset - shifted).abs() < 1e-12,
+            "absolute offset {} vs shifted relative offset {shifted}",
+            absolute.offset
+        );
+    }
+
+    // 35. orca_half_plane: the current relative velocity of a far agent is permitted
+    #[test]
+    fn test_orca_half_plane_permits_the_current_velocity_of_a_distant_agent() {
+        let rel_vel = [0.5, 0.0];
+        let hp = orca_half_plane([20.0, 0.0], rel_vel, 1.0, 2.0, 0.1);
+        assert!(dot2(rel_vel, hp.normal) >= hp.offset - 1e-12);
     }
 }

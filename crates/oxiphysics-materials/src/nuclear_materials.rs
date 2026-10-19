@@ -102,16 +102,65 @@ impl RadiationDamage {
         }
     }
 
-    /// NRT displacements per atom (dpa) for a given neutron fluence.
+    /// NRT (Norgett–Robinson–Torrens) number of stable displacements ν_NRT
+    /// produced by a single primary knock-on atom.
     ///
-    /// dpa = 0.8 · ν_NRT · fluence / (2 · Ed)
-    /// where ν_NRT is the number of displacements from one PKA event.
+    /// `pka_energy` is used as the damage energy T_dam, the part of the recoil
+    /// energy that is spent in nuclear (displacive) collisions; if it is a raw
+    /// recoil energy, the electronic losses must already have been subtracted
+    /// (Lindhard partition).
+    ///
+    /// ```text
+    /// ν_NRT = 0                     for T_dam <  Ed
+    /// ν_NRT = 1                     for Ed ≤ T_dam < 2.5 Ed
+    /// ν_NRT = 0.8 · T_dam / (2 Ed)  for T_dam ≥ 2.5 Ed
+    /// ```
+    ///
+    /// The factor 0.8 is the NRT displacement efficiency; 2.5 Ed = 2 Ed / 0.8 is
+    /// the energy at which the linear branch reaches the single-displacement
+    /// plateau, so ν_NRT is continuous.  Unlike the integer
+    /// [`RadiationDamage::kinchin_pease`] count it is returned as a real number
+    /// so that it can be used directly in damage-rate integrals.
+    ///
+    /// Returns `NaN` if the displacement energy is not a positive finite number.
+    pub fn nrt_displacements(&self) -> f64 {
+        let ed = self.displacement_energy;
+        let damage_energy = self.pka_energy;
+        if !(ed.is_finite() && ed > 0.0) || damage_energy.is_nan() {
+            return f64::NAN;
+        }
+        if damage_energy < ed {
+            0.0
+        } else if damage_energy < 2.5 * ed {
+            1.0
+        } else {
+            0.8 * damage_energy / (2.0 * ed)
+        }
+    }
+
+    /// Displacements per atom (dpa) accumulated under a neutron fluence.
+    ///
+    /// ```text
+    /// dpa = σ_d · ν_NRT · Φ
+    /// ```
+    ///
+    /// where σ_d is the spectrum-averaged cross-section for producing a PKA of
+    /// energy `pka_energy` (events per atom per unit fluence), ν_NRT the number
+    /// of displacements per PKA ([`RadiationDamage::nrt_displacements`]) and Φ
+    /// the fluence.  The result is dimensionless.
     ///
     /// # Arguments
-    /// * `fluence` – Neutron fluence \[n/m²\].
-    pub fn nrt_dpa(&self, fluence: f64) -> f64 {
-        let nu = self.kinchin_pease(self.pka_energy) as f64;
-        0.8 * nu * fluence / (2.0 * self.displacement_energy)
+    /// * `fluence_m2` – Neutron fluence Φ \[n/m²\] (non-negative).
+    /// * `displacement_xs_m2` – PKA-production cross-section σ_d \[m²\]
+    ///   (non-negative; 1 barn = 1e-28 m²).
+    ///
+    /// Returns `NaN` for a negative or `NaN` fluence or cross-section, and
+    /// whenever [`RadiationDamage::nrt_displacements`] is `NaN`.
+    pub fn nrt_dpa(&self, fluence_m2: f64, displacement_xs_m2: f64) -> f64 {
+        if !(fluence_m2 >= 0.0 && displacement_xs_m2 >= 0.0) {
+            return f64::NAN;
+        }
+        displacement_xs_m2 * self.nrt_displacements() * fluence_m2
     }
 
     /// Kinchin-Pease number of displacements from a single PKA.
@@ -581,18 +630,108 @@ mod tests {
     }
 
     #[test]
-    fn test_nrt_dpa_positive() {
-        let rd = RadiationDamage::new(40.0, 200.0, 26, 55.85);
-        let dpa = rd.nrt_dpa(1e22);
-        assert!(dpa > 0.0);
+    fn test_nrt_displacements_zero_below_threshold() {
+        let rd = RadiationDamage::new(40.0, 39.999, 26, 55.85);
+        assert_eq!(rd.nrt_displacements(), 0.0);
     }
 
     #[test]
-    fn test_nrt_dpa_scales_with_fluence() {
+    fn test_nrt_displacements_single_pair_plateau() {
+        // Ed <= T_dam < 2.5 Ed gives exactly one displacement.
+        for energy in [40.0, 55.0, 99.999] {
+            let rd = RadiationDamage::new(40.0, energy, 26, 55.85);
+            assert_eq!(rd.nrt_displacements(), 1.0, "T_dam = {energy} eV");
+        }
+    }
+
+    #[test]
+    fn test_nrt_displacements_continuous_at_two_and_a_half_ed() {
+        // 0.8 * 2.5 Ed / (2 Ed) = 1: the linear branch joins the plateau.
+        let at_knee = RadiationDamage::new(40.0, 100.0, 26, 55.85);
+        assert!((at_knee.nrt_displacements() - 1.0).abs() < 1e-12);
+        let just_below = RadiationDamage::new(40.0, 100.0 - 1e-9, 26, 55.85);
+        assert!((at_knee.nrt_displacements() - just_below.nrt_displacements()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_nrt_displacements_linear_branch() {
+        // 0.8 * 10 keV / (2 * 40 eV) = 100.
+        let rd = RadiationDamage::new(40.0, 10_000.0, 26, 55.85);
+        assert!((rd.nrt_displacements() - 100.0).abs() < 1e-12);
+        let doubled = RadiationDamage::new(40.0, 20_000.0, 26, 55.85);
+        assert!((doubled.nrt_displacements() / rd.nrt_displacements() - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_nrt_displacements_rejects_non_physical_threshold() {
+        assert!(
+            RadiationDamage::new(0.0, 100.0, 26, 55.85)
+                .nrt_displacements()
+                .is_nan()
+        );
+        assert!(
+            RadiationDamage::new(-40.0, 100.0, 26, 55.85)
+                .nrt_displacements()
+                .is_nan()
+        );
+        assert!(
+            RadiationDamage::new(f64::NAN, 100.0, 26, 55.85)
+                .nrt_displacements()
+                .is_nan()
+        );
+        assert!(
+            RadiationDamage::new(40.0, f64::NAN, 26, 55.85)
+                .nrt_displacements()
+                .is_nan()
+        );
+    }
+
+    #[test]
+    fn test_nrt_dpa_reference_case() {
+        // Ed = 40 eV, T_dam = 10 keV: nu_NRT = 100.  With sigma_d = 3e-28 m^2 (0.3 b)
+        // and Phi = 1e25 n/m^2: dpa = 3e-28 * 100 * 1e25 = 0.3.
+        let rd = RadiationDamage::new(40.0, 10_000.0, 26, 55.85);
+        assert!((rd.nrt_displacements() - 100.0).abs() < 1e-12);
+        let dpa = rd.nrt_dpa(1e25, 3e-28);
+        assert!((dpa - 0.3).abs() < 1e-12, "dpa = {dpa}");
+    }
+
+    #[test]
+    fn test_nrt_dpa_scales_linearly_with_fluence_and_cross_section() {
         let rd = RadiationDamage::new(40.0, 200.0, 26, 55.85);
-        let dpa1 = rd.nrt_dpa(1e22);
-        let dpa2 = rd.nrt_dpa(2e22);
-        assert!((dpa2 / dpa1 - 2.0).abs() < 1e-10);
+        let base = rd.nrt_dpa(1e22, 2e-28);
+        assert!(base > 0.0);
+        assert!((rd.nrt_dpa(2e22, 2e-28) / base - 2.0).abs() < 1e-12);
+        assert!((rd.nrt_dpa(1e22, 6e-28) / base - 3.0).abs() < 1e-12);
+        assert_eq!(rd.nrt_dpa(0.0, 2e-28), 0.0);
+        assert_eq!(rd.nrt_dpa(1e22, 0.0), 0.0);
+    }
+
+    #[test]
+    fn test_nrt_dpa_rejects_negative_or_nan_exposure() {
+        let rd = RadiationDamage::new(40.0, 10_000.0, 26, 55.85);
+        assert!(rd.nrt_dpa(-1e25, 3e-28).is_nan());
+        assert!(rd.nrt_dpa(1e25, -3e-28).is_nan());
+        assert!(rd.nrt_dpa(f64::NAN, 3e-28).is_nan());
+        assert!(rd.nrt_dpa(1e25, f64::NAN).is_nan());
+        let invalid_threshold = RadiationDamage::new(0.0, 10_000.0, 26, 55.85);
+        assert!(invalid_threshold.nrt_dpa(1e25, 3e-28).is_nan());
+    }
+
+    #[test]
+    fn test_nrt_dpa_is_zero_when_recoil_cannot_displace() {
+        let rd = RadiationDamage::new(40.0, 25.0, 26, 55.85);
+        assert_eq!(rd.nrt_dpa(1e25, 3e-28), 0.0);
+    }
+
+    #[test]
+    fn test_nrt_dpa_is_dimensionless_dose_not_a_fluence_density() {
+        // E = 10 keV, Ed = 40 eV, Phi = 1e22 n/m^2, sigma_d = 3e-28 m^2 gives 3e-4 dpa;
+        // the former expression returned 1.25e22 "dpa" for the same inputs.
+        let rd = RadiationDamage::new(40.0, 10_000.0, 26, 55.85);
+        let dpa = rd.nrt_dpa(1e22, 3e-28);
+        assert!((dpa - 3e-4).abs() < 1e-15, "dpa = {dpa}");
+        assert!(dpa < 1.0);
     }
 
     #[test]

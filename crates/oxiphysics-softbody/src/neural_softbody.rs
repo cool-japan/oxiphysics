@@ -16,6 +16,18 @@
 //! - **Neural pose-driven deformation**: blend-shape + neural residual
 //! - **Latent space deformation**: encoder/decoder over vertex positions
 //! - **Real-time neural softbody**: low-latency inference loop
+//!
+//! Strains and stresses are Voigt 6-vectors `[xx, yy, zz, xy, xz, yz]` with
+//! tensor (not engineering) shear components.
+
+use crate::{Error, Result};
+
+mod pde_loss;
+mod rest_shape;
+#[cfg(test)]
+mod tests;
+
+pub use rest_shape::TetRestShape;
 
 // ---------------------------------------------------------------------------
 // Internal math helpers (no nalgebra)
@@ -26,14 +38,6 @@
 fn vec_add_inplace(a: &mut [f64], b: &[f64]) {
     for (x, y) in a.iter_mut().zip(b.iter()) {
         *x += y;
-    }
-}
-
-/// In-place scalar multiplication: `a *= s`.
-#[inline]
-fn vec_scale_inplace(a: &mut [f64], s: f64) {
-    for x in a.iter_mut() {
-        *x *= s;
     }
 }
 
@@ -92,10 +96,51 @@ fn dense_weight_grad(x: &[f64], grad_y: &[f64], n_in: usize, n_out: usize) -> Ve
 // NeuralConstitutiveModel
 // ---------------------------------------------------------------------------
 
+/// Seed of the deterministic He initialisation used by
+/// [`NeuralConstitutiveModel::new`] ("OXPHYSIC" in ASCII).
+pub const DEFAULT_INIT_SEED: u64 = 0x4F58_5048_5953_4943;
+
+/// SplitMix64 pseudo-random generator (Steele, Lea & Flood, 2014).
+///
+/// Only used for the weight initialisation, so that a model built from a given
+/// seed is bit-identical on every platform and independent of the `rand` version.
+struct SplitMix64 {
+    state: u64,
+}
+
+impl SplitMix64 {
+    fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform sample in `[-limit, limit)` with 53 random bits.
+    fn next_symmetric(&mut self, limit: f64) -> f64 {
+        let unit = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+        limit * (2.0 * unit - 1.0)
+    }
+}
+
+/// Half-width `sqrt(6 / fan_in)` of the He-uniform weight distribution.
+fn he_uniform_limit(fan_in: usize) -> f64 {
+    if fan_in == 0 {
+        0.0
+    } else {
+        (6.0 / fan_in as f64).sqrt()
+    }
+}
+
 /// A 2-layer ReLU network that maps strain (Voigt 6-vector) to stress (6-vector).
 ///
 /// Architecture: `6 → n_hidden (ReLU) → 6`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NeuralConstitutiveModel {
     /// Hidden layer size.
     pub n_hidden: usize,
@@ -110,8 +155,13 @@ pub struct NeuralConstitutiveModel {
 }
 
 impl NeuralConstitutiveModel {
-    /// Construct a new constitutive model with zero weights and given hidden size.
-    pub fn new(n_hidden: usize) -> Self {
+    /// Construct a model with all weights and biases zero.
+    ///
+    /// Such a model predicts zero stress for every strain, and gradient descent
+    /// cannot leave that state through the hidden layer: with `w1 = w2 = 0`
+    /// every weight gradient except the one of the output bias vanishes.  Use
+    /// [`new`](Self::new) for a trainable network.
+    pub fn zeros(n_hidden: usize) -> Self {
         Self {
             n_hidden,
             w1: vec![0.0; n_hidden * 6],
@@ -121,21 +171,57 @@ impl NeuralConstitutiveModel {
         }
     }
 
-    /// Construct a simple "linear-elastic" model: identity mapping via weights.
+    /// Construct a trainable model with deterministic He-uniform weights.
     ///
-    /// This initialises the two-layer network so that for small strains the
-    /// output approximates `stress = scale * strain`.
-    pub fn linear_elastic(n_hidden: usize, scale: f64) -> Self {
-        let mut model = Self::new(n_hidden);
-        // Set w1 rows to unit vectors scaled by sqrt(scale).
-        let s = scale.sqrt();
-        for i in 0..n_hidden.min(6) {
-            model.w1[i * 6 + i] = s;
+    /// Equivalent to [`with_seed`](Self::with_seed) with [`DEFAULT_INIT_SEED`].
+    pub fn new(n_hidden: usize) -> Self {
+        Self::with_seed(n_hidden, DEFAULT_INIT_SEED)
+    }
+
+    /// Construct a model with He-uniform weights drawn from a SplitMix64
+    /// generator seeded with `seed`: every weight is uniform in
+    /// `±sqrt(6 / fan_in)` (fan-in 6 for the first layer, `n_hidden` for the
+    /// second) and all biases are zero.
+    ///
+    /// The random weights break the symmetry that keeps a zero-initialised
+    /// network from learning, and the zero biases make the stress vanish at
+    /// zero strain, so the undeformed body starts force free.
+    pub fn with_seed(n_hidden: usize, seed: u64) -> Self {
+        let mut rng = SplitMix64::new(seed);
+        let limit1 = he_uniform_limit(6);
+        let limit2 = he_uniform_limit(n_hidden);
+        let w1 = (0..n_hidden * 6)
+            .map(|_| rng.next_symmetric(limit1))
+            .collect();
+        let w2 = (0..6 * n_hidden)
+            .map(|_| rng.next_symmetric(limit2))
+            .collect();
+        Self {
+            n_hidden,
+            w1,
+            b1: vec![0.0; n_hidden],
+            w2,
+            b2: vec![0.0; 6],
         }
-        // Set w2 rows to unit vectors scaled by sqrt(scale).
-        for i in 0..6 {
-            let j = i % n_hidden;
-            model.w2[i * n_hidden + j] = s;
+    }
+
+    /// Construct a "linear-elastic" model with `stress = scale * strain`.
+    ///
+    /// A ReLU unit cannot pass a negative input, so every Voigt component uses
+    /// a pair of hidden units, `relu(x) - relu(-x) = x`: the network is then
+    /// exactly linear for tension and compression alike.  Six components need
+    /// `n_hidden >= 12`; with fewer hidden units only the first `n_hidden / 2`
+    /// components get a pair and the remaining stress components are zero.
+    /// Hidden units beyond twelve have zero weights.
+    pub fn linear_elastic(n_hidden: usize, scale: f64) -> Self {
+        let mut model = Self::zeros(n_hidden);
+        for component in 0..(n_hidden / 2).min(6) {
+            let positive = 2 * component;
+            let negative = positive + 1;
+            model.w1[positive * 6 + component] = 1.0;
+            model.w1[negative * 6 + component] = -1.0;
+            model.w2[component * n_hidden + positive] = scale;
+            model.w2[component * n_hidden + negative] = -scale;
         }
         model
     }
@@ -148,29 +234,51 @@ impl NeuralConstitutiveModel {
         dense_forward(&self.w2, &self.b2, &h_act, self.n_hidden, 6)
     }
 
-    /// Backward pass: returns `(grad_w1, grad_b1, grad_w2, grad_b2)` for a MSE loss
-    /// `||stress_pred - stress_target||^2`.
+    /// Forward inference on a fixed-size Voigt strain; returns the Voigt stress.
+    pub fn forward_voigt(&self, strain: &[f64; 6]) -> [f64; 6] {
+        let mut stress = [0.0f64; 6];
+        for (out, value) in stress.iter_mut().zip(self.forward(strain)) {
+            *out = value;
+        }
+        stress
+    }
+
+    /// Backward pass: returns `(grad_w1, grad_b1, grad_w2, grad_b2)` for the
+    /// squared-error loss `||stress_pred - stress_target||^2` of one sample.
     pub fn backward(
         &self,
         strain: &[f64],
         stress_target: &[f64],
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
-        let h_pre = dense_forward(&self.w1, &self.b1, strain, 6, self.n_hidden);
-        let h_act: Vec<f64> = h_pre.iter().map(|&x| relu(x)).collect();
-        let stress_pred = dense_forward(&self.w2, &self.b2, &h_act, self.n_hidden, 6);
-
+        let stress_pred = self.forward(strain);
         // dL/d_stress_pred = 2*(pred - target)
         let grad_out: Vec<f64> = stress_pred
             .iter()
             .zip(stress_target.iter())
             .map(|(p, t)| 2.0 * (p - t))
             .collect();
+        self.backward_from_output_grad(strain, &grad_out)
+    }
 
-        let gw2 = dense_weight_grad(&h_act, &grad_out, self.n_hidden, 6);
-        let gb2 = grad_out.clone();
+    /// Backward pass for an arbitrary upstream gradient `grad_out = dL/d(stress)`
+    /// (length 6) of the stress predicted for `strain`; returns
+    /// `(grad_w1, grad_b1, grad_w2, grad_b2)`.
+    ///
+    /// This is how losses that are not a plain per-sample error, such as the
+    /// equilibrium residual of a stress field, reach the network weights.
+    pub fn backward_from_output_grad(
+        &self,
+        strain: &[f64],
+        grad_out: &[f64],
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let h_pre = dense_forward(&self.w1, &self.b1, strain, 6, self.n_hidden);
+        let h_act: Vec<f64> = h_pre.iter().map(|&x| relu(x)).collect();
+
+        let gw2 = dense_weight_grad(&h_act, grad_out, self.n_hidden, 6);
+        let gb2 = grad_out.to_vec();
 
         // Backprop through ReLU
-        let grad_h_pre_act = dense_backward_input(&self.w2, &grad_out, self.n_hidden, 6);
+        let grad_h_pre_act = dense_backward_input(&self.w2, grad_out, self.n_hidden, 6);
         let grad_h_pre: Vec<f64> = grad_h_pre_act
             .iter()
             .zip(h_pre.iter())
@@ -204,47 +312,63 @@ impl NeuralConstitutiveModel {
 // PhysicsInformedLoss
 // ---------------------------------------------------------------------------
 
-/// Physics-informed loss combining data MSE with equilibrium residual penalty.
+/// Physics-informed loss combining data MSE with an equilibrium residual penalty.
 ///
 /// `L = L_data + lambda_pde * L_pde`
 ///
-/// where `L_pde` penalises the divergence of the predicted stress tensor.
+/// `L_data` is the mean squared error between predicted and target stress
+/// ([`data_loss`](Self::data_loss)).  `L_pde` is the mean squared residual
+/// `||div(sigma) + f||^2` of the static equilibrium equation of the predicted
+/// stress field, evaluated with central differences on a regular grid of
+/// spacing [`fd_step`](Self::fd_step) (see
+/// [`pde_loss`](Self::pde_loss) and [`compute_field`](Self::compute_field)).
+/// The divergence needs spatial neighbours, so the PDE term only exists for a
+/// stress field sampled on a grid.
 #[derive(Debug, Clone)]
 pub struct PhysicsInformedLoss {
     /// Weight on the PDE residual term.
     pub lambda_pde: f64,
-    /// Finite-difference step for computing the stress divergence.
+    /// Grid spacing `h` of the stress field, the finite-difference step of
+    /// the stress divergence.
     pub fd_step: f64,
+    /// Regular-grid layout `[nx, ny, nz]` (flat index `i + nx * (j + ny * k)`)
+    /// of the batches given to [`NeuralPinnSolver::train_step`].  With
+    /// `Some(dims)` the batch is the stress field of the grid nodes and the PDE
+    /// term takes part in training; with `None` the samples are independent and
+    /// only the data term is trained.
+    pub grid_dims: Option<[usize; 3]>,
 }
 
 impl PhysicsInformedLoss {
-    /// Create a new PINN loss with given `lambda_pde` and finite-difference step.
+    /// Create a PINN loss with given `lambda_pde` and grid spacing `fd_step`,
+    /// without a grid layout (data term only until [`with_grid`](Self::with_grid)).
     pub fn new(lambda_pde: f64, fd_step: f64) -> Self {
         Self {
             lambda_pde,
             fd_step,
+            grid_dims: None,
         }
     }
 
-    /// Compute the total PINN loss given predicted and target stresses plus a
-    /// body-force vector.
+    /// Declare that training batches are stress fields on a regular grid of
+    /// `dims = [nx, ny, nz]` nodes, which activates the PDE term.
+    pub fn with_grid(mut self, dims: [usize; 3]) -> Self {
+        self.grid_dims = Some(dims);
+        self
+    }
+
+    /// Mean squared error between predicted and target stress components.
     ///
-    /// `L_pde` is approximated as `||div_sigma - f_body||^2` using a
-    /// finite-difference estimate of the divergence from neighbouring samples.
-    pub fn compute(&self, stress_pred: &[f64], stress_target: &[f64], _body_force: &[f64]) -> f64 {
-        // Data loss: MSE
-        let l_data: f64 = stress_pred
-            .iter()
-            .zip(stress_target.iter())
-            .map(|(p, t)| (p - t).powi(2))
-            .sum::<f64>()
-            / stress_pred.len() as f64;
-
-        // Simplified PDE loss: penalise norm of stress itself (proxy for divergence)
-        let l_pde: f64 =
-            stress_pred.iter().map(|s| s.powi(2)).sum::<f64>() / stress_pred.len() as f64;
-
-        l_data + self.lambda_pde * l_pde
+    /// Returns 0 for empty slices (never NaN).  The comparison covers the
+    /// common length of the two slices.
+    pub fn data_loss(&self, stress_pred: &[f64], stress_target: &[f64]) -> f64 {
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for (p, t) in stress_pred.iter().zip(stress_target.iter()) {
+            sum += (p - t) * (p - t);
+            count += 1;
+        }
+        if count == 0 { 0.0 } else { sum / count as f64 }
     }
 }
 
@@ -559,7 +683,12 @@ impl TrainingDataset {
     }
 
     /// Add a sample. If the dataset is full, evict the oldest sample.
+    ///
+    /// A dataset with `max_size == 0` stores nothing.
     pub fn push(&mut self, sample: StrainStressSample) {
+        if self.max_size == 0 {
+            return;
+        }
         if self.samples.len() >= self.max_size {
             self.samples.remove(0);
         }
@@ -857,13 +986,39 @@ impl NeuralVertex {
     }
 }
 
+/// Nodal displacements `x - X` of the four corners of `elem`, or `None` if a
+/// corner index is out of range.
+fn element_displacements(
+    positions: &[[f64; 3]],
+    rest: &[[f64; 3]],
+    elem: &[usize; 4],
+) -> Option<[[f64; 3]; 4]> {
+    let mut u = [[0.0f64; 3]; 4];
+    for (slot, &corner) in u.iter_mut().zip(elem.iter()) {
+        let x = positions.get(corner)?;
+        let x_rest = rest.get(corner)?;
+        *slot = [x[0] - x_rest[0], x[1] - x_rest[1], x[2] - x_rest[2]];
+    }
+    Some(u)
+}
+
 /// Real-time neural softbody: combines a learned constitutive model with
 /// a simple explicit Euler integrator for high-speed soft simulation.
+///
+/// The mesh consists of linear tetrahedra.  The strain of an element is the
+/// small strain `eps = sym(grad u)` of its displacement field relative to the
+/// rest configuration recorded when the body is built (see [`TetRestShape`]);
+/// the learned model maps it to a Voigt stress, and the stress becomes the
+/// nodal forces `f_a = -V0 * sigma * grad N_a`.  The forces of an element sum
+/// to zero and vanish for a rigid translation.  Being linearised, the strain
+/// is not invariant under large rigid rotations.
 #[derive(Debug, Clone)]
 pub struct RealTimeNeuralSoftBody {
     /// Vertices of the mesh.
     pub vertices: Vec<NeuralVertex>,
     /// Tetrahedral element connectivity (4 vertex indices per element).
+    ///
+    /// Call [`refresh_rest_shapes`](Self::refresh_rest_shapes) after changing it.
     pub elements: Vec<[usize; 4]>,
     /// Neural constitutive model for stress prediction.
     pub constitutive: NeuralConstitutiveModel,
@@ -871,10 +1026,20 @@ pub struct RealTimeNeuralSoftBody {
     pub density: f64,
     /// Rayleigh damping coefficient.
     pub damping: f64,
+    /// Rest positions of the vertices.
+    rest_positions: Vec<[f64; 3]>,
+    /// Per-element rest-state data (`None` for invalid or degenerate elements).
+    rest_shapes: Vec<Option<TetRestShape>>,
 }
 
 impl RealTimeNeuralSoftBody {
     /// Construct a new real-time neural softbody.
+    ///
+    /// The current vertex positions are the rest configuration.  The inverse
+    /// rest edge matrix and the rest volume of every element are precomputed
+    /// here, once.  Elements with an out-of-range vertex index or a degenerate
+    /// rest shape exert no force; they are listed by
+    /// [`invalid_elements`](Self::invalid_elements).
     pub fn new(
         vertices: Vec<NeuralVertex>,
         elements: Vec<[usize; 4]>,
@@ -882,85 +1047,139 @@ impl RealTimeNeuralSoftBody {
         density: f64,
         damping: f64,
     ) -> Self {
+        let rest_positions: Vec<[f64; 3]> = vertices.iter().map(|v| v.position).collect();
+        let rest_shapes = Self::build_rest_shapes(&rest_positions, &elements);
         Self {
             vertices,
             elements,
             constitutive,
             density,
             damping,
+            rest_positions,
+            rest_shapes,
         }
+    }
+
+    fn build_rest_shapes(
+        rest_positions: &[[f64; 3]],
+        elements: &[[usize; 4]],
+    ) -> Vec<Option<TetRestShape>> {
+        elements
+            .iter()
+            .map(|elem| TetRestShape::from_rest(rest_positions, elem))
+            .collect()
+    }
+
+    /// Rest positions of the vertices.
+    pub fn rest_positions(&self) -> &[[f64; 3]] {
+        &self.rest_positions
+    }
+
+    /// Replace the rest configuration and recompute the element rest data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`] unless there is exactly one rest
+    /// position per vertex.
+    pub fn set_rest_positions(&mut self, rest_positions: Vec<[f64; 3]>) -> Result<()> {
+        if rest_positions.len() != self.vertices.len() {
+            return Err(Error::InvalidParameter(format!(
+                "expected {} rest positions (one per vertex), got {}",
+                self.vertices.len(),
+                rest_positions.len()
+            )));
+        }
+        self.rest_positions = rest_positions;
+        self.refresh_rest_shapes();
+        Ok(())
+    }
+
+    /// Recompute the per-element rest data from the rest positions, e.g.
+    /// after modifying [`elements`](Self::elements).
+    pub fn refresh_rest_shapes(&mut self) {
+        self.rest_shapes = Self::build_rest_shapes(&self.rest_positions, &self.elements);
+    }
+
+    /// Indices of the elements that exert no force because a vertex index is
+    /// out of range or the rest tetrahedron is degenerate.
+    pub fn invalid_elements(&self) -> Vec<usize> {
+        (0..self.elements.len())
+            .filter(|&e| self.rest_shapes.get(e).copied().flatten().is_none())
+            .collect()
     }
 
     /// Compute the Voigt strain for a tetrahedral element given its current
     /// and rest positions.
     ///
-    /// Uses the linearised strain tensor `ε = 0.5*(∇u + ∇u^T)`.
+    /// The strain is the linearised strain tensor `eps = 0.5*(grad u + grad u^T)`
+    /// with the displacement gradient `grad u = Du * Dm^-1`, where `Du` holds
+    /// the displacement differences `u_i - u_0` and `Dm` the rest edge vectors
+    /// `X_i - X_0` of the element.  Returns zero strain for a degenerate rest
+    /// tetrahedron or an out-of-range vertex index.
     pub fn element_strain(
         positions: &[[f64; 3]],
         rest: &[[f64; 3]],
         elem: &[usize; 4],
     ) -> [f64; 6] {
-        // Displacement gradient via finite differences across tetrahedron edges
-        let u: Vec<[f64; 3]> = elem
-            .iter()
-            .map(|&i| {
-                [
-                    positions[i][0] - rest[i][0],
-                    positions[i][1] - rest[i][1],
-                    positions[i][2] - rest[i][2],
-                ]
-            })
-            .collect();
+        match (
+            TetRestShape::from_rest(rest, elem),
+            element_displacements(positions, rest, elem),
+        ) {
+            (Some(shape), Some(u)) => shape.voigt_strain(&u),
+            _ => [0.0; 6],
+        }
+    }
 
-        // Simple average strain approximation
-        let du_dx = u[1][0] - u[0][0];
-        let du_dy = u[2][1] - u[0][1];
-        let du_dz = u[3][2] - u[0][2];
-        let shear_xy = 0.5 * ((u[1][1] - u[0][1]) + (u[2][0] - u[0][0]));
-        let shear_xz = 0.5 * ((u[1][2] - u[0][2]) + (u[3][0] - u[0][0]));
-        let shear_yz = 0.5 * ((u[2][2] - u[0][2]) + (u[3][1] - u[0][1]));
-
-        [du_dx, du_dy, du_dz, shear_xy, shear_xz, shear_yz]
+    /// Elastic force on every vertex for the current positions.
+    ///
+    /// The learned stress of each element is converted to nodal forces
+    /// `f_a = -V0 * sigma * grad N_a` (columns of `-V0 sigma Dm^-T`, and
+    /// `f_0 = -(f_1 + f_2 + f_3)`) and accumulated per vertex.  Reaction forces
+    /// on static vertices are included.
+    pub fn elastic_forces(&self) -> Vec<[f64; 3]> {
+        let positions: Vec<[f64; 3]> = self.vertices.iter().map(|v| v.position).collect();
+        let mut forces = vec![[0.0f64; 3]; self.vertices.len()];
+        for (elem, shape) in self.elements.iter().zip(self.rest_shapes.iter()) {
+            let Some(shape) = shape else {
+                continue;
+            };
+            let Some(u) = element_displacements(&positions, &self.rest_positions, elem) else {
+                continue;
+            };
+            let strain = shape.voigt_strain(&u);
+            let stress = self.constitutive.forward_voigt(&strain);
+            let nodal = shape.nodal_forces(&stress);
+            for (&vertex, force) in elem.iter().zip(nodal.iter()) {
+                if let Some(total) = forces.get_mut(vertex) {
+                    for (t, f) in total.iter_mut().zip(force.iter()) {
+                        *t += f;
+                    }
+                }
+            }
+        }
+        forces
     }
 
     /// Advance the simulation by one time step `dt` given external gravity vector.
-    pub fn step(&mut self, dt: f64, gravity: &[f64; 3], rest_positions: &[[f64; 3]]) {
-        let n = self.vertices.len();
-        let mut forces = vec![[0.0f64; 3]; n];
+    pub fn step(&mut self, dt: f64, gravity: &[f64; 3]) {
+        let mut forces = self.elastic_forces();
 
         // Apply gravity
-        for (i, v) in self.vertices.iter().enumerate() {
+        for (force, v) in forces.iter_mut().zip(self.vertices.iter()) {
             if !v.is_static {
-                forces[i][0] += v.mass * gravity[0];
-                forces[i][1] += v.mass * gravity[1];
-                forces[i][2] += v.mass * gravity[2];
-            }
-        }
-
-        // Compute elastic forces from constitutive model
-        let positions: Vec<[f64; 3]> = self.vertices.iter().map(|v| v.position).collect();
-        for elem in &self.elements {
-            let strain = Self::element_strain(&positions, rest_positions, elem);
-            let stress = self.constitutive.forward(&strain);
-
-            // Distribute stress as equal forces on the 4 nodes (simplified)
-            let force_per_node = stress.iter().take(3).map(|&s| s * 0.25).collect::<Vec<_>>();
-            for &idx in elem.iter() {
-                if !self.vertices[idx].is_static {
-                    forces[idx][0] -= force_per_node[0];
-                    forces[idx][1] -= force_per_node[1];
-                    forces[idx][2] -= force_per_node[2];
+                for (f, g) in force.iter_mut().zip(gravity.iter()) {
+                    *f += v.mass * g;
                 }
             }
         }
 
         // Explicit Euler integration
-        for (i, v) in self.vertices.iter_mut().enumerate() {
+        for (v, force) in self.vertices.iter_mut().zip(forces.iter()) {
             if v.is_static {
                 continue;
             }
             let inv_m = 1.0 / v.mass;
-            for (k, &fk) in forces[i].iter().enumerate() {
+            for (k, &fk) in force.iter().enumerate() {
                 let acc = fk * inv_m - self.damping * v.velocity[k];
                 v.velocity[k] += dt * acc;
                 v.position[k] += dt * v.velocity[k];
@@ -973,10 +1192,16 @@ impl RealTimeNeuralSoftBody {
 // NeuralPinnSolver
 // ---------------------------------------------------------------------------
 
-/// Physics-informed neural network solver for static deformation.
+/// Physics-informed neural network solver for the constitutive model.
 ///
-/// Minimises `L = L_data + lambda_pinn * ||K*u - f||^2` where `u` is the
-/// displacement predicted by the network.
+/// Minimises `L = L_data + lambda_pde * L_pde` over the network weights by
+/// gradient descent.  `L_data` is the mean squared error between predicted
+/// and target stress.  `L_pde` is the equilibrium residual
+/// `||div(sigma) + f||^2` of the *predicted* stress field on a regular grid;
+/// it takes part in training when the solver's loss has a grid layout
+/// ([`PhysicsInformedLoss::grid_dims`]) and the batch holds the samples of
+/// the grid nodes in x-fastest order.  Without a grid layout the samples are
+/// independent, carry no spatial neighbours, and only the data term is trained.
 #[derive(Debug, Clone)]
 pub struct NeuralPinnSolver {
     /// The neural constitutive model used to predict stress from strain.
@@ -990,47 +1215,96 @@ pub struct NeuralPinnSolver {
 }
 
 impl NeuralPinnSolver {
-    /// Create a new PINN solver.
+    /// Create a new PINN solver with a He-initialised model.
+    ///
+    /// The loss starts without a grid layout (data term only) and with unit
+    /// grid spacing; set [`pinn_loss`](Self::pinn_loss) to
+    /// `PhysicsInformedLoss::new(lambda_pde, spacing).with_grid(dims)` to train
+    /// on a stress field.
     pub fn new(n_hidden: usize, lambda_pde: f64, lr: f64) -> Self {
         Self {
             model: NeuralConstitutiveModel::new(n_hidden),
-            pinn_loss: PhysicsInformedLoss::new(lambda_pde, 1e-5),
+            pinn_loss: PhysicsInformedLoss::new(lambda_pde, 1.0),
             lr,
             iteration: 0,
         }
     }
 
-    /// Run one training step on a batch of strain-stress samples.
+    /// Run one gradient-descent step on a batch of strain-stress samples.
     ///
-    /// Returns the mean total PINN loss over the batch.
-    pub fn train_step(&mut self, batch: &[StrainStressSample], body_force: &[f64]) -> f64 {
-        let mut total_loss = 0.0;
+    /// Returns the total loss `L_data + lambda_pde * L_pde` of the batch
+    /// evaluated at the weights *before* the update, with
+    /// `L_data = 1/(6 N) sum_k ||sigma_k - target_k||^2`.  The PDE term uses
+    /// `body_force` and is only present for a gridded batch (see
+    /// [`PhysicsInformedLoss::grid_dims`]); its gradient
+    /// `lambda_pde * d L_pde / d sigma` is added to the output gradient of the
+    /// data term before backpropagation through the network.
+    ///
+    /// An empty batch changes nothing and returns 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`] (leaving the model untouched) if a
+    /// grid layout is set but the batch size does not match it, or the grid
+    /// is invalid (see [`PhysicsInformedLoss::equilibrium_residuals`]).
+    pub fn train_step(
+        &mut self,
+        batch: &[StrainStressSample],
+        body_force: [f64; 3],
+    ) -> Result<f64> {
+        if batch.is_empty() {
+            return Ok(0.0);
+        }
+        let predictions: Vec<[f64; 6]> = batch
+            .iter()
+            .map(|s| self.model.forward_voigt(&s.strain))
+            .collect();
+
+        // Data term L_data = 1/(6 N) sum ||pred - target||^2 and its gradient.
+        let inv_count = 1.0 / (6.0 * batch.len() as f64);
+        let mut loss = 0.0;
+        let mut grad_out: Vec<[f64; 6]> = Vec::with_capacity(batch.len());
+        for (pred, sample) in predictions.iter().zip(batch.iter()) {
+            let mut grad = [0.0f64; 6];
+            for ((g, p), t) in grad.iter_mut().zip(pred.iter()).zip(sample.stress.iter()) {
+                let diff = p - t;
+                loss += diff * diff * inv_count;
+                *g = 2.0 * diff * inv_count;
+            }
+            grad_out.push(grad);
+        }
+
+        // Equilibrium term of the predicted stress field.
+        if let Some(dims) = self.pinn_loss.grid_dims {
+            let lambda = self.pinn_loss.lambda_pde;
+            let pde_loss = self.pinn_loss.pde_loss(&predictions, dims, body_force)?;
+            let pde_grad = self
+                .pinn_loss
+                .pde_gradient(&predictions, dims, body_force)?;
+            loss += lambda * pde_loss;
+            for (grad, pde) in grad_out.iter_mut().zip(pde_grad.iter()) {
+                for (g, d) in grad.iter_mut().zip(pde.iter()) {
+                    *g += lambda * d;
+                }
+            }
+        }
+
         let mut acc_gw1 = vec![0.0f64; self.model.w1.len()];
         let mut acc_gb1 = vec![0.0f64; self.model.b1.len()];
         let mut acc_gw2 = vec![0.0f64; self.model.w2.len()];
         let mut acc_gb2 = vec![0.0f64; self.model.b2.len()];
-
-        for s in batch {
-            let stress_pred = self.model.forward(&s.strain);
-            total_loss += self.pinn_loss.compute(&stress_pred, &s.stress, body_force);
-
-            let (gw1, gb1, gw2, gb2) = self.model.backward(&s.strain, &s.stress);
+        for (sample, grad) in batch.iter().zip(grad_out.iter()) {
+            let (gw1, gb1, gw2, gb2) = self.model.backward_from_output_grad(&sample.strain, grad);
             vec_add_inplace(&mut acc_gw1, &gw1);
             vec_add_inplace(&mut acc_gb1, &gb1);
             vec_add_inplace(&mut acc_gw2, &gw2);
             vec_add_inplace(&mut acc_gb2, &gb2);
         }
 
-        let n = batch.len() as f64;
-        vec_scale_inplace(&mut acc_gw1, 1.0 / n);
-        vec_scale_inplace(&mut acc_gb1, 1.0 / n);
-        vec_scale_inplace(&mut acc_gw2, 1.0 / n);
-        vec_scale_inplace(&mut acc_gb2, 1.0 / n);
-
         self.model
             .sgd_step(&acc_gw1, &acc_gb1, &acc_gw2, &acc_gb2, self.lr);
         self.iteration += 1;
-        total_loss / n
+        Ok(loss)
     }
 }
 
@@ -1040,6 +1314,10 @@ impl NeuralPinnSolver {
 
 /// High-level simulator that orchestrates training data generation, online
 /// training of the neural constitutive model, and real-time stepping.
+///
+/// The solver's model is the single source of truth for the learned
+/// constitutive law: after every training step it is copied into the soft
+/// body, so training changes the simulated material.
 #[derive(Debug, Clone)]
 pub struct NeuralSoftBodySimulator {
     /// The real-time soft body.
@@ -1050,14 +1328,15 @@ pub struct NeuralSoftBodySimulator {
     pub dataset: TrainingDataset,
     /// Inference-time corrector.
     pub corrector: InferenceTimeCorrector,
-    /// Rest positions of vertices.
-    pub rest_positions: Vec<[f64; 3]>,
     /// Gravity vector.
     pub gravity: [f64; 3],
 }
 
 impl NeuralSoftBodySimulator {
     /// Construct a new simulator from a vertex/element mesh.
+    ///
+    /// The initial vertex positions are the rest configuration; the soft body
+    /// starts with a copy of the solver's (He-initialised) model.
     pub fn new(
         vertices: Vec<NeuralVertex>,
         elements: Vec<[usize; 4]>,
@@ -1066,10 +1345,9 @@ impl NeuralSoftBodySimulator {
         damping: f64,
         gravity: [f64; 3],
     ) -> Self {
-        let rest_positions: Vec<[f64; 3]> = vertices.iter().map(|v| v.position).collect();
-        let constitutive = NeuralConstitutiveModel::new(n_hidden);
-        let body = RealTimeNeuralSoftBody::new(vertices, elements, constitutive, density, damping);
         let solver = NeuralPinnSolver::new(n_hidden, 0.01, 1e-4);
+        let body =
+            RealTimeNeuralSoftBody::new(vertices, elements, solver.model.clone(), density, damping);
         let dataset = TrainingDataset::new(1024);
         let corrector = InferenceTimeCorrector::new(0.01, 10, 1e-6);
         Self {
@@ -1077,18 +1355,34 @@ impl NeuralSoftBodySimulator {
             solver,
             dataset,
             corrector,
-            rest_positions,
             gravity,
         }
     }
 
     /// Advance the simulation by `dt`, optionally performing one online training step.
-    pub fn step(&mut self, dt: f64, do_train: bool) {
-        self.body.step(dt, &self.gravity, &self.rest_positions);
-        if do_train && !self.dataset.is_empty() {
-            let batch: Vec<StrainStressSample> = self.dataset.samples.clone();
-            self.solver.train_step(&batch, &[0.0, 0.0, 0.0]);
+    ///
+    /// With `do_train` and a non-empty dataset, the whole dataset is one
+    /// training batch (no body force); afterwards the trained model replaces
+    /// the soft body's constitutive model and the batch loss is returned.
+    /// Otherwise returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error of [`NeuralPinnSolver::train_step`] (for example a
+    /// grid layout of the solver that does not match the dataset size).
+    pub fn step(&mut self, dt: f64, do_train: bool) -> Result<Option<f64>> {
+        self.body.step(dt, &self.gravity);
+        if !do_train || self.dataset.is_empty() {
+            return Ok(None);
         }
+        let loss = self.solver.train_step(&self.dataset.samples, [0.0; 3])?;
+        self.body.constitutive = self.solver.model.clone();
+        Ok(Some(loss))
+    }
+
+    /// Rest positions of the vertices.
+    pub fn rest_positions(&self) -> &[[f64; 3]] {
+        self.body.rest_positions()
     }
 
     /// Return the current positions of all vertices.
@@ -1132,548 +1426,4 @@ pub fn vec3_cross(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ]
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // -----------------------------------------------------------------------
-    // NeuralConstitutiveModel tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_constitutive_forward_zero_input() {
-        let model = NeuralConstitutiveModel::new(16);
-        let strain = [0.0f64; 6];
-        let stress = model.forward(&strain);
-        assert_eq!(stress.len(), 6);
-        for s in &stress {
-            assert!(
-                s.abs() < 1e-12,
-                "Zero input should give zero output with zero weights"
-            );
-        }
-    }
-
-    #[test]
-    fn test_constitutive_forward_nonzero_weights() {
-        let mut model = NeuralConstitutiveModel::linear_elastic(8, 1000.0);
-        model.b2[0] = 0.5;
-        let strain = [0.01, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let stress = model.forward(&strain);
-        assert_eq!(stress.len(), 6);
-        // With non-zero weights the stress should not all be zero
-        let norm: f64 = stress.iter().map(|x| x * x).sum::<f64>().sqrt();
-        assert!(
-            norm > 0.0,
-            "Non-zero weights should produce non-zero output"
-        );
-    }
-
-    #[test]
-    fn test_constitutive_backward_gradient_shape() {
-        let model = NeuralConstitutiveModel::new(8);
-        let strain = [0.01, 0.02, -0.01, 0.0, 0.005, -0.003];
-        let target = [100.0, 50.0, -20.0, 0.0, 10.0, -5.0];
-        let (gw1, gb1, gw2, gb2) = model.backward(&strain, &target);
-        assert_eq!(gw1.len(), model.n_hidden * 6);
-        assert_eq!(gb1.len(), model.n_hidden);
-        assert_eq!(gw2.len(), 6 * model.n_hidden);
-        assert_eq!(gb2.len(), 6);
-    }
-
-    #[test]
-    fn test_constitutive_sgd_reduces_loss() {
-        let mut model = NeuralConstitutiveModel::linear_elastic(16, 1.0);
-        let strain = [0.01, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let target = [10.0, 5.0, 5.0, 0.0, 0.0, 0.0];
-
-        let initial_loss: f64 = {
-            let pred = model.forward(&strain);
-            pred.iter()
-                .zip(target.iter())
-                .map(|(p, t)| (p - t).powi(2))
-                .sum()
-        };
-
-        for _ in 0..200 {
-            let (gw1, gb1, gw2, gb2) = model.backward(&strain, &target);
-            model.sgd_step(&gw1, &gb1, &gw2, &gb2, 1e-3);
-        }
-
-        let final_loss: f64 = {
-            let pred = model.forward(&strain);
-            pred.iter()
-                .zip(target.iter())
-                .map(|(p, t)| (p - t).powi(2))
-                .sum()
-        };
-
-        assert!(
-            final_loss < initial_loss,
-            "SGD should reduce loss: {initial_loss} -> {final_loss}"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // PhysicsInformedLoss tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_pinn_loss_zero_when_perfect() {
-        let loss = PhysicsInformedLoss::new(0.0, 1e-5);
-        let s = [1.0, 2.0, 3.0, 0.5, -0.5, 0.1];
-        let body = [0.0; 6];
-        let l = loss.compute(&s, &s, &body);
-        assert!(l.abs() < 1e-12, "Loss should be zero when pred == target");
-    }
-
-    #[test]
-    fn test_pinn_loss_positive() {
-        let loss = PhysicsInformedLoss::new(0.1, 1e-5);
-        let pred = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let target = [0.0; 6];
-        let body = [0.0; 6];
-        let l = loss.compute(&pred, &target, &body);
-        assert!(
-            l > 0.0,
-            "Loss should be positive for non-matching pred/target"
-        );
-    }
-
-    #[test]
-    fn test_pinn_loss_lambda_scaling() {
-        let loss_a = PhysicsInformedLoss::new(0.0, 1e-5);
-        let loss_b = PhysicsInformedLoss::new(1.0, 1e-5);
-        let pred = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let target = [0.0; 6];
-        let body = [0.0; 6];
-        let la = loss_a.compute(&pred, &target, &body);
-        let lb = loss_b.compute(&pred, &target, &body);
-        assert!(
-            lb > la,
-            "Higher lambda_pde should give higher loss: la={la}, lb={lb}"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // LearnedCollisionResponse tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_collision_response_output_shape() {
-        let responder = LearnedCollisionResponse::new(8);
-        let normal = [0.0, 1.0, 0.0];
-        let impulse = responder.predict(&normal, -0.5, 0.01);
-        assert_eq!(impulse.len(), 3);
-    }
-
-    #[test]
-    fn test_collision_response_zero_weights() {
-        let responder = LearnedCollisionResponse::new(8);
-        let normal = [0.0, 1.0, 0.0];
-        let impulse = responder.predict(&normal, -0.5, 0.01);
-        for x in &impulse {
-            assert!(x.abs() < 1e-12, "Zero weights should give zero impulse");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // MaterialParameterIdentifier tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_material_id_lame_params() {
-        let id = MaterialParameterIdentifier::new(1e6, 0.3, 1e-3, 0.0);
-        let lam = id.lame_lambda();
-        let mu = id.shear_modulus();
-        assert!(lam > 0.0, "Lamé lambda should be positive");
-        assert!(mu > 0.0, "Shear modulus should be positive");
-    }
-
-    #[test]
-    fn test_material_id_poisson_clamped() {
-        // Poisson ratio should stay in [0, 0.499]
-        let mut id = MaterialParameterIdentifier::new(1e6, 0.29, 1.0, 0.0);
-        let sim_fn = |_e: f64, _nu: f64| -> Vec<[f64; 3]> { vec![[0.0; 3]; 1] };
-        let obs = vec![[0.001, 0.0, 0.0]];
-        id.step(&obs, &obs, &sim_fn);
-        assert!(id.poisson_ratio >= 0.0 && id.poisson_ratio <= 0.499);
-    }
-
-    #[test]
-    fn test_material_id_young_positive() {
-        let mut id = MaterialParameterIdentifier::new(1e6, 0.25, 1e-3, 0.0);
-        let sim_fn = |_e: f64, _nu: f64| -> Vec<[f64; 3]> { vec![[0.0; 3]; 4] };
-        let obs = vec![[0.001, 0.002, 0.0]; 4];
-        for _ in 0..10 {
-            id.step(&obs, &obs, &sim_fn);
-        }
-        assert!(
-            id.young_modulus >= 1.0,
-            "Young's modulus should stay positive"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // NeuralElasticityGraph tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_neural_graph_creation() {
-        let nodes = vec![
-            NeuralElasticNode::new([0.0, 0.0, 0.0], 4, 1.0),
-            NeuralElasticNode::new([1.0, 0.0, 0.0], 4, 1.0),
-        ];
-        let edges = vec![NeuralElasticEdge::new(0, 1, 1.0)];
-        let graph = NeuralElasticityGraph::new(nodes, edges, 4, 8);
-        assert_eq!(graph.nodes.len(), 2);
-        assert_eq!(graph.edges.len(), 1);
-    }
-
-    #[test]
-    fn test_neural_graph_zero_forces_with_zero_weights() {
-        let nodes = vec![
-            NeuralElasticNode::new([0.0, 0.0, 0.0], 4, 1.0),
-            NeuralElasticNode::new([1.0, 0.0, 0.0], 4, 1.0),
-            NeuralElasticNode::new([0.5, 1.0, 0.0], 4, 1.0),
-        ];
-        let edges = vec![
-            NeuralElasticEdge::new(0, 1, 1.0),
-            NeuralElasticEdge::new(1, 2, 1.0),
-            NeuralElasticEdge::new(0, 2, 1.0),
-        ];
-        let graph = NeuralElasticityGraph::new(nodes, edges, 4, 8);
-        let forces = graph.predict_forces();
-        assert_eq!(forces.len(), 3);
-        for f in &forces {
-            for &c in f {
-                assert!(c.abs() < 1e-12, "Zero weights should yield zero forces");
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // TrainingDataset tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_dataset_push_and_evict() {
-        let mut ds = TrainingDataset::new(3);
-        for i in 0..5u64 {
-            ds.push(StrainStressSample {
-                strain: [i as f64; 6],
-                stress: [0.0; 6],
-            });
-        }
-        assert_eq!(ds.len(), 3, "Dataset should not exceed max_size=3");
-        assert_eq!(
-            ds.samples[0].strain[0], 2.0,
-            "Oldest samples should be evicted"
-        );
-    }
-
-    #[test]
-    fn test_dataset_generate_linear_elastic() {
-        let mut rng = rand::rng();
-        let mut ds = TrainingDataset::new(100);
-        ds.generate_linear_elastic(1e6, 0.3, 50, &mut rng);
-        assert_eq!(ds.len(), 50);
-        // Stress should not be all-zero for non-trivial strains
-        let has_nonzero = ds
-            .samples
-            .iter()
-            .any(|s| s.stress.iter().any(|&x| x != 0.0));
-        assert!(has_nonzero, "Generated stress should be non-zero");
-    }
-
-    #[test]
-    fn test_dataset_is_empty() {
-        let ds = TrainingDataset::new(10);
-        assert!(ds.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // InferenceTimeCorrector tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_corrector_converges_for_identity_k() {
-        let corrector = InferenceTimeCorrector::new(0.5, 100, 1e-8);
-        let mut u = vec![2.0, -1.0, 0.5];
-        let f = vec![0.0, 0.0, 0.0];
-        // K = I => K*u = u, residual = u - f = u => correct to zero
-        let iters = corrector.correct(&mut u, &f, &|x: &[f64]| x.to_vec());
-        assert!(iters < 100, "Should converge before max iterations");
-        for &ui in &u {
-            assert!(ui.abs() < 1e-5, "u should converge to 0 = f when K=I");
-        }
-    }
-
-    #[test]
-    fn test_corrector_already_converged() {
-        let corrector = InferenceTimeCorrector::new(0.5, 100, 1e-8);
-        let mut u = vec![0.0, 0.0, 0.0];
-        let f = vec![0.0, 0.0, 0.0];
-        let iters = corrector.correct(&mut u, &f, &|x: &[f64]| x.to_vec());
-        assert_eq!(iters, 0, "Already converged should return 0 iterations");
-    }
-
-    // -----------------------------------------------------------------------
-    // NeuralPoseDeformer tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_pose_deformer_output_size() {
-        let deformer = NeuralPoseDeformer::new(10, 4, 8);
-        let weights = [0.25, 0.25, 0.25, 0.25];
-        let result = deformer.deform(&weights);
-        assert_eq!(result.len(), 30, "Output should be n_verts * 3");
-    }
-
-    #[test]
-    fn test_pose_deformer_zero_weights_zero_output() {
-        let deformer = NeuralPoseDeformer::new(5, 3, 4);
-        let weights = [0.0, 0.0, 0.0];
-        let result = deformer.deform(&weights);
-        for x in &result {
-            assert!(
-                x.abs() < 1e-12,
-                "Zero pose weights should yield zero deformation"
-            );
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // LatentSpaceDeformer tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_latent_encode_output_size() {
-        let lsd = LatentSpaceDeformer::new(5, 3);
-        let pos = vec![0.0f64; 15];
-        let z = lsd.encode(&pos);
-        assert_eq!(z.len(), 3);
-    }
-
-    #[test]
-    fn test_latent_decode_output_size() {
-        let lsd = LatentSpaceDeformer::new(5, 3);
-        let z = vec![0.0f64; 3];
-        let out = lsd.decode(&z);
-        assert_eq!(out.len(), 15);
-    }
-
-    #[test]
-    fn test_latent_reconstruction_loss_zero_weights() {
-        let lsd = LatentSpaceDeformer::new(4, 2);
-        let pos = vec![
-            1.0f64, 2.0, 3.0, -1.0, 0.5, 0.0, 0.1, -0.2, 2.0, 1.5, 0.0, 0.0,
-        ];
-        // With zero encoder weights encode gives tanh(0)=0, decode gives 0
-        // Loss = MSE(pos, 0) > 0
-        let loss = lsd.reconstruction_loss(&pos);
-        assert!(
-            loss > 0.0,
-            "Reconstruction loss should be positive with random positions"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // RealTimeNeuralSoftBody tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_realtime_body_step_moves_dynamic_vertex() {
-        let verts = vec![
-            NeuralVertex::new_static([0.0, 0.0, 0.0]),
-            NeuralVertex::new([1.0, 0.0, 0.0], 1.0),
-            NeuralVertex::new([0.0, 1.0, 0.0], 1.0),
-            NeuralVertex::new([0.0, 0.0, 1.0], 1.0),
-        ];
-        let rest: Vec<[f64; 3]> = verts.iter().map(|v| v.position).collect();
-        let elems = vec![[0, 1, 2, 3]];
-        let model = NeuralConstitutiveModel::new(8);
-        let mut body = RealTimeNeuralSoftBody::new(verts, elems, model, 1000.0, 0.01);
-        let gravity = [0.0, -9.81, 0.0];
-        body.step(0.01, &gravity, &rest);
-        // Dynamic vertex 1 should have moved in y
-        assert!(
-            body.vertices[1].position[1] < 0.0,
-            "Dynamic vertex should fall under gravity"
-        );
-    }
-
-    #[test]
-    fn test_realtime_body_static_vertex_does_not_move() {
-        let verts = vec![
-            NeuralVertex::new_static([0.5, 0.5, 0.5]),
-            NeuralVertex::new([1.0, 0.0, 0.0], 1.0),
-            NeuralVertex::new([0.0, 1.0, 0.0], 1.0),
-            NeuralVertex::new([0.0, 0.0, 1.0], 1.0),
-        ];
-        let rest: Vec<[f64; 3]> = verts.iter().map(|v| v.position).collect();
-        let elems = vec![[0, 1, 2, 3]];
-        let model = NeuralConstitutiveModel::new(8);
-        let mut body = RealTimeNeuralSoftBody::new(verts, elems, model, 1000.0, 0.01);
-        let gravity = [0.0, -9.81, 0.0];
-        for _ in 0..10 {
-            body.step(0.01, &gravity, &rest);
-        }
-        assert_eq!(
-            body.vertices[0].position,
-            [0.5, 0.5, 0.5],
-            "Static vertex should not move"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // NeuralPinnSolver tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_pinn_solver_train_step_returns_finite_loss() {
-        let mut solver = NeuralPinnSolver::new(8, 0.01, 1e-4);
-        let batch = vec![
-            StrainStressSample {
-                strain: [0.01, 0.0, 0.0, 0.0, 0.0, 0.0],
-                stress: [1000.0, 300.0, 300.0, 0.0, 0.0, 0.0],
-            },
-            StrainStressSample {
-                strain: [0.0, 0.02, 0.0, 0.0, 0.0, 0.0],
-                stress: [300.0, 2000.0, 300.0, 0.0, 0.0, 0.0],
-            },
-        ];
-        let loss = solver.train_step(&batch, &[0.0; 6]);
-        assert!(loss.is_finite(), "Training loss should be finite");
-        assert!(loss >= 0.0, "Training loss should be non-negative");
-    }
-
-    #[test]
-    fn test_pinn_solver_iteration_increments() {
-        let mut solver = NeuralPinnSolver::new(4, 0.0, 1e-4);
-        let batch = vec![StrainStressSample {
-            strain: [0.0; 6],
-            stress: [0.0; 6],
-        }];
-        for i in 1..=5 {
-            solver.train_step(&batch, &[0.0; 6]);
-            assert_eq!(solver.iteration, i);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // NeuralSoftBodySimulator tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_simulator_creation() {
-        let verts = vec![
-            NeuralVertex::new_static([0.0, 0.0, 0.0]),
-            NeuralVertex::new([1.0, 0.0, 0.0], 1.0),
-            NeuralVertex::new([0.0, 1.0, 0.0], 1.0),
-            NeuralVertex::new([0.0, 0.0, 1.0], 1.0),
-        ];
-        let elems = vec![[0, 1, 2, 3]];
-        let sim = NeuralSoftBodySimulator::new(verts, elems, 8, 1000.0, 0.01, [0.0, -9.81, 0.0]);
-        assert_eq!(sim.positions().len(), 4);
-        assert_eq!(sim.rest_positions.len(), 4);
-    }
-
-    #[test]
-    fn test_simulator_step_no_panic() {
-        let verts = vec![
-            NeuralVertex::new_static([0.0, 0.0, 0.0]),
-            NeuralVertex::new([1.0, 0.0, 0.0], 1.0),
-            NeuralVertex::new([0.0, 1.0, 0.0], 1.0),
-            NeuralVertex::new([0.0, 0.0, 1.0], 1.0),
-        ];
-        let elems = vec![[0, 1, 2, 3]];
-        let mut sim =
-            NeuralSoftBodySimulator::new(verts, elems, 8, 1000.0, 0.01, [0.0, -9.81, 0.0]);
-        for _ in 0..20 {
-            sim.step(0.01, false);
-        }
-        let pos = sim.positions();
-        assert_eq!(pos.len(), 4);
-        // Positions should be finite
-        for p in &pos {
-            for &c in p {
-                assert!(c.is_finite(), "Positions should remain finite");
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Utility tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_vec3_norm() {
-        let v = [3.0, 4.0, 0.0];
-        assert!((vec3_norm(&v) - 5.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_vec3_normalise() {
-        let v = [1.0, 0.0, 0.0];
-        let n = vec3_normalise(&v);
-        assert!((vec3_norm(&n) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_vec3_normalise_zero() {
-        let v = [0.0, 0.0, 0.0];
-        let n = vec3_normalise(&v);
-        assert_eq!(n, [0.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn test_vec3_cross() {
-        let a = [1.0, 0.0, 0.0];
-        let b = [0.0, 1.0, 0.0];
-        let c = vec3_cross(&a, &b);
-        assert!((c[0]).abs() < 1e-12);
-        assert!((c[1]).abs() < 1e-12);
-        assert!((c[2] - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_vec3_dot() {
-        let a = [1.0, 2.0, 3.0];
-        let b = [4.0, 5.0, 6.0];
-        assert!((vec3_dot(&a, &b) - 32.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_dense_forward_identity() {
-        // 2×2 identity matrix
-        let w = [1.0, 0.0, 0.0, 1.0];
-        let b = [0.0, 0.0];
-        let x = [3.0, 7.0];
-        let y = dense_forward(&w, &b, &x, 2, 2);
-        assert!((y[0] - 3.0).abs() < 1e-12);
-        assert!((y[1] - 7.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_element_strain_rest_gives_zero() {
-        let positions = vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ];
-        let rest = positions.clone();
-        let elem = [0, 1, 2, 3];
-        let strain = RealTimeNeuralSoftBody::element_strain(&positions, &rest, &elem);
-        for &s in &strain {
-            assert!(s.abs() < 1e-12, "No deformation => zero strain, got {s}");
-        }
-    }
 }

@@ -543,7 +543,8 @@ impl RectPlateElement {
 }
 /// Flat 3-node triangular shell element combining:
 /// - Membrane: CST (constant strain triangle, 2 DOF/node in-plane)
-/// - Bending:  DKT-style (3 DOF/node: w, θ_x, θ_y)
+/// - Bending:  discrete Kirchhoff triangle, DKT (Batoz, Bathe and Ho, 1980;
+///   3 DOF/node: w, θ_x, θ_y; see [`dkt`](super::dkt))
 ///
 /// Each node has 6 DOF: (u, v, w, θ_x, θ_y, θ_z).
 /// Returns 18×18 stiffness matrix.
@@ -605,52 +606,20 @@ impl FlatShellElement {
         let elem = MembraneTriangle::new(self.thickness, self.young_modulus, self.poisson_ratio);
         elem.stiffness_2d(nodes)
     }
-    fn bending_stiffness(&self, nodes: &[[f64; 2]; 3]) -> [[f64; 9]; 9] {
+    /// 9×9 plate-bending stiffness of the element, the DKT triangle of Batoz,
+    /// Bathe and Ho (1980), integrated exactly with three Hammer points.
+    ///
+    /// DOF order per vertex is `(w, θx, θy) = (w, ∂w/∂y, −∂w/∂x)`.  The matrix
+    /// has rank six; its null space is the set of rigid plate motions
+    /// `w = c₀ + c₁ x + c₂ y`.  A degenerate triangle gives the zero matrix.
+    pub fn bending_stiffness(&self, nodes: &[[f64; 2]; 3]) -> [[f64; 9]; 9] {
         let plate = KirchhoffPlate::new(
             self.thickness,
             self.young_modulus,
             self.poisson_ratio,
             self.density,
         );
-        let d_mat = plate.constitutive_matrix();
-        let (x0, y0) = (nodes[0][0], nodes[0][1]);
-        let (x1, y1) = (nodes[1][0], nodes[1][1]);
-        let (x2, y2) = (nodes[2][0], nodes[2][1]);
-        let area = 0.5 * ((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)).abs();
-        if area < 1e-15 {
-            return [[0.0; 9]; 9];
-        }
-        let two_a = 2.0 * area;
-        let b1x = (y1 - y2) / two_a;
-        let b2x = (y2 - y0) / two_a;
-        let b3x = (y0 - y1) / two_a;
-        let b1y = (x2 - x1) / two_a;
-        let b2y = (x0 - x2) / two_a;
-        let b3y = (x1 - x0) / two_a;
-        let b_bend = [
-            [0.0, 0.0, b1x, 0.0, 0.0, b2x, 0.0, 0.0, b3x],
-            [0.0, -b1y, 0.0, 0.0, -b2y, 0.0, 0.0, -b3y, 0.0],
-            [0.0, -b1x, b1y, 0.0, -b2x, b2y, 0.0, -b3x, b3y],
-        ];
-        let mut db = [[0.0_f64; 9]; 3];
-        for i in 0..3 {
-            for j in 0..9 {
-                for l in 0..3 {
-                    db[i][j] += d_mat[i][l] * b_bend[l][j];
-                }
-            }
-        }
-        let mut k_bend = [[0.0_f64; 9]; 9];
-        for i in 0..9 {
-            for j in 0..9 {
-                let mut val = 0.0;
-                for l in 0..3 {
-                    val += b_bend[l][i] * db[l][j];
-                }
-                k_bend[i][j] = area * val;
-            }
-        }
-        k_bend
+        super::dkt::dkt_bending_stiffness(nodes, &plate.constitutive_matrix())
     }
 }
 /// Membrane element (2D plane-stress triangle, 3 nodes, 2 DOF/node = 6×6 stiffness).

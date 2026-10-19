@@ -415,21 +415,30 @@ impl SettlingVelocity {
     }
     /// Rubey (1933) settling velocity formula.
     ///
-    /// w_s = √((2/3 + 36 ν²/(g d³ (s-1)))^{1/2} − √(36 ν²/(g d³ (s-1)))) * √((s-1)*g*d)
+    /// ```text
+    /// w_s = [ √(2/3 + ξ) − √ξ ] · √((s − 1) g d),   ξ = 36 ν² / ((s − 1) g d³)
+    /// ```
+    ///
+    /// with `s = ρ_s / ρ_f`.  The bracket is evaluated in the equivalent
+    /// cancellation-free form `(2/3) / (√(2/3 + ξ) + √ξ)`, which stays accurate
+    /// for fine silt and clay where `ξ` is very large.  In that limit the formula
+    /// reduces to the Stokes velocity; for coarse grains it tends to the
+    /// inviscid value `√(2/3) √((s − 1) g d)`.
+    ///
+    /// Returns `0.0` for a non-positive grain diameter or a grain that is not
+    /// denser than the fluid (`s ≤ 1`), which does not settle.
     pub fn rubey(&self) -> f64 {
         let s = self.rho_s / self.rho_f;
         let d = self.diameter;
         let nu = self.nu;
-        if (s - 1.0).abs() < 1e-300 || d < 1e-300 {
+        if !(s > 1.0 && d > 1e-300) {
             return 0.0;
         }
         let base = (s - 1.0) * G * d;
-        let xi = 36.0 * nu * nu / (base * d);
-        let inner = (2.0 / 3.0 + xi).sqrt() - xi.sqrt();
-        if inner < 0.0 {
-            return 0.0;
-        }
-        inner * base.sqrt()
+        let xi = 36.0 * nu * nu / (base * d * d);
+        let two_thirds = 2.0 / 3.0;
+        let bracket = two_thirds / ((two_thirds + xi).sqrt() + xi.sqrt());
+        bracket * base.sqrt()
     }
     /// Drag-corrected settling velocity for non-spherical particles.
     ///
@@ -782,6 +791,17 @@ impl SphSedimentAdvection {
         grad
     }
     /// dC/dt from diffusion: ε_s ∇²C (Brookshaw form).
+    ///
+    /// ```text
+    /// ∇²C_i ≈ 2 Σ_j (m_j/ρ_j) (C_i − C_j) (r_ij · ∇W_ij) / |r_ij|²
+    /// ```
+    ///
+    /// Because `r_ij · ∇W_ij = r W'(r) ≤ 0` for the cubic spline, a particle
+    /// that is richer in sediment than its neighbours (`C_i > C_j`) gets a
+    /// negative rate and a poorer one gets a positive rate, so concentration
+    /// peaks flatten out.  Each neighbour tuple is `(r_ij, C_j, m_j, ρ_j)`; only
+    /// `|r_ij|` and `r_ij · ∇W_ij` enter, so the orientation of `r_ij` does not
+    /// matter.
     pub fn diffusion_rate(&self, c_i: f64, neighbors: &[([f64; 3], f64, f64, f64)]) -> f64 {
         let mut sum = 0.0;
         for &(r_ij, c_j, m_j, rho_j) in neighbors {
@@ -793,7 +813,7 @@ impl SphSedimentAdvection {
             let dot_rg = dot3_sed(r_ij, gw);
             sum += m_j / rho_j * 2.0 * (c_i - c_j) / r2 * dot_rg;
         }
-        -self.diffusivity * sum
+        self.diffusivity * sum
     }
     /// Settling contribution to dC/dt: -w_s ∂C/∂z ≈ -w_s (∇C)_z.
     pub fn settling_rate(&self, c_i: f64, neighbors: &[([f64; 3], f64, f64, f64)]) -> f64 {

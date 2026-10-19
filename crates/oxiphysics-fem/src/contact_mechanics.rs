@@ -226,9 +226,15 @@ impl HertzCylinderFlat {
 
 /// Mindlin reduced shear modulus G* from two elastic solids.
 ///
-/// 1/G* = (2 - ν₁)/(4 G₁) + (2 - ν₂)/(4 G₂)
+/// Johnson's convention (Contact Mechanics, tangential loading of spheres; Mindlin 1949):
+///
+/// 1/G* = (2 - ν₁)/G₁ + (2 - ν₂)/G₂
+///
+/// With this definition the initial tangential stiffness of a circular Hertzian
+/// contact of radius `a` is k_t = 8 G* a.  For two identical bodies
+/// G* = G / (2 (2 - ν)), i.e. k_t = 4 G a / (2 - ν).
 pub fn mindlin_reduced_shear_modulus(g1: f64, nu1: f64, g2: f64, nu2: f64) -> f64 {
-    1.0 / ((2.0 - nu1) / (4.0 * g1) + (2.0 - nu2) / (4.0 * g2))
+    1.0 / ((2.0 - nu1) / g1 + (2.0 - nu2) / g2)
 }
 
 /// Mindlin tangential compliance model.
@@ -257,9 +263,17 @@ impl MindlinCompliance {
         8.0 * self.g_star * contact_radius
     }
 
+    /// Tangential displacement at the onset of gross slip,
+    /// δ_s = 3 μ F_n / (16 G* a).
+    fn saturation_displacement(&self, normal_force: f64, contact_radius: f64) -> f64 {
+        3.0 * self.friction * normal_force / (16.0 * self.g_star * contact_radius)
+    }
+
     /// Mindlin partial-slip tangential displacement (loading from 0).
     ///
-    /// δ_t = (3 μ F_n)/(8 G* a) \[1 - (1 - Q/(μ F_n))^(2/3)\]
+    /// δ_t = (3 μ F_n)/(16 G* a) \[1 - (1 - Q/(μ F_n))^(2/3)\]
+    ///
+    /// Its initial slope dδ_t/dQ at Q = 0 is 1/k_t with k_t = 8 G* a.
     ///
     /// Returns `None` if gross slip (Q ≥ μ F_n).
     pub fn partial_slip_displacement(
@@ -272,12 +286,15 @@ impl MindlinCompliance {
         if tangential_force >= limit {
             return None;
         }
-        let prefactor = 3.0 * limit / (8.0 * self.g_star * contact_radius);
+        let prefactor = self.saturation_displacement(normal_force, contact_radius);
         let term = 1.0 - tangential_force / limit;
         Some(prefactor * (1.0 - term.powf(2.0 / 3.0)))
     }
 
     /// Inverse: force from displacement (partial-slip).
+    ///
+    /// Q = μ F_n \[1 - (1 - δ_t/δ_s)^(3/2)\] with δ_s = 3 μ F_n/(16 G* a); the
+    /// displacement is clamped to \[0, δ_s\] (gross-slip limit Q = μ F_n).
     pub fn force_from_displacement(
         &self,
         delta_t: f64,
@@ -285,7 +302,7 @@ impl MindlinCompliance {
         contact_radius: f64,
     ) -> f64 {
         let limit = self.friction * normal_force;
-        let prefactor = 3.0 * limit / (8.0 * self.g_star * contact_radius);
+        let prefactor = self.saturation_displacement(normal_force, contact_radius);
         let ratio = (delta_t / prefactor).clamp(0.0, 1.0);
         limit * (1.0 - (1.0 - ratio).powf(1.5))
     }
@@ -306,7 +323,13 @@ impl MindlinCompliance {
 
     /// Energy dissipated per fretting cycle (Mindlin–Deresiewicz).
     ///
-    /// W = (9 μ² F_n²)/(10 k_t) \[1 - (1 - Q/(μ F_n))^(5/3)\]
+    /// For a tangential force oscillating between ±Q* under constant normal
+    /// force F_n, with q = Q*/(μ F_n) < 1 (Mindlin & Deresiewicz 1953; Johnson, Contact Mechanics):
+    ///
+    /// W = (36 μ² F_n²)/(5 k_t) \[1 - (1 - q)^(5/3) - (5q/6) (1 + (1 - q)^(2/3))\]
+    ///
+    /// which scales as Q*³ for small amplitudes (W → 2 Q*³/(9 μ F_n k_t)).  The
+    /// amplitude is capped at the onset of gross slip (q = 1).
     pub fn fretting_energy_per_cycle(
         &self,
         tangential_amplitude: f64,
@@ -321,14 +344,122 @@ impl MindlinCompliance {
         if k_t < 1e-30 {
             return 0.0;
         }
-        let ratio = (tangential_amplitude / limit).min(1.0);
-        (9.0 * limit * limit) / (10.0 * k_t) * (1.0 - (1.0 - ratio).powf(5.0 / 3.0))
+        let ratio = (tangential_amplitude.abs() / limit).min(1.0);
+        mindlin_dissipation_per_cycle(limit, k_t, ratio)
     }
+}
+
+/// Bracket function of the Mindlin–Deresiewicz dissipation integral,
+/// f(q) = 1 - (1 - q)^(5/3) - (5q/6) (1 + (1 - q)^(2/3)), for q ∈ \[0, 1\].
+///
+/// f(q) = 5q³/162 + 5q⁴/243 + 7q⁵/486 + … vanishes like q³, so the closed form
+/// loses all significant digits to cancellation for small q.  Below `q = 0.2`
+/// the (all-positive) binomial series is summed instead, which keeps the
+/// relative accuracy at machine precision.
+fn mindlin_dissipation_bracket(q: f64) -> f64 {
+    if q <= 0.0 {
+        return 0.0;
+    }
+    if q >= 0.2 {
+        let rest = 1.0 - q;
+        return 1.0 - rest.powf(5.0 / 3.0) - (5.0 * q / 6.0) * (1.0 + rest.powf(2.0 / 3.0));
+    }
+    let alpha_a = 5.0 / 3.0;
+    let alpha_b = 2.0 / 3.0;
+    // Binomial coefficients c_j(α) = C(α, j) (-1)^j of (1 - q)^α:
+    //   c_a = c_k(5/3) and c_b = c_(k-1)(2/3) when entering iteration k.
+    let mut c_a = 5.0 / 9.0; // c_2(5/3)
+    let mut c_b = -2.0 / 3.0; // c_1(2/3)
+    let mut q_pow = q * q; // q^2
+    let mut sum = 0.0;
+    for k in 3..80_u32 {
+        let kf = f64::from(k);
+        c_a *= (kf - 1.0 - alpha_a) / kf;
+        c_b *= (kf - 2.0 - alpha_b) / (kf - 1.0);
+        q_pow *= q;
+        let term = (-c_a - 5.0 / 6.0 * c_b) * q_pow;
+        sum += term;
+        if term.abs() <= 1e-18 * sum.abs() {
+            break;
+        }
+    }
+    sum
+}
+
+/// Energy dissipated per full tangential load cycle of a Mindlin contact with
+/// Coulomb limit `limit` = μ F_n, initial tangential stiffness `k_t` and
+/// normalised force amplitude `ratio` = Q*/(μ F_n) ∈ \[0, 1\].
+///
+/// W = (36 · limit²)/(5 k_t) \[1 - (1 - q)^(5/3) - (5q/6) (1 + (1 - q)^(2/3))\]
+///
+/// Derived by integrating the Masing-rule hysteresis loop built from the
+/// virgin loading curve δ(Q) = (3 μ F_n/(16 G* a)) \[1 - (1 - Q/(μ F_n))^(2/3)\].
+pub fn mindlin_dissipation_per_cycle(limit: f64, k_t: f64, ratio: f64) -> f64 {
+    let q = ratio.clamp(0.0, 1.0);
+    36.0 * limit * limit / (5.0 * k_t) * mindlin_dissipation_bracket(q)
 }
 
 // ---------------------------------------------------------------------------
 // 6. JKR adhesion model
 // ---------------------------------------------------------------------------
+
+/// JKR contact radius `a` for an applied load `force` (Johnson, Kendall &
+/// Roberts 1971).
+///
+/// a³ = (3 R*/(4 E*)) \[F + 3π W R* + √(6π W R* F + (3π W R*)²)\]
+///
+/// where `r_star` is the effective radius R*, `e_star` the reduced modulus E*
+/// and `work_adhesion` the Dupré work of adhesion W.  For W = 0 this reduces to
+/// the Hertz radius (3 F R*/(4 E*))^(1/3); at zero load a³ = 9π W R*²/(2 E*).
+///
+/// Returns 0 when the surfaces are separated: for loads below the JKR pull-off
+/// force −(3/2)π W R* the equation has no real solution, and for a vanishing or
+/// negative bracket (Hertz limit under tension) there is no contact patch.
+pub fn jkr_contact_radius(force: f64, r_star: f64, e_star: f64, work_adhesion: f64) -> f64 {
+    let term = 3.0 * PI * work_adhesion * r_star;
+    let discriminant = 6.0 * PI * work_adhesion * r_star * force + term * term;
+    // Tolerate round-off exactly at the pull-off load, where the discriminant is 0.
+    if discriminant < -1e-12 * term * term {
+        return 0.0;
+    }
+    let a3 = 0.75 * (r_star / e_star) * (force + term + discriminant.max(0.0).sqrt());
+    if a3 > 0.0 {
+        a3.cbrt()
+    } else if a3.is_nan() {
+        f64::NAN
+    } else {
+        0.0
+    }
+}
+
+/// JKR approach (indentation depth) at contact radius `a`:
+/// δ = a²/R* − √(2π W a/E*).
+pub fn jkr_indentation(a: f64, r_star: f64, e_star: f64, work_adhesion: f64) -> f64 {
+    a * a / r_star - (2.0 * PI * work_adhesion * a / e_star).sqrt()
+}
+
+/// Elastic strain energy stored in a JKR contact of radius `a`.
+///
+/// The JKR pressure distribution is the Hertz pressure of radius `a` minus the
+/// pressure under a rigid flat punch of the same radius pressed by
+/// δ_p = √(2π W a/E*).  Clapeyron's theorem then gives (Hertz + cross + punch
+/// parts)
+///
+/// U_E = 8 E* a⁵/(15 R*²) − 4 E* a³ δ_p/(3 R*) + 2π W a²
+///
+/// which is a positive-definite quadratic form in δ_p.  Its derivative with
+/// respect to `a` at fixed approach reproduces the JKR equilibrium condition
+/// (energy release rate = W).
+pub fn jkr_elastic_energy_at_radius(a: f64, r_star: f64, e_star: f64, work_adhesion: f64) -> f64 {
+    if a <= 0.0 {
+        return 0.0;
+    }
+    let delta_punch = (2.0 * PI * work_adhesion * a / e_star).sqrt();
+    let hertz = 8.0 * e_star * a.powi(5) / (15.0 * r_star * r_star);
+    let cross = 4.0 * e_star * a.powi(3) * delta_punch / (3.0 * r_star);
+    let punch = 2.0 * PI * work_adhesion * a * a;
+    hertz - cross + punch
+}
 
 /// Johnson–Kendall–Roberts (JKR) adhesion model.
 ///
@@ -357,16 +488,17 @@ impl JkrAdhesion {
 
     /// JKR contact radius as a function of applied load F.
     ///
-    /// a³ = (R*/(E*)) \[F + 3πW R* + √(6πW R* F + (3πW R*)²)\]
-    /// where W = W_ad.
+    /// a³ = (3R*/(4E*)) \[F + 3πW R* + √(6πW R* F + (3πW R*)²)\]
+    /// where W = W_ad.  Equals the Hertz radius for W = 0 and is 0 below the
+    /// pull-off load (see [`jkr_contact_radius`]).
     pub fn contact_radius(&self, force: f64) -> f64 {
-        let w = self.work_adhesion;
-        let r = self.r_star;
-        let e_star = self.e_star;
-        let term = 3.0 * PI * w * r;
-        let discriminant = 6.0 * PI * w * r * force + term * term;
-        let a3 = (r / e_star) * (force + term + discriminant.max(0.0).sqrt());
-        a3.cbrt()
+        jkr_contact_radius(force, self.r_star, self.e_star, self.work_adhesion)
+    }
+
+    /// JKR approach (indentation) δ = a²/R* − √(2π W a/E*) at load F.
+    pub fn indentation(&self, force: f64) -> f64 {
+        let a = self.contact_radius(force);
+        jkr_indentation(a, self.r_star, self.e_star, self.work_adhesion)
     }
 
     /// JKR pull-off (adhesion) force: F_po = -(3/2) π W_ad R*.
@@ -379,15 +511,13 @@ impl JkrAdhesion {
         self.contact_radius(0.0)
     }
 
-    /// Elastic energy stored in the adhesive contact at load F.
+    /// Elastic strain energy stored in the adhesive contact at load F.
+    ///
+    /// U_E = 8E*a⁵/(15R*²) − 4E*a³δ_p/(3R*) + 2πW a² with
+    /// δ_p = √(2πW a/E*) (see [`jkr_elastic_energy_at_radius`]).
     pub fn elastic_energy(&self, force: f64) -> f64 {
         let a = self.contact_radius(force);
-        let delta =
-            a * a / self.r_star - (8.0 * PI * self.work_adhesion * a / (3.0 * self.e_star)).sqrt();
-        if delta < 0.0 {
-            return 0.0;
-        }
-        (4.0 / 3.0) * self.e_star * self.r_star.sqrt() * delta.powf(1.5)
+        jkr_elastic_energy_at_radius(a, self.r_star, self.e_star, self.work_adhesion)
     }
 
     /// Surface energy gain −W_ad π a².
@@ -1120,6 +1250,195 @@ mod tests {
         assert!(e.abs() < 1e-30);
     }
 
+    #[test]
+    fn test_mindlin_reduced_shear_modulus_identical_bodies() {
+        let g = 80.0e9_f64;
+        let nu = 0.3_f64;
+        let g_star = mindlin_reduced_shear_modulus(g, nu, g, nu);
+        let expected = g / (2.0 * (2.0 - nu));
+        assert!(
+            (g_star - expected).abs() / expected < 1e-14,
+            "G* = {g_star}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_mindlin_tangential_stiffness_matches_johnson_for_identical_steel() {
+        // Johnson: k_t = 8 a / ((2-nu1)/G1 + (2-nu2)/G2) = 4 G a / (2 - nu) for equal bodies.
+        let (e, nu, a) = (200.0e9_f64, 0.3_f64, 1.0e-4_f64);
+        let m = MindlinCompliance::new(e, nu, e, nu, 0.4);
+        let g = e / (2.0 * (1.0 + nu));
+        let expected = 4.0 * g * a / (2.0 - nu);
+        let k_t = m.tangential_stiffness(a);
+        assert!(
+            (k_t - expected).abs() / expected < 1e-12,
+            "k_t = {k_t}, expected 4Ga/(2-nu) = {expected}"
+        );
+    }
+
+    #[test]
+    fn test_mindlin_tangential_stiffness_dissimilar_bodies() {
+        let (e1, nu1, e2, nu2, a) = (200.0e9_f64, 0.3_f64, 70.0e9_f64, 0.33_f64, 2.0e-4_f64);
+        let m = MindlinCompliance::new(e1, nu1, e2, nu2, 0.3);
+        let g1 = e1 / (2.0 * (1.0 + nu1));
+        let g2 = e2 / (2.0 * (1.0 + nu2));
+        let expected = 8.0 * a / ((2.0 - nu1) / g1 + (2.0 - nu2) / g2);
+        let k_t = m.tangential_stiffness(a);
+        assert!(
+            (k_t - expected).abs() / expected < 1e-12,
+            "k_t = {k_t}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_mindlin_initial_slope_equals_inverse_tangential_stiffness() {
+        let m = make_mindlin();
+        let (normal, a) = (100.0_f64, 1.0e-4_f64);
+        let limit = m.friction * normal;
+        let dq = 1.0e-6 * limit;
+        let delta = m.partial_slip_displacement(dq, normal, a).unwrap();
+        let k_fd = dq / delta;
+        let k_t = m.tangential_stiffness(a);
+        assert!(
+            (k_fd - k_t).abs() / k_t < 1e-5,
+            "finite-difference slope {k_fd} vs k_t {k_t}"
+        );
+    }
+
+    #[test]
+    fn test_mindlin_saturation_displacement_is_johnson_value() {
+        // As Q -> mu F the displacement tends to 3 mu F / (16 G* a).
+        let m = make_mindlin();
+        let (normal, a) = (100.0_f64, 1.0e-4_f64);
+        let limit = m.friction * normal;
+        let delta = m
+            .partial_slip_displacement(limit * (1.0 - 1.0e-12), normal, a)
+            .unwrap();
+        let expected = 3.0 * limit / (16.0 * m.g_star * a);
+        assert!(
+            (delta - expected).abs() / expected < 1e-6,
+            "delta = {delta}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_mindlin_force_displacement_roundtrip() {
+        let m = make_mindlin();
+        let (normal, a) = (250.0_f64, 3.0e-4_f64);
+        let limit = m.friction * normal;
+        for q in [0.05, 0.3, 0.7, 0.95] {
+            let force = q * limit;
+            let delta = m.partial_slip_displacement(force, normal, a).unwrap();
+            let back = m.force_from_displacement(delta, normal, a);
+            assert!(
+                (back - force).abs() / force < 1e-10,
+                "q = {q}: force {force} came back as {back}"
+            );
+        }
+        // Beyond the saturation displacement the force is capped at mu F_n.
+        let delta_big = 10.0 * 3.0 * limit / (16.0 * m.g_star * a);
+        assert!((m.force_from_displacement(delta_big, normal, a) - limit).abs() < 1e-12);
+        assert_eq!(m.force_from_displacement(-1.0, normal, a), 0.0);
+    }
+
+    #[test]
+    fn test_mindlin_fretting_energy_small_amplitude_is_cubic() {
+        // W -> 2 Q*^3 / (9 mu F k_t) as q -> 0 (not linear in Q*).
+        let m = make_mindlin();
+        let (normal, a) = (100.0_f64, 1.0e-4_f64);
+        let limit = m.friction * normal;
+        let k_t = m.tangential_stiffness(a);
+        for q in [1.0e-6, 1.0e-4, 1.0e-3] {
+            let amplitude = q * limit;
+            let w = m.fretting_energy_per_cycle(amplitude, normal, a);
+            let asymptote = 2.0 * amplitude.powi(3) / (9.0 * limit * k_t);
+            let tol = 2.0 * q + 1.0e-9;
+            assert!(
+                (w - asymptote).abs() / asymptote < tol,
+                "q = {q}: W = {w:e}, asymptote = {asymptote:e}"
+            );
+        }
+        // Doubling a small amplitude multiplies the dissipation by ~8.
+        let w1 = m.fretting_energy_per_cycle(1.0e-5 * limit, normal, a);
+        let w2 = m.fretting_energy_per_cycle(2.0e-5 * limit, normal, a);
+        assert!((w2 / w1 - 8.0).abs() < 1.0e-3, "ratio = {}", w2 / w1);
+    }
+
+    #[test]
+    fn test_mindlin_fretting_energy_matches_masing_hysteresis_loop() {
+        // Independent check: loop area W = 4 Q* d* - 8 * integral_0^Q* d(Q) dQ built from the
+        // virgin loading curve (Masing rule), integrated with Simpson's rule.
+        let m = make_mindlin();
+        let (normal, a) = (100.0_f64, 1.0e-4_f64);
+        let limit = m.friction * normal;
+        for q_star in [0.2_f64, 0.6, 0.9] {
+            let amp = q_star * limit;
+            let d_star = m.partial_slip_displacement(amp, normal, a).unwrap();
+            let n = 4000_usize;
+            let h = amp / n as f64;
+            let mut simpson = 0.0;
+            for i in 0..=n {
+                let weight = if i == 0 || i == n {
+                    1.0
+                } else if i % 2 == 1 {
+                    4.0
+                } else {
+                    2.0
+                };
+                let d = m
+                    .partial_slip_displacement(i as f64 * h, normal, a)
+                    .unwrap();
+                simpson += weight * d;
+            }
+            simpson *= h / 3.0;
+            let loop_area = 4.0 * amp * d_star - 8.0 * simpson;
+            let w = m.fretting_energy_per_cycle(amp, normal, a);
+            assert!(
+                (w - loop_area).abs() / loop_area < 1.0e-6,
+                "q* = {q_star}: closed form {w:e} vs hysteresis loop {loop_area:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mindlin_fretting_energy_gross_slip_limit_and_monotonicity() {
+        let m = make_mindlin();
+        let (normal, a) = (100.0_f64, 1.0e-4_f64);
+        let limit = m.friction * normal;
+        let k_t = m.tangential_stiffness(a);
+        // q = 1: W = 6/5 (mu F)^2 / k_t; larger amplitudes are capped there.
+        let expected = 1.2 * limit * limit / k_t;
+        let w1 = m.fretting_energy_per_cycle(limit, normal, a);
+        let w2 = m.fretting_energy_per_cycle(3.0 * limit, normal, a);
+        assert!((w1 - expected).abs() / expected < 1e-12);
+        assert_eq!(w1, w2);
+        let mut previous = 0.0;
+        for i in 1..=20 {
+            let w = m.fretting_energy_per_cycle(i as f64 * 0.05 * limit, normal, a);
+            assert!(w > previous, "dissipation must increase with amplitude");
+            previous = w;
+        }
+    }
+
+    #[test]
+    fn test_mindlin_dissipation_series_matches_closed_form() {
+        // Just below the series/closed-form switch (q = 0.2) both branches must agree.
+        for q in [0.05_f64, 0.12, 0.19] {
+            let rest = 1.0 - q;
+            let closed =
+                1.0 - rest.powf(5.0 / 3.0) - (5.0 * q / 6.0) * (1.0 + rest.powf(2.0 / 3.0));
+            let series = mindlin_dissipation_bracket(q);
+            assert!(
+                (series - closed).abs() / closed < 1e-9,
+                "q = {q}: series {series:e} vs closed form {closed:e}"
+            );
+        }
+        // Leading behaviour 5 q^3 / 162 for tiny q (closed form is pure round-off here).
+        let q = 1.0e-9_f64;
+        let series = mindlin_dissipation_bracket(q);
+        assert!((series / (5.0 * q.powi(3) / 162.0) - 1.0).abs() < 1e-8);
+    }
+
     // ── JKR adhesion ─────────────────────────────────────────────────────
 
     fn make_jkr() -> JkrAdhesion {
@@ -1151,6 +1470,140 @@ mod tests {
     fn test_jkr_surface_energy_negative() {
         let j = make_jkr();
         assert!(j.surface_energy(1e-3) < 0.0);
+    }
+
+    #[test]
+    fn test_jkr_reduces_to_hertz_without_adhesion() {
+        let (r_star, e_star) = (5.0e-3_f64, 1.0e11_f64);
+        let jkr = JkrAdhesion::new(r_star, e_star, 0.0);
+        let hertz = HertzSphereSphere { r_star, e_star };
+        for force in [0.1, 1.0, 50.0, 1.0e3] {
+            let a_jkr = jkr.contact_radius(force);
+            let a_hertz = hertz.contact_radius(force);
+            assert!(
+                (a_jkr - a_hertz).abs() / a_hertz < 1e-12,
+                "F = {force}: JKR {a_jkr} vs Hertz {a_hertz}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_jkr_zero_load_radius_cubed() {
+        // a0^3 = 9 pi W R^2 / (2 E*)
+        let j = make_jkr();
+        let a0 = j.contact_radius(0.0);
+        let expected = 9.0 * PI * j.work_adhesion * j.r_star * j.r_star / (2.0 * j.e_star);
+        assert!(
+            (a0.powi(3) - expected).abs() / expected < 1e-12,
+            "a0^3 = {:e}, expected {expected:e}",
+            a0.powi(3)
+        );
+    }
+
+    #[test]
+    fn test_jkr_radius_satisfies_jkr_load_equation() {
+        // P = 4 E* a^3 / (3 R) - sqrt(8 pi W E* a^3) must return the applied load.
+        let j = make_jkr();
+        let pull_off = j.pull_off_force().abs();
+        for force in [-0.99, -0.5, 0.0, 0.7, 4.0, 60.0].map(|f| f * pull_off) {
+            let a = j.contact_radius(force);
+            let load = 4.0 * j.e_star * a.powi(3) / (3.0 * j.r_star)
+                - (8.0 * PI * j.work_adhesion * j.e_star * a.powi(3)).sqrt();
+            let scale = pull_off.max(force.abs());
+            assert!(
+                (load - force).abs() / scale < 1e-9,
+                "F = {force:e}: load equation gives {load:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_jkr_pull_off_radius_and_separation() {
+        let j = make_jkr();
+        let a0 = j.contact_radius(0.0);
+        let a_po = j.contact_radius(j.pull_off_force());
+        // a_po^3 = a0^3 / 4
+        assert!((a_po.powi(3) / a0.powi(3) - 0.25).abs() < 1e-9);
+        // Below the pull-off load there is no contact patch (and never a negative radius).
+        assert_eq!(j.contact_radius(1.01 * j.pull_off_force()), 0.0);
+        assert_eq!(j.contact_radius(10.0 * j.pull_off_force()), 0.0);
+        assert_eq!(j.elastic_energy(10.0 * j.pull_off_force()), 0.0);
+    }
+
+    #[test]
+    fn test_jkr_indentation_formula() {
+        let j = make_jkr();
+        let force = 2.0e-3;
+        let a = j.contact_radius(force);
+        let expected = a * a / j.r_star - (2.0 * PI * j.work_adhesion * a / j.e_star).sqrt();
+        assert!((j.indentation(force) - expected).abs() <= 1e-12 * expected.abs());
+        // Without adhesion the JKR approach is the Hertz approach a^2/R.
+        let hertz_like = JkrAdhesion::new(j.r_star, j.e_star, 0.0);
+        let a_h = hertz_like.contact_radius(force);
+        assert!((hertz_like.indentation(force) - a_h * a_h / j.r_star).abs() < 1e-18);
+    }
+
+    #[test]
+    fn test_jkr_elastic_energy_hertz_limit() {
+        // W = 0: U_E = (2/5) F delta = 8 E* a^5 / (15 R^2).
+        let (r_star, e_star) = (5.0e-3_f64, 1.0e11_f64);
+        let jkr = JkrAdhesion::new(r_star, e_star, 0.0);
+        let hertz = HertzSphereSphere { r_star, e_star };
+        let force = 40.0;
+        let expected = 0.4 * force * hertz.indentation(force);
+        let u = jkr.elastic_energy(force);
+        assert!(
+            (u - expected).abs() / expected < 1e-12,
+            "U_E = {u:e}, expected {expected:e}"
+        );
+    }
+
+    #[test]
+    fn test_jkr_elastic_energy_zero_load_closed_form() {
+        // At F = 0 the Hertz and flat-punch loads cancel: U_E = 4 E* a0^5 / (45 R^2).
+        let j = make_jkr();
+        let a0 = j.contact_radius(0.0);
+        let expected = 4.0 * j.e_star * a0.powi(5) / (45.0 * j.r_star * j.r_star);
+        let u = j.elastic_energy(0.0);
+        assert!(
+            (u - expected).abs() / expected < 1e-10,
+            "U_E(0) = {u:e}, expected {expected:e}"
+        );
+    }
+
+    #[test]
+    fn test_jkr_elastic_energy_satisfies_griffith_equilibrium() {
+        // General (non-equilibrium) energy of the Hertz-minus-punch superposition at fixed approach:
+        //   U(a, d) = 8E*a^5/(15R^2) - 4E*a^3 d2/(3R) + E* a d2^2,  d2 = a^2/R - d.
+        // At the JKR approach it must equal elastic_energy(), and dU/da|_d must equal
+        // W * d(pi a^2)/da = 2 pi W a (energy release rate = work of adhesion).
+        let j = make_jkr();
+        let u_general = |a: f64, d: f64| -> f64 {
+            let d2 = a * a / j.r_star - d;
+            8.0 * j.e_star * a.powi(5) / (15.0 * j.r_star * j.r_star)
+                - 4.0 * j.e_star * a.powi(3) * d2 / (3.0 * j.r_star)
+                + j.e_star * a * d2 * d2
+        };
+        let pull_off = j.pull_off_force().abs();
+        for force in [-0.9, 0.0, 1.0, 5.0, 20.0].map(|f| f * pull_off) {
+            let a = j.contact_radius(force);
+            let d = j.indentation(force);
+            let u = j.elastic_energy(force);
+            assert!(
+                (u_general(a, d) - u).abs() / u < 1e-9,
+                "F = {force}: general {:e} vs closed form {u:e}",
+                u_general(a, d)
+            );
+            // Central difference; the truncation error is O((h/a)^2) and stays below 1e-6 here.
+            let h = 1.0e-4 * a;
+            let du_da = (u_general(a + h, d) - u_general(a - h, d)) / (2.0 * h);
+            let expected = 2.0 * PI * j.work_adhesion * a;
+            assert!(
+                (du_da - expected).abs() / expected < 1e-5,
+                "F = {force}: dU/da = {du_da:e}, 2 pi W a = {expected:e}"
+            );
+            assert!(u > 0.0, "strain energy must be positive");
+        }
     }
 
     // ── DMT adhesion ─────────────────────────────────────────────────────

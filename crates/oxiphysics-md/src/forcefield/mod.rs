@@ -1,5 +1,6 @@
 //! Auto-generated module structure
 
+pub mod amber_topology;
 pub mod amberforcefield_traits;
 pub mod angleforcefield_traits;
 pub mod bondedforcefield_traits;

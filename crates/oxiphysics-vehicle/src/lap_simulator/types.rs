@@ -611,24 +611,96 @@ impl OptimalLap {
         }
         distance / speed
     }
+    /// Time (s) lost against cruising at `v_entry` while braking from `v_entry`
+    /// down to the corner speed `v_corner` (both m/s).
+    ///
+    /// The braking zone `d = (v_entry² − v_corner²) / (2·a_brake)` is the last
+    /// stretch of road before the corner, and the time to cover it at `v_entry`,
+    /// `d / v_entry`, is already part of the preceding segment.  Braking takes
+    /// `t = (v_entry − v_corner) / a_brake` instead, so the corner only adds
+    ///
+    /// `t − d / v_entry = (v_entry − v_corner)² / (2·a_brake·v_entry) ≥ 0`.
+    ///
+    /// Returns `0.0` when no braking is needed (`v_entry ≤ v_corner`) or possible.
+    pub fn braking_time_loss(&self, v_entry: f64, v_corner: f64) -> f64 {
+        let a_brake = self.perf.brake_g_at(v_entry);
+        if a_brake < 1e-3 || v_entry < 1e-3 || v_entry <= v_corner {
+            return 0.0;
+        }
+        let t_brake = (v_entry - v_corner) / a_brake;
+        let d_brake = self.braking_distance(v_entry, v_corner);
+        (t_brake - d_brake / v_entry).max(0.0)
+    }
     /// Estimate segment time (s) for a straight of given length and entry speed.
+    ///
+    /// This is the time of [`OptimalLap::straight_time_and_exit_speed`].
     pub fn straight_time(&self, length: f64, v_entry: f64, v_limit: f64) -> f64 {
-        let a = self.perf.traction_g_at(v_entry);
-        let v_lim = v_limit.min(self.perf.v_max);
-        let d_accel = if v_entry < v_lim && a > 1e-3 {
-            ((v_lim * v_lim - v_entry * v_entry) / (2.0 * a)).min(length)
+        self.straight_time_and_exit_speed(length, v_entry, v_limit)
+            .0
+    }
+    /// Time (s) and exit speed (m/s) of a straight of `length` metres that is
+    /// entered at `v_entry` (m/s) and may be driven at `v_limit` (m/s) at most;
+    /// the limit is also capped by the top speed `v_max` of the vehicle.
+    ///
+    /// The car accelerates with the traction limit `a` found at the entry speed
+    /// until it reaches the limit speed `v_lim`, and then cruises at `v_lim`:
+    ///
+    /// * The limit is reached after `d = (v_lim² − v_entry²) / (2a)`.  When
+    ///   `d < length`: `t = (v_lim − v_entry)/a + (length − d)/v_lim` and the
+    ///   exit speed is `v_lim`.
+    /// * When the straight ends first (`d ≥ length`) the car is still
+    ///   accelerating: `v_exit = √(v_entry² + 2a·length)` and
+    ///   `t = (v_exit − v_entry)/a`.  The exit speed is then below the limit.
+    /// * A car that arrives above the limit (e.g. after a DRS zone) brakes down
+    ///   to it with the braking limit at the entry speed, the same two cases
+    ///   apply with `d = (v_entry² − v_lim²) / (2·a_brake)`.
+    /// * A car that arrives at the limit cruises: `t = length / v_lim`.
+    ///
+    /// Returns `(time, exit_speed)`; `time` is `f64::INFINITY` when the car
+    /// cannot move over the straight (no speed and no traction).  A straight of
+    /// zero length takes no time and leaves the speed unchanged.
+    pub fn straight_time_and_exit_speed(
+        &self,
+        length: f64,
+        v_entry: f64,
+        v_limit: f64,
+    ) -> (f64, f64) {
+        const MIN_ACCELERATION: f64 = 1e-3;
+        let length = length.max(0.0);
+        let v_start = v_entry.max(0.0);
+        if length <= 0.0 {
+            return (0.0, v_start);
+        }
+        let v_lim = v_limit.min(self.perf.v_max).max(0.0);
+        if v_start < v_lim {
+            let a = self.perf.traction_g_at(v_start);
+            if a < MIN_ACCELERATION {
+                return (self.time_at_speed(length, v_start), v_start);
+            }
+            let d_accel = (v_lim * v_lim - v_start * v_start) / (2.0 * a);
+            if d_accel >= length {
+                let v_exit = (v_start * v_start + 2.0 * a * length).sqrt();
+                ((v_exit - v_start) / a, v_exit)
+            } else {
+                let t_accel = (v_lim - v_start) / a;
+                (t_accel + self.time_at_speed(length - d_accel, v_lim), v_lim)
+            }
+        } else if v_start > v_lim {
+            let a_brake = self.perf.brake_g_at(v_start);
+            if a_brake < MIN_ACCELERATION {
+                return (self.time_at_speed(length, v_start), v_start);
+            }
+            let d_brake = (v_start * v_start - v_lim * v_lim) / (2.0 * a_brake);
+            if d_brake >= length {
+                let v_exit = (v_start * v_start - 2.0 * a_brake * length).sqrt();
+                ((v_start - v_exit) / a_brake, v_exit)
+            } else {
+                let t_brake = (v_start - v_lim) / a_brake;
+                (t_brake + self.time_at_speed(length - d_brake, v_lim), v_lim)
+            }
         } else {
-            0.0
-        };
-        let t_accel = if a > 1e-3 && v_entry < v_lim {
-            (v_lim - v_entry) / a
-        } else {
-            0.0
-        };
-        let d_const = (length - d_accel).max(0.0);
-        let v_avg = (v_entry + v_lim) / 2.0;
-        let t_const = if v_avg > 1e-3 { d_const / v_avg } else { 0.0 };
-        t_accel + t_const
+            (self.time_at_speed(length, v_start), v_start)
+        }
     }
     /// Estimate corner time (s) at geometric speed.
     pub fn corner_time(&self, radius: f64, angle: f64) -> f64 {

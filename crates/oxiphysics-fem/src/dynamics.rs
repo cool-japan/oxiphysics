@@ -1,13 +1,43 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-//! Time-domain structural dynamics using Rayleigh damping and Newmark-β / Central Difference methods.
+//! Time-domain structural dynamics using Rayleigh damping and Newmark-β / HHT-α / Bathe /
+//! Central Difference methods.
 //!
 //! Solves: M*a + C*v + K*u = F(t)
 //! where C = α*M + β*K (Rayleigh damping).
 //!
-//! Also includes the Bathe composite method, mass matrix lumping,
-//! Rayleigh damping assembly, and energy balance monitoring.
+//! The implicit integrators ([`NewmarkIntegrator`], including HHT-α, and [`BatheIntegrator`])
+//! assemble and factorise the full, generally non-diagonal effective matrix of each step, so
+//! they keep the stability properties of the methods; the explicit [`CentralDifference`] schemes
+//! need a lumped mass matrix and a time step below the limit of [`safe_explicit_dt`].
+//!
+//! Also includes mass matrix lumping, Rayleigh damping assembly, and energy balance monitoring.
+
+use crate::dense_lu::LuFactor;
+use crate::error::{Error, Result};
+
+/// Check that `dt` is a usable (positive, finite) time step.
+fn check_time_step(dt: f64) -> Result<()> {
+    if dt.is_finite() && dt > 0.0 {
+        Ok(())
+    } else {
+        Err(Error::InvalidInput(format!(
+            "time step must be positive and finite, got {dt}"
+        )))
+    }
+}
+
+/// Check that a vector has the expected length.
+fn check_len(name: &str, got: usize, expected: usize) -> Result<()> {
+    if got == expected {
+        Ok(())
+    } else {
+        Err(Error::InvalidInput(format!(
+            "{name} has {got} entries, expected {expected}"
+        )))
+    }
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // DynamicsSystem
@@ -19,7 +49,8 @@
 /// where the damping matrix is C = α*M + β*K (Rayleigh damping).
 ///
 /// Mass is stored as a diagonal vector (lumped mass), stiffness as a dense row-major
-/// matrix (`Vec<Vec`f64`>`).
+/// matrix (`Vec<Vec<f64>>`).
+#[derive(Debug, Clone)]
 pub struct DynamicsSystem {
     /// Number of degrees of freedom.
     pub n_dof: usize,
@@ -96,41 +127,146 @@ impl DynamicsSystem {
             .map(|i| self.mass_diag[i] * acceleration[i])
             .collect()
     }
+
+    /// Acceleration consistent with the equation of motion at the given state:
+    /// `a = M⁻¹ (f − C·v − K·u)`.
+    ///
+    /// The Newmark-type integrators ([`NewmarkIntegrator`], [`BatheIntegrator`]) advance
+    /// `(u, v, a)`, and their first step is only accurate when the supplied `a` is the
+    /// acceleration implied by `u`, `v` and the load at the initial time.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidInput`] when a vector does not have `n_dof` entries, when the system is
+    /// inconsistent, or when a mass is not strictly positive (a massless DOF has no
+    /// well-defined acceleration).
+    pub fn initial_acceleration(&self, u: &[f64], v: &[f64], f_ext: &[f64]) -> Result<Vec<f64>> {
+        self.validate()?;
+        check_len("displacement vector", u.len(), self.n_dof)?;
+        check_len("velocity vector", v.len(), self.n_dof)?;
+        check_len("load vector", f_ext.len(), self.n_dof)?;
+        let k_u = self.internal_force(u);
+        let c_v = self.rayleigh_damping_force(v);
+        self.mass_diag
+            .iter()
+            .enumerate()
+            .map(|(i, &mass)| {
+                if mass > 0.0 {
+                    Ok((f_ext[i] - k_u[i] - c_v[i]) / mass)
+                } else {
+                    Err(Error::InvalidInput(format!(
+                        "DOF {i} has mass {mass}; the initial acceleration needs a positive mass"
+                    )))
+                }
+            })
+            .collect()
+    }
+
+    /// Check that the public fields describe a consistent system: matching sizes, finite
+    /// non-negative masses, and finite stiffness and damping coefficients.
+    fn validate(&self) -> Result<()> {
+        let n = self.n_dof;
+        check_len("mass_diag", self.mass_diag.len(), n)?;
+        check_len("stiffness (row count)", self.stiffness.len(), n)?;
+        for (i, row) in self.stiffness.iter().enumerate() {
+            check_len(&format!("stiffness row {i}"), row.len(), n)?;
+            if row.iter().any(|k| !k.is_finite()) {
+                return Err(Error::InvalidInput(format!(
+                    "stiffness row {i} contains a non-finite entry"
+                )));
+            }
+        }
+        for (i, &mass) in self.mass_diag.iter().enumerate() {
+            if !(mass.is_finite() && mass >= 0.0) {
+                return Err(Error::InvalidInput(format!(
+                    "mass of DOF {i} must be finite and non-negative, got {mass}"
+                )));
+            }
+        }
+        if !(self.damping_alpha.is_finite() && self.damping_beta.is_finite()) {
+            return Err(Error::InvalidInput(
+                "Rayleigh damping coefficients must be finite".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The dense matrix `m_coeff·diag(M) + k_coeff·K`, the building block of the effective
+    /// matrices of the implicit integrators.
+    fn mass_stiffness_combination(&self, m_coeff: f64, k_coeff: f64) -> Vec<Vec<f64>> {
+        let mut combined: Vec<Vec<f64>> = self
+            .stiffness
+            .iter()
+            .map(|row| row.iter().map(|k| k_coeff * k).collect())
+            .collect();
+        for (i, row) in combined.iter_mut().enumerate() {
+            row[i] += m_coeff * self.mass_diag[i];
+        }
+        combined
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // NewmarkIntegrator
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Newmark-β implicit time integrator.
+/// Newmark-β / Hilber–Hughes–Taylor (HHT-α) implicit time integrator.
 ///
-/// Solves M*a_{n+1} + C*v_{n+1} + K*u_{n+1} = F_{n+1} at each step via a
-/// predictor-corrector scheme operating on the individual diagonal DOFs.
+/// The Newmark kinematics
 ///
-/// For the general (coupled) case this requires solving a linear system; since
-/// the module avoids nalgebra, the implementation uses diagonal decoupling:
-/// each DOF is treated independently under the assumption that the effective
-/// stiffness matrix is diagonally dominant (holds exactly when the problem is
-/// already decoupled, e.g. modal coordinates, and is a common approximation
-/// in lumped-mass contexts).
+/// ```text
+/// u_{n+1} = u_n + Δt·v_n + Δt²·[(1/2 − β)·a_n + β·a_{n+1}]
+/// v_{n+1} = v_n + Δt·[(1 − γ)·a_n + γ·a_{n+1}]
+/// ```
 ///
-/// For coupled systems use the `crate::dynamic` module which assembles and
-/// solves the full sparse effective system via CG.
+/// are combined with the α-weighted equation of motion
+///
+/// ```text
+/// M·a_{n+1} + (1+α)(C·v_{n+1} + K·u_{n+1}) − α(C·v_n + K·u_n) = (1+α)·f_{n+1} − α·f_n
+/// ```
+///
+/// where α = [`hht_alpha`](Self::hht_alpha) ∈ [−1/3, 0] (α = 0 is the classical Newmark
+/// method) and `C = α_R·M + β_R·K` is the Rayleigh damping of the [`DynamicsSystem`].
+/// Substituting the kinematics for `u_{n+1}`, `v_{n+1}` leaves one linear system for the new
+/// acceleration,
+///
+/// ```text
+/// [M + (1+α)(γΔt·C + βΔt²·K)]·a_{n+1}
+///     = (1+α)·f_{n+1} − α·f_n − (1+α)(K·ũ + C·ṽ) + α(K·u_n + C·v_n)
+/// ```
+///
+/// with the predictors `ũ = u_n + Δt·v_n + Δt²(1/2 − β)·a_n` and `ṽ = v_n + Δt(1 − γ)·a_n`.
+/// The full (generally non-diagonal) effective matrix is assembled and factorised with a
+/// dense LU decomposition, so coupled systems are integrated exactly as the method prescribes
+/// and the scheme has the stability properties of the Newmark/HHT family: with 2β ≥ γ ≥ 1/2
+/// (classical Newmark) or the optimal HHT-α parameters it is unconditionally stable for linear
+/// systems; otherwise see [`critical_dt`](Self::critical_dt).
+///
+/// The factorisation costs `O(n³)`.  For many steps with a fixed `Δt` build a
+/// [`NewmarkStepper`] once with [`stepper`](Self::stepper) and reuse it; each step then costs
+/// `O(n²)`.
+///
+/// For large sparse systems use the CSR-based `crate::dynamic` module.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NewmarkIntegrator {
     /// Newmark β parameter.
     pub beta: f64,
     /// Newmark γ parameter.
     pub gamma: f64,
+    /// HHT-α parameter in `[-1/3, 0]`; `0` gives the classical Newmark method.
+    pub hht_alpha: f64,
 }
 
 impl NewmarkIntegrator {
     /// Average-acceleration method: β = 1/4, γ = 1/2.
     ///
-    /// Unconditionally stable for linear systems (spectral radius ≤ 1 for all dt).
+    /// Unconditionally stable for linear systems (spectral radius ≤ 1 for all dt) and
+    /// non-dissipative.
     pub fn new_average_acceleration() -> Self {
         Self {
             beta: 0.25,
             gamma: 0.5,
+            hht_alpha: 0.0,
         }
     }
 
@@ -141,23 +277,99 @@ impl NewmarkIntegrator {
         Self {
             beta: 1.0 / 6.0,
             gamma: 0.5,
+            hht_alpha: 0.0,
         }
     }
 
-    /// HHT-α method: β = (1+α)²/4, γ = 1/2 + α.
+    /// HHT-α method (Hilber, Hughes & Taylor, 1977): β = (1−α)²/4, γ = 1/2 − α.
     ///
-    /// α should be in \[-1/3, 0\]. α = 0 recovers average acceleration.
-    /// Introduces numerical dissipation of high-frequency modes.
-    pub fn new_hht_alpha(alpha: f64) -> Self {
-        let gamma = 0.5 + alpha;
-        let beta = (1.0 + alpha).powi(2) / 4.0;
-        Self { beta, gamma }
+    /// For α ∈ [−1/3, 0] the method is unconditionally stable, second-order accurate, and
+    /// dissipates high-frequency modes (asymptotic spectral radius (1+α)/(1−α)) while leaving
+    /// the low-frequency response almost untouched.  α = 0 recovers the average-acceleration
+    /// method.  Note γ = 1/2 − α ≥ 1/2: a *negative* α gives positive numerical damping.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidInput`] when `alpha` is not in `[-1/3, 0]` (this includes NaN).
+    pub fn new_hht_alpha(alpha: f64) -> Result<Self> {
+        if !(-1.0 / 3.0..=0.0).contains(&alpha) {
+            return Err(Error::InvalidInput(format!(
+                "HHT-α must lie in [-1/3, 0], got {alpha}"
+            )));
+        }
+        Ok(Self {
+            beta: (1.0 - alpha).powi(2) / 4.0,
+            gamma: 0.5 - alpha,
+            hht_alpha: alpha,
+        })
     }
 
-    /// Advance the state by one Newmark-β step.
+    /// Check that the integrator parameters define a solvable step.
+    fn validate(&self) -> Result<()> {
+        if !(self.beta.is_finite() && self.beta >= 0.0) {
+            return Err(Error::InvalidInput(format!(
+                "Newmark β must be finite and non-negative, got {}",
+                self.beta
+            )));
+        }
+        if !(self.gamma.is_finite() && self.gamma >= 0.0) {
+            return Err(Error::InvalidInput(format!(
+                "Newmark γ must be finite and non-negative, got {}",
+                self.gamma
+            )));
+        }
+        if !(self.hht_alpha.is_finite() && self.hht_alpha > -1.0) {
+            return Err(Error::InvalidInput(format!(
+                "HHT-α must be finite and greater than -1, got {}",
+                self.hht_alpha
+            )));
+        }
+        Ok(())
+    }
+
+    /// Bind the integrator to a system and a time step and factorise the effective matrix.
     ///
-    /// Uses a predictor-corrector approach on the **decoupled** (diagonal) form
-    /// of the equations of motion.
+    /// The returned [`NewmarkStepper`] can advance the state many times at `O(n²)` per step.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::InvalidInput`] when `dt` is not positive and finite, when the integrator
+    ///   parameters are unusable, or when the system is inconsistent (sizes, negative or
+    ///   non-finite masses, non-finite stiffness or damping).
+    /// * [`Error::SingularSystem`] when the effective matrix
+    ///   `M + (1+α)(γΔt·C + βΔt²·K)` is singular, e.g. a rigid-body mode of a massless DOF.
+    pub fn stepper<'a>(&self, sys: &'a DynamicsSystem, dt: f64) -> Result<NewmarkStepper<'a>> {
+        self.validate()?;
+        check_time_step(dt)?;
+        sys.validate()?;
+        let weight = 1.0 + self.hht_alpha;
+        let m_coeff = 1.0 + weight * self.gamma * dt * sys.damping_alpha;
+        let k_coeff = weight * (self.beta * dt * dt + self.gamma * dt * sys.damping_beta);
+        let effective = sys.mass_stiffness_combination(m_coeff, k_coeff);
+        let factor = LuFactor::new(&effective).ok_or(Error::SingularSystem)?;
+        Ok(NewmarkStepper {
+            sys,
+            integrator: *self,
+            dt,
+            factor,
+        })
+    }
+
+    /// Advance the state by one step of size `dt`, treating the load as constant over the step.
+    ///
+    /// `f_ext` is the external load `f_{n+1}`; it is also used for the `f_n` of the HHT
+    /// weighting, which is exact for loads that are constant over the step and for the
+    /// classical Newmark method (α = 0).  For time-varying loads with α ≠ 0 build a
+    /// [`NewmarkStepper`] with [`stepper`](Self::stepper) and pass both loads to
+    /// [`NewmarkStepper::step_with_loads`] to retain second-order accuracy.
+    ///
+    /// `a` must be the acceleration consistent with `u`, `v` and the load at the start of the
+    /// step (see [`DynamicsSystem::initial_acceleration`]).  On error the state is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// See [`stepper`](Self::stepper); additionally [`Error::InvalidInput`] when a state or load
+    /// vector does not have `sys.n_dof` entries or the update becomes non-finite.
     pub fn step(
         &self,
         sys: &DynamicsSystem,
@@ -166,56 +378,259 @@ impl NewmarkIntegrator {
         a: &mut Vec<f64>,
         f_ext: &[f64],
         dt: f64,
-    ) {
+    ) -> Result<()> {
+        self.stepper(sys, dt)?
+            .step_with_loads(u, v, a, f_ext, f_ext)
+    }
+
+    /// Normalised amplification matrix of one step for the undamped modal equation
+    /// `u'' + ω²u = 0` with `ω·Δt = omega_dt`, acting on `(u, Δt·v, Δt²·a)`.
+    fn modal_amplification(&self, omega_dt: f64) -> [[f64; 3]; 3] {
+        let k = omega_dt * omega_dt;
+        let weight = 1.0 + self.hht_alpha;
+        let denominator = 1.0 + weight * self.beta * k;
+        let advance = |state: [f64; 3]| -> [f64; 3] {
+            let [u, v, a] = state;
+            let u_pred = u + v + (0.5 - self.beta) * a;
+            let v_pred = v + (1.0 - self.gamma) * a;
+            let a_new = (-weight * k * u_pred + self.hht_alpha * k * u) / denominator;
+            [
+                u_pred + self.beta * a_new,
+                v_pred + self.gamma * a_new,
+                a_new,
+            ]
+        };
+        let columns = [
+            advance([1.0, 0.0, 0.0]),
+            advance([0.0, 1.0, 0.0]),
+            advance([0.0, 0.0, 1.0]),
+        ];
+        let mut matrix = [[0.0; 3]; 3];
+        for (j, column) in columns.iter().enumerate() {
+            for (i, &entry) in column.iter().enumerate() {
+                matrix[i][j] = entry;
+            }
+        }
+        matrix
+    }
+
+    /// Whether every eigenvalue of the modal amplification matrix lies in the closed unit disk.
+    fn is_modally_stable(&self, omega_dt: f64) -> bool {
+        schur_cohn_cubic_stable(&self.modal_amplification(omega_dt))
+    }
+
+    /// Largest `ω·Δt` up to which the undamped modal recurrence is stable.
+    ///
+    /// Returns `f64::INFINITY` for unconditional stability and `0.0` when no step is stable.
+    fn critical_omega_dt(&self) -> f64 {
+        if self.hht_alpha == 0.0 {
+            // Classical Newmark (Hughes, The Finite Element Method, §9.1).
+            if self.gamma < 0.5 {
+                return 0.0;
+            }
+            if 2.0 * self.beta >= self.gamma {
+                return f64::INFINITY;
+            }
+            return 1.0 / (0.5 * self.gamma - self.beta).sqrt();
+        }
+        // HHT-α with its optimal parameters is unconditionally stable for α ∈ [-1/3, 0].
+        let optimal_gamma = 0.5 - self.hht_alpha;
+        let optimal_beta = (1.0 - self.hht_alpha).powi(2) / 4.0;
+        if (-1.0 / 3.0..=0.0).contains(&self.hht_alpha)
+            && (self.gamma - optimal_gamma).abs() <= 1.0e-12
+            && self.beta >= optimal_beta - 1.0e-12
+        {
+            return f64::INFINITY;
+        }
+        // Any other (β, γ, α) combination: the plain Newmark criterion does not apply.
+        self.scan_critical_omega_dt()
+    }
+
+    /// Largest `ω·Δt` up to which the modal amplification matrix keeps its eigenvalues in the
+    /// closed unit disk, found by scanning a geometric grid for the first unstable step and
+    /// bisecting the bracket.  Valid for every `(β, γ, α)`; `f64::INFINITY` when the whole
+    /// grid up to `ω·Δt = 10⁸` is stable and `0.0` when already `ω·Δt = 10⁻³` is not.
+    fn scan_critical_omega_dt(&self) -> f64 {
+        const FIRST: f64 = 1.0e-3;
+        const LAST: f64 = 1.0e8;
+        const GROWTH: f64 = 1.02;
+        if !self.is_modally_stable(FIRST) {
+            return 0.0;
+        }
+        let mut stable = FIRST;
+        while stable < LAST {
+            let next = (stable * GROWTH).min(LAST);
+            if !self.is_modally_stable(next) {
+                let (mut low, mut high) = (stable, next);
+                for _ in 0..60 {
+                    let mid = 0.5 * (low + high);
+                    if self.is_modally_stable(mid) {
+                        low = mid;
+                    } else {
+                        high = mid;
+                    }
+                }
+                return low;
+            }
+            stable = next;
+        }
+        f64::INFINITY
+    }
+
+    /// Stability limit Δt_crit of the scheme for a system whose highest natural frequency is
+    /// `omega_max`.
+    ///
+    /// Obtained from the undamped modal recurrence, which is also a conservative bound for
+    /// positive Rayleigh damping.  For the classical Newmark family (α = 0):
+    ///
+    /// - `2β ≥ γ ≥ 1/2`: unconditionally stable, returns `f64::INFINITY`;
+    /// - `γ ≥ 1/2` and `β < γ/2`: conditionally stable with `ω·Δt ≤ 1/√(γ/2 − β)`
+    ///   (2 for central difference, 2√3 for linear acceleration);
+    /// - `γ < 1/2`: no time step is stable, returns `0.0`.
+    ///
+    /// The optimal HHT-α parameters of [`new_hht_alpha`](Self::new_hht_alpha) are
+    /// unconditionally stable.  For any other combination with α ≠ 0 the limit is found from the
+    /// spectral radius of the amplification matrix.
+    ///
+    /// A zero `omega_max` imposes no limit (`f64::INFINITY`); a negative or NaN `omega_max`
+    /// yields NaN.
+    pub fn critical_dt(&self, omega_max: f64) -> f64 {
+        if omega_max.is_nan() || omega_max < 0.0 {
+            return f64::NAN;
+        }
+        if omega_max == 0.0 {
+            return f64::INFINITY;
+        }
+        self.critical_omega_dt() / omega_max
+    }
+}
+
+/// Whether the roots of the characteristic polynomial of the 3×3 matrix `a` all lie in the
+/// closed unit disk (Schur–Cohn/Jury test for a real cubic, with a small relative tolerance).
+fn schur_cohn_cubic_stable(a: &[[f64; 3]; 3]) -> bool {
+    let trace = a[0][0] + a[1][1] + a[2][2];
+    let minors = (a[0][0] * a[1][1] - a[0][1] * a[1][0])
+        + (a[0][0] * a[2][2] - a[0][2] * a[2][0])
+        + (a[1][1] * a[2][2] - a[1][2] * a[2][1]);
+    let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+        - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+        + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+    // p(λ) = λ³ + c2·λ² + c1·λ + c0
+    let (c2, c1, c0) = (-trace, minors, -det);
+    if !(c2.is_finite() && c1.is_finite() && c0.is_finite()) {
+        return false;
+    }
+    let tol = 1.0e-9 * (1.0 + c2.abs() + c1.abs() + c0.abs());
+    let p_at_one = 1.0 + c2 + c1 + c0;
+    let p_at_minus_one = -1.0 + c2 - c1 + c0;
+    p_at_one >= -tol
+        && -p_at_minus_one >= -tol
+        && c0.abs() <= 1.0 + tol
+        && (c0 * c0 - 1.0).abs() >= (c0 * c2 - c1).abs() - tol
+}
+
+/// A [`NewmarkIntegrator`] bound to a [`DynamicsSystem`] and a time step, with the effective
+/// matrix already factorised.
+///
+/// Created by [`NewmarkIntegrator::stepper`].  Each call to
+/// [`step_with_loads`](Self::step_with_loads) then costs `O(n²)`.
+#[derive(Debug)]
+pub struct NewmarkStepper<'a> {
+    /// The system being integrated.
+    sys: &'a DynamicsSystem,
+    /// Integration parameters.
+    integrator: NewmarkIntegrator,
+    /// Time step.
+    dt: f64,
+    /// LU factors of `M + (1+α)(γΔt·C + βΔt²·K)`.
+    factor: LuFactor,
+}
+
+impl NewmarkStepper<'_> {
+    /// Advance the state by one step.
+    ///
+    /// `f_prev` is the external load `f_n` at the start of the step and `f_next` the load
+    /// `f_{n+1}` at its end; `f_prev` only matters for HHT-α (α ≠ 0).  `a` must be consistent
+    /// with `u`, `v` and `f_prev` (see [`DynamicsSystem::initial_acceleration`]).  On error the
+    /// state is left unchanged.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidInput`] when a vector does not have `n_dof` entries or the update
+    /// becomes non-finite (non-finite state or load).
+    pub fn step_with_loads(
+        &self,
+        u: &mut Vec<f64>,
+        v: &mut Vec<f64>,
+        a: &mut Vec<f64>,
+        f_prev: &[f64],
+        f_next: &[f64],
+    ) -> Result<()> {
+        let sys = self.sys;
         let n = sys.n_dof;
-        assert_eq!(u.len(), n);
-        assert_eq!(v.len(), n);
-        assert_eq!(a.len(), n);
-        assert_eq!(f_ext.len(), n);
+        check_len("displacement vector", u.len(), n)?;
+        check_len("velocity vector", v.len(), n)?;
+        check_len("acceleration vector", a.len(), n)?;
+        check_len("previous load vector", f_prev.len(), n)?;
+        check_len("load vector", f_next.len(), n)?;
 
-        let beta = self.beta;
-        let gamma = self.gamma;
+        let NewmarkIntegrator {
+            beta,
+            gamma,
+            hht_alpha: alpha,
+        } = self.integrator;
+        let dt = self.dt;
         let dt2 = dt * dt;
+        let weight = 1.0 + alpha;
 
-        // ── Predictors ──────────────────────────────────────────────────────
         let u_pred: Vec<f64> = (0..n)
             .map(|i| u[i] + dt * v[i] + dt2 * (0.5 - beta) * a[i])
             .collect();
         let v_pred: Vec<f64> = (0..n).map(|i| v[i] + dt * (1.0 - gamma) * a[i]).collect();
-
-        // ── Build effective RHS per DOF ──────────────────────────────────────
         let k_u_pred = sys.internal_force(&u_pred);
         let c_v_pred = sys.rayleigh_damping_force(&v_pred);
+        let (k_u_old, c_v_old) = if alpha == 0.0 {
+            (vec![0.0; n], vec![0.0; n])
+        } else {
+            (sys.internal_force(u), sys.rayleigh_damping_force(v))
+        };
 
-        let mut u_new = vec![0.0; n];
-        for i in 0..n {
-            let m_i = sys.mass_diag[i];
-            let inv_coeff = beta * dt2 / m_i;
-            let residual = f_ext[i] - k_u_pred[i] - c_v_pred[i];
-            u_new[i] = u_pred[i] + inv_coeff * residual;
+        let rhs: Vec<f64> = (0..n)
+            .map(|i| {
+                weight * f_next[i] - alpha * f_prev[i] - weight * (k_u_pred[i] + c_v_pred[i])
+                    + alpha * (k_u_old[i] + c_v_old[i])
+            })
+            .collect();
+        let a_new = self.factor.solve(&rhs);
+        if a_new.iter().any(|x| !x.is_finite()) {
+            return Err(Error::InvalidInput(
+                "Newmark update is not finite: check the state and the load for NaN or infinity"
+                    .into(),
+            ));
         }
 
-        // ── Correctors ──────────────────────────────────────────────────────
-        let a_new: Vec<f64> = (0..n)
-            .map(|i| (u_new[i] - u_pred[i]) / (beta * dt2))
-            .collect();
+        let u_new: Vec<f64> = (0..n).map(|i| u_pred[i] + beta * dt2 * a_new[i]).collect();
         let v_new: Vec<f64> = (0..n).map(|i| v_pred[i] + gamma * dt * a_new[i]).collect();
-
         *u = u_new;
         *v = v_new;
         *a = a_new;
+        Ok(())
     }
 
-    /// Stability limit Δt_crit for the Newmark method.
+    /// Advance the state by one step with the load held constant over the step
+    /// (`f_prev = f_next = f_ext`); see [`NewmarkIntegrator::step`].
     ///
-    /// - For explicit schemes (β = 0): Δt_crit = 2 / ω_max
-    /// - For implicit schemes (β > 0, unconditionally stable): returns `f64::INFINITY`
-    pub fn critical_dt(&self, omega_max: f64) -> f64 {
-        if self.beta == 0.0 {
-            2.0 / omega_max
-        } else {
-            f64::INFINITY
-        }
+    /// # Errors
+    ///
+    /// See [`step_with_loads`](Self::step_with_loads).
+    pub fn step(
+        &self,
+        u: &mut Vec<f64>,
+        v: &mut Vec<f64>,
+        a: &mut Vec<f64>,
+        f_ext: &[f64],
+    ) -> Result<()> {
+        self.step_with_loads(u, v, a, f_ext, f_ext)
     }
 }
 
@@ -292,17 +707,36 @@ impl CentralDifference {
 // Bathe composite integration method
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Bathe composite time integration method.
+/// Bathe composite time integration method (Bathe & Noh, 2012).
 ///
-/// Splits each time step into two sub-steps:
-/// 1. First sub-step uses the trapezoidal rule (Newmark β=1/4, γ=1/2)
-/// 2. Second sub-step uses the 3-point Euler backward method
+/// Each step of size Δt is split at the ratio p ∈ (0, 1) into two implicit sub-steps:
 ///
-/// This composite scheme provides unconditional stability with controllable
-/// numerical dissipation for high-frequency modes, while maintaining
-/// second-order accuracy.
+/// 1. **Trapezoidal rule** over \[t_n, t_n + pΔt\] (Newmark β = 1/4, γ = 1/2) gives the
+///    intermediate state `(u_p, v_p)`.
+/// 2. **Three-point backward difference** over \[t_n + pΔt, t_{n+1}\] uses the states at
+///    `t_n`, `t_n + pΔt` and `t_{n+1}`:
 ///
-/// Reference: Bathe & Noh, Computers & Structures, 2012.
+///    ```text
+///    v_{n+1} = c1·u_n + c2·u_p + c3·u_{n+1}
+///    a_{n+1} = c1·v_n + c2·v_p + c3·v_{n+1}
+///    c1 = (1 − p)/(p·Δt),  c2 = −1/(p(1 − p)Δt),  c3 = (2 − p)/((1 − p)Δt)
+///    ```
+///
+///    Together with the equation of motion at `t_{n+1}` this yields
+///    `(c3²·M + c3·C + K)·u_{n+1} = f_{n+1} − M(c1·v_n + c2·v_p + c3(c1·u_n + c2·u_p))
+///    − C(c1·u_n + c2·u_p)`.
+///
+/// The composite scheme is second-order accurate, unconditionally stable for linear systems for
+/// every p ∈ (0, 1), and dissipates high-frequency content strongly (the spectral radius tends
+/// to zero as ω·Δt → ∞) while preserving the low-frequency response; p = 1/2 is the standard
+/// choice.  Both sub-steps solve the full (generally non-diagonal) effective system with a dense
+/// LU decomposition.
+///
+/// For many steps with a fixed `Δt` build a [`BatheStepper`] with [`stepper`](Self::stepper).
+///
+/// Reference: K.-J. Bathe, G. Noh, "Insight into an implicit time integration scheme for
+/// structural dynamics", Computers & Structures 98–99 (2012) 1–6.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BatheIntegrator {
     /// Split ratio p ∈ (0, 1). Default is 0.5 (equal sub-steps).
     pub split_ratio: f64,
@@ -315,6 +749,10 @@ impl BatheIntegrator {
     }
 
     /// Create with a custom split ratio.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `split_ratio` is not in the open interval (0, 1).
     pub fn with_split_ratio(split_ratio: f64) -> Self {
         assert!(
             split_ratio > 0.0 && split_ratio < 1.0,
@@ -323,13 +761,49 @@ impl BatheIntegrator {
         Self { split_ratio }
     }
 
-    /// Advance the state by one Bathe composite step (two sub-steps).
+    /// Bind the integrator to a system and a time step and factorise both sub-step matrices.
     ///
-    /// Sub-step 1 (trapezoidal rule over \[t_n, t_n + p*dt\]):
-    ///   Uses Newmark β=1/4, γ=1/2.
+    /// # Errors
     ///
-    /// Sub-step 2 (3-point backward Euler over \[t_n + p*dt, t_n + dt\]):
-    ///   Uses a 3-point backward difference formula.
+    /// * [`Error::InvalidInput`] when `split_ratio` is not in (0, 1), when `dt` is not positive
+    ///   and finite, or when the system is inconsistent (see [`NewmarkIntegrator::stepper`]).
+    /// * [`Error::SingularSystem`] when one of the sub-step matrices is singular.
+    pub fn stepper<'a>(&self, sys: &'a DynamicsSystem, dt: f64) -> Result<BatheStepper<'a>> {
+        let p = self.split_ratio;
+        if !(p.is_finite() && p > 0.0 && p < 1.0) {
+            return Err(Error::InvalidInput(format!(
+                "Bathe split ratio must be in (0, 1), got {p}"
+            )));
+        }
+        check_time_step(dt)?;
+        let first = NewmarkIntegrator::new_average_acceleration().stepper(sys, p * dt)?;
+        let c1 = (1.0 - p) / (p * dt);
+        let c2 = -1.0 / (p * (1.0 - p) * dt);
+        let c3 = (2.0 - p) / ((1.0 - p) * dt);
+        let m_coeff = c3 * c3 + c3 * sys.damping_alpha;
+        let k_coeff = 1.0 + c3 * sys.damping_beta;
+        let effective = sys.mass_stiffness_combination(m_coeff, k_coeff);
+        let second = LuFactor::new(&effective).ok_or(Error::SingularSystem)?;
+        Ok(BatheStepper {
+            sys,
+            first,
+            coefficients: [c1, c2, c3],
+            second,
+        })
+    }
+
+    /// Advance the state by one Bathe composite step, treating the load as constant over the
+    /// step.
+    ///
+    /// `f_ext` serves as the load at both `t_n + p·Δt` and `t_{n+1}`.  For time-varying loads use
+    /// [`BatheStepper::step_with_loads`].  `a` must be the acceleration consistent with `u`,
+    /// `v` and the load at the start of the step (see [`DynamicsSystem::initial_acceleration`]).
+    /// On error the state is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// See [`stepper`](Self::stepper); additionally [`Error::InvalidInput`] when a state or load
+    /// vector does not have `sys.n_dof` entries or the update becomes non-finite.
     pub fn step(
         &self,
         sys: &DynamicsSystem,
@@ -338,82 +812,108 @@ impl BatheIntegrator {
         a: &mut Vec<f64>,
         f_ext: &[f64],
         dt: f64,
-    ) {
-        let n = sys.n_dof;
-        let p = self.split_ratio;
-        let dt1 = p * dt;
-        let dt2_sub = (1.0 - p) * dt;
-
-        // Save state at t_n
-        let u_n = u.clone();
-        let _v_n = v.clone();
-
-        // ── Sub-step 1: Trapezoidal rule (Newmark β=1/4, γ=1/2) ──────────
-        let newmark = NewmarkIntegrator::new_average_acceleration();
-        newmark.step(sys, u, v, a, f_ext, dt1);
-
-        // Save state at t_n + p*dt
-        let u_mid = u.clone();
-        let v_mid = v.clone();
-
-        // ── Sub-step 2: 3-point backward Euler ───────────────────────────
-        // Using the 3-point backward difference formula:
-        //   v_{n+1} = (1/(p*(1-p)*dt)) * [(1-p)*u_{n+1} - (1/p)*u_mid + (p/(1-p))*u_n]
-        //   a_{n+1} = (v_{n+1} - v_n) / ((1-p)*dt)  (simplified)
-        //
-        // We use a predictor-corrector approach similar to Newmark for the second sub-step.
-        let beta2 = 0.25;
-        let gamma2 = 0.5;
-        let dt2_sq = dt2_sub * dt2_sub;
-
-        // Predict
-        let u_pred2: Vec<f64> = (0..n)
-            .map(|i| u_mid[i] + dt2_sub * v_mid[i] + dt2_sq * (0.5 - beta2) * a[i])
-            .collect();
-        let v_pred2: Vec<f64> = (0..n)
-            .map(|i| v_mid[i] + dt2_sub * (1.0 - gamma2) * a[i])
-            .collect();
-
-        let k_u2 = sys.internal_force(&u_pred2);
-        let c_v2 = sys.rayleigh_damping_force(&v_pred2);
-
-        let mut u_new = vec![0.0; n];
-        for i in 0..n {
-            let m_i = sys.mass_diag[i];
-            let inv_coeff = beta2 * dt2_sq / m_i;
-            let residual = f_ext[i] - k_u2[i] - c_v2[i];
-            u_new[i] = u_pred2[i] + inv_coeff * residual;
-        }
-
-        let a_new: Vec<f64> = (0..n)
-            .map(|i| (u_new[i] - u_pred2[i]) / (beta2 * dt2_sq))
-            .collect();
-        let v_new: Vec<f64> = (0..n)
-            .map(|i| v_pred2[i] + gamma2 * dt2_sub * a_new[i])
-            .collect();
-
-        // Apply 3-point backward correction for improved dissipation
-        // Blend with the two-substep result for better high-frequency damping
-        let _blend_factor = 1.0 / (1.0 + p * (1.0 - p));
-        for i in 0..n {
-            // Use weighted average with 3-point backward estimate
-            let u_3pt = (u_new[i] * (1.0 + p) - u_mid[i] + u_n[i] * (1.0 - p) * p) / (1.0 + p * p);
-            // Blend: mostly use direct result but apply slight 3-point correction
-            u[i] = 0.9 * u_new[i] + 0.1 * u_3pt;
-            v[i] = v_new[i];
-            a[i] = a_new[i];
-        }
-
-        // Recompute velocity from displacements for consistency
-        for i in 0..n {
-            v[i] = (u[i] - u_n[i]) / dt;
-        }
+    ) -> Result<()> {
+        self.stepper(sys, dt)?
+            .step_with_loads(u, v, a, f_ext, f_ext)
     }
 }
 
 impl Default for BatheIntegrator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A [`BatheIntegrator`] bound to a [`DynamicsSystem`] and a time step, with both sub-step
+/// matrices already factorised.
+///
+/// Created by [`BatheIntegrator::stepper`].
+#[derive(Debug)]
+pub struct BatheStepper<'a> {
+    /// The system being integrated.
+    sys: &'a DynamicsSystem,
+    /// Trapezoidal first sub-step over `p·Δt`.
+    first: NewmarkStepper<'a>,
+    /// Backward-difference coefficients `[c1, c2, c3]` of the second sub-step.
+    coefficients: [f64; 3],
+    /// LU factors of `c3²·M + c3·C + K`.
+    second: LuFactor,
+}
+
+impl BatheStepper<'_> {
+    /// Advance the state by one composite step.
+    ///
+    /// `f_mid` is the external load at `t_n + p·Δt` (first sub-step) and `f_end` the load at
+    /// `t_{n+1}` (second sub-step).  `a` must be consistent with `u`, `v` and the load at
+    /// `t_n`.  On error the state is left unchanged.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidInput`] when a vector does not have `n_dof` entries or the update
+    /// becomes non-finite.
+    pub fn step_with_loads(
+        &self,
+        u: &mut Vec<f64>,
+        v: &mut Vec<f64>,
+        a: &mut Vec<f64>,
+        f_mid: &[f64],
+        f_end: &[f64],
+    ) -> Result<()> {
+        let sys = self.sys;
+        let n = sys.n_dof;
+        check_len("displacement vector", u.len(), n)?;
+        check_len("velocity vector", v.len(), n)?;
+        check_len("acceleration vector", a.len(), n)?;
+        check_len("mid-step load vector", f_mid.len(), n)?;
+        check_len("end-of-step load vector", f_end.len(), n)?;
+        let [c1, c2, c3] = self.coefficients;
+
+        // Sub-step 1: trapezoidal rule over p·Δt, on copies so that an error leaves the caller's
+        // state untouched.
+        let mut u_mid = u.clone();
+        let mut v_mid = v.clone();
+        let mut a_mid = a.clone();
+        self.first
+            .step_with_loads(&mut u_mid, &mut v_mid, &mut a_mid, f_mid, f_mid)?;
+
+        // Sub-step 2: three-point backward difference over (1 − p)·Δt.
+        let history_u: Vec<f64> = (0..n).map(|i| c1 * u[i] + c2 * u_mid[i]).collect();
+        let history_v: Vec<f64> = (0..n).map(|i| c1 * v[i] + c2 * v_mid[i]).collect();
+        let c_history_u = sys.rayleigh_damping_force(&history_u);
+        let rhs: Vec<f64> = (0..n)
+            .map(|i| {
+                f_end[i] - sys.mass_diag[i] * (history_v[i] + c3 * history_u[i]) - c_history_u[i]
+            })
+            .collect();
+        let u_new = self.second.solve(&rhs);
+        if u_new.iter().any(|x| !x.is_finite()) {
+            return Err(Error::InvalidInput(
+                "Bathe update is not finite: check the state and the load for NaN or infinity"
+                    .into(),
+            ));
+        }
+        let v_new: Vec<f64> = (0..n).map(|i| history_u[i] + c3 * u_new[i]).collect();
+        let a_new: Vec<f64> = (0..n).map(|i| history_v[i] + c3 * v_new[i]).collect();
+        *u = u_new;
+        *v = v_new;
+        *a = a_new;
+        Ok(())
+    }
+
+    /// Advance the state by one composite step with the load held constant over the step
+    /// (`f_mid = f_end = f_ext`); see [`BatheIntegrator::step`].
+    ///
+    /// # Errors
+    ///
+    /// See [`step_with_loads`](Self::step_with_loads).
+    pub fn step(
+        &self,
+        u: &mut Vec<f64>,
+        v: &mut Vec<f64>,
+        a: &mut Vec<f64>,
+        f_ext: &[f64],
+    ) -> Result<()> {
+        self.step_with_loads(u, v, a, f_ext, f_ext)
     }
 }
 
@@ -432,33 +932,52 @@ pub fn lump_mass_row_sum(consistent_mass: &[Vec<f64>]) -> Vec<f64> {
 
 /// Lump a consistent mass matrix using diagonal scaling (HRZ lumping).
 ///
-/// The diagonal entries are scaled so that the total mass is preserved:
-///   M_lumped\[i\] = M\[i\]\[i\] * (total_mass / sum_of_diagonals)
+/// `n_dim` is the number of degrees of freedom per node; DOF `i` belongs to direction
+/// `i % n_dim`.  The diagonal entries are scaled *per direction* so that the mass carried in
+/// every direction is preserved:
 ///
-/// where total_mass = Σ_i Σ_j M\[i\]\[j\] / n_dim
+/// ```text
+/// M_lumped[i] = M[i][i] · S_d / D_d,    d = i mod n_dim
+/// S_d = Σ_{i ≡ d, j ≡ d} M[i][j]        (mass of direction d)
+/// D_d = Σ_{i ≡ d} M[i][i]               (diagonal sum of direction d)
+/// ```
 ///
-/// This method often gives better results than row-sum lumping for
-/// higher-order elements.
+/// Hence `Σ_{i ≡ d} M_lumped[i] = S_d` for every direction.  For a consistent mass matrix built
+/// from a scalar element mass matrix, such as the 4-node tetrahedron with `n_dim = 3`, every
+/// lumped entry is `ρV/4` and the lumped entries sum to `3ρV` (the element mass once per
+/// direction).  A direction whose diagonal sum vanishes is lumped to zero, and `n_dim == 0` is
+/// treated like `1`.
+///
+/// This method often gives better results than row-sum lumping for higher-order elements.
 pub fn lump_mass_hrz(consistent_mass: &[Vec<f64>], n_dim: usize) -> Vec<f64> {
-    let n = consistent_mass.len();
-    if n == 0 {
+    if consistent_mass.is_empty() {
         return Vec::new();
     }
-
-    let total_mass: f64 = consistent_mass
-        .iter()
-        .flat_map(|row| row.iter())
-        .sum::<f64>()
-        / n_dim as f64;
-
-    let diag_sum: f64 = (0..n).map(|i| consistent_mass[i][i]).sum();
-
-    if diag_sum.abs() < 1e-30 {
-        return vec![0.0; n];
+    let directions = n_dim.max(1);
+    let mut direction_mass = vec![0.0_f64; directions];
+    let mut diagonal_sum = vec![0.0_f64; directions];
+    for (i, row) in consistent_mass.iter().enumerate() {
+        let d = i % directions;
+        direction_mass[d] += row
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| j % directions == d)
+            .map(|(_, m)| m)
+            .sum::<f64>();
+        diagonal_sum[d] += row.get(i).copied().unwrap_or(0.0);
     }
-
-    let scale = total_mass / diag_sum;
-    (0..n).map(|i| consistent_mass[i][i] * scale).collect()
+    consistent_mass
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let d = i % directions;
+            if diagonal_sum[d].abs() < 1e-30 {
+                0.0
+            } else {
+                row.get(i).copied().unwrap_or(0.0) * direction_mass[d] / diagonal_sum[d]
+            }
+        })
+        .collect()
 }
 
 /// Lump a flat row-major consistent mass matrix into a diagonal vector.
@@ -688,26 +1207,32 @@ impl CentralDifferenceHalfStep {
     }
 }
 
-/// Estimate the maximum natural frequency from a diagonal mass and stiffness.
+/// Estimate an upper bound of the maximum natural frequency of `K·φ = ω²·M·φ` for a lumped
+/// (diagonal) mass matrix.
 ///
-/// For a lumped-mass system: ω_max ≈ max_i(sqrt(K_ii / M_ii))
+/// The bound is Gershgorin's circle theorem applied to `M⁻¹K`: every eigenvalue satisfies
+/// `ω² ≤ max_i (Σ_j |K_ij|) / M_ii`, so `ω_max ≤ max_i sqrt(Σ_j |K_ij| / M_ii)`.  Using only the
+/// diagonal ratio `K_ii/M_ii` underestimates `ω_max` for any coupled stiffness (a uniform
+/// spring chain has `K_ii = 2k` but `ω_max² → 4k/m`) and so yields a time step that is not
+/// stable.  DOFs with a (numerically) zero mass are skipped.
 ///
 /// Used to determine the critical time step for explicit methods.
 pub fn estimate_omega_max(mass_diag: &[f64], stiffness: &[Vec<f64>]) -> f64 {
-    let n = mass_diag.len();
-    let mut omega_max = 0.0_f64;
-    for i in 0..n {
-        if mass_diag[i] > 1e-30 {
-            let omega_i = (stiffness[i][i] / mass_diag[i]).sqrt();
-            omega_max = omega_max.max(omega_i);
-        }
-    }
-    omega_max
+    mass_diag
+        .iter()
+        .zip(stiffness.iter())
+        .filter(|(mass, _)| **mass > 1e-30)
+        .fold(0.0_f64, |omega_max, (mass, row)| {
+            let row_sum: f64 = row.iter().map(|k| k.abs()).sum();
+            omega_max.max((row_sum / mass).sqrt())
+        })
 }
 
 /// Compute the safe time step for explicit integration with a safety factor.
 ///
-/// dt_safe = safety_factor * 2 / ω_max
+/// dt_safe = safety_factor * 2 / ω_max, with ω_max the Gershgorin bound of
+/// [`estimate_omega_max`]; any `safety_factor` ≤ 1 therefore keeps the central-difference
+/// scheme stable.
 pub fn safe_explicit_dt(mass_diag: &[f64], stiffness: &[Vec<f64>], safety_factor: f64) -> f64 {
     let omega_max = estimate_omega_max(mass_diag, stiffness);
     if omega_max < 1e-30 {
@@ -838,7 +1363,9 @@ mod tests {
         let f_ext = vec![0.0_f64];
 
         for _ in 0..n_steps {
-            integrator.step(&sys, &mut u, &mut v, &mut a, &f_ext, dt);
+            integrator
+                .step(&sys, &mut u, &mut v, &mut a, &f_ext, dt)
+                .expect("Newmark step");
         }
 
         assert!(
@@ -871,7 +1398,9 @@ mod tests {
 
         let total_steps = (10.0 * period / dt).ceil() as usize;
         for _ in 0..total_steps {
-            integrator.step(&sys, &mut u, &mut v, &mut a, &f_ext, dt);
+            integrator
+                .step(&sys, &mut u, &mut v, &mut a, &f_ext, dt)
+                .expect("Newmark step");
         }
 
         let e_final = 0.5 * k * u[0].powi(2) + 0.5 * m * v[0].powi(2);
@@ -973,7 +1502,9 @@ mod tests {
         let f_ext = vec![0.0_f64];
 
         for _ in 0..n_steps {
-            bathe.step(&sys, &mut u, &mut v, &mut a, &f_ext, dt);
+            bathe
+                .step(&sys, &mut u, &mut v, &mut a, &f_ext, dt)
+                .expect("Bathe step");
         }
 
         // Bathe composite has numerical dissipation; verify energy decayed
@@ -1127,7 +1658,9 @@ mod tests {
 
         for _ in 0..200 {
             let u_prev = u.clone();
-            integrator.step(&sys, &mut u, &mut v, &mut a, &f_ext, dt);
+            integrator
+                .step(&sys, &mut u, &mut v, &mut a, &f_ext, dt)
+                .expect("Newmark step");
             eb.update(&sys, &u, &v, &u_prev, &f_ext);
         }
 
@@ -1265,19 +1798,34 @@ mod tests {
 
     #[test]
     fn test_hht_alpha_recovers_average_accel() {
-        let hht = NewmarkIntegrator::new_hht_alpha(0.0);
+        let hht = NewmarkIntegrator::new_hht_alpha(0.0).expect("alpha in range");
         assert!((hht.beta - 0.25).abs() < 1e-12);
         assert!((hht.gamma - 0.5).abs() < 1e-12);
     }
 
     #[test]
     fn test_hht_alpha_parameters() {
-        // HHT-α with α = -0.1 should set β = (1-0.1)^2/4 = 0.2025, γ = 0.4
-        let hht = NewmarkIntegrator::new_hht_alpha(-0.1);
-        let expected_gamma = 0.5 + (-0.1);
-        let expected_beta = (1.0 + (-0.1_f64)).powi(2) / 4.0;
-        assert!((hht.gamma - expected_gamma).abs() < 1e-12);
-        assert!((hht.beta - expected_beta).abs() < 1e-12);
+        // Hilber–Hughes–Taylor: γ = 1/2 − α, β = (1 − α)²/4.  With α = −0.1 this is
+        // γ = 0.6 ≥ 1/2 (positive numerical damping) and β = 1.1²/4 = 0.3025.
+        let hht = NewmarkIntegrator::new_hht_alpha(-0.1).expect("alpha in range");
+        assert!((hht.gamma - 0.6).abs() < 1e-12, "gamma = {}", hht.gamma);
+        assert!((hht.beta - 0.3025).abs() < 1e-12, "beta = {}", hht.beta);
+        assert!((hht.hht_alpha + 0.1).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_hht_alpha_rejects_out_of_range_values() {
+        for alpha in [0.1, -0.34, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                matches!(
+                    NewmarkIntegrator::new_hht_alpha(alpha),
+                    Err(Error::InvalidInput(_))
+                ),
+                "alpha = {alpha} must be rejected"
+            );
+        }
+        assert!(NewmarkIntegrator::new_hht_alpha(-1.0 / 3.0).is_ok());
+        assert!(NewmarkIntegrator::new_hht_alpha(0.0).is_ok());
     }
 
     #[test]
@@ -1295,9 +1843,10 @@ mod tests {
         let mut a = vec![-k / m];
         let f_ext = vec![0.0_f64];
 
-        let hht = NewmarkIntegrator::new_hht_alpha(-0.1);
+        let hht = NewmarkIntegrator::new_hht_alpha(-0.1).expect("alpha in range");
         for _ in 0..2000 {
-            hht.step(&sys, &mut u, &mut v, &mut a, &f_ext, dt);
+            hht.step(&sys, &mut u, &mut v, &mut a, &f_ext, dt)
+                .expect("HHT step");
         }
 
         // Should remain bounded
@@ -1325,9 +1874,14 @@ mod tests {
 
         // Just verify it runs without panicking and produces bounded results
         for _ in 0..100 {
-            integrator.step(&sys, &mut u, &mut v, &mut a, &f_ext, dt);
+            integrator
+                .step(&sys, &mut u, &mut v, &mut a, &f_ext, dt)
+                .expect("Newmark step");
         }
         assert!(u[0].abs() < 10.0);
         assert!(u[1].abs() < 10.0);
     }
 }
+
+#[cfg(test)]
+mod stability_tests;

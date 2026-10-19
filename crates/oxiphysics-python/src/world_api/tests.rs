@@ -542,18 +542,18 @@ fn test_sph_time_advances() {
 
 #[test]
 fn test_fem_assembly_creation() {
-    let asm = PyFemAssembly::new(4); // 4 nodes, 12 DOFs
+    let asm = PyFemAssembly::new(4).expect("4 nodes"); // 4 nodes, 12 DOFs
     assert_eq!(asm.n_dofs, 12);
 }
 
 #[test]
 fn test_fem_single_bar_solve() {
-    // Simple 2-node bar: fixed at node 0, force at node 1
-    let mut asm = PyFemAssembly::new(2); // DOFs: 0,1,2 for node0; 3,4,5 for node1
-    asm.add_bar_element(0, 1, 1.0e6, 1.0); // EA=1e6, L=1.0
-    asm.fix_dof(0); // Fix x-DOF of node 0
-    asm.apply_force(3, 1000.0); // Apply 1000 N to x-DOF of node 1
-    let ok = asm.solve();
+    // Simple 2-node bar along x: fixed at node 0, force at node 1
+    let mut asm = PyFemAssembly::from_coords(vec![[0.0; 3], [1.0, 0.0, 0.0]]).expect("two nodes"); // DOFs: 0,1,2 for node0; 3,4,5 for node1
+    asm.add_bar_element(0, 1, 1.0e6, Some(1.0)).expect("bar"); // EA=1e6, L=1.0
+    asm.fix_dof(0).expect("DOF 0"); // Fix x-DOF of node 0
+    asm.apply_force(3, 1000.0).expect("DOF 3"); // Apply 1000 N to x-DOF of node 1
+    let ok = asm.solve().expect("a stable bar");
     assert!(ok, "FEM solve should succeed");
     // u = F * L / EA = 1000 * 1.0 / 1e6 = 0.001 m
     let u = asm.displacement(3);
@@ -562,11 +562,11 @@ fn test_fem_single_bar_solve() {
 
 #[test]
 fn test_fem_element_force() {
-    let mut asm = PyFemAssembly::new(2);
-    asm.add_bar_element(0, 1, 1.0e6, 1.0);
-    asm.fix_dof(0);
-    asm.apply_force(3, 500.0);
-    asm.solve();
+    let mut asm = PyFemAssembly::from_coords(vec![[0.0; 3], [1.0, 0.0, 0.0]]).expect("two nodes");
+    asm.add_bar_element(0, 1, 1.0e6, Some(1.0)).expect("bar");
+    asm.fix_dof(0).expect("DOF 0");
+    asm.apply_force(3, 500.0).expect("DOF 3");
+    asm.solve().expect("a stable bar");
     let f = asm.element_force(0).expect("element 0 should exist");
     assert!(
         (f - 500.0).abs() < 1e-6,

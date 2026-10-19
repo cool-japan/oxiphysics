@@ -95,6 +95,74 @@ fn xpbd_solver_hanging_particle_settles_at_static_stretch_and_stays() {
 }
 
 #[test]
+fn xpbd_solver_steady_stretch_is_exactly_mass_times_gravity_times_compliance() {
+    // With the multiplier restarted every sub-step the compliant constraint
+    // has a fixed point: the stretch that balances gravity, m * g * alpha. It
+    // must be reached to high precision and must not depend on how long the
+    // simulation has been running (a carried-over multiplier made the stretch
+    // grow without bound instead).
+    let mut body = SoftBody::from_particles(hanging_particles());
+    let mut constraints = hanging_constraints();
+    let mut solver = XpbdSolver::with_iterations(4, 1);
+    solver.sleep_threshold = 0.0;
+    // The 4-substep solver needs a few hundred frames to ring down completely
+    // (the stretch is 9.44e-3 after 60 and 9.796e-3 after 120 frames).
+    let mut stretches = Vec::new();
+    for frame in 1..=600 {
+        solver.solve(&mut body, &mut constraints, FRAME_DT);
+        if matches!(frame, 240 | 480 | 600) {
+            stretches.push(stretch(&body.particles));
+        }
+    }
+    for (frame, value) in [240, 480, 600].into_iter().zip(stretches.iter()) {
+        assert!(
+            (value - EXPECTED_STRETCH).abs() < 1.0e-6,
+            "frame {frame}: stretch {value:.9e} vs m*g*alpha = {EXPECTED_STRETCH:.9e}"
+        );
+    }
+    assert!(
+        (stretches[0] - stretches[2]).abs() < 1.0e-6,
+        "the stretch after 240 and after 600 frames must agree to 1e-6"
+    );
+}
+
+#[test]
+fn xpbd_solver_stretch_is_the_same_after_60_and_after_600_frames() {
+    // The reference scenario of the finding: a mass hanging from a distance
+    // constraint of compliance 1e-3 has the stretch m * g * alpha after 60
+    // frames and after 600 frames alike. With the default damping the particle
+    // is still ringing after a second, so the velocity damping is raised until
+    // the transient has died out. Carrying the multiplier over from sub-step to
+    // sub-step instead lets the stretch grow without bound (about 0.19 m after
+    // 60 and 1.9 m after 600 frames for this setup).
+    let mut body = SoftBody::from_particles(hanging_particles());
+    body.damping = 0.2;
+    let mut constraints = hanging_constraints();
+    let mut solver = XpbdSolver::with_iterations(4, 1);
+    solver.sleep_threshold = 0.0;
+    let mut stretch_after_60_frames = 0.0;
+    for frame in 1..=600 {
+        solver.solve(&mut body, &mut constraints, FRAME_DT);
+        if frame == 60 {
+            stretch_after_60_frames = stretch(&body.particles);
+        }
+    }
+    let stretch_after_600_frames = stretch(&body.particles);
+    assert!(
+        (stretch_after_60_frames - EXPECTED_STRETCH).abs() < 1.0e-6,
+        "after 60 frames: stretch {stretch_after_60_frames:.9e} vs m*g*alpha = {EXPECTED_STRETCH:.9e}"
+    );
+    assert!(
+        (stretch_after_600_frames - EXPECTED_STRETCH).abs() < 1.0e-6,
+        "after 600 frames: stretch {stretch_after_600_frames:.9e} vs m*g*alpha = {EXPECTED_STRETCH:.9e}"
+    );
+    assert!(
+        (stretch_after_60_frames - stretch_after_600_frames).abs() < 1.0e-6,
+        "the stretch must not drift between frame 60 and frame 600"
+    );
+}
+
+#[test]
 fn xpbd_solver_stretch_scales_with_compliance_and_mass() {
     // Static stretch = m * g * compliance, so doubling either doubles it.
     for (mass, compliance) in [(1.0, 5.0e-4), (2.0, 1.0e-3), (0.5, 4.0e-3)] {

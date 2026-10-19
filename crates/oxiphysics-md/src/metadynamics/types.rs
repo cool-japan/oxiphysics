@@ -107,16 +107,39 @@ impl MetadynamicsState {
         bins.iter().map(|s| -self.bias_potential(s)).collect()
     }
 }
-/// OPES state: maintains a running estimate of the probability distribution
-/// p(s) of the CV and computes a bias V(s) = (1 - 1/gamma) * k_B*T * log(p(s)/p_0).
+/// OPES state (on-the-fly probability enhanced sampling): a reweighted kernel
+/// density estimate of the *unbiased* CV distribution `P(s)` and the bias built
+/// from it,
+///
+/// ```text
+/// V(s) = (1 - 1/gamma) * k_B*T * ln( P_hat(s) / Z + epsilon )
+/// ```
+///
+/// which drives the CV towards the well-tempered target `P(s)^(1/gamma)`.
+///
+/// The samples `s_k` are drawn from the *biased* ensemble, so every kernel is
+/// weighted by the reweighting factor `w_k = exp(V(s_k) / k_B*T)` evaluated with
+/// the bias that was active when the sample was taken.  The kernel height stored
+/// in [`OpesState::kernels`] is that weight; without it the estimate converges
+/// to the biased distribution and the bias flattens instead of reaching the
+/// target.  `Z` is the average of the (un-normalised) density estimate over the
+/// kernel centres, so `P_hat(s) / Z` is the density relative to its mean over
+/// the explored region, and `epsilon = exp(-barrier / (k_B*T * (1 - 1/gamma)))`
+/// bounds the bias from below by `-barrier`.
 ///
 /// Reference: Invernizzi & Parrinello, J. Phys. Chem. Lett. 11, 2731 (2020).
+#[derive(Debug, Clone)]
 pub struct OpesState {
-    /// Gaussian kernels forming the density estimate.
+    /// Gaussian kernels forming the density estimate.  The height of each kernel
+    /// is its reweighting factor `w_k = exp(V(s_k) / k_B*T)`.
     pub kernels: Vec<GaussianHill>,
-    /// Normalisation constant Z (running sum of kernel weights).
+    /// Normalisation constant Z: the mean of [`OpesState::kernel_density`] over
+    /// the kernel centres.  Kept up to date by [`OpesState::update`]; call
+    /// [`OpesState::recompute_normalisation`] after editing `kernels` by hand.
     pub z: f64,
-    /// Bias factor gamma (> 1; use gamma=∞ for unbiased target).
+    /// Bias factor gamma.  `gamma = 1` is unbiased sampling and no bias is
+    /// applied for `gamma <= 1`; the target is `P(s)^(1/gamma)`, so `gamma -> inf`
+    /// aims at a uniform distribution of the CV.
     pub gamma: f64,
     /// Simulation temperature (K).
     pub temperature: f64,
@@ -124,11 +147,21 @@ pub struct OpesState {
     pub step: usize,
     /// Deposition stride.
     pub stride: usize,
-    /// Initial kernel height (determines bandwidth in probability space).
+    /// Kernel bandwidth: Gaussian standard deviation per CV dimension.
     pub bandwidth: Vec<f64>,
+    /// Free-energy barrier `ΔE` (kJ/mol) the sampling should be able to cross.
+    /// It sets the regularisation `epsilon` (the bias never drops below
+    /// `-barrier`).  [`OpesState::new`] uses `gamma * k_B*T`, the convention in
+    /// which the bias factor is `barrier / k_B*T`.
+    pub barrier: f64,
+    /// `sum_k kernel_density(centre_k)`, the numerator of `z`.
+    centre_density_sum: f64,
 }
 impl OpesState {
     /// Create a new OPES state.
+    ///
+    /// The barrier is set to `gamma * k_B*T`; use [`OpesState::with_barrier`] to
+    /// choose it independently of the bias factor.
     pub fn new(gamma: f64, temperature: f64, stride: usize, bandwidth: Vec<f64>) -> Self {
         Self {
             kernels: Vec::new(),
@@ -138,35 +171,159 @@ impl OpesState {
             step: 0,
             stride,
             bandwidth,
+            barrier: gamma * KB * temperature,
+            centre_density_sum: 0.0,
         }
     }
+    /// Set the barrier `ΔE` (kJ/mol) that defines the regularisation `epsilon`.
+    ///
+    /// # Errors
+    /// [`MdError::General`] if `barrier` is NaN or negative (`+inf` is allowed
+    /// and gives `epsilon = 0`).
+    pub fn with_barrier(mut self, barrier: f64) -> Result<Self, MdError> {
+        if barrier.is_nan() || barrier < 0.0 {
+            return Err(MdError::General(format!(
+                "OPES barrier must be non-negative, got {barrier}"
+            )));
+        }
+        self.barrier = barrier;
+        Ok(self)
+    }
+    /// Thermal energy `k_B*T` in kJ/mol.
+    fn thermal_energy(&self) -> f64 {
+        KB * self.temperature
+    }
+    /// Prefactor `1 - 1/gamma` of the bias.
+    fn bias_prefactor(&self) -> f64 {
+        1.0 - 1.0 / self.gamma
+    }
+    /// Whether a bias is applied: at least one kernel, `gamma > 1` and a usable
+    /// temperature.
+    fn is_biasing(&self) -> bool {
+        let kt = self.thermal_energy();
+        self.z >= 1e-30 && self.gamma > 1.0 && kt > 0.0 && kt.is_finite()
+    }
+    /// Regularisation `epsilon = exp(-barrier / (k_B*T * (1 - 1/gamma)))`.
+    ///
+    /// It is the value of `P_hat / Z` below which the bias stops decreasing:
+    /// far from every kernel `V = (1 - 1/gamma) k_B*T ln(epsilon) = -barrier`.
+    pub fn epsilon(&self) -> f64 {
+        let scale = self.bias_prefactor() * self.thermal_energy();
+        if scale > 0.0 && scale.is_finite() {
+            (-self.barrier / scale).exp().max(0.0)
+        } else {
+            0.0
+        }
+    }
+    /// `P_hat(s) / Z + epsilon`, the argument of the logarithm in the bias.
+    fn density_ratio(&self, cv: &[f64]) -> f64 {
+        self.kernel_density(cv) / self.z + self.epsilon()
+    }
     /// Evaluate the (un-normalised) kernel density estimate at `cv`.
+    ///
+    /// Because the kernels are weighted by their reweighting factors this is
+    /// proportional to the estimate of the unbiased distribution `P(s)`.
     pub fn kernel_density(&self, cv: &[f64]) -> f64 {
         self.kernels.iter().map(|k| k.evaluate(cv)).sum()
     }
     /// Compute the OPES bias potential at `cv`.
     ///
-    /// V(s) = (1 - 1/gamma) * k_B*T * ln(p_hat(s) / Z + epsilon)
-    /// where epsilon prevents log(0).
+    /// `V(s) = (1 - 1/gamma) * k_B*T * ln(P_hat(s) / Z + epsilon)`, see
+    /// [`OpesState::epsilon`] for the regularisation.  Zero before the first
+    /// kernel is deposited and for `gamma <= 1`.
     pub fn bias_potential(&self, cv: &[f64]) -> f64 {
-        if self.z < 1e-30 || self.gamma <= 1.0 {
+        if !self.is_biasing() {
             return 0.0;
         }
-        let p_hat = self.kernel_density(cv);
-        let factor = 1.0 - 1.0 / self.gamma;
-        let log_arg = (p_hat / self.z).max(1e-300);
-        factor * KB * self.temperature * log_arg.ln()
+        let ratio = self.density_ratio(cv).max(f64::MIN_POSITIVE);
+        self.bias_prefactor() * self.thermal_energy() * ratio.ln()
+    }
+    /// Reweighting factor `exp(V(cv) / k_B*T)` of a sample taken at `cv` in the
+    /// current biased ensemble (1 while no bias is applied).
+    pub fn reweighting_factor(&self, cv: &[f64]) -> f64 {
+        if !self.is_biasing() {
+            return 1.0;
+        }
+        // exp(beta * V) = (P_hat / Z + epsilon)^(1 - 1/gamma)
+        let ratio = self.density_ratio(cv).max(f64::MIN_POSITIVE);
+        ratio.powf(self.bias_prefactor())
     }
     /// Update the OPES state at the current CV value.
     ///
-    /// Adds a new kernel every `stride` steps and updates the normalisation Z.
+    /// Every `stride` steps a kernel centred at `cv` is deposited with the
+    /// weight `exp(V(cv) / k_B*T)` of the bias that produced this sample, and
+    /// the normalisation `Z` is updated.
     pub fn update(&mut self, cv: &[f64]) {
         if self.step.is_multiple_of(self.stride) {
-            let kernel = GaussianHill::new(cv.to_vec(), 1.0, self.bandwidth.clone());
-            self.z += 1.0;
-            self.kernels.push(kernel);
+            let weight = self.reweighting_factor(cv);
+            self.push_weighted_kernel(cv, weight);
         }
         self.step += 1;
+    }
+    /// Append a kernel of the given weight and update `Z` incrementally.
+    ///
+    /// With `S = sum_k P_hat(c_k)` over the kernel centres, adding the kernel
+    /// `n` changes `S` by `P_hat_old(c_n) + w_n + w_n * sum_k G_n(c_k)`
+    /// (the new kernel's own value, the old density at the new centre and the
+    /// new kernel's tail at the old centres), where `G_n` is the unit Gaussian.
+    fn push_weighted_kernel(&mut self, cv: &[f64], weight: f64) {
+        let kernel = GaussianHill::new(cv.to_vec(), weight, self.bandwidth.clone());
+        let unit_kernel = GaussianHill::new(cv.to_vec(), 1.0, self.bandwidth.clone());
+        let old_density_at_new_centre = self.kernel_density(cv);
+        let new_kernel_at_old_centres: f64 = self
+            .kernels
+            .iter()
+            .map(|k| unit_kernel.evaluate(&k.center))
+            .sum();
+        self.centre_density_sum +=
+            old_density_at_new_centre + weight * (1.0 + new_kernel_at_old_centres);
+        self.kernels.push(kernel);
+        self.z = self.centre_density_sum / self.kernels.len() as f64;
+    }
+    /// Recompute `Z` from scratch (`O(n²)` in the number of kernels).
+    ///
+    /// Needed only after `kernels` was modified directly.
+    pub fn recompute_normalisation(&mut self) {
+        if self.kernels.is_empty() {
+            self.centre_density_sum = 0.0;
+            self.z = 0.0;
+            return;
+        }
+        self.centre_density_sum = self
+            .kernels
+            .iter()
+            .map(|k| self.kernel_density(&k.center))
+            .sum();
+        self.z = self.centre_density_sum / self.kernels.len() as f64;
+    }
+    /// Merge nearby kernels (see [`compress_opes_kernels`]) and refresh `Z`.
+    ///
+    /// Merged kernels carry the sum of the weights of the originals, so the
+    /// density estimate is preserved up to the smoothing of the merge.
+    pub fn compress(&mut self, compression_threshold: f64) {
+        compress_opes_kernels(&mut self.kernels, compression_threshold);
+        self.recompute_normalisation();
+    }
+    /// Free-energy estimate `F(s) = -k_B*T ln(P_hat(s) / P_hat_max)` of the
+    /// *unbiased* system at the given CV points (kJ/mol, lowest density
+    /// maximum shifted to zero; points without density are `+inf`).
+    pub fn free_energy_estimate(&self, points: &[Vec<f64>]) -> Vec<f64> {
+        let densities: Vec<f64> = points.iter().map(|s| self.kernel_density(s)).collect();
+        let peak = densities.iter().copied().fold(0.0_f64, f64::max);
+        if peak <= 0.0 {
+            return vec![0.0; points.len()];
+        }
+        let kt = self.thermal_energy();
+        densities
+            .iter()
+            .map(|&d| {
+                if d > 0.0 {
+                    -kt * (d / peak).ln()
+                } else {
+                    f64::INFINITY
+                }
+            })
+            .collect()
     }
 }
 /// Coordination number CV: sum_j sigma(r_ij) where sigma is a switching function.

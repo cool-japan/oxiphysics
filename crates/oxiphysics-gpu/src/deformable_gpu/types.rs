@@ -5,6 +5,7 @@ use super::corotational;
 use super::functions::{
     add3, cross3, dot3, len2_3, length3, normalize3, quat_rotate, scale3, sub3,
 };
+use super::stvk::StvkTet;
 
 /// An XPBD distance constraint between two particles.
 #[derive(Debug, Clone)]
@@ -447,11 +448,17 @@ impl DeformableGpuMesh {
     }
 }
 /// A linear tetrahedral FEM element.
+///
+/// The element stores the material and the node indices; the rest geometry is
+/// supplied to [`FEMGpuKernel::compute_forces`] as `rest_positions`.
 #[derive(Debug, Clone)]
 pub struct TetElement {
     /// Vertex indices `[a, b, c, d]`.
     pub nodes: [usize; 4],
-    /// Rest-pose volume (m³).
+    /// Rest-pose volume `V₀` (m³): the weight of the strain energy density.  It
+    /// should equal `|det [b − a | c − a | d − a]| / 6` of the rest tetrahedron;
+    /// an element whose rest volume is not a positive finite number carries no
+    /// energy and no force.
     pub rest_volume: f64,
     /// Young's modulus (Pa).
     pub youngs_modulus: f64,
@@ -473,10 +480,13 @@ impl TetElement {
             poisson_ratio,
         }
     }
-    /// Compute Lamé parameters from Young's modulus and Poisson's ratio.
+    /// Compute Lamé parameters `(λ, μ)` from Young's modulus and Poisson's ratio.
+    ///
+    /// Poisson's ratio is clamped to `[-0.999, 0.4999]`: `λ` diverges for an
+    /// incompressible material (`ν = 0.5`) and would turn every force into NaN.
     pub fn lame_params(&self) -> (f64, f64) {
         let e = self.youngs_modulus;
-        let nu = self.poisson_ratio;
+        let nu = self.poisson_ratio.clamp(-0.999, 0.4999);
         let lambda = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
         let mu = e / (2.0 * (1.0 + nu));
         (lambda, mu)
@@ -528,7 +538,15 @@ impl JointTransform {
         ]
     }
 }
-/// FEM GPU kernel (CPU mock): element stiffness assembly and force computation.
+/// FEM kernel for tetrahedral meshes (CPU implementation in the layout of a GPU
+/// kernel): Saint Venant-Kirchhoff element energies and the assembled internal
+/// elastic forces.
+///
+/// Per element the deformation gradient is `F = Ds · Dm⁻¹` with the current and
+/// rest edge matrices `Ds`, `Dm`, the energy is `V₀ [ μ E:E + (λ/2) tr(E)² ]`
+/// with the Green-Lagrange strain `E = ½ (FᵀF − I)`, and the nodal forces are
+/// its exact negative gradient.  The rest pose and rigid motions are force free;
+/// both Lamé parameters of every [`TetElement`] enter.
 #[derive(Debug)]
 pub struct FEMGpuKernel {
     /// Tetrahedral elements.
@@ -551,12 +569,48 @@ impl FEMGpuKernel {
             .max(elem.nodes.iter().copied().max().unwrap_or(0) + 1);
         self.elements.push(elem);
     }
+    /// Material model and current corner positions of `elem`.
+    ///
+    /// Returns `None` for an element that must be skipped: a node index is
+    /// outside the mesh (`num_nodes`), `positions` or `rest_positions`, the rest
+    /// tetrahedron is degenerate, or its rest volume or material parameters are
+    /// not valid (see [`StvkTet::new`]).  Forces and energy skip exactly the
+    /// same elements, so the forces stay the gradient of the energy.
+    fn element_model(
+        &self,
+        elem: &TetElement,
+        positions: &[[f64; 3]],
+        rest_positions: &[[f64; 3]],
+    ) -> Option<(StvkTet, [[f64; 3]; 4])> {
+        if elem.nodes.iter().any(|&node| node >= self.num_nodes) {
+            return None;
+        }
+        let gather = |values: &[[f64; 3]]| -> Option<[[f64; 3]; 4]> {
+            let [a, b, c, d] = elem.nodes;
+            Some([
+                *values.get(a)?,
+                *values.get(b)?,
+                *values.get(c)?,
+                *values.get(d)?,
+            ])
+        };
+        let current = gather(positions)?;
+        let rest = gather(rest_positions)?;
+        let (lambda, mu) = elem.lame_params();
+        let model = StvkTet::new(&rest, elem.rest_volume, lambda, mu)?;
+        Some((model, current))
+    }
     /// Compute internal elastic forces for all elements.
     ///
     /// `positions` – current node positions `[x, y, z]`.
     /// `rest_positions` – rest-pose node positions.
     ///
-    /// Returns a per-node force vector.
+    /// Returns a per-node force vector (`num_nodes` entries): the restoring
+    /// force `−∂E/∂x` of the Saint Venant-Kirchhoff energy, with the
+    /// contributions of elements sharing a node summed.  Elements that cannot be
+    /// evaluated (see [`TetElement`]: node indices outside the mesh or the
+    /// position arrays, degenerate rest shape, non-positive rest volume) are
+    /// skipped.
     pub fn compute_forces(
         &self,
         positions: &[[f64; 3]],
@@ -564,87 +618,28 @@ impl FEMGpuKernel {
     ) -> Vec<[f64; 3]> {
         let mut forces = vec![[0.0f64; 3]; self.num_nodes];
         for elem in &self.elements {
-            let [ia, ib, ic, id] = elem.nodes;
-            if ia >= positions.len()
-                || ib >= positions.len()
-                || ic >= positions.len()
-                || id >= positions.len()
-            {
+            let Some((model, current)) = self.element_model(elem, positions, rest_positions) else {
                 continue;
-            }
-            let pa = positions[ia];
-            let pb = positions[ib];
-            let pc = positions[ic];
-            let pd = positions[id];
-            let ra = rest_positions[ia];
-            let rb = rest_positions[ib];
-            let rc = rest_positions[ic];
-            let rd = rest_positions[id];
-            let e1 = sub3(pb, pa);
-            let e2 = sub3(pc, pa);
-            let e3 = sub3(pd, pa);
-            let r1 = sub3(rb, ra);
-            let r2 = sub3(rc, ra);
-            let r3 = sub3(rd, ra);
-            let (_lambda, mu) = elem.lame_params();
-            let stretch_force = |e_cur: [f64; 3], e_rest: [f64; 3]| -> [f64; 3] {
-                let len_cur = length3(e_cur);
-                let len_rest = length3(e_rest);
-                if len_rest < 1e-15 {
-                    return [0.0; 3];
-                }
-                let stretch = (len_cur - len_rest) / len_rest;
-                let dir = normalize3(e_cur);
-                scale3(dir, -mu * stretch * elem.rest_volume)
             };
-            let f1 = stretch_force(e1, r1);
-            let f2 = stretch_force(e2, r2);
-            let f3 = stretch_force(e3, r3);
-            let fa = [
-                -(f1[0] + f2[0] + f3[0]),
-                -(f1[1] + f2[1] + f3[1]),
-                -(f1[2] + f2[2] + f3[2]),
-            ];
-            forces[ia] = add3(forces[ia], fa);
-            forces[ib] = add3(forces[ib], f1);
-            forces[ic] = add3(forces[ic], f2);
-            forces[id] = add3(forces[id], f3);
+            for (&node, force) in elem.nodes.iter().zip(model.forces(&current)) {
+                forces[node] = add3(forces[node], force);
+            }
         }
         forces
     }
-    /// Compute the total elastic potential energy of the mesh.
+    /// Compute the total elastic potential energy of the mesh (J):
+    /// `Σ V₀ [ μ E:E + (λ/2) tr(E)² ]` over the elements that
+    /// [`compute_forces`](Self::compute_forces) evaluates.
     pub fn compute_strain_energy(
         &self,
         positions: &[[f64; 3]],
         rest_positions: &[[f64; 3]],
     ) -> f64 {
-        let mut energy = 0.0;
-        for elem in &self.elements {
-            let [ia, ib, ic, id] = elem.nodes;
-            if ia >= positions.len()
-                || ib >= positions.len()
-                || ic >= positions.len()
-                || id >= positions.len()
-            {
-                continue;
-            }
-            let (_lambda, mu) = elem.lame_params();
-            for (cur, rest) in [
-                (positions[ib], rest_positions[ib]),
-                (positions[ic], rest_positions[ic]),
-                (positions[id], rest_positions[id]),
-            ] {
-                let e_cur = sub3(cur, positions[ia]);
-                let e_rest = sub3(rest, rest_positions[ia]);
-                let len_cur = length3(e_cur);
-                let len_rest = length3(e_rest);
-                if len_rest > 1e-15 {
-                    let stretch = (len_cur - len_rest) / len_rest;
-                    energy += 0.5 * mu * stretch * stretch * elem.rest_volume;
-                }
-            }
-        }
-        energy
+        self.elements
+            .iter()
+            .filter_map(|elem| self.element_model(elem, positions, rest_positions))
+            .map(|(model, current)| model.energy(&current))
+            .sum()
     }
 }
 /// Parameters for GPU collision response.
@@ -962,34 +957,8 @@ impl CorotationalElement {
     /// tetrahedron whose edge vectors are linearly dependent (relative
     /// determinant below `1e-12`) is degenerate: it gets `rest_volume = 0`.
     pub fn from_rest(nodes: [usize; 4], rest: &[[f64; 3]; 4], e: f64, nu: f64) -> Self {
-        let ra = rest[0];
-        let rb = rest[1];
-        let rc = rest[2];
-        let rd = rest[3];
-        let c0 = sub3(rb, ra);
-        let c1 = sub3(rc, ra);
-        let c2 = sub3(rd, ra);
-        let det = dot3(c0, cross3(c1, c2));
-        let edge_scale = length3(c0) * length3(c1) * length3(c2);
-        let degenerate = det.is_nan() || det.abs() <= 1.0e-12 * edge_scale;
-        let (rest_volume, dm_inv) = if degenerate {
-            (0.0, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        } else {
-            // Rows of Dm⁻¹ are (c1×c2, c2×c0, c0×c1)/det, so its columns -- the
-            // rows of Dm⁻ᵀ stored below -- are assembled component by component.
-            let inv_det = 1.0 / det;
-            let r0 = scale3(cross3(c1, c2), inv_det);
-            let r1 = scale3(cross3(c2, c0), inv_det);
-            let r2 = scale3(cross3(c0, c1), inv_det);
-            (
-                det.abs() / 6.0,
-                [
-                    [r0[0], r1[0], r2[0]],
-                    [r0[1], r1[1], r2[1]],
-                    [r0[2], r1[2], r2[2]],
-                ],
-            )
-        };
+        let (rest_volume, dm_inv) =
+            corotational::rest_shape(rest).unwrap_or((0.0, corotational::IDENTITY));
         Self {
             nodes,
             dm_inv,
@@ -1014,21 +983,13 @@ impl CorotationalElement {
     /// Returns `None` if a node index is outside `positions`.
     pub fn deformation_gradient(&self, positions: &[[f64; 3]]) -> Option<[[f64; 3]; 3]> {
         let [ia, ib, ic, id] = self.nodes;
-        let pa = *positions.get(ia)?;
-        let edges = [
-            sub3(*positions.get(ib)?, pa),
-            sub3(*positions.get(ic)?, pa),
-            sub3(*positions.get(id)?, pa),
+        let corners = [
+            *positions.get(ia)?,
+            *positions.get(ib)?,
+            *positions.get(ic)?,
+            *positions.get(id)?,
         ];
-        let mut f = [[0.0; 3]; 3];
-        for (a, row) in f.iter_mut().enumerate() {
-            for (b, entry) in row.iter_mut().enumerate() {
-                let dm_col = self.dm_inv[b];
-                *entry =
-                    edges[0][a] * dm_col[0] + edges[1][a] * dm_col[1] + edges[2][a] * dm_col[2];
-            }
-        }
-        Some(f)
+        Some(corotational::deformation_gradient(&self.dm_inv, &corners))
     }
     /// Elastic strain energy (J) of this element at the given node `positions`.
     ///
@@ -1062,12 +1023,12 @@ impl CorotationalElement {
     /// the negative sum, so the element is force free at rest and in any rigid
     /// motion and exerts no net force or torque.
     pub fn compute_nodal_forces(&self, positions: &[[f64; 3]]) -> [[f64; 3]; 4] {
-        let mut forces = [[0.0f64; 3]; 4];
+        let no_force = [[0.0f64; 3]; 4];
         if self.rest_volume <= 0.0 {
-            return forces;
+            return no_force;
         }
         let Some(f) = self.deformation_gradient(positions) else {
-            return forces;
+            return no_force;
         };
         let (lambda, mu) = self.lame();
         let r = corotational::polar_rotation(&f);
@@ -1079,14 +1040,7 @@ impl CorotationalElement {
                 piola[i][j] = 2.0 * mu * (f[i][j] - r[i][j]) + trace_term * r[i][j];
             }
         }
-        for column in 0..3 {
-            for i in 0..3 {
-                let h: f64 = (0..3).map(|l| piola[i][l] * self.dm_inv[l][column]).sum();
-                forces[column + 1][i] = -self.rest_volume * h;
-            }
-        }
-        forces[0] = scale3(add3(add3(forces[1], forces[2]), forces[3]), -1.0);
-        forces
+        corotational::nodal_forces(&piola, &self.dm_inv, self.rest_volume)
     }
 }
 /// Shape-matching constraint: pulls a group of particles toward a reference shape.

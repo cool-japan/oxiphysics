@@ -122,7 +122,8 @@ pub struct ThermalD2Q9 {
     pub beta: f64,
     /// Reference temperature T_ref for Boussinesq approximation.
     pub t_ref: f64,
-    /// Gravitational acceleration (y-component, typically negative).
+    /// Gravity magnitude `g > 0`.  The buoyancy force acts along `+y` (opposite
+    /// to the gravity vector `(0, -g)`), so fluid hotter than `t_ref` rises.
     pub gravity: f64,
 }
 
@@ -135,7 +136,8 @@ impl ThermalD2Q9 {
     /// * `tau_t` — thermal relaxation time (> 0.5)
     /// * `beta` — thermal expansion coefficient
     /// * `t_ref` — reference temperature
-    /// * `gravity` — gravitational acceleration (y-direction)
+    /// * `gravity` — gravity magnitude `g > 0`; the Boussinesq buoyancy force acts
+    ///   along `+y` (see [`boussinesq_force`])
     pub fn new(
         nx: usize,
         ny: usize,
@@ -339,12 +341,20 @@ fn geq_uniform(temperature: f64, ux: f64, uy: f64) -> [f64; 9] {
 
 /// Boussinesq buoyancy force in the y-direction.
 ///
+/// ```text
 /// F_y = ρ β g (T − T_ref)
+/// ```
+///
+/// `g` is the gravity *magnitude* (`g > 0`, gravity itself points towards
+/// `−y`), so the force points along `+y`: fluid hotter than `T_ref` is pushed up
+/// and colder fluid is pushed down.  Callers holding a gravity vector `g_vec`
+/// should use `BoussinesqCoupling` instead, which evaluates
+/// `F = −ρ β (T − T_ref) g_vec`.
 ///
 /// # Arguments
 /// * `rho` — local density
 /// * `beta` — thermal expansion coefficient
-/// * `gravity` — gravitational acceleration (positive upward convention)
+/// * `gravity` — gravity magnitude `g > 0` (the force acts along `+y`)
 /// * `temperature` — local temperature T
 /// * `t_ref` — reference temperature T_ref
 pub fn boussinesq_force(rho: f64, beta: f64, gravity: f64, temperature: f64, t_ref: f64) -> f64 {
@@ -465,13 +475,13 @@ mod tests {
 
     #[test]
     fn test_boussinesq_force_zero_at_ref() {
-        let f = boussinesq_force(1.0, 0.01, -9.8, 300.0, 300.0);
+        let f = boussinesq_force(1.0, 0.01, 9.8, 300.0, 300.0);
         assert!(f.abs() < EPS);
     }
 
     #[test]
     fn test_boussinesq_force_positive_above_ref() {
-        // Hot fluid rises: T > T_ref, gravity < 0 → force should be in direction of gravity sign
+        // Hot fluid rises: for the gravity magnitude g > 0 the force acts along +y.
         let f = boussinesq_force(1.0, 0.01, 9.8, 310.0, 300.0);
         assert!(
             f > 0.0,
@@ -585,7 +595,7 @@ mod tests {
 
     #[test]
     fn test_solver_new() {
-        let solver = ThermalD2Q9::new(8, 8, 0.6, 0.6, 0.01, 300.0, -9.8);
+        let solver = ThermalD2Q9::new(8, 8, 0.6, 0.6, 0.01, 300.0, 9.8);
         assert_eq!(solver.nx, 8);
         assert_eq!(solver.ny, 8);
         assert_eq!(solver.f.len(), 64);
@@ -594,7 +604,7 @@ mod tests {
 
     #[test]
     fn test_solver_prandtl() {
-        let solver = ThermalD2Q9::new(8, 8, 0.8, 0.6, 0.01, 300.0, -9.8);
+        let solver = ThermalD2Q9::new(8, 8, 0.8, 0.6, 0.01, 300.0, 9.8);
         let pr = solver.prandtl_number();
         let nu = (0.8 - 0.5) / 3.0;
         let alpha = (0.6 - 0.5) / 3.0;
@@ -610,7 +620,7 @@ mod tests {
 
     #[test]
     fn test_solver_update_macroscopic_conserves_mass() {
-        let mut solver = ThermalD2Q9::new(4, 4, 0.6, 0.6, 0.01, 300.0, -9.8);
+        let mut solver = ThermalD2Q9::new(4, 4, 0.6, 0.6, 0.01, 300.0, 9.8);
         solver.update_macroscopic();
         let total_rho: f64 = solver.rho.iter().sum();
         // 16 nodes × rho=1.0
@@ -619,7 +629,7 @@ mod tests {
 
     #[test]
     fn test_solver_collision_thermal_conserves_temperature_sum() {
-        let mut solver = ThermalD2Q9::new(4, 4, 0.6, 0.8, 0.01, 300.0, -9.8);
+        let mut solver = ThermalD2Q9::new(4, 4, 0.6, 0.8, 0.01, 300.0, 9.8);
         solver.update_macroscopic();
         let t_before: f64 = solver.temperature.iter().sum();
         solver.collision_thermal();
@@ -630,8 +640,30 @@ mod tests {
     }
 
     #[test]
+    fn test_solver_buoyancy_accelerates_hot_node_up_and_cold_node_down() {
+        // gravity magnitude g > 0: the buoyancy force acts along +y for T > T_ref.
+        let mut solver = ThermalD2Q9::new(4, 4, 0.8, 0.8, 0.01, 300.0, 9.8);
+        let hot = solver.idx(1, 1);
+        let cold = solver.idx(2, 2);
+        let neutral = solver.idx(0, 0);
+        solver.temperature[hot] = 310.0;
+        solver.temperature[cold] = 290.0;
+        solver.collision_step();
+        let momentum_y = |node: usize| -> f64 {
+            (0..9)
+                .map(|i| D2Q9_VELOCITIES[i][1] as f64 * solver.f[node][i])
+                .sum()
+        };
+        let expected = boussinesq_force(1.0, 0.01, 9.8, 310.0, 300.0);
+        assert!(expected > 0.0);
+        assert!((momentum_y(hot) - expected).abs() < 1e-12);
+        assert!((momentum_y(cold) + expected).abs() < 1e-12);
+        assert!(momentum_y(neutral).abs() < 1e-12);
+    }
+
+    #[test]
     fn test_solver_idx() {
-        let solver = ThermalD2Q9::new(10, 8, 0.6, 0.6, 0.01, 0.0, -9.8);
+        let solver = ThermalD2Q9::new(10, 8, 0.6, 0.6, 0.01, 0.0, 9.8);
         assert_eq!(solver.idx(0, 0), 0);
         assert_eq!(solver.idx(5, 3), 35);
         assert_eq!(solver.idx(9, 7), 79);
@@ -677,7 +709,7 @@ mod tests {
     #[test]
     fn test_streaming_periodic() {
         // After streaming, total f-mass is conserved
-        let mut solver = ThermalD2Q9::new(4, 4, 0.6, 0.6, 0.01, 1.0, -9.8);
+        let mut solver = ThermalD2Q9::new(4, 4, 0.6, 0.6, 0.01, 1.0, 9.8);
         let mass_before: f64 = solver.f.iter().flat_map(|row| row.iter()).sum();
         solver.streaming_step();
         let mass_after: f64 = solver.f.iter().flat_map(|row| row.iter()).sum();

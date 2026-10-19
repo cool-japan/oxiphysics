@@ -1,5 +1,6 @@
 //! Auto-generated module structure
 
+pub mod dkt;
 pub mod functions;
 pub mod types;
 

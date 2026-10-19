@@ -1,5 +1,7 @@
 //! Auto-generated module structure
 
+#[cfg(test)]
+mod bending_tests;
 pub mod functions;
 pub mod pbdsimulation_traits;
 #[cfg(test)]

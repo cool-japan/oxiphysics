@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use super::types::MatrixFunctions;
-
 /// Compute the dot product of two vectors.
 pub fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
@@ -106,94 +104,229 @@ pub fn matmul_rect_t(a: &[f64], m: usize, k: usize, b: &[f64], _m2: usize, n: us
     }
     c
 }
-/// Compute the thin QR factorisation of an `m×k` matrix stored row-major.
+/// Relative remainder (after orthogonalisation) below which [`qr_thin`] treats a
+/// column as linearly dependent on its predecessors.
+const QR_DEPENDENCE_TOL: f64 = 64.0 * f64::EPSILON;
+/// Maximum number of cyclic sweeps of the one-sided Jacobi iteration in
+/// [`svd_small`].  Convergence is quadratic, so a handful of sweeps suffices.
+const SVD_MAX_SWEEPS: usize = 60;
+/// Unit vector orthogonal to every vector of `basis`, or `None` when `basis`
+/// already spans `R^dim`.
 ///
-/// Returns the orthonormal `Q` factor as a flat `m×k` row-major vector.
-pub fn qr_thin(a: &[f64], m: usize, k: usize) -> Vec<f64> {
-    let mut q = a.to_vec();
-    for j in 0..k {
-        let nrm = (0..m)
-            .map(|i| q[i * k + j] * q[i * k + j])
-            .sum::<f64>()
-            .sqrt();
-        if nrm > 1e-300 {
-            for i in 0..m {
-                q[i * k + j] /= nrm;
+/// `basis` must hold orthonormal vectors of length `dim`.  The canonical basis
+/// vector with the largest component outside their span is orthogonalised twice
+/// and normalised; its component is at least `sqrt((dim - basis.len()) / dim)`,
+/// so the result is deterministic and well conditioned.
+fn orthogonal_unit_vector(basis: &[Vec<f64>], dim: usize) -> Option<Vec<f64>> {
+    if basis.len() >= dim {
+        return None;
+    }
+    let mut best: Vec<f64> = Vec::new();
+    let mut best_norm = 0.0f64;
+    for candidate in 0..dim {
+        let mut r = vec![0.0f64; dim];
+        r[candidate] = 1.0;
+        for _pass in 0..2 {
+            for q in basis {
+                let projection = dot(q, &r);
+                axpy(-projection, q, &mut r);
             }
         }
-        for l in (j + 1)..k {
-            let proj: f64 = (0..m).map(|i| q[i * k + j] * q[i * k + l]).sum();
-            for i in 0..m {
-                q[i * k + l] -= proj * q[i * k + j];
+        let nrm = norm2(&r);
+        if nrm > best_norm {
+            best_norm = nrm;
+            best = r;
+        }
+    }
+    if best_norm > 0.0 {
+        for value in best.iter_mut() {
+            *value /= best_norm;
+        }
+        Some(best)
+    } else {
+        None
+    }
+}
+/// Compute the thin QR factorisation of an `m×k` matrix stored row-major.
+///
+/// Returns the orthonormal `Q` factor as a flat `m×k` row-major vector.  Columns
+/// are orthogonalised against their predecessors twice (Gram-Schmidt with
+/// re-orthogonalisation).  A column that is numerically dependent on the earlier
+/// ones — as happens for a rank-deficient sketch — is replaced by a unit vector
+/// orthogonal to all previous columns, so `Q` has orthonormal columns whenever
+/// `m >= k`.
+pub fn qr_thin(a: &[f64], m: usize, k: usize) -> Vec<f64> {
+    let mut columns: Vec<Vec<f64>> = Vec::with_capacity(k);
+    for j in 0..k {
+        let mut v: Vec<f64> = (0..m).map(|i| a[i * k + j]).collect();
+        let original = norm2(&v);
+        for _pass in 0..2 {
+            for q in &columns {
+                let projection = dot(q, &v);
+                axpy(-projection, q, &mut v);
             }
+        }
+        let remaining = norm2(&v);
+        if remaining <= QR_DEPENDENCE_TOL * original {
+            let replacement = orthogonal_unit_vector(&columns, m).unwrap_or_else(|| vec![0.0; m]);
+            columns.push(replacement);
+        } else {
+            for value in v.iter_mut() {
+                *value /= remaining;
+            }
+            columns.push(v);
+        }
+    }
+    let mut q = vec![0.0f64; m * k];
+    for (j, column) in columns.iter().enumerate() {
+        for (i, &value) in column.iter().enumerate() {
+            q[i * k + j] = value;
         }
     }
     q
 }
-/// Compute the thin SVD of a small dense `m×n` matrix.
+/// Transpose a row-major `rows×cols` matrix into a row-major `cols×rows` matrix.
+pub(super) fn transpose_dense(a: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let mut t = vec![0.0f64; rows * cols];
+    for i in 0..rows {
+        for j in 0..cols {
+            t[j * rows + i] = a[i * cols + j];
+        }
+    }
+    t
+}
+/// Rotate columns `p < q` of `columns` in place: `(c_p, c_q) ← (c·c_p − s·c_q, s·c_p + c·c_q)`.
+fn rotate_column_pair(columns: &mut [Vec<f64>], p: usize, q: usize, c: f64, s: f64) {
+    let (head, tail) = columns.split_at_mut(q);
+    for (xp, xq) in head[p].iter_mut().zip(tail[0].iter_mut()) {
+        let (vp, vq) = (*xp, *xq);
+        *xp = c * vp - s * vq;
+        *xq = s * vp + c * vq;
+    }
+}
+/// One-sided Jacobi (Hestenes) SVD of a tall row-major `rows×cols` matrix
+/// (`rows >= cols >= 1`).
 ///
-/// Returns `(U, s, Vt)` where `U` is `m×k`, `s` has length `k`, and `Vt` is `k×n`, with `k = min(m, n)`.
-pub fn svd_small(a: &[f64], m: usize, n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    let k = m.min(n);
-    let mut u = MatrixFunctions::eye(m);
-    let mut vt_mat = MatrixFunctions::eye(n);
-    let mut b = a.to_vec();
-    for _ in 0..100 {
-        let mut converged = true;
-        for p in 0..k.min(m) {
-            for q in (p + 1)..k.min(n) {
-                let bpp: f64 = (0..m).map(|i| b[i * n + p] * b[i * n + p]).sum();
-                let bqq: f64 = (0..m).map(|i| b[i * n + q] * b[i * n + q]).sum();
-                let bpq: f64 = (0..m).map(|i| b[i * n + p] * b[i * n + q]).sum();
-                if bpq.abs() <= 1e-12 * (bpp * bqq).sqrt() {
+/// Returns `(U, s, V)`: `U` is `rows×cols` with orthonormal columns, `s` holds the
+/// singular values in descending order and `V` is the orthogonal `cols×cols`
+/// matrix of right singular vectors (stored as `V`, not `Vᵀ`), so that
+/// `A = U · diag(s) · Vᵀ`.  Pairs of columns are rotated until they are mutually
+/// orthogonal; the column norms are then the singular values.  Columns belonging
+/// to a zero singular value are completed to an orthonormal set.
+fn jacobi_svd_tall(a: &[f64], rows: usize, cols: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    // Scale by the largest entry so that squared column norms cannot overflow.
+    let scale = a
+        .iter()
+        .take(rows * cols)
+        .fold(0.0f64, |acc, v| acc.max(v.abs()));
+    let divisor = if scale > 0.0 && scale.is_finite() {
+        scale
+    } else {
+        1.0
+    };
+    let mut work: Vec<Vec<f64>> = (0..cols)
+        .map(|j| (0..rows).map(|i| a[i * cols + j] / divisor).collect())
+        .collect();
+    let mut right: Vec<Vec<f64>> = (0..cols)
+        .map(|j| {
+            let mut unit = vec![0.0f64; cols];
+            unit[j] = 1.0;
+            unit
+        })
+        .collect();
+    let tol = f64::EPSILON * (rows as f64).sqrt();
+    for _sweep in 0..SVD_MAX_SWEEPS {
+        let mut rotated = false;
+        for p in 0..cols.saturating_sub(1) {
+            for q in (p + 1)..cols {
+                let alpha = dot(&work[p], &work[p]);
+                let beta = dot(&work[q], &work[q]);
+                let gamma = dot(&work[p], &work[q]);
+                if gamma == 0.0 || gamma.abs() <= tol * alpha.sqrt() * beta.sqrt() {
                     continue;
                 }
-                converged = false;
-                let tau = (bqq - bpp) / (2.0 * bpq);
-                let t = 1.0 / (tau.abs() + (1.0 + tau * tau).sqrt());
-                let t = if tau < 0.0 { -t } else { t };
-                let cs = 1.0 / (1.0 + t * t).sqrt();
-                let sn = t * cs;
-                for i in 0..m {
-                    let bp = b[i * n + p];
-                    let bq = b[i * n + q];
-                    b[i * n + p] = cs * bp + sn * bq;
-                    b[i * n + q] = -sn * bp + cs * bq;
-                }
-                for i in 0..n {
-                    let vp = vt_mat[i * n + p];
-                    let vq = vt_mat[i * n + q];
-                    vt_mat[i * n + p] = cs * vp + sn * vq;
-                    vt_mat[i * n + q] = -sn * vp + cs * vq;
-                }
+                rotated = true;
+                // Rotation angle that makes the two columns orthogonal.
+                let zeta = (beta - alpha) / (2.0 * gamma);
+                let sign = if zeta >= 0.0 { 1.0 } else { -1.0 };
+                let t = sign / (zeta.abs() + zeta.hypot(1.0));
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                let s = c * t;
+                rotate_column_pair(&mut work, p, q, c, s);
+                rotate_column_pair(&mut right, p, q, c, s);
             }
         }
-        if converged {
+        if !rotated {
             break;
         }
     }
-    let mut s: Vec<f64> = (0..k)
-        .map(|j| {
-            (0..m)
-                .map(|i| b[i * n + j] * b[i * n + j])
-                .sum::<f64>()
-                .sqrt()
-        })
-        .collect();
-    for j in 0..k {
-        for i in 0..m {
-            u[i * m + j] = if s[j] > 1e-300 {
-                b[i * n + j] / s[j]
-            } else {
-                0.0
-            };
+    let norms: Vec<f64> = work.iter().map(|column| norm2(column)).collect();
+    let mut order: Vec<usize> = (0..cols).collect();
+    order.sort_by(|&x, &y| norms[y].total_cmp(&norms[x]));
+    let mut u_columns: Vec<Vec<f64>> = Vec::with_capacity(cols);
+    let mut v_columns: Vec<Vec<f64>> = Vec::with_capacity(cols);
+    let mut singular_values: Vec<f64> = Vec::with_capacity(cols);
+    let mut missing: Vec<usize> = Vec::new();
+    for (position, &source) in order.iter().enumerate() {
+        let nrm = norms[source];
+        singular_values.push(nrm * divisor);
+        v_columns.push(right[source].clone());
+        if nrm > f64::MIN_POSITIVE {
+            u_columns.push(work[source].iter().map(|x| x / nrm).collect());
+        } else {
+            u_columns.push(Vec::new());
+            missing.push(position);
         }
     }
-    let mut order: Vec<usize> = (0..k).collect();
-    order.sort_by(|&a, &b| s[b].partial_cmp(&s[a]).unwrap_or(std::cmp::Ordering::Equal));
-    let s_sorted: Vec<f64> = order.iter().map(|&i| s[i]).collect();
-    s = s_sorted;
-    (u, s, vt_mat)
+    for position in missing {
+        let basis: Vec<Vec<f64>> = u_columns
+            .iter()
+            .filter(|column| !column.is_empty())
+            .cloned()
+            .collect();
+        u_columns[position] =
+            orthogonal_unit_vector(&basis, rows).unwrap_or_else(|| vec![0.0; rows]);
+    }
+    let mut u = vec![0.0f64; rows * cols];
+    for (j, column) in u_columns.iter().enumerate() {
+        for (i, &value) in column.iter().enumerate() {
+            u[i * cols + j] = value;
+        }
+    }
+    let mut v = vec![0.0f64; cols * cols];
+    for (j, column) in v_columns.iter().enumerate() {
+        for (i, &value) in column.iter().enumerate() {
+            v[i * cols + j] = value;
+        }
+    }
+    (u, singular_values, v)
+}
+/// Compute the thin SVD of a small dense `m×n` matrix.
+///
+/// `a` is stored row-major with `a.len() == m * n`.  With `k = min(m, n)` the
+/// result `(U, s, Vt)` satisfies `A = U · diag(s) · Vt`, where
+/// * `U` is `m×k` (row-major, stride `k`) with orthonormal columns,
+/// * `s` holds the `k` singular values in descending order,
+/// * `Vt` is `k×n` (row-major, stride `n`) with orthonormal rows.
+///
+/// The factorisation uses one-sided Jacobi rotations (Hestenes), which computes
+/// small singular values to high relative accuracy.  A wide matrix (`m < n`) is
+/// factorised through its transpose.  Columns of `U` and rows of `Vt` that belong
+/// to zero singular values are completed so that both factors stay orthonormal.
+/// Empty input (`m == 0` or `n == 0`) yields empty factors.
+pub fn svd_small(a: &[f64], m: usize, n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    if m == 0 || n == 0 {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+    if m >= n {
+        let (u, s, v) = jacobi_svd_tall(a, m, n);
+        (u, s, transpose_dense(&v, n, n))
+    } else {
+        // A^T = U' S V'^T  =>  A = V' S U'^T.
+        let a_t = transpose_dense(a, m, n);
+        let (u_t, s, v_t) = jacobi_svd_tall(&a_t, n, m);
+        (v_t, s, transpose_dense(&u_t, n, m))
+    }
 }
 /// Compute the Gram matrix G = A^T A of shape (r x r) for A of shape (m x r).
 pub fn gram(a: &[f64], m: usize, r: usize) -> Vec<f64> {
@@ -216,6 +349,7 @@ mod tests {
     use crate::numerical_linear_algebra::IterativeSolver;
     use crate::numerical_linear_algebra::JacobiPreconditioner;
     use crate::numerical_linear_algebra::LowRankApproximation;
+    use crate::numerical_linear_algebra::MatrixFunctions;
     use crate::numerical_linear_algebra::SPAIPreconditioner;
     use crate::numerical_linear_algebra::SSORPreconditioner;
     use crate::numerical_linear_algebra::SparseCSR;

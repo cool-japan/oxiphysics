@@ -392,66 +392,102 @@ pub fn reliability_factor(reliability: f64) -> f64 {
 // Rainflow counting
 // ---------------------------------------------------------------------------
 
-/// Rainflow cycle counting (ASTM E1049 three-point algorithm).
+/// Reduce a sampled history to its turning points (peaks and valleys).
 ///
-/// Extracts closed cycles from a stress history and returns a vector of
-/// (range, mean, count) tuples where count is 0.5 for a half-cycle and 1.0
-/// for a full cycle.
+/// Non-finite samples are ignored.  Runs of equal consecutive samples are
+/// collapsed to one sample first, so a flat peak or valley (plateau) is kept as
+/// a single reversal instead of being lost.  The first and last samples are
+/// always retained.
+fn turning_points(history: &[f64]) -> Vec<f64> {
+    let mut samples: Vec<f64> = Vec::with_capacity(history.len());
+    for &s in history {
+        if s.is_finite() && samples.last() != Some(&s) {
+            samples.push(s);
+        }
+    }
+    let (Some(&first), Some(&last)) = (samples.first(), samples.last()) else {
+        return samples;
+    };
+    if samples.len() < 3 {
+        return samples;
+    }
+    let mut turning: Vec<f64> = Vec::with_capacity(samples.len());
+    turning.push(first);
+    for w in samples.windows(3) {
+        // Consecutive samples differ, so the direction of each step is a
+        // plain comparison: a reversal is a change of direction.
+        if (w[1] > w[0]) != (w[2] > w[1]) {
+            turning.push(w[1]);
+        }
+    }
+    turning.push(last);
+    turning
+}
+
+/// Rainflow cycle counting (ASTM E1049-85 three-point algorithm).
+///
+/// Reduces the history to its reversals (plateaus count as a single reversal,
+/// non-finite samples are ignored) and counts cycles with the stack algorithm
+/// of ASTM E1049-85 §5.4.4.  Whenever the latest range `X` is at least as large
+/// as the preceding range `Y`:
+///
+/// - if `Y` contains the starting point of the history (the first point still
+///   on the stack), `Y` is counted as a **half cycle** and only that starting
+///   point is discarded;
+/// - otherwise `Y` is a closed cycle: it is counted as **one full cycle** and
+///   both of its points are discarded.
+///
+/// The ranges left on the stack at the end of the history (the residue) are
+/// counted as half cycles.  Every reversal-to-reversal step is therefore
+/// accounted for exactly once: the counts sum to `(reversals − 1) / 2` and
+/// `Σ 2·count·range` equals the total variation of the reversal sequence.
+///
+/// For example `[−2, 1, −3, 5, −1, 3, −4, 4, −2]` gives ranges 3 (0.5 cycle),
+/// 4 (1.5), 6 (0.5), 8 (1.0) and 9 (0.5), as in the ASTM E1049 example.
 ///
 /// # Arguments
 /// * `stress_history` - stress time series (Pa)
 ///
 /// # Returns
-/// `Vec<(range, mean, count)>` — each entry is a counted cycle.
+/// `Vec<(range, mean, count)>` — each entry is a counted cycle, with `count`
+/// equal to 0.5 for a half cycle and 1.0 for a full cycle.  The vector is empty
+/// when the history has fewer than two distinct finite samples.
 pub fn rainflow_count(stress_history: &[f64]) -> Vec<(f64, f64, f64)> {
-    if stress_history.len() < 2 {
+    let reversals = turning_points(stress_history);
+    if reversals.len() < 2 {
         return Vec::new();
     }
 
-    // Build turning-point (reversal) sequence
-    let mut reversals: Vec<f64> = Vec::with_capacity(stress_history.len());
-    reversals.push(stress_history[0]);
-    for i in 1..stress_history.len() - 1 {
-        let prev = stress_history[i - 1];
-        let curr = stress_history[i];
-        let next = stress_history[i + 1];
-        if (curr - prev) * (next - curr) < 0.0 {
-            reversals.push(curr);
-        }
-    }
-    reversals.push(*stress_history.last().expect("stress_history is non-empty"));
-
-    // Three-point cycle extraction
-    let mut stack: Vec<f64> = Vec::new();
+    let mut stack: Vec<f64> = Vec::with_capacity(reversals.len());
+    // Position in `stack` of the starting point S of the history.  Discarding
+    // S just advances this index, so no element is ever shifted.
+    let mut start = 0usize;
     let mut cycles: Vec<(f64, f64, f64)> = Vec::new();
 
-    for &s in &reversals {
-        stack.push(s);
-        loop {
+    for &point in &reversals {
+        stack.push(point);
+        while stack.len() - start >= 3 {
             let n = stack.len();
-            if n < 3 {
+            let (s0, s1, s2) = (stack[n - 3], stack[n - 2], stack[n - 1]);
+            let y = (s1 - s0).abs();
+            let x = (s2 - s1).abs();
+            if x < y {
                 break;
             }
-            let s0 = stack[n - 3];
-            let s1 = stack[n - 2];
-            let s2 = stack[n - 1];
-            let r1 = (s1 - s0).abs();
-            let r2 = (s2 - s1).abs();
-            if r2 >= r1 {
-                // Full cycle: extract s0–s1
-                let range = r1;
-                let mean = 0.5 * (s0 + s1);
-                cycles.push((range, mean, 1.0));
-                stack.remove(n - 3);
-                stack.remove(n - 3); // now n-2 after removal
+            let mean = 0.5 * (s0 + s1);
+            if n - 3 == start {
+                cycles.push((y, mean, 0.5));
+                start += 1;
             } else {
-                break;
+                cycles.push((y, mean, 1.0));
+                stack.truncate(n - 3);
+                stack.push(s2);
             }
         }
     }
 
-    // Remaining items in stack are half-cycles
-    for w in stack.windows(2) {
+    // The residue is counted as half cycles.
+    for w in stack[start..].windows(2) {
         let range = (w[1] - w[0]).abs();
         let mean = 0.5 * (w[0] + w[1]);
         cycles.push((range, mean, 0.5));
@@ -846,6 +882,166 @@ mod tests {
         for &(range, _mean, _count) in &cycles {
             assert!(range >= 0.0);
         }
+    }
+
+    /// Total count per (integer) range, as a sorted list of `(range, count)`.
+    fn counts_by_range(cycles: &[(f64, f64, f64)]) -> Vec<(i64, f64)> {
+        let mut table: Vec<(i64, f64)> = Vec::new();
+        for &(range, _mean, count) in cycles {
+            let key = range.round() as i64;
+            assert!(
+                (range - key as f64).abs() < 1e-9,
+                "non-integer range {range}"
+            );
+            match table.iter_mut().find(|(k, _)| *k == key) {
+                Some(entry) => entry.1 += count,
+                None => table.push((key, count)),
+            }
+        }
+        table.sort_by_key(|&(k, _)| k);
+        table
+    }
+
+    #[test]
+    fn test_rainflow_astm_e1049_example() {
+        // ASTM E1049-85 Fig. 6: -2, 1, -3, 5, -1, 3, -4, 4, -2.
+        let history = [-2.0, 1.0, -3.0, 5.0, -1.0, 3.0, -4.0, 4.0, -2.0];
+        let cycles = rainflow_count(&history);
+        assert_eq!(
+            counts_by_range(&cycles),
+            vec![(3, 0.5), (4, 1.5), (6, 0.5), (8, 1.0), (9, 0.5)]
+        );
+        let total: f64 = cycles.iter().map(|c| c.2).sum();
+        assert!((total - 4.0).abs() < 1e-12, "8 reversal steps = 4 cycles");
+    }
+
+    #[test]
+    fn test_rainflow_start_point_range_is_half_cycle() {
+        // [0, 5, -10, 10]: the 0-5 range contains the starting point and must be
+        // a half cycle, so no range is lost (the old code reported 5:1.0, 20:0.5).
+        let cycles = rainflow_count(&[0.0, 5.0, -10.0, 10.0]);
+        assert_eq!(
+            counts_by_range(&cycles),
+            vec![(5, 0.5), (15, 0.5), (20, 0.5)]
+        );
+    }
+
+    #[test]
+    fn test_rainflow_means_of_counted_cycles() {
+        let cycles = rainflow_count(&[0.0, 5.0, -10.0, 10.0]);
+        let mean_of = |range: f64| {
+            cycles
+                .iter()
+                .find(|c| (c.0 - range).abs() < 1e-12)
+                .map(|c| c.1)
+        };
+        assert_eq!(mean_of(5.0), Some(2.5));
+        assert_eq!(mean_of(15.0), Some(-2.5));
+        assert_eq!(mean_of(20.0), Some(0.0));
+    }
+
+    #[test]
+    fn test_rainflow_plateau_peak_is_kept() {
+        // The flat top must count as one peak: 0 -> 10 -> 0 is one full cycle
+        // expressed as two half cycles of range 10 about the mean 5.  The old
+        // reversal test dropped the plateau and reported nothing for [0, 10, 10, 0].
+        for history in [
+            vec![0.0, 10.0, 10.0, 0.0],
+            vec![0.0, 10.0, 10.0, 10.0, 10.0, 0.0],
+            vec![0.0, 0.0, 10.0, 10.0, 0.0, 0.0],
+        ] {
+            let cycles = rainflow_count(&history);
+            assert_eq!(cycles.len(), 2, "history {history:?}");
+            for &(range, mean, count) in &cycles {
+                assert_eq!(
+                    (range, mean, count),
+                    (10.0, 5.0, 0.5),
+                    "history {history:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_rainflow_plateau_valley_and_interior_plateau() {
+        // 3,3,0,0,0,10,10 collapses to 3,0,10: a half cycle of range 3 at the
+        // start point and a residue half cycle of range 10.
+        let cycles = rainflow_count(&[3.0, 3.0, 0.0, 0.0, 0.0, 10.0, 10.0]);
+        assert_eq!(counts_by_range(&cycles), vec![(3, 0.5), (10, 0.5)]);
+        // A monotone ramp with a plateau in the middle is one half cycle.
+        let ramp = rainflow_count(&[0.0, 1.0, 2.0, 2.0, 3.0, 4.0]);
+        assert_eq!(ramp, vec![(4.0, 2.0, 0.5)]);
+    }
+
+    #[test]
+    fn test_rainflow_degenerate_histories() {
+        assert!(rainflow_count(&[5.0, 5.0, 5.0, 5.0]).is_empty());
+        assert!(rainflow_count(&[f64::NAN, 1.0, f64::INFINITY]).is_empty());
+        assert_eq!(rainflow_count(&[1.0, 2.0]), vec![(1.0, 1.5, 0.5)]);
+        assert_eq!(rainflow_count(&[2.0, 2.0, 1.0]), vec![(1.0, 1.5, 0.5)]);
+    }
+
+    #[test]
+    fn test_rainflow_ignores_non_finite_samples() {
+        let clean = rainflow_count(&[0.0, 10.0, -4.0, 6.0]);
+        let dirty = rainflow_count(&[0.0, f64::NAN, 10.0, -4.0, f64::INFINITY, 6.0]);
+        assert_eq!(clean, dirty);
+    }
+
+    #[test]
+    fn test_rainflow_conserves_counts_and_total_variation() {
+        // Deterministic pseudo-random history with deliberate plateaus.
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 33) as f64) / ((1u64 << 31) as f64)
+        };
+        let mut history = Vec::new();
+        let mut value = 0.0_f64;
+        for _ in 0..400 {
+            // One draw in five repeats the previous sample (a plateau).
+            if next() >= 0.2 {
+                value = 100.0 * (next() - 0.5);
+            }
+            history.push(value);
+        }
+        let turning = turning_points(&history);
+        let cycles = rainflow_count(&history);
+        let total_count: f64 = cycles.iter().map(|c| c.2).sum();
+        assert!(
+            (total_count - 0.5 * (turning.len() as f64 - 1.0)).abs() < 1e-9,
+            "count {total_count} vs {} reversals",
+            turning.len()
+        );
+        let variation: f64 = turning.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
+        let counted: f64 = cycles.iter().map(|c| 2.0 * c.2 * c.0).sum();
+        assert!(
+            (variation - counted).abs() < 1e-8 * variation,
+            "total variation {variation} vs counted {counted}"
+        );
+        assert!(
+            cycles
+                .iter()
+                .all(|c| c.0 > 0.0 && (c.2 == 0.5 || c.2 == 1.0))
+        );
+    }
+
+    #[test]
+    fn test_analyze_element_counts_start_point_half_cycle() {
+        let analysis = FatigueAnalysis::new(FatigueParams::default());
+        let history = [0.0, 500.0e6, -500.0e6, 500.0e6];
+        let result = analysis.analyze_element(&history);
+        // ASTM counts: ranges 500, 1000, 1000 MPa, each half a cycle.
+        let pairs = [(250.0e6, 0.5), (500.0e6, 0.5), (500.0e6, 0.5)];
+        let expected = miner_damage(&pairs, &analysis.sn);
+        assert!(expected > 0.0);
+        assert!((result.damage - expected).abs() <= 1e-12 * expected);
+        // The old (start-point blind) count lost the 1000 MPa half cycle and
+        // so under-predicted the damage.
+        let old_pairs = [(250.0e6, 1.0), (500.0e6, 0.5)];
+        assert!(result.damage > miner_damage(&old_pairs, &analysis.sn));
     }
 
     // ---- Miner rule --------------------------------------------------------

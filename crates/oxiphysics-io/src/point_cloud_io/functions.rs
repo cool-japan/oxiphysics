@@ -5,6 +5,7 @@
 use std::io::{self, Write};
 
 use super::types::{KdTree, PointCloud, Triangle};
+use crate::small_sym_eigen::symmetric_eigen;
 
 /// Voxel map type: maps (ix, iy, iz) cell coordinates to (point indices, centroid accumulator, count).
 type VoxelMap = std::collections::HashMap<(i64, i64, i64), (Vec<usize>, [f64; 3], usize)>;
@@ -195,9 +196,11 @@ pub fn statistical_outlier_removal(
 /// Estimate normals for a point cloud using k-nearest neighbors.
 ///
 /// For each point, finds `k` nearest neighbors, computes the covariance
-/// matrix, and takes the eigenvector with smallest eigenvalue as the normal.
-/// Normals are oriented consistently by checking alignment with the centroid
-/// direction.
+/// matrix, and takes the eigenvector with smallest eigenvalue (found with a
+/// Jacobi eigen-decomposition, so the result is independent of the length
+/// scale of the cloud) as the normal.  Normals are oriented consistently by
+/// checking alignment with the centroid direction: they point away from the
+/// centroid.  A point with fewer than three neighbours gets `[0, 0, 1]`.
 pub fn estimate_normals(cloud: &PointCloud, k: usize) -> Vec<[f64; 3]> {
     if cloud.is_empty() {
         return Vec::new();
@@ -271,36 +274,19 @@ pub fn compute_centroid(cloud: &PointCloud) -> [f64; 3] {
     }
     [c[0] / n, c[1] / n, c[2] / n]
 }
-/// Approximate smallest eigenvector of a 3x3 symmetric matrix using
-/// inverse power iteration.
-fn smallest_eigenvector_3x3(m: [[f64; 3]; 3]) -> [f64; 3] {
-    let mut v = [1.0, 0.0, 0.0];
-    for _ in 0..20 {
-        let mv = mat_vec_3x3(m, v);
-        let len = (mv[0] * mv[0] + mv[1] * mv[1] + mv[2] * mv[2]).sqrt();
-        if len < 1e-15 {
-            return v;
-        }
-        v = [mv[0] / len, mv[1] / len, mv[2] / len];
-    }
-    let max_eval =
-        v[0] * mat_vec_3x3(m, v)[0] + v[1] * mat_vec_3x3(m, v)[1] + v[2] * mat_vec_3x3(m, v)[2];
-    let shift = max_eval + 1.0;
-    let b = [
-        [shift - m[0][0], -m[0][1], -m[0][2]],
-        [-m[1][0], shift - m[1][1], -m[1][2]],
-        [-m[2][0], -m[2][1], shift - m[2][2]],
-    ];
-    let mut w = [0.577, 0.577, 0.577];
-    for _ in 0..30 {
-        let bw = mat_vec_3x3(b, w);
-        let len = (bw[0] * bw[0] + bw[1] * bw[1] + bw[2] * bw[2]).sqrt();
-        if len < 1e-15 {
-            return w;
-        }
-        w = [bw[0] / len, bw[1] / len, bw[2] / len];
-    }
-    w
+/// Unit eigenvector that belongs to the smallest eigenvalue of the symmetric
+/// 3x3 matrix `m`.
+///
+/// The decomposition uses the cyclic Jacobi method of the crate-internal
+/// `symmetric_eigen`.  Its rotations are chosen from ratios of matrix entries,
+/// so the result does not depend on the magnitude of the matrix (covariances
+/// of centimetre-spaced scans in metres are of order `1e-4`) and axis-aligned
+/// or rank-deficient inputs such as `diag(1, 4, 0)` are handled exactly.  For
+/// a degenerate smallest eigenvalue any unit vector of that eigenspace may be
+/// returned.
+pub(super) fn smallest_eigenvector_3x3(m: [[f64; 3]; 3]) -> [f64; 3] {
+    // Eigenvalues are sorted in descending order, the last one is the smallest.
+    symmetric_eigen(m).vectors[2]
 }
 /// Multiply 3x3 matrix by 3-vector.
 fn mat_vec_3x3(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {

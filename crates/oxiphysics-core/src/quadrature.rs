@@ -516,74 +516,134 @@ pub fn gauss_hermite_weights(n: usize) -> Vec<(f64, f64)> {
 
 // ── Gauss-Laguerre ────────────────────────────────────────────────────────────
 
-/// Evaluate the Laguerre polynomial L_n(x) and its derivative.
-fn laguerre_p_dp(n: usize, x: f64) -> (f64, f64) {
-    if n == 0 {
-        return (1.0, 0.0);
-    }
-    if n == 1 {
-        return (1.0 - x, -1.0);
-    }
-    let mut pm1 = 1.0_f64;
-    let mut p = 1.0 - x;
-    for k in 2..=n {
+/// Magnitude above which the Laguerre recurrence is rescaled to avoid overflow.
+const LAGUERRE_RESCALE_LIMIT: f64 = 1.0e150;
+/// Factor applied to the Laguerre recurrence when it exceeds [`LAGUERRE_RESCALE_LIMIT`].
+const LAGUERRE_RESCALE_FACTOR: f64 = 1.0e-150;
+
+/// Difference form of the Laguerre three-term recurrence.
+///
+/// With `d_k = L_k - L_(k-1)` the recurrence
+/// `(k + 1) L_(k+1) = (2k + 1 - x) L_k - k L_(k-1)` is equivalent to
+/// `d_(k+1) = (k d_k - x L_k) / (k + 1)` and `L_(k+1) = L_k + d_(k+1)`, started
+/// from `L_1 = 1 - x`, `d_1 = -x`.  Carrying the differences avoids the
+/// cancellation of the plain recurrence near `x = 0`, so the zeros of `L_n` are
+/// resolved to a few ulp, and it yields the derivative without a further
+/// subtraction: `L_n'(x) = n (L_n - L_(n-1)) / x = n d_n / x`.
+///
+/// Returns `(L_n, d_n, r)` for `n >= 1`.  Whenever the running pair would exceed
+/// [`LAGUERRE_RESCALE_LIMIT`] it is multiplied by [`LAGUERRE_RESCALE_FACTOR`] and `r`
+/// is incremented, so that the true values are the returned ones times `1e150^r`.
+/// This keeps the recurrence finite for any `n` and `x` (`|L_n(x)|` grows like
+/// `exp(x / 2)`).
+fn laguerre_recurrence(n: usize, x: f64) -> (f64, f64, i32) {
+    let mut value = 1.0 - x;
+    let mut difference = -x;
+    let mut rescales = 0_i32;
+    for k in 1..n {
         let kf = k as f64;
-        let pnew = ((2.0 * kf - 1.0 - x) * p - (kf - 1.0) * pm1) / kf;
-        pm1 = p;
-        p = pnew;
+        difference = (kf * difference - x * value) / (kf + 1.0);
+        value += difference;
+        if value.abs() > LAGUERRE_RESCALE_LIMIT || difference.abs() > LAGUERRE_RESCALE_LIMIT {
+            value *= LAGUERRE_RESCALE_FACTOR;
+            difference *= LAGUERRE_RESCALE_FACTOR;
+            rescales += 1;
+        }
     }
-    // Derivative: L_n'(x) = -L_{n-1}(x) (for monic normalization the relation is:
-    // L_n'(x) = -(n / (n + 1)) * sum ..., but the standard relation is n * L_n(x) = ... )
-    // Use: n L_n'(x) = n L_{n-1}(x) - (n - x) ... simplify: L_n'(x) = (L_n(x) - L_{n-1}(x)) / ... nope
-    // Correct recurrence for derivative: n L_n'(x) = n L_{n-1}(x) - (x L_n(x))' (see DLMF 18.9.23)
-    // Simpler: L_n'(x) = -\sum_{k=0}^{n-1} L_k(x) or equivalently L_n'(x) = (n L_n(x) - n L_{n-1}(x)) / x  for x != 0
-    // Standard relation: L_n'(x) = -L_{n-1}(x) (for generalized α=0)  ← this is CORRECT for standard Laguerre
-    let dp = -pm1;
-    (p, dp)
+    (value, difference, rescales)
+}
+
+/// Refine an approximate zero `x_start` of `L_n` with Newton's method on the
+/// difference recurrence.
+///
+/// Since `L_n' = n d_n / x` the Newton step is `x L_n / (n d_n)`.  The starting
+/// value comes from an eigenvalue solver and is already accurate to about
+/// `1e-13 (1 + x)`, so the iteration only removes the last rounding errors; if it
+/// ever moves the root by more than `1e-8 (1 + |x_start|)` the starting value is
+/// kept.
+fn polish_laguerre_node(n: usize, x_start: f64) -> f64 {
+    let nf = n as f64;
+    let mut x = x_start;
+    for _ in 0..8 {
+        let (value, difference, _) = laguerre_recurrence(n, x);
+        let step = x * value / (nf * difference);
+        if !step.is_finite() {
+            break;
+        }
+        x -= step;
+        if step.abs() <= 4.0 * f64::EPSILON * x.abs() {
+            break;
+        }
+    }
+    if (x - x_start).abs() <= 1.0e-8 * (1.0 + x_start.abs()) {
+        x
+    } else {
+        x_start
+    }
+}
+
+/// Gauss-Laguerre weight of the node `x`, a zero of `L_n`:
+/// `w = x / (n L_(n-1)(x))²`.
+///
+/// `L_(n-1)(x) = L_n(x) - d_n(x)` comes out of the rescaled difference
+/// recurrence, so the weight keeps full relative accuracy for the tiny weights of
+/// the outermost nodes and never overflows.  A weight below the smallest positive
+/// `f64` underflows to `0`.
+fn laguerre_weight(n: usize, x: f64) -> f64 {
+    let (value, difference, rescales) = laguerre_recurrence(n, x);
+    let inverse = (value - difference).recip();
+    let nf = n as f64;
+    x / (nf * nf) * inverse * inverse * LAGUERRE_RESCALE_FACTOR.powi(2 * rescales)
 }
 
 /// Compute the *n*-point Gauss-Laguerre nodes and weights.
 ///
-/// The rule integrates `f(x) · exp(-x)` over \[0, +∞).
-/// Uses Newton iteration on L_n(x) with Tricomi initial guesses.
+/// The rule integrates `f(x) · exp(-x)` over \[0, +∞) and is exact for
+/// polynomials `f` of degree up to `2n - 1`.  The nodes are the zeros of the
+/// Laguerre polynomial `L_n(x)` and the weights are
+/// `w_i = x_i / (n L_(n-1)(x_i))²`, so that `Σ w_i = 1` and, more generally,
+/// `Σ w_i x_i^k = k!` for `k <= 2n - 1`.
+///
+/// # Algorithm
+///
+/// The nodes start as the eigenvalues of the symmetric tridiagonal Jacobi matrix
+/// of the Laguerre polynomials (diagonal `2k + 1`, off-diagonal entries `k` for
+/// `k = 1..n`; Golub-Welsch), computed with a symmetric eigen-solver.  Unlike
+/// Newton iteration from asymptotic starting values, this cannot collapse several
+/// starting points onto the same zero.  Each node is then polished with Newton's
+/// method on the difference form of the Laguerre recurrence (where
+/// `L_n' = n (L_n - L_(n-1)) / x`) and the weight follows from the same
+/// recurrence, which gives full relative accuracy for the nodes and the tiny
+/// outer weights.
+///
+/// Returns `(node, weight)` pairs in ascending node order, or an empty vector for
+/// `n = 0`.  The cost is dominated by the dense eigen-solve (`O(n³)`).  The
+/// weight of the outermost node is roughly `exp(-4n)`; once it drops below the
+/// smallest positive `f64` (for `n` above about 180) it is returned as `0`.
 pub fn gauss_laguerre_weights(n: usize) -> Vec<(f64, f64)> {
-    assert!(n >= 1, "n must be at least 1");
-    let mut nw = Vec::with_capacity(n);
-    for i in 1..=n {
-        // Tricomi initial guess for the i-th zero of L_n
-        let nf = n as f64;
-        let jv = PI * (4 * i - 1) as f64 / (4.0 * nf + 2.0);
-        let mut x = (1.0 - (nf - 1.0) / (8.0 * nf * nf * nf)) * jv * jv;
-        x = x.max(1e-6);
-
-        // Newton iteration on L_n(x)
-        for _ in 0..200 {
-            let (p, dp) = laguerre_p_dp(n, x);
-            if dp.abs() < 1e-300 {
-                break;
-            }
-            let dx = p / dp;
-            x -= dx;
-            x = x.max(1e-15);
-            if dx.abs() < 1e-12 {
-                break;
-            }
-        }
-
-        // Standard Gauss-Laguerre weight formula:
-        // w_i = x_i / ((n+1)^2 * [L_{n+1}(x_i)]^2)
-        // Alternatively: w_i = x_i / (n * L_{n-1}(x_i))^2
-        // Both are equivalent; use the latter.
-        let (p_prev, _) = laguerre_p_dp(n - 1, x);
-        let w = if p_prev.abs() < 1e-300 {
-            0.0
-        } else {
-            x / ((n as f64) * p_prev).powi(2)
-        };
-        nw.push((x, w));
+    if n == 0 {
+        return Vec::new();
     }
-    nw.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    nw
+    let jacobi = DMatrix::<f64>::from_fn(n, n, |i, j| {
+        if i == j {
+            (2 * i + 1) as f64
+        } else if i + 1 == j {
+            j as f64
+        } else if j + 1 == i {
+            i as f64
+        } else {
+            0.0
+        }
+    });
+    let mut eigenvalues: Vec<f64> = jacobi.symmetric_eigenvalues().iter().copied().collect();
+    eigenvalues.sort_by(|a, b| a.total_cmp(b));
+    eigenvalues
+        .into_iter()
+        .map(|start| {
+            let x = polish_laguerre_node(n, start);
+            (x, laguerre_weight(n, x))
+        })
+        .collect()
 }
 
 // ── 2D tensor-product integration ────────────────────────────────────────────
@@ -963,38 +1023,283 @@ mod tests {
 
     // ── gauss_laguerre ───────────────────────────────────────────────────────
 
-    #[test]
-    fn test_laguerre_n1() {
-        let nw = gauss_laguerre_weights(1);
-        // Single node at x=1, weight=1
-        assert_eq!(nw.len(), 1);
-        assert!((nw[0].0 - 1.0).abs() < 0.1, "n=1 node ≈ 1, got {}", nw[0].0);
+    /// `∫₀^∞ x^k exp(-x) dx = k!`.
+    fn laguerre_moment(k: usize) -> f64 {
+        (1..=k).fold(1.0_f64, |acc, j| acc * j as f64)
+    }
+
+    /// `L_n(x)` and `L_n'(x)` from the difference recurrence for arguments that
+    /// need no rescaling.
+    fn laguerre_value_and_derivative(n: usize, x: f64) -> (f64, f64) {
+        let (value, difference, rescales) = laguerre_recurrence(n, x);
+        assert_eq!(rescales, 0, "n={n}, x={x} must not trigger rescaling");
+        (value, n as f64 * difference / x)
+    }
+
+    fn assert_laguerre_rule(nodes: &[f64], weights: &[f64], node_rtol: f64, weight_rtol: f64) {
+        let n = nodes.len();
+        let nw = gauss_laguerre_weights(n);
+        assert_eq!(nw.len(), n);
+        for i in 0..n {
+            assert_rel_close(nw[i].0, nodes[i], node_rtol, &format!("n={n} node {i}"));
+            assert_rel_close(
+                nw[i].1,
+                weights[i],
+                weight_rtol,
+                &format!("n={n} weight {i}"),
+            );
+        }
     }
 
     #[test]
-    fn test_laguerre_nodes_positive() {
-        for n in [1, 2, 3, 4, 5] {
-            for (x, _) in gauss_laguerre_weights(n) {
-                assert!(x > 0.0, "Laguerre node must be positive, got {x}");
+    fn test_laguerre_recurrence_matches_closed_forms() {
+        // L_2 = (x² - 4x + 2)/2 with L_2' = x - 2 (the old code used -L_1 = x - 1);
+        // L_3 = (-x³ + 9x² - 18x + 6)/6 with L_3' = (-x² + 6x - 6)/2.
+        for &x in &[0.05_f64, 0.5, 1.0, 2.5, 7.0, 13.0] {
+            let scale = 1.0 + x * x * x;
+            let (p2, dp2) = laguerre_value_and_derivative(2, x);
+            assert!(
+                (p2 - (x * x - 4.0 * x + 2.0) / 2.0).abs() <= 1e-14 * scale,
+                "L_2({x})"
+            );
+            assert!((dp2 - (x - 2.0)).abs() <= 1e-14 * scale, "L_2'({x})");
+            let (p3, dp3) = laguerre_value_and_derivative(3, x);
+            let l3 = (-x * x * x + 9.0 * x * x - 18.0 * x + 6.0) / 6.0;
+            assert!((p3 - l3).abs() <= 1e-14 * scale, "L_3({x})");
+            let dl3 = (-x * x + 6.0 * x - 6.0) / 2.0;
+            assert!((dp3 - dl3).abs() <= 1e-14 * scale, "L_3'({x})");
+        }
+    }
+
+    #[test]
+    fn test_laguerre_derivative_matches_central_differences() {
+        for n in [1_usize, 2, 5, 12, 30] {
+            for &x in &[0.3_f64, 1.7, 6.0, 20.0] {
+                let h = 1.0e-5 * x;
+                let upper = laguerre_value_and_derivative(n, x + h).0;
+                let lower = laguerre_value_and_derivative(n, x - h).0;
+                let numeric = (upper - lower) / (2.0 * h);
+                let (_, analytic) = laguerre_value_and_derivative(n, x);
+                assert!(
+                    (numeric - analytic).abs() <= 1e-6 * (1.0 + analytic.abs()),
+                    "n={n}, x={x}: finite difference {numeric}, analytic {analytic}"
+                );
             }
         }
     }
 
     #[test]
-    fn test_laguerre_integrates_exp_neg_x() {
-        // ∫₀^∞ e^{-x} * 1 dx = 1  (f(x)=1 with Laguerre weight e^{-x})
-        // The quadrature approximates this as sum_i w_i * f(x_i) = sum_i w_i
-        // The weights already absorb the e^{-x} factor, so their sum ≈ 1.
-        // We test with f(x)=1 and verify the rule is reasonable.
-        let nw = gauss_laguerre_weights(5);
-        // Verify nodes are positive and sorted
-        for i in 1..nw.len() {
-            assert!(nw[i].0 > nw[i - 1].0, "nodes should be sorted");
+    fn test_laguerre_n0_is_empty() {
+        assert!(gauss_laguerre_weights(0).is_empty());
+    }
+
+    #[test]
+    fn test_laguerre_n1_is_one_at_one() {
+        let nw = gauss_laguerre_weights(1);
+        assert_eq!(nw.len(), 1);
+        assert_rel_close(nw[0].0, 1.0, 1e-15, "x(n=1)");
+        assert_rel_close(nw[0].1, 1.0, 1e-15, "w(n=1)");
+    }
+
+    #[test]
+    fn test_laguerre_n2_matches_closed_form() {
+        // Nodes 2 ∓ √2 with weights (2 ± √2) / 4.
+        let nw = gauss_laguerre_weights(2);
+        let root_two = 2.0_f64.sqrt();
+        assert_eq!(nw.len(), 2);
+        assert_rel_close(nw[0].0, 2.0 - root_two, 1e-15, "x0");
+        assert_rel_close(nw[1].0, 2.0 + root_two, 1e-15, "x1");
+        assert_rel_close(nw[0].1, (2.0 + root_two) / 4.0, 1e-14, "w0");
+        assert_rel_close(nw[1].1, (2.0 - root_two) / 4.0, 1e-14, "w1");
+    }
+
+    #[test]
+    fn test_laguerre_matches_high_precision_references() {
+        // 70-digit values (mpmath), rounded to f64; they agree with
+        // scipy.special.roots_laguerre to its own accuracy.
+        assert_laguerre_rule(
+            &[0.4157745567834791, 2.294280360279042, 6.2899450829374794],
+            &[0.711093009929173, 0.27851773356924087, 0.010389256501586135],
+            1e-14,
+            1e-13,
+        );
+        assert_laguerre_rule(
+            &[
+                0.2635603197181409,
+                1.4134030591065168,
+                3.596425771040722,
+                7.085810005858837,
+                12.640800844275782,
+            ],
+            &[
+                0.5217556105828086,
+                0.3986668110831759,
+                0.0759424496817076,
+                0.0036117586799220484,
+                2.3369972385776228e-5,
+            ],
+            1e-14,
+            1e-13,
+        );
+        assert_laguerre_rule(
+            &[
+                0.13779347054049243,
+                0.7294545495031705,
+                1.808342901740316,
+                3.4014336978548996,
+                5.552496140063804,
+                8.330152746764497,
+                11.843785837900066,
+                16.279257831378104,
+                21.99658581198076,
+                29.92069701227389,
+            ],
+            &[
+                0.30844111576502015,
+                0.40111992915527356,
+                0.2180682876118094,
+                0.062087456098677746,
+                0.0095015169751811,
+                0.0007530083885875388,
+                2.8259233495995656e-5,
+                4.2493139849626863e-7,
+                1.8395648239796308e-9,
+                9.911827219609008e-13,
+            ],
+            1e-14,
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_laguerre_nodes_are_distinct_sorted_and_weights_positive() {
+        // Newton iteration from the old Tricomi guesses with L_n' = -L_(n-1)
+        // returned [3.60, 7.09, 12.64, 12.64, 12.64] at n = 5 (Σw = 0.08).
+        for n in 1..=60 {
+            let nw = gauss_laguerre_weights(n);
+            assert_eq!(nw.len(), n);
+            for pair in nw.windows(2) {
+                assert!(
+                    pair[1].0 > pair[0].0,
+                    "n={n}: nodes not strictly increasing ({} then {})",
+                    pair[0].0,
+                    pair[1].0
+                );
+            }
+            for (x, w) in &nw {
+                assert!(*x > 0.0 && *x < 4.0 * n as f64, "n={n}: node {x}");
+                assert!(*w > 0.0 && w.is_finite(), "n={n}: weight {w} at x={x}");
+            }
         }
-        // All weights should be positive
-        for (_, w) in &nw {
-            assert!(*w > 0.0, "weights should be positive");
+    }
+
+    #[test]
+    fn test_laguerre_weights_sum_to_one_and_reproduce_the_cubic_moment() {
+        for n in [2_usize, 5, 10, 20] {
+            let nw = gauss_laguerre_weights(n);
+            let sum: f64 = nw.iter().map(|(_, w)| w).sum();
+            assert_rel_close(sum, 1.0, 1e-12, &format!("n={n} Σw"));
+            let cubic: f64 = nw.iter().map(|(x, w)| w * x.powi(3)).sum();
+            assert_rel_close(cubic, 6.0, 1e-12, &format!("n={n} Σw·x³"));
         }
+    }
+
+    #[test]
+    fn test_laguerre_is_exact_up_to_degree_two_n_minus_one() {
+        for n in 1..=30 {
+            let nw = gauss_laguerre_weights(n);
+            for k in 0..2 * n {
+                let moment: f64 = nw.iter().map(|(x, w)| w * x.powi(k as i32)).sum();
+                assert_rel_close(
+                    moment,
+                    laguerre_moment(k),
+                    1e-11,
+                    &format!("n={n} degree {k}"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_laguerre_outer_weights_keep_relative_accuracy() {
+        // Outermost nodes and weights of the 20-point rule (70-digit reference values).
+        let nw = gauss_laguerre_weights(20);
+        let nodes = [
+            (0, 0.07053988969198875),
+            (1, 0.37212681800161146),
+            (17, 47.6199940473465),
+            (18, 55.810795750063896),
+            (19, 66.52441652561575),
+        ];
+        for (i, node) in nodes {
+            assert_rel_close(nw[i].0, node, 1e-14, &format!("x{i}"));
+        }
+        let weights = [
+            (0, 0.16874680185111388),
+            (1, 0.2912543620060683),
+            (17, 1.5395221405823435e-20),
+            (18, 5.286442725569158e-24),
+            (19, 1.6564566124990233e-28),
+        ];
+        for (i, weight) in weights {
+            assert_rel_close(nw[i].1, weight, 1e-12, &format!("w{i}"));
+        }
+    }
+
+    #[test]
+    fn test_laguerre_large_rule_is_finite_and_normalised() {
+        let n = 150;
+        let nw = gauss_laguerre_weights(n);
+        assert_eq!(nw.len(), n);
+        for pair in nw.windows(2) {
+            assert!(pair[1].0 > pair[0].0);
+        }
+        for (x, w) in &nw {
+            assert!(x.is_finite() && w.is_finite() && *w > 0.0, "x={x}, w={w}");
+        }
+        for (k, expected) in [(0_i32, 1.0), (1, 1.0), (2, 2.0)] {
+            let moment: f64 = nw.iter().map(|(x, w)| w * x.powi(k)).sum();
+            assert_rel_close(moment, expected, 1e-11, &format!("Σw·x^{k}"));
+        }
+    }
+
+    #[test]
+    fn test_laguerre_beyond_the_f64_range_stays_finite() {
+        // L_399(x) ~ exp(x / 2) exceeds f64::MAX for the outermost nodes of the
+        // 400-point rule; the unscaled recurrence gives NaN there, the rescaled
+        // one underflows the (true) weights below 1e-308 to zero.
+        let nw = gauss_laguerre_weights(400);
+        assert_eq!(nw.len(), 400);
+        for pair in nw.windows(2) {
+            assert!(pair[1].0 > pair[0].0);
+        }
+        for (x, w) in &nw {
+            assert!(x.is_finite() && w.is_finite() && *w >= 0.0, "x={x}, w={w}");
+        }
+        assert!(nw[0].1 > 0.0);
+        assert_eq!(nw[399].1, 0.0);
+        let sum: f64 = nw.iter().map(|(_, w)| w).sum();
+        assert_rel_close(sum, 1.0, 1e-10, "Σw");
+    }
+
+    #[test]
+    fn test_laguerre_recurrence_stays_finite_for_huge_arguments() {
+        let (value, difference, rescales) = laguerre_recurrence(2000, 1500.0);
+        assert!(value.is_finite() && difference.is_finite());
+        assert!(rescales > 0, "rescales={rescales}");
+        let w = laguerre_weight(2000, 1500.0);
+        assert!(w.is_finite() && w >= 0.0, "w={w}");
+    }
+
+    #[test]
+    fn test_laguerre_integrates_smooth_functions() {
+        let nw = gauss_laguerre_weights(20);
+        // ∫₀^∞ exp(-x) exp(-x/2) dx = 2/3
+        let decay: f64 = nw.iter().map(|(x, w)| w * (-0.5 * x).exp()).sum();
+        assert_rel_close(decay, 2.0 / 3.0, 1e-13, "∫exp(-3x/2)");
+        // ∫₀^∞ exp(-x) cos(x) dx = 1/2
+        let oscillation: f64 = nw.iter().map(|(x, w)| w * x.cos()).sum();
+        assert_rel_close(oscillation, 0.5, 1e-11, "∫exp(-x)cos(x)");
     }
 
     // ── integrate_2d ─────────────────────────────────────────────────────────

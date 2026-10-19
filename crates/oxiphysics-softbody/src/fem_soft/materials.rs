@@ -223,7 +223,14 @@ impl FemSoftBodyRaw {
         }
     }
 
-    /// Perform one explicit Euler time step.
+    /// Perform one explicit (semi-implicit Euler) time step.
+    ///
+    /// Both the elastic and the Kelvin-Voigt force are evaluated at the start of
+    /// the step, so the step is only conditionally stable: for a mode of angular
+    /// frequency `omega` of the elements, with `eta` the
+    /// [`SoftMaterial::damping`] time, `omega^2 (dt^2 + 2 eta dt) < 4` has to
+    /// hold. Without damping this is the usual `dt < 2 / omega`; a large damping
+    /// time lowers the admissible step to about `dt < 2 / (eta omega^2)`.
     pub fn step(&mut self, dt: f64, gravity: [f64; 3]) {
         let n = self.nodes.len();
         let mut forces = vec![[0.0f64; 3]; n];

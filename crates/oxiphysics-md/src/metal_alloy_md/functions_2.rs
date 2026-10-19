@@ -282,29 +282,11 @@ mod tests {
         }
     }
     #[test]
-    fn test_elastic_constants_positive() {
-        let cu = EamParams::copper();
-        let (c11, _c12, c44) = elastic_constants_eam(&cu);
-        assert!(c11.is_finite());
-        assert!(c44.is_finite());
-        assert!(c11 != 0.0, "C11 should be nonzero");
-    }
-    #[test]
     fn test_heat_of_mixing_finite() {
         let cu = EamParams::copper();
         let ni = EamParams::nickel();
         let dh = heat_of_mixing(&cu, &ni, 0.5, 2, MixingRule::Johnson);
         assert!(dh.is_finite(), "heat of mixing should be finite");
-    }
-    #[test]
-    fn test_thermal_expansion_positive() {
-        let cu = EamParams::copper();
-        let alpha = thermal_expansion_coefficient(&cu, 300.0, 600.0, 2);
-        assert!(
-            alpha > 0.0 && alpha.is_finite(),
-            "thermal expansion should be positive finite, got {:.6}",
-            alpha
-        );
     }
     #[test]
     fn test_coordination_numbers() {
@@ -484,6 +466,40 @@ mod tests {
     }
 
     #[test]
+    fn test_eam_dimer_force_at_two_angstrom_matches_central_difference() {
+        // Two Cu atoms 2.0 Å apart: the embedding term dominates the pair term, so a
+        // sign error in either of them shows up directly in the force.
+        let dimer = |x1: f64| {
+            let mut sys = AlloySystem::new(
+                vec![EamParams::copper()],
+                SimBox::cubic(30.0),
+                MixingRule::Geometric,
+                0.001,
+            );
+            sys.add_atom([10.0, 10.0, 10.0], 0);
+            sys.add_atom([x1, 10.0, 10.0], 0);
+            sys
+        };
+        let h = 1.0e-6;
+        let mut sys = dimer(12.0);
+        sys.compute_forces();
+        let analytic = sys.atoms[1].force[0];
+        let numeric =
+            -(dimer(12.0 + h).potential_energy() - dimer(12.0 - h).potential_energy()) / (2.0 * h);
+        assert!(
+            analytic.abs() > 1.0,
+            "force {analytic} eV/Å must be non-trivial"
+        );
+        assert!(
+            ((analytic - numeric) / numeric).abs() < 1.0e-6,
+            "analytic {analytic} vs central difference {numeric}"
+        );
+        // Newton's third law, and no transverse force.
+        assert!((sys.atoms[0].force[0] + analytic).abs() < 1.0e-12);
+        assert!(sys.atoms[1].force[1].abs() < 1.0e-12 && sys.atoms[1].force[2].abs() < 1.0e-12);
+    }
+
+    #[test]
     fn test_eam_forces_match_energy_gradient_across_periodic_boundary() {
         // Corner 11.0 Å inside a 12 Å box: the cluster straddles the boundary.
         let sys = tetrahedron_cluster(
@@ -647,9 +663,9 @@ mod tests {
                 0.5 * (f_start[i][1] + sys.atoms[i].force[1]),
                 0.5 * (f_start[i][2] + sys.atoms[i].force[2]),
             ];
-            for d in 0..3 {
+            for (d, f_component) in f_mean.iter().enumerate() {
                 let expected =
-                    f_mean[d] * sys.dt * EV_PER_ANGSTROM_AMU_TO_ANGSTROM_PER_PS2 / masses[i];
+                    f_component * sys.dt * EV_PER_ANGSTROM_AMU_TO_ANGSTROM_PER_PS2 / masses[i];
                 let got = sys.atoms[i].velocity[d];
                 assert!(
                     (got - expected).abs() <= 1.0e-12 * expected.abs().max(1.0e-3),

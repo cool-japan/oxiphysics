@@ -146,17 +146,21 @@ pub fn rankine_hugoniot_residuals(
 /// This gives p_H as a function of V via parametric elimination.
 ///
 /// Returns the Hugoniot pressure at specific volume V.
+///
+/// Eliminating `U_p` with `η = U_p/U_s = 1 − V/V₀` and `U_s = c₀ + s·U_p` gives
+/// `p_H = ρ₀ c₀² η / (1 − s η)²`; it is 0 for `V ≥ V₀` and `+∞` at and beyond
+/// the Hugoniot pole `s·η ≥ 1`.
 pub fn hugoniot_pressure_volume(rho0: f64, c0: f64, s: f64, v: f64) -> f64 {
     let v0 = 1.0 / rho0;
-    let mu = v0 / v - 1.0;
-    if mu <= 0.0 {
+    let eta = 1.0 - v / v0;
+    if eta <= 0.0 {
         return 0.0;
     }
-    let denom = (1.0 - s * mu).powi(2);
-    if denom.abs() < f64::EPSILON {
-        return 0.0;
+    let denom = 1.0 - s * eta;
+    if denom <= 0.0 {
+        return f64::INFINITY;
     }
-    rho0 * c0 * c0 * mu / denom
+    rho0 * c0 * c0 * eta / (denom * denom)
 }
 /// Statistical EOS uncertainty: bootstrap error estimate for Hugoniot fit.
 ///
@@ -869,6 +873,145 @@ mod tests {
             (p_e - p).abs() < 1e-6,
             "pressure_from_energy at e=0 should match pressure()"
         );
+    }
+    fn mie_gruneisen_presets() -> [MieGruneisenEos; 3] {
+        [
+            MieGruneisenEos::copper(),
+            MieGruneisenEos::aluminum(),
+            MieGruneisenEos::iron(),
+        ]
+    }
+    #[test]
+    fn test_mie_gruneisen_hugoniot_matches_shock_hugoniot() {
+        // p_H(rho(u_p)) must equal rho0 Us Up for the same linear Us-Up relation.
+        for eos in mie_gruneisen_presets() {
+            let shock = ShockHugoniot::new(eos.rho0, eos.c0, eos.s);
+            for u_p in [100.0, 500.0, 1000.0] {
+                let rho = shock.post_shock_density(u_p);
+                let expected = shock.hugoniot_pressure(u_p);
+                let p = eos.hugoniot_pressure(rho);
+                assert!(
+                    (p - expected).abs() <= 1e-9 * expected,
+                    "u_p = {u_p}: p_H = {p} vs rho0 Us Up = {expected}"
+                );
+                let p_v = hugoniot_pressure_volume(eos.rho0, eos.c0, eos.s, 1.0 / rho);
+                assert!(
+                    (p_v - expected).abs() <= 1e-9 * expected,
+                    "u_p = {u_p}: p_H(V) = {p_v} vs rho0 Us Up = {expected}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_mie_gruneisen_hugoniot_pole_is_infinite_not_nan() {
+        // Copper (s = 1.5) has its Hugoniot pole at rho = 3 rho0.
+        let eos = MieGruneisenEos::copper();
+        let beyond = 3.5 * eos.rho0;
+        assert_eq!(eos.hugoniot_pressure(beyond), f64::INFINITY);
+        assert_eq!(eos.pressure_from_energy(beyond, 1.0e6), f64::INFINITY);
+        assert_eq!(
+            hugoniot_pressure_volume(eos.rho0, eos.c0, eos.s, 1.0 / beyond),
+            f64::INFINITY
+        );
+        assert!(!eos.pressure(beyond).is_nan());
+        assert_eq!(eos.sound_speed(beyond), f64::INFINITY);
+        // Just below the pole the pressure is finite and large.
+        assert!(eos.hugoniot_pressure(2.9 * eos.rho0).is_finite());
+    }
+    #[test]
+    fn test_mie_gruneisen_hugoniot_is_zero_at_or_below_reference_density() {
+        for eos in mie_gruneisen_presets() {
+            for density in [-1.0, 0.0, 0.5 * eos.rho0, eos.rho0] {
+                assert_eq!(eos.hugoniot_pressure(density), 0.0, "rho = {density}");
+                assert_eq!(eos.pressure_from_energy(density, 0.0), 0.0);
+            }
+            // Zero-energy pressure above the reference density is positive.
+            assert!(eos.pressure(1.05 * eos.rho0) > 0.0);
+        }
+        assert_eq!(
+            hugoniot_pressure_volume(8930.0, 3933.0, 1.5, 1.0 / 8930.0),
+            0.0
+        );
+    }
+    #[test]
+    fn test_mie_gruneisen_sound_speed_is_c0_at_and_below_reference_density() {
+        for eos in mie_gruneisen_presets() {
+            assert!((eos.sound_speed(eos.rho0) - eos.c0).abs() <= 1e-12 * eos.c0);
+            assert_eq!(eos.sound_speed(0.9 * eos.rho0), eos.c0);
+            // Right-hand slope of the pressure curve at rho0 is c0^2, zero below.
+            let slope = eos.pressure_density_derivative(eos.rho0);
+            assert!((slope - eos.c0 * eos.c0).abs() <= 1e-12 * eos.c0 * eos.c0);
+            assert_eq!(eos.pressure_density_derivative(0.9 * eos.rho0), 0.0);
+        }
+    }
+    #[test]
+    fn test_mie_gruneisen_sound_speed_matches_pressure_slope() {
+        // c^2 = dP/drho of the e = 0 curve, checked away from the kink at rho0.
+        for eos in mie_gruneisen_presets() {
+            for ratio in [1.01, 1.05, 1.1, 1.2, 1.3, 1.5] {
+                let rho = eos.rho0 * ratio;
+                let h = 1.0e-6 * rho;
+                let slope = (eos.pressure(rho + h) - eos.pressure(rho - h)) / (2.0 * h);
+                let c = eos.sound_speed(rho);
+                assert!(
+                    (c * c - slope).abs() <= 1e-6 * slope.abs(),
+                    "rho/rho0 = {ratio}: c^2 = {} vs dP/drho = {slope}",
+                    c * c
+                );
+                assert!((eos.pressure_density_derivative(rho) - slope).abs() <= 1e-6 * slope.abs());
+            }
+        }
+    }
+    #[test]
+    fn test_mie_gruneisen_sound_speed_has_velocity_dimension() {
+        // Copper at 10 % compression: of the order of c0 (about 4.3 km/s), not
+        // the ~2e5 m/s obtained when a pressure was added to c^2.
+        let eos = MieGruneisenEos::copper();
+        let c = eos.sound_speed(1.1 * eos.rho0);
+        assert!(c > eos.c0 && c < 1.3 * eos.c0, "c = {c}");
+        assert!((c - 4290.9).abs() < 1.0, "c = {c}");
+    }
+    #[test]
+    fn test_mie_gruneisen_sound_speed_grows_under_moderate_compression() {
+        for eos in mie_gruneisen_presets() {
+            let mut previous = eos.sound_speed(eos.rho0);
+            for i in 1..=40 {
+                let rho = eos.rho0 * (1.0 + 0.2 * i as f64 / 40.0);
+                let c = eos.sound_speed(rho);
+                assert!(
+                    c.is_finite() && c >= previous,
+                    "rho/rho0 = {}: c = {c} after {previous}",
+                    rho / eos.rho0
+                );
+                previous = c;
+            }
+        }
+    }
+    #[test]
+    fn test_mie_gruneisen_sound_speed_finite_and_non_negative_up_to_1_5_rho0() {
+        // c^2 = dP/drho of the zero-energy curve stays strictly positive up to
+        // 1.5 rho0 (the value is never clamped to 0), but it is not monotone
+        // all the way: the -Gamma0 rho e_H term bends it over (Al peaks near
+        // 1.24 rho0 and Cu near 1.36 rho0), which is why the monotonicity test
+        // above stops at 1.2 rho0.
+        for eos in mie_gruneisen_presets() {
+            for i in 0..=100 {
+                let rho = eos.rho0 * (1.0 + 0.5 * i as f64 / 100.0);
+                let c = eos.sound_speed(rho);
+                assert!(
+                    c.is_finite() && c > 0.5 * eos.c0,
+                    "rho/rho0 = {}: c = {c}",
+                    rho / eos.rho0
+                );
+                let slope = eos.pressure_density_derivative(rho);
+                assert!(
+                    (c * c - slope).abs() <= 1e-9 * slope,
+                    "rho/rho0 = {}: c^2 = {} vs dP/drho = {slope}",
+                    rho / eos.rho0,
+                    c * c
+                );
+            }
+        }
     }
     #[test]
     fn test_stiffened_gas_pressure_increases_with_density() {

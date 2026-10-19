@@ -1248,14 +1248,28 @@ mod tests {
         }
     }
     #[test]
-    fn test_ic0_apply_returns_vector() {
-        let lap = laplacian_1d(5, 1.0 / 6.0);
+    fn test_ic0_apply_solves_the_system_for_a_tridiagonal_matrix() {
+        // IC(0) of a tridiagonal matrix is its exact Cholesky factorization,
+        // so apply() is A^{-1} and A * apply(b) = b.
+        let dx = 1.0 / 6.0;
+        let lap = laplacian_1d(5, dx);
         let ic = IncompleteCholesky::factor(&lap).expect("IC should succeed");
         let b = vec![1.0, 0.0, 0.0, 0.0, 0.0];
         let x = ic.apply(&b);
         assert_eq!(x.len(), 5);
-        let nrm: f64 = x.iter().map(|v| v * v).sum::<f64>().sqrt();
-        assert!(nrm > 0.0, "IC apply should return non-zero vector");
+        let ax = lap.matvec(&x);
+        for (axi, bi) in ax.iter().zip(b.iter()) {
+            assert!((axi - bi).abs() < 1e-10, "A x = {ax:?}, b = {b:?}");
+        }
+        // Discrete Green's function of -d²/dx² with homogeneous Dirichlet ends:
+        // the unit load at node 0 gives x_i = dx² (n - i) / (n + 1).
+        for (i, xi) in x.iter().enumerate() {
+            let expected = dx * dx * (5 - i) as f64 / 6.0;
+            assert!(
+                (xi - expected).abs() < 1e-12,
+                "x[{i}] = {xi}, expected {expected}"
+            );
+        }
     }
     #[test]
     fn test_sparse_qr_least_squares_identity() {

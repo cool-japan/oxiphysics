@@ -106,8 +106,14 @@ pub struct CouplingInterface {
     pub nodes: Vec<CouplingNode>,
     /// Coupling method.
     pub method: CouplingMethod,
-    /// Penalty parameter for direct coupling.
+    /// Penalty parameter of the tie between paired nodes.
     pub penalty: f64,
+    /// Left edge `x_min` of the bridging-domain overlap strip: the blend weight of
+    /// a coupling node at `x` is `(x − x_min)/width` (see
+    /// [`CouplingInterface::compute_bridging_weights`]).  `0.0` for an interface
+    /// made by [`CouplingInterface::new`];
+    /// [`setup_bridging_domain`](super::bridging::setup_bridging_domain) sets it.
+    pub overlap_x_min: f64,
 }
 impl CouplingInterface {
     /// Create a new coupling interface.
@@ -116,15 +122,27 @@ impl CouplingInterface {
             nodes: Vec::new(),
             method,
             penalty,
+            overlap_x_min: 0.0,
         }
     }
     /// Add a coupling node.
     pub fn add_node(&mut self, node: CouplingNode) {
         self.nodes.push(node);
     }
-    /// Compute the coupling constraint matrix for direct coupling.
+    /// Compute the penalty tie of the paired coupling nodes (direct coupling).
     ///
-    /// Returns a penalty contribution to be added to the combined stiffness.
+    /// Returns a `(ndof_meshfree + ndof_fem)²` penalty contribution to be added to
+    /// the combined stiffness (meshfree DOFs first, then FEM DOFs, two per node).
+    /// Every coupling node holding both a meshfree and a finite element index adds
+    /// `p (x_mesh − x_fem)²` per component; unpaired nodes carry no tie.
+    ///
+    /// The tie acts on the *entries of the solution vectors*.  For finite element
+    /// DOFs these are nodal displacements, but the entries of a meshfree (MLS)
+    /// model are shape-function parameters `û_I`, not displacements
+    /// (`u_h(x_I) = Σ_J φ_J(x_I) û_J ≠ û_I`), so for an MLS model this ties the
+    /// wrong quantity.  Use
+    /// [`compute_field_penalty_coupling`](Self::compute_field_penalty_coupling),
+    /// which ties the MLS field itself, for such models.
     pub fn compute_penalty_coupling(&self, ndof_meshfree: usize, ndof_fem: usize) -> Vec<f64> {
         let ndof_total = ndof_meshfree + ndof_fem;
         let mut coupling_k = vec![0.0; ndof_total * ndof_total];
@@ -143,16 +161,6 @@ impl CouplingInterface {
             }
         }
         coupling_k
-    }
-    /// Compute blending weights for the bridging domain method.
-    ///
-    /// In the overlap region, the total energy is partitioned:
-    ///   E_total = w * E_meshfree + (1-w) * E_fem
-    pub fn compute_bridging_weights(&mut self, overlap_width: f64) {
-        for cn in &mut self.nodes {
-            cn.blend_weight = cn.blend_weight.clamp(0.0, 1.0);
-            let _ = overlap_width;
-        }
     }
     /// Number of coupling nodes.
     pub fn num_coupling_nodes(&self) -> usize {
@@ -360,7 +368,9 @@ pub struct CouplingNode {
     pub meshfree_idx: Option<usize>,
     /// FEM node index (if exists).
     pub fem_idx: Option<usize>,
-    /// Weight for blending (0 = pure FEM, 1 = pure meshfree).
+    /// Meshfree share `α` of the strain energy at this node (0 = pure FEM,
+    /// 1 = pure meshfree); the finite element share is `1 − α`.  It is the
+    /// *meshfree* share for every kind of coupling node, FEM-only ones included.
     pub blend_weight: f64,
 }
 /// A triangular background integration cell.

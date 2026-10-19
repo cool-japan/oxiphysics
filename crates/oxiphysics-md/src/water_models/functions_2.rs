@@ -624,6 +624,123 @@ mod tests {
             );
         }
     }
+    /// Euclidean distance between two points.
+    fn tip4p_test_dist(a: [f64; 3], b: [f64; 3]) -> f64 {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    }
+    /// γ must equal r_OM / (2 r_OH cos(θ/2)) ≈ 0.128012 (the GROMACS TIP4P value).
+    #[test]
+    fn tip4p_gamma_matches_published_value() {
+        let tip4p = Tip4p::default_params();
+        let half_angle = 52.26_f64.to_radians();
+        let expected = 0.15 / (2.0 * 0.9572 * half_angle.cos());
+        assert!(
+            (tip4p.gamma - expected).abs() < 1e-14,
+            "gamma = {}, expected {expected}",
+            tip4p.gamma
+        );
+        assert!(
+            (tip4p.gamma - 0.128_012).abs() < 1e-5,
+            "gamma = {} is not the standard TIP4P 0.128012",
+            tip4p.gamma
+        );
+    }
+    /// On the ideal TIP4P geometry the M-site must sit exactly r_OM = 0.15 Å from O
+    /// and coincide with the position produced by `WaterMolecule::update_m_site`.
+    #[test]
+    fn tip4p_m_site_is_015_angstrom_from_oxygen_and_matches_update_m_site() {
+        let tip4p = Tip4p::default_params();
+        let geom = WaterGeometry::tip4p();
+        let mut mol = WaterMolecule::with_geometry([1.25, -0.5, 3.0], &geom);
+        mol.m_site = None;
+        let m = tip4p.m_site_position(mol.oxygen, mol.hydrogen1, mol.hydrogen2);
+        let r_om = tip4p_test_dist(m, mol.oxygen);
+        assert!(
+            (r_om - 0.15).abs() < 1e-9,
+            "|M - O| = {r_om} Å, expected 0.15 Å (old doubled gamma gave 0.30 Å)"
+        );
+        mol.update_m_site(&geom);
+        let reference = mol.m_site.expect("TIP4P geometry has an M-site");
+        for k in 0..3 {
+            assert!(
+                (m[k] - reference[k]).abs() < 1e-9,
+                "component {k}: m_site_position = {}, update_m_site = {}",
+                m[k],
+                reference[k]
+            );
+        }
+    }
+    /// The M-site distance must not depend on the molecular orientation.
+    #[test]
+    fn tip4p_m_site_distance_is_rotation_invariant() {
+        let tip4p = Tip4p::default_params();
+        let geom = WaterGeometry::tip4p();
+        let mol = WaterMolecule::with_geometry([0.0; 3], &geom);
+        // Rotate 37° about the z axis then 61° about the x axis.
+        let (a, b) = (37.0_f64.to_radians(), 61.0_f64.to_radians());
+        let rotate = |p: [f64; 3]| -> [f64; 3] {
+            let rz = [
+                a.cos() * p[0] - a.sin() * p[1],
+                a.sin() * p[0] + a.cos() * p[1],
+                p[2],
+            ];
+            [
+                rz[0],
+                b.cos() * rz[1] - b.sin() * rz[2],
+                b.sin() * rz[1] + b.cos() * rz[2],
+            ]
+        };
+        let (o, h1, h2) = (
+            rotate(mol.oxygen),
+            rotate(mol.hydrogen1),
+            rotate(mol.hydrogen2),
+        );
+        let m = tip4p.m_site_position(o, h1, h2);
+        let r_om = tip4p_test_dist(m, o);
+        assert!((r_om - 0.15).abs() < 1e-9, "|M - O| = {r_om}");
+    }
+    /// The (1 - 2γ, γ, γ) redistribution must preserve both the total force and the
+    /// torque of the M-site force about the origin: Σ r_i × ΔF_i = r_M × F_M.
+    #[test]
+    fn tip4p_force_redistribution_preserves_force_and_torque() {
+        let tip4p = Tip4p::default_params();
+        let geom = WaterGeometry::tip4p();
+        let mol = WaterMolecule::with_geometry([2.0, -1.0, 0.5], &geom);
+        let f_m = [0.7_f64, -1.3, 2.1];
+        let (df_o, df_h1, df_h2) = tip4p.compute_virtual_site_force_redistribution(f_m);
+        for k in 0..3 {
+            assert!(
+                (df_o[k] + df_h1[k] + df_h2[k] - f_m[k]).abs() < 1e-14,
+                "force not conserved on axis {k}"
+            );
+        }
+        let cross = |r: [f64; 3], f: [f64; 3]| -> [f64; 3] {
+            [
+                r[1] * f[2] - r[2] * f[1],
+                r[2] * f[0] - r[0] * f[2],
+                r[0] * f[1] - r[1] * f[0],
+            ]
+        };
+        let m = tip4p.m_site_position(mol.oxygen, mol.hydrogen1, mol.hydrogen2);
+        let torque_m = cross(m, f_m);
+        let (t_o, t_h1, t_h2) = (
+            cross(mol.oxygen, df_o),
+            cross(mol.hydrogen1, df_h1),
+            cross(mol.hydrogen2, df_h2),
+        );
+        for k in 0..3 {
+            let total = t_o[k] + t_h1[k] + t_h2[k];
+            assert!(
+                (total - torque_m[k]).abs() < 1e-12,
+                "torque axis {k}: redistributed {total}, M-site {}",
+                torque_m[k]
+            );
+        }
+        // Weights: (1 - 2γ) on O, γ on each hydrogen, with γ ≈ 0.128 (not 0.256).
+        assert!((df_h1[0] - tip4p.gamma * f_m[0]).abs() < 1e-15);
+        assert!((df_o[0] - (1.0 - 2.0 * tip4p.gamma) * f_m[0]).abs() < 1e-15);
+        assert!(tip4p.gamma < 0.13 && tip4p.gamma > 0.12);
+    }
     #[test]
     fn spc_angle_energy_zero_at_equilibrium() {
         let spc = Spc::new();

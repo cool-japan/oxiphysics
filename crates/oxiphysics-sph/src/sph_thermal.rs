@@ -5,9 +5,15 @@
 //!
 //! Implements:
 //! - [`ThermalParticle`] struct with temperature, thermal conductivity, specific heat
-//! - [`compute_heat_flux`] – SPH discretisation of the heat equation (Brookshaw operator)
-//! - [`phase_change`] – latent-heat enthalpy method for melting/solidification
-//! - [`thermal_conduction_step`] – explicit Euler time integration
+//! - [`compute_heat_flux`] – SPH discretisation of the heat equation (Cleary–Monaghan /
+//!   Brookshaw conduction operator)
+//! - [`phase_change`] – synchronise the liquid fraction and the specific enthalpy with a
+//!   particle's temperature (it does not change the temperature itself)
+//! - [`thermal_conduction_step`] – explicit Euler time integration of the sensible heat
+//! - [`thermal_conduction_step_with_phase`] / [`integrate_enthalpy`] – explicit conduction
+//!   step with the enthalpy method: the conducted heat is added to the specific enthalpy
+//!   `e(T) = c_p T + f L`, which is then inverted for the temperature and the liquid
+//!   fraction `f`, so latent heat holds the temperature inside the mushy zone
 //! - [`nucleation`] – nucleation-site probability model
 //! - [`solidification_front`] – Stefan problem front velocity
 
@@ -96,11 +102,15 @@ pub struct ThermalParticle {
     pub thermal_conductivity: f64,
     /// Specific heat at constant pressure c_p (J/(kg·K)).
     pub specific_heat: f64,
-    /// Rate of temperature change dT/dt (K/s) — updated each step.
+    /// Rate of temperature change dT/dt (K/s) caused by conduction, i.e. the
+    /// sensible-heat rate `c_p dT/dt = (1/ρ) ∇·(λ∇T)` — updated by
+    /// [`compute_heat_flux`] each step.
     pub d_temperature: f64,
-    /// Phase indicator: 0.0 = fully solid, 1.0 = fully liquid.
+    /// Phase indicator (liquid fraction): 0.0 = fully solid, 1.0 = fully liquid.
     pub phase: f64,
-    /// Internal energy per unit mass (J/kg).
+    /// Specific enthalpy per unit mass (J/kg).  [`ThermalParticle::new`] stores
+    /// the sensible part `c_p T`; [`phase_change`] and
+    /// [`thermal_conduction_step_with_phase`] store `c_p T + f L`.
     pub internal_energy: f64,
 }
 
@@ -146,11 +156,18 @@ impl ThermalParticle {
 
 /// Compute the SPH heat-equation source term dT/dt for all particles.
 ///
-/// Uses the Brookshaw (1985) first-derivative SPH discretisation:
+/// Uses the Cleary–Monaghan (1999) conduction operator, which is the Brookshaw
+/// (1985) discretisation of `∇·(λ∇T)` with the harmonic-mean pair conductivity:
 ///
 /// ```text
-/// dTᵢ/dt = Σⱼ mⱼ/ρⱼ · 4 λᵢ λⱼ/(λᵢ+λⱼ) · (Tᵢ−Tⱼ)/(|rᵢⱼ|²+ε) · ∂W/∂r
+/// ρᵢ c_pᵢ dTᵢ/dt = Σⱼ (mⱼ/ρⱼ) · 4 λᵢ λⱼ/(λᵢ+λⱼ) · (Tᵢ−Tⱼ) (rᵢⱼ·∇ᵢWᵢⱼ) / (|rᵢⱼ|²+ε)
 /// ```
+///
+/// with `rᵢⱼ = xᵢ − xⱼ`, `rᵢⱼ·∇ᵢWᵢⱼ = |rᵢⱼ| ∂W/∂r` (negative for a decreasing
+/// kernel, so heat flows from hot to cold), pair smoothing length
+/// `hᵢⱼ = (hᵢ+hⱼ)/2` and `ε = 10⁻⁴ hᵢⱼ²`.  For a uniform conductivity the
+/// harmonic mean `4λ²/(2λ)` equals `2λ`, so the sum is exactly the Brookshaw
+/// form `λ ∇²T`; the pair terms are antisymmetric, so `Σ mᵢ c_pᵢ dTᵢ/dt = 0`.
 ///
 /// Results are written into `particle.d_temperature` for each particle.
 ///
@@ -172,7 +189,7 @@ pub fn compute_heat_flux(particles: &mut [ThermalParticle]) {
     for i in 0..n {
         let mut sum = 0.0f64;
         for j in 0..n {
-            if i == j {
+            if i == j || rho[j] <= 0.0 {
                 continue;
             }
             let rij = sub3(pos[i], pos[j]);
@@ -188,12 +205,14 @@ pub fn compute_heat_flux(particles: &mut [ThermalParticle]) {
                 0.0
             };
             let eps = 1e-4 * h_avg * h_avg;
-            let contrib = mass[j] / rho[j] * lam_ij * (temp[i] - temp[j]) / (r * r + eps) * dw_dr;
+            // r_ij · ∇_i W_ij = r ∂W/∂r
+            let contrib =
+                mass[j] / rho[j] * lam_ij * (temp[i] - temp[j]) * r * dw_dr / (r * r + eps);
             sum += contrib;
         }
-        // dT/dt = (1/c_p) * Σ ...  (divide by ρᵢ c_pᵢ after)
+        // c_p ρ dT/dt = Σ ...
         d_temp[i] = if cp[i] * rho[i] > 0.0 {
-            2.0 * sum / (cp[i] * rho[i])
+            sum / (cp[i] * rho[i])
         } else {
             0.0
         };
@@ -240,30 +259,183 @@ impl PhaseChangeMaterial {
             liquidus_temperature: 937.0,
         }
     }
+
+    /// Width `T_liquidus − T_solidus` of the mushy zone (K); zero for a material
+    /// that melts at a single temperature (or a malformed, inverted zone).
+    pub fn mushy_zone_width(&self) -> f64 {
+        (self.liquidus_temperature - self.solidus_temperature).max(0.0)
+    }
+
+    /// Liquid fraction `f(T)` of the material: 0 below the solidus, 1 above the
+    /// liquidus and linear in between.
+    ///
+    /// A material with a zero-width mushy zone melts isothermally: `f` is a step
+    /// at the solidus temperature, and exactly at that temperature the fraction
+    /// is not determined by `T` alone (`0.5` is returned here; the particle
+    /// routines use the particle's own liquid fraction instead).
+    pub fn liquid_fraction(&self, temperature: f64) -> f64 {
+        self.liquid_fraction_with_state(temperature, 0.5)
+    }
+
+    /// Liquid fraction at `temperature`; `stored` is only consulted for the
+    /// isothermal case at exactly the melting temperature, where the fraction is
+    /// a free state variable of the particle.
+    fn liquid_fraction_with_state(&self, temperature: f64, stored: f64) -> f64 {
+        let ts = self.solidus_temperature;
+        let width = self.mushy_zone_width();
+        if width > 0.0 {
+            if temperature <= ts {
+                0.0
+            } else if temperature >= self.liquidus_temperature {
+                1.0
+            } else {
+                (temperature - ts) / width
+            }
+        } else if temperature < ts {
+            0.0
+        } else if temperature > ts {
+            1.0
+        } else {
+            stored.clamp(0.0, 1.0)
+        }
+    }
+
+    /// Specific enthalpy `e = c_p T + f L` (J/kg) of a particle with specific heat
+    /// `specific_heat`, temperature `temperature` and liquid fraction `liquid_fraction`.
+    pub fn specific_enthalpy(
+        &self,
+        specific_heat: f64,
+        temperature: f64,
+        liquid_fraction: f64,
+    ) -> f64 {
+        specific_heat * temperature + liquid_fraction * self.latent_heat
+    }
+
+    /// Invert the enthalpy relation: the temperature (K) and liquid fraction that
+    /// belong to the specific enthalpy `enthalpy` (J/kg) of a material with
+    /// specific heat `specific_heat` (J/(kg·K)).
+    ///
+    /// With `ΔT = T_liquidus − T_solidus`:
+    /// * `e ≤ c_p T_s` (solid): `T = e/c_p`, `f = 0`;
+    /// * `e ≥ c_p T_l + L` (liquid): `T = (e − L)/c_p`, `f = 1`;
+    /// * otherwise (mushy zone): `T = (e + L T_s/ΔT)/(c_p + L/ΔT)` and
+    ///   `f = (T − T_s)/ΔT`.  For `ΔT = 0` the temperature stays at `T_s` and
+    ///   `f = (e − c_p T_s)/L`.
+    ///
+    /// The map `T ↦ e` is strictly increasing for `c_p > 0`, so this is its exact inverse.
+    pub fn temperature_and_fraction(&self, specific_heat: f64, enthalpy: f64) -> (f64, f64) {
+        let ts = self.solidus_temperature;
+        let latent = self.latent_heat;
+        let width = self.mushy_zone_width();
+        let e_solid = specific_heat * ts;
+        let e_liquid = specific_heat * (ts + width) + latent;
+        if enthalpy <= e_solid {
+            (enthalpy / specific_heat, 0.0)
+        } else if enthalpy >= e_liquid {
+            ((enthalpy - latent) / specific_heat, 1.0)
+        } else if width > 0.0 {
+            let t = (enthalpy + latent * ts / width) / (specific_heat + latent / width);
+            (t, ((t - ts) / width).clamp(0.0, 1.0))
+        } else {
+            (ts, ((enthalpy - e_solid) / latent).clamp(0.0, 1.0))
+        }
+    }
 }
 
-/// Apply the enthalpy-based phase-change model to a single particle.
+/// Synchronise a particle's liquid fraction and specific enthalpy with its temperature.
 ///
-/// Updates `particle.phase` (liquid fraction) based on temperature and the
-/// mushy-zone linear interpolation between solidus and liquidus.
+/// Sets `particle.phase` to the liquid fraction `f(T)` of the mushy-zone model
+/// (see [`PhaseChangeMaterial::liquid_fraction`]) and `particle.internal_energy`
+/// to the specific enthalpy `c_p T + f L`.  The temperature itself is **not**
+/// modified: this call is a diagnostic/initialisation step that puts a particle
+/// into a state consistent with the enthalpy method.  Latent heat only enters the
+/// temperature evolution through [`thermal_conduction_step_with_phase`] (or
+/// [`integrate_enthalpy`]), which advance the enthalpy and invert it for `T`.
+///
+/// For a material that melts at a single temperature the liquid fraction of a
+/// particle sitting exactly at that temperature is a free state variable and is
+/// kept (clamped to `[0, 1]`).
 ///
 /// # Arguments
 /// * `particle` – mutable reference to the thermal particle
 /// * `material` – phase-change material parameters
 pub fn phase_change(particle: &mut ThermalParticle, material: &PhaseChangeMaterial) {
-    let t = particle.temperature;
-    let ts = material.solidus_temperature;
-    let tl = material.liquidus_temperature;
-    particle.phase = if t <= ts {
-        0.0
-    } else if t >= tl {
-        1.0
-    } else {
-        (t - ts) / (tl - ts)
-    };
-    // Correct temperature in the mushy zone: absorb/release latent heat
-    // by adjusting internal energy instead.
-    particle.internal_energy = particle.specific_heat * t + particle.phase * material.latent_heat;
+    particle.phase = material.liquid_fraction_with_state(particle.temperature, particle.phase);
+    particle.internal_energy =
+        material.specific_enthalpy(particle.specific_heat, particle.temperature, particle.phase);
+}
+
+/// Advance the specific enthalpy of every particle by its current conduction
+/// rate and recover the temperature and liquid fraction (enthalpy method).
+///
+/// For each particle the enthalpy is rebuilt from its present temperature and
+/// liquid fraction, `e = c_p T + f L`, advanced with the conduction rate stored in
+/// `d_temperature` (`e ← e + c_p dT/dt · dt`, the rate is the *sensible-heat* rate
+/// that [`compute_heat_flux`] writes) and inverted with
+/// [`PhaseChangeMaterial::temperature_and_fraction`].  While a particle is inside
+/// the mushy zone the supplied heat therefore melts (or, when removed, freezes)
+/// material instead of changing the temperature: the plateau lasts
+/// `(c_p ΔT + L)/(c_p |dT/dt|)` seconds.
+///
+/// `particle.internal_energy` is updated with the new enthalpy.  Particles with a
+/// non-positive specific heat are left untouched, and the temperature is clamped
+/// at absolute zero as in [`thermal_conduction_step`].
+///
+/// # Arguments
+/// * `particles` – mutable slice of all thermal particles
+/// * `dt`        – time step (s)
+/// * `material`  – phase-change material parameters
+pub fn integrate_enthalpy(
+    particles: &mut [ThermalParticle],
+    dt: f64,
+    material: &PhaseChangeMaterial,
+) {
+    for p in particles.iter_mut() {
+        let cp = p.specific_heat;
+        if !cp.is_finite() || cp <= 0.0 {
+            continue;
+        }
+        let fraction = material.liquid_fraction_with_state(p.temperature, p.phase);
+        let enthalpy =
+            material.specific_enthalpy(cp, p.temperature, fraction) + cp * p.d_temperature * dt;
+        if !enthalpy.is_finite() {
+            continue;
+        }
+        let (mut temperature, fraction) = material.temperature_and_fraction(cp, enthalpy);
+        let mut enthalpy = enthalpy;
+        if temperature < 0.0 {
+            temperature = 0.0;
+            enthalpy = material.specific_enthalpy(cp, 0.0, fraction);
+        }
+        p.temperature = temperature;
+        p.phase = fraction;
+        p.internal_energy = enthalpy;
+    }
+}
+
+/// Advance all particles by one explicit conduction step **with latent heat**.
+///
+/// Calls [`compute_heat_flux`] and then [`integrate_enthalpy`]: the conducted heat
+/// is added to the specific enthalpy `e = c_p T + f L` and the temperature and
+/// liquid fraction are recovered from it, so the temperature of a melting or
+/// freezing particle stays inside `[T_solidus, T_liquidus]` until the latent heat
+/// has been absorbed or released.  The total enthalpy `Σ mᵢ eᵢ` is conserved.
+///
+/// The particles should carry a state consistent with the material (use
+/// [`phase_change`] once after setting the temperatures); the enthalpy is always
+/// rebuilt from the temperature, so a stale `internal_energy` cannot corrupt the step.
+///
+/// # Arguments
+/// * `particles` – mutable slice of all thermal particles
+/// * `dt`        – time step (s)
+/// * `material`  – phase-change material parameters
+pub fn thermal_conduction_step_with_phase(
+    particles: &mut [ThermalParticle],
+    dt: f64,
+    material: &PhaseChangeMaterial,
+) {
+    compute_heat_flux(particles);
+    integrate_enthalpy(particles, dt, material);
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +444,9 @@ pub fn phase_change(particle: &mut ThermalParticle, material: &PhaseChangeMateri
 
 /// Advance temperatures of all particles by one explicit Euler step.
 ///
-/// Calls [`compute_heat_flux`] first, then integrates T += dT/dt · dt.
+/// Calls [`compute_heat_flux`] first, then integrates T += dT/dt · dt.  Only the
+/// sensible heat is modelled; use [`thermal_conduction_step_with_phase`] when
+/// melting or solidification has to absorb or release latent heat.
 ///
 /// # Arguments
 /// * `particles` – mutable slice of all thermal particles
@@ -369,6 +543,9 @@ pub fn solidification_front(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod conduction_tests;
 
 #[cfg(test)]
 mod tests {

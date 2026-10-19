@@ -40,7 +40,11 @@ impl<A: Sdf, B: Sdf> SdfSmoothUnion<A, B> {
 }
 /// SDF for a hexagonal prism aligned with the Y axis.
 ///
-/// `radius` is the circumscribed circle radius; `half_height` is along Y.
+/// `radius` is the circumscribed circle radius; `half_height` is along Y.  The
+/// regular hexagonal cross-section lies in the XZ plane with two vertices on the X
+/// axis at `(+-radius, 0)`, so two of its sides are the flat faces
+/// `z = +-radius * sqrt(3) / 2`.  The distance is exact, negative inside and
+/// positive outside.
 #[derive(Debug, Clone, Copy)]
 pub struct SdfHexagonalPrism {
     /// Circumscribed radius of the hexagonal cross-section \[m\].
@@ -386,9 +390,13 @@ impl<A: Sdf, B: Sdf> SdfUnion<A, B> {
         Self { a, b }
     }
 }
-/// SDF for a finite cone with apex at origin pointing along +Y.
+/// SDF for a finite cone with its apex at the origin and its axis along +Y.
 ///
-/// `half_angle` is the half-apex angle in radians; `height` is the cone height.
+/// The cone fills `0 <= y <= height`; its base is the disc at `y = height` with
+/// radius `height * tan(half_angle)`.  `half_angle` is the half-apex angle in
+/// radians, measured between the axis and the slant surface, and must lie in
+/// `(0, pi / 2)`; `height` is the cone height.  The distance is exact, negative
+/// inside and positive outside.
 #[derive(Debug, Clone, Copy)]
 pub struct SdfCone {
     /// Half-apex angle \[rad\].
@@ -428,7 +436,8 @@ pub struct IsoMeshResult {
 }
 /// SDF for a square-base pyramid with apex at `(0, height, 0)`.
 ///
-/// Base is centred at origin in the XZ plane with half-side `half_base`.
+/// Base is centred at origin in the XZ plane with half-side `half_base`.  The
+/// distance is exact, negative inside and positive outside.
 #[derive(Debug, Clone, Copy)]
 pub struct SdfPyramid {
     /// Half-side of the square base \[m\].
@@ -567,7 +576,9 @@ impl SdfNode {
 }
 /// SDF for a triangular prism (equilateral cross-section) aligned with Y axis.
 ///
-/// `side` is the equilateral triangle side length; `half_height` is along Y.
+/// `side` is the equilateral triangle side length; `half_height` is along Y.  The
+/// cross-section lies in the XZ plane with its centroid on the Y axis and its apex
+/// towards +Z; the distance is exact, negative inside and positive outside.
 #[derive(Debug, Clone, Copy)]
 pub struct SdfTriangularPrism {
     /// Triangle side length \[m\].

@@ -8,13 +8,24 @@
 //! - Solid domain: finite-difference heat diffusion
 //! - Interface: temperature and flux continuity conditions
 //!
+//! The interface between a fluid node `F` and a solid node `S` lies half-way between the two
+//! node centres. Flux continuity `k_f (T_F − T_i) = k_s (T_i − T_S)` fixes the interface
+//! temperature `T_i = (k_f T_F + k_s T_S) / (k_f + k_s)`, which acts as a Dirichlet value for both
+//! sides: an anti-bounce-back link for the fluid temperature populations and a ghost value
+//! `2 T_i − T_S` in the finite-difference stencil of the solid node. The node temperatures
+//! themselves are never overwritten, so the interface flux
+//! `q = 2 k_f k_s (T_S − T_F) / ((k_f + k_s) Δx)` is non-zero whenever the two sides differ and
+//! a steady state satisfies `k_f ∇T_f = k_s ∇T_s`. Fluid–solid links without a registered
+//! interface are adiabatic; the fluid flow bounces back from every solid link.
+//!
 //! Key references:
 //! - Wang, J., et al. (2007). A lattice Boltzmann algorithm for fluid-solid
 //!   conjugate heat transfer. *Int. J. Therm. Sci.* 46, 228–234.
 //! - Karani, H., & Huber, C. (2015). Lattice Boltzmann formulation for
 //!   conjugate heat transfer in heterogeneous media. *Phys. Rev. E* 91, 023304.
 
-use crate::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS};
+use crate::error::{Error, Result};
+use crate::lattice::{D2Q9_OPPOSITES, D2Q9_VELOCITIES, D2Q9_WEIGHTS};
 
 /// Speed of sound squared (cs² = 1/3).
 const CS2: f64 = 1.0 / 3.0;
@@ -86,13 +97,16 @@ impl SolidRegion {
 ///
 /// At the interface the temperature continuity condition T_f = T_s and the
 /// heat-flux continuity condition k_f (∂T/∂n)_f = k_s (∂T/∂n)_s are enforced.
+/// The interface is located half-way between the fluid node and the solid node, which must be
+/// axis-adjacent lattice neighbours (the link direction is derived from the two node indices).
 #[derive(Debug, Clone)]
 pub struct FluidSolidInterface {
     /// Flat index of the fluid-side node.
     pub fluid_index: usize,
     /// Flat index of the solid-side node.
     pub solid_index: usize,
-    /// Outward unit normal from fluid to solid `[nx, ny]`.
+    /// Outward unit normal from fluid to solid `[nx, ny]` (informational; the solver derives the
+    /// link direction from the node indices).
     pub normal: [f64; 2],
     /// Thermal conductivity of the fluid side (W/m·K).
     pub k_fluid: f64,
@@ -121,7 +135,9 @@ impl FluidSolidInterface {
         }
     }
 
-    /// Compute interface temperature from a harmonic mean conductivity weighting:
+    /// Compute the interface temperature from the node temperatures with the
+    /// conductivity-weighted mean that balances the fluxes of an interface half-way between
+    /// the nodes, `k_f (T_f − T_i) = k_s (T_i − T_s)`:
     ///
     /// ```text
     /// T_int = (k_f * T_f + k_s * T_s) / (k_f + k_s)
@@ -134,6 +150,20 @@ impl FluidSolidInterface {
     /// Heat flux continuity residual (should be zero at convergence).
     pub fn flux_residual(&self, grad_t_fluid: f64, grad_t_solid: f64) -> f64 {
         self.k_fluid * grad_t_fluid - self.k_solid * grad_t_solid
+    }
+
+    /// Heat flux through the interface (W/m²) for the node temperatures `t_fluid` and
+    /// `t_solid` at node spacing `dx`, positive when heat flows from the solid into the fluid.
+    ///
+    /// Both half-cells carry the same flux,
+    /// `k_f (T_i − T_f) / (Δx/2) = k_s (T_s − T_i) / (Δx/2)`, which gives
+    ///
+    /// ```text
+    /// q = 2 k_f k_s (T_s − T_f) / ((k_f + k_s) Δx)
+    /// ```
+    pub fn heat_flux(&self, t_fluid: f64, t_solid: f64, dx: f64) -> f64 {
+        2.0 * self.k_fluid * self.k_solid * (t_solid - t_fluid)
+            / ((self.k_fluid + self.k_solid) * dx)
     }
 }
 
@@ -341,10 +371,23 @@ impl DoubleDistribution {
         w * temp * (1.0 + eu / CS2)
     }
 
-    /// BGK collision for both fluid and temperature populations.
+    /// BGK collision for both fluid and temperature populations on every node.
     pub fn collide(&mut self) {
+        self.collide_nodes(|_| true);
+    }
+
+    /// BGK collision on the fluid nodes (`is_fluid[k] == true`) only; the populations of solid
+    /// nodes are left untouched. Nodes beyond the end of `is_fluid` count as solid.
+    pub fn collide_masked(&mut self, is_fluid: &[bool]) {
+        self.collide_nodes(|k| is_fluid.get(k).copied().unwrap_or(false));
+    }
+
+    fn collide_nodes<P: Fn(usize) -> bool>(&mut self, is_active: P) {
         let n = self.nx * self.ny;
         for k in 0..n {
+            if !is_active(k) {
+                continue;
+            }
             let rho = self.rho[k];
             let u = self.u[k];
             let t = self.temperature[k];
@@ -359,30 +402,69 @@ impl DoubleDistribution {
         }
     }
 
-    /// Streaming step with periodic boundaries for both populations.
+    /// Streaming step with periodic boundaries for both populations on every node.
     pub fn stream(&mut self) {
+        self.stream_nodes(|_| true, &[]);
+    }
+
+    /// Streaming step on the fluid nodes with solid links (`is_fluid[k] == false` neighbours).
+    ///
+    /// A population that would stream from a fluid node into a solid node is reflected back
+    /// into the fluid node with the reversed direction (half-way bounce-back), so no mass or
+    /// heat is exchanged with the solid by the lattice itself and the flow sees a no-slip wall.
+    /// For the temperature populations `wall_temperature[k][i] = Some(T_w)` turns the link of
+    /// fluid node `k` in D2Q5 direction `i` into a Dirichlet wall of temperature `T_w`
+    /// (anti-bounce-back `h_ī = −h*_i + 2 w_i T_w`); `None` keeps the plain bounce-back, i.e. an
+    /// adiabatic wall. The populations of solid nodes are left untouched. Nodes beyond the end
+    /// of `is_fluid` count as solid.
+    pub fn stream_masked(&mut self, is_fluid: &[bool], wall_temperature: &[[Option<f64>; 5]]) {
+        self.stream_nodes(
+            |k| is_fluid.get(k).copied().unwrap_or(false),
+            wall_temperature,
+        );
+    }
+
+    fn stream_nodes<P: Fn(usize) -> bool>(
+        &mut self,
+        is_active: P,
+        wall_temperature: &[[Option<f64>; 5]],
+    ) {
         let nx = self.nx;
         let ny = self.ny;
-        let n = nx * ny;
-        let mut f_new = vec![[0.0_f64; 9]; n];
-        let mut h_new = vec![[0.0_f64; 5]; n];
+        let mut f_new = self.f.clone();
+        let mut h_new = self.h.clone();
 
         for y in 0..ny {
             for x in 0..nx {
                 let k_src = self.idx(x, y);
+                if !is_active(k_src) {
+                    continue;
+                }
                 for i in 0..9 {
                     let c = D2Q9_VELOCITIES[i];
                     let xd = ((x as isize + c[0] as isize).rem_euclid(nx as isize)) as usize;
                     let yd = ((y as isize + c[1] as isize).rem_euclid(ny as isize)) as usize;
                     let k_dst = self.idx(xd, yd);
-                    f_new[k_dst][i] = self.f[k_src][i];
+                    if is_active(k_dst) {
+                        f_new[k_dst][i] = self.f[k_src][i];
+                    } else {
+                        f_new[k_src][D2Q9_OPPOSITES[i]] = self.f[k_src][i];
+                    }
                 }
                 for i in 0..5 {
                     let c = D2Q5_VELOCITIES[i];
                     let xd = ((x as isize + c[0] as isize).rem_euclid(nx as isize)) as usize;
                     let yd = ((y as isize + c[1] as isize).rem_euclid(ny as isize)) as usize;
                     let k_dst = self.idx(xd, yd);
-                    h_new[k_dst][i] = self.h[k_src][i];
+                    if is_active(k_dst) {
+                        h_new[k_dst][i] = self.h[k_src][i];
+                    } else {
+                        let wall = wall_temperature.get(k_src).and_then(|links| links[i]);
+                        h_new[k_src][D2Q5_OPPOSITES[i]] = match wall {
+                            Some(t_wall) => -self.h[k_src][i] + 2.0 * D2Q5_WEIGHTS[i] * t_wall,
+                            None => self.h[k_src][i],
+                        };
+                    }
                 }
             }
         }
@@ -390,10 +472,22 @@ impl DoubleDistribution {
         self.h = h_new;
     }
 
-    /// Compute macroscopic fields from moments.
+    /// Compute macroscopic fields from moments on every node.
     pub fn compute_macroscopic(&mut self) {
+        self.macroscopic_nodes(|_| true);
+    }
+
+    /// Compute the macroscopic fields of the fluid nodes only; solid nodes keep their values.
+    pub fn compute_macroscopic_masked(&mut self, is_fluid: &[bool]) {
+        self.macroscopic_nodes(|k| is_fluid.get(k).copied().unwrap_or(false));
+    }
+
+    fn macroscopic_nodes<P: Fn(usize) -> bool>(&mut self, is_active: P) {
         let n = self.nx * self.ny;
         for k in 0..n {
+            if !is_active(k) {
+                continue;
+            }
             let rho: f64 = self.f[k].iter().sum();
             let mut ux = 0.0_f64;
             let mut uy = 0.0_f64;
@@ -741,9 +835,20 @@ impl ConjugateResult {
 
 /// Full conjugate heat transfer solver using a dual grid.
 ///
-/// - Fluid domain: D2Q9 for velocity + D2Q5 for temperature (LBM).
-/// - Solid domain: explicit finite-difference diffusion on the same grid.
-/// - Interface nodes track temperature and enforce flux continuity.
+/// - Fluid domain: D2Q9 for velocity + D2Q5 for temperature (LBM) on the fluid nodes only;
+///   every fluid–solid link bounces the flow back (no slip) and reflects the temperature
+///   populations (adiabatic, or Dirichlet at the interface temperature where an interface is
+///   registered).
+/// - Solid domain: explicit finite-difference diffusion on the same grid. The outermost ring of
+///   grid nodes is never updated and acts as a fixed-temperature (Dirichlet) boundary at its
+///   initial value.
+/// - Interface nodes track temperature and enforce flux continuity (see the module
+///   documentation); the node temperatures are not overwritten.
+///
+/// The solid temperature field uses the physical `dx`/`dt` of the solver, the fluid lattice
+/// works in lattice units; for a consistent setup express the solid properties in lattice
+/// units too (`dx = dt = 1`) and use `k_fluid = ρ c_p α_f` with `α_f = (τ_t − ½)/3` for the
+/// fluid conductivity of the interfaces.
 #[derive(Debug, Clone)]
 pub struct ConjugateHeatSolver {
     /// Double-distribution LBM state.
@@ -766,10 +871,35 @@ pub struct ConjugateHeatSolver {
     pub step: u64,
 }
 
+/// Largest explicit-diffusion number `α Δt / Δx²` of the 5-point solid stencil in 2-D.
+const MAX_SOLID_DIFFUSION_NUMBER: f64 = 0.25;
+
+/// D2Q5 direction from node `from` to its axis-adjacent (periodic) neighbour `to`, if any.
+fn link_direction(nx: usize, ny: usize, from: usize, to: usize) -> Option<usize> {
+    if nx == 0 || ny == 0 || from >= nx * ny || to >= nx * ny {
+        return None;
+    }
+    let (x, y) = (from % nx, from / nx);
+    for (direction, c) in D2Q5_VELOCITIES.iter().enumerate().skip(1) {
+        let xn = ((x as isize + c[0] as isize).rem_euclid(nx as isize)) as usize;
+        let yn = ((y as isize + c[1] as isize).rem_euclid(ny as isize)) as usize;
+        if yn * nx + xn == to {
+            return Some(direction);
+        }
+    }
+    None
+}
+
 impl ConjugateHeatSolver {
     /// Create a new conjugate heat solver.
     ///
     /// `is_fluid[k] = true` marks fluid nodes; solid nodes use finite-difference diffusion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the grid is empty, `is_fluid` does not hold `nx * ny` flags, `tau`
+    /// or `tau_t` is not above ½, `dx` or `dt` is not positive and finite, or the explicit solid
+    /// diffusion number `α_s Δt / Δx²` exceeds ¼ (the stability limit of the 5-point stencil).
     pub fn new(
         nx: usize,
         ny: usize,
@@ -781,11 +911,29 @@ impl ConjugateHeatSolver {
         solid: SolidRegion,
         dx: f64,
         dt: f64,
-    ) -> Self {
-        assert_eq!(is_fluid.len(), nx * ny, "is_fluid must have nx*ny entries");
+    ) -> Result<Self> {
+        Error::check_grid(nx, ny)?;
+        Error::check_tau(tau)?;
+        Error::check_tau(tau_t)?;
+        if is_fluid.len() != nx * ny {
+            return Err(Error::ComponentCountMismatch {
+                expected: nx * ny,
+                found: is_fluid.len(),
+                field: "is_fluid".to_string(),
+            });
+        }
+        Error::check_range(dx, f64::MIN_POSITIVE, f64::MAX, "dx")?;
+        Error::check_range(dt, f64::MIN_POSITIVE, f64::MAX, "dt")?;
+        let diffusion_number = solid.thermal_diffusivity() * dt / (dx * dx);
+        Error::check_range(
+            diffusion_number,
+            0.0,
+            MAX_SOLID_DIFFUSION_NUMBER,
+            "solid diffusion number alpha_s*dt/dx^2",
+        )?;
         let lbm = DoubleDistribution::new(nx, ny, tau, tau_t, rho0, t0);
         let solid_temp = vec![t0; nx * ny];
-        Self {
+        Ok(Self {
             lbm,
             solid_temp,
             is_fluid,
@@ -795,94 +943,236 @@ impl ConjugateHeatSolver {
             dt,
             time: 0.0,
             step: 0,
-        }
+        })
     }
 
-    /// Add an interface node.
-    pub fn add_interface(&mut self, iface: FluidSolidInterface) {
+    /// Explicit solid diffusion number `r = α_s Δt / Δx²`.
+    pub fn solid_diffusion_number(&self) -> f64 {
+        self.solid.thermal_diffusivity() * self.dt / (self.dx * self.dx)
+    }
+
+    /// Add an interface between a fluid node and an axis-adjacent solid node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a node index is outside the grid, `fluid_index` is not a fluid node,
+    /// `solid_index` is not a solid node, the two nodes are not axis-adjacent lattice
+    /// neighbours, a conductivity is not positive and finite, or the interface makes the
+    /// explicit solid update unstable: with the ghost value `2 T_i − T_s` the solid node keeps
+    /// the weight `1 − r (4 − β)` of its own temperature, `β = (k_s − k_f)/(k_s + k_f)`, which
+    /// must not be negative.
+    pub fn add_interface(&mut self, iface: FluidSolidInterface) -> Result<()> {
+        let n = self.lbm.nx * self.lbm.ny;
+        if iface.fluid_index >= n || iface.solid_index >= n {
+            return Err(Error::IncompatibleParameters {
+                message: format!(
+                    "interface node index out of range: fluid {}, solid {} on a grid of {n} nodes",
+                    iface.fluid_index, iface.solid_index
+                ),
+            });
+        }
+        if !self
+            .is_fluid
+            .get(iface.fluid_index)
+            .copied()
+            .unwrap_or(false)
+        {
+            return Err(Error::IncompatibleParameters {
+                message: format!(
+                    "interface fluid node {} is not a fluid node",
+                    iface.fluid_index
+                ),
+            });
+        }
+        if self
+            .is_fluid
+            .get(iface.solid_index)
+            .copied()
+            .unwrap_or(true)
+        {
+            return Err(Error::IncompatibleParameters {
+                message: format!(
+                    "interface solid node {} is not a solid node",
+                    iface.solid_index
+                ),
+            });
+        }
+        if link_direction(
+            self.lbm.nx,
+            self.lbm.ny,
+            iface.fluid_index,
+            iface.solid_index,
+        )
+        .is_none()
+        {
+            return Err(Error::IncompatibleParameters {
+                message: format!(
+                    "interface nodes {} and {} are not axis-adjacent lattice neighbours",
+                    iface.fluid_index, iface.solid_index
+                ),
+            });
+        }
+        Error::check_range(
+            iface.k_fluid,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            "interface k_fluid",
+        )?;
+        Error::check_range(
+            iface.k_solid,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            "interface k_solid",
+        )?;
+        let beta = (iface.k_solid - iface.k_fluid) / (iface.k_solid + iface.k_fluid);
+        Error::check_range(
+            self.solid_diffusion_number(),
+            0.0,
+            1.0 / (4.0 - beta.min(0.0)),
+            "solid diffusion number alpha_s*dt/dx^2 at the interface",
+        )?;
         self.interfaces.push(iface);
+        Ok(())
     }
 
     /// Perform one full conjugate heat transfer step.
     ///
-    /// 1. LBM collide + stream (fluid)
-    /// 2. Solid finite-difference diffusion
-    /// 3. Interface coupling (temperature + flux matching)
-    /// 4. Update macroscopic fields
+    /// 1. Interface temperatures from the current node temperatures
+    /// 2. LBM collide + stream on the fluid nodes (bounce-back / anti-bounce-back at the solid links)
+    /// 3. Solid finite-difference diffusion with the interface temperatures as ghost values
+    /// 4. Refresh the interface temperatures from the updated node temperatures
     pub fn step(&mut self) {
-        // 1. LBM fluid step
-        self.lbm.collide();
-        self.lbm.stream();
-        self.lbm.compute_macroscopic();
+        // 1. Interface temperatures at the start of the step.
+        self.update_interface_temperatures();
+        let walls = self.wall_links();
 
-        // 2. Solid diffusion (explicit FD, 5-point stencil)
-        self.diffuse_solid();
+        // 2. LBM fluid step on the fluid nodes only.
+        self.lbm.collide_masked(&self.is_fluid);
+        self.lbm.stream_masked(&self.is_fluid, &walls);
+        self.lbm.compute_macroscopic_masked(&self.is_fluid);
 
-        // 3. Interface coupling
-        self.couple_interfaces();
+        // 3. Solid diffusion (explicit FD, 5-point stencil).
+        self.diffuse_solid(&walls);
+
+        // 4. Interface temperatures consistent with the new node temperatures.
+        self.update_interface_temperatures();
 
         self.time += self.dt;
         self.step += 1;
     }
 
+    /// Interface temperatures of the registered interfaces from the current node temperatures.
+    fn update_interface_temperatures(&mut self) {
+        for iface in &mut self.interfaces {
+            if let (Some(&t_fluid), Some(&t_solid)) = (
+                self.lbm.temperature.get(iface.fluid_index),
+                self.solid_temp.get(iface.solid_index),
+            ) {
+                iface.compute_interface_temperature(t_fluid, t_solid);
+            }
+        }
+    }
+
+    /// Dirichlet wall temperature of every fluid link that carries a registered interface:
+    /// `wall_links()[fluid_node][d2q5_direction] = Some(interface temperature)`.
+    fn wall_links(&self) -> Vec<[Option<f64>; 5]> {
+        let (nx, ny) = (self.lbm.nx, self.lbm.ny);
+        let mut walls = vec![[None; 5]; nx * ny];
+        for iface in &self.interfaces {
+            let fluid_ok = self
+                .is_fluid
+                .get(iface.fluid_index)
+                .copied()
+                .unwrap_or(false);
+            let solid_ok = !self
+                .is_fluid
+                .get(iface.solid_index)
+                .copied()
+                .unwrap_or(true);
+            if !(fluid_ok && solid_ok) {
+                continue;
+            }
+            if let Some(direction) = link_direction(nx, ny, iface.fluid_index, iface.solid_index) {
+                walls[iface.fluid_index][direction] = Some(iface.interface_temperature);
+            }
+        }
+        walls
+    }
+
     /// Explicit finite-difference heat diffusion in solid nodes.
-    fn diffuse_solid(&mut self) {
+    ///
+    /// A fluid neighbour contributes the ghost value `2 T_i − T_s` of its registered interface
+    /// (flux `2 k_s (T_i − T_s)/Δx` through the half-cell) or, without an interface, the node's
+    /// own temperature (adiabatic link).
+    fn diffuse_solid(&mut self, walls: &[[Option<f64>; 5]]) {
         let nx = self.lbm.nx;
         let ny = self.lbm.ny;
-        let alpha = self.solid.thermal_diffusivity();
-        let r = alpha * self.dt / (self.dx * self.dx);
+        let r = self.solid_diffusion_number();
 
         let old = self.solid_temp.clone();
-        for y in 1..(ny - 1) {
-            for x in 1..(nx - 1) {
+        for y in 1..ny.saturating_sub(1) {
+            for x in 1..nx.saturating_sub(1) {
                 let k = y * nx + x;
                 if self.is_fluid[k] {
                     continue;
                 }
                 let t_c = old[k];
-                let t_e = old[k + 1];
-                let t_w = old[k - 1];
-                let t_n = old[k + nx];
-                let t_s = old[k - nx];
+                // Neighbour value seen from the solid node through direction `d` (D2Q5 index
+                // pointing from the solid node to the neighbour node `idx`).
+                let neighbour = |idx: usize, d: usize| -> f64 {
+                    if self.is_fluid[idx] {
+                        match walls.get(idx).and_then(|links| links[D2Q5_OPPOSITES[d]]) {
+                            Some(t_interface) => 2.0 * t_interface - t_c,
+                            None => t_c,
+                        }
+                    } else {
+                        old[idx]
+                    }
+                };
+                let t_e = neighbour(k + 1, 1);
+                let t_n = neighbour(k + nx, 2);
+                let t_w = neighbour(k - 1, 3);
+                let t_s = neighbour(k - nx, 4);
                 self.solid_temp[k] = t_c + r * (t_e + t_w + t_n + t_s - 4.0 * t_c);
             }
         }
     }
 
-    /// Enforce interface temperature/flux continuity between fluid and solid.
-    fn couple_interfaces(&mut self) {
-        for iface in &mut self.interfaces {
-            let t_fluid = self.lbm.temperature[iface.fluid_index];
-            let t_solid = self.solid_temp[iface.solid_index];
-            iface.compute_interface_temperature(t_fluid, t_solid);
-            let t_int = iface.interface_temperature;
-            // Set fluid interface temperature via equilibrium
-            for i in 0..5 {
-                let u = self.lbm.u[iface.fluid_index];
-                let h_eq = {
-                    let w = D2Q5_WEIGHTS[i];
-                    let c = D2Q5_VELOCITIES[i];
-                    let eu = c[0] as f64 * u[0] + c[1] as f64 * u[1];
-                    w * t_int * (1.0 + eu / CS2)
-                };
-                self.lbm.h[iface.fluid_index][i] = h_eq;
-            }
-            self.lbm.temperature[iface.fluid_index] = t_int;
-            // Set solid interface temperature
-            self.solid_temp[iface.solid_index] = t_int;
-        }
+    /// Temperature of every node: the LBM temperature on fluid nodes, the finite-difference
+    /// temperature on solid nodes.
+    pub fn temperature_field(&self) -> Vec<f64> {
+        (0..self.lbm.nx * self.lbm.ny)
+            .map(|k| {
+                if self.is_fluid.get(k).copied().unwrap_or(false) {
+                    self.lbm.temperature[k]
+                } else {
+                    self.solid_temp[k]
+                }
+            })
+            .collect()
     }
 
     /// Compute and return simulation results.
+    ///
+    /// The interface heat fluxes are positive when heat flows from the solid into the fluid
+    /// (see [`FluidSolidInterface::heat_flux`]). The convection coefficient is
+    /// `h = |⟨q⟩| / |t_wall − t_ref|` with the mean `⟨q⟩` of the signed fluxes of the registered
+    /// interfaces (register only the heated surface, or interfaces that transfer heat in
+    /// opposite directions offset each other), and the Nusselt number is `h L / k_fluid` with
+    /// the domain width `L`.
     pub fn results(&self, t_ref: f64, t_wall: f64, k_fluid: f64) -> ConjugateResult {
-        let temperature = self.lbm.temperature.clone();
+        let temperature = self.temperature_field();
         let interface_heat_flux: Vec<f64> = self
             .interfaces
             .iter()
             .map(|iface| {
-                let t_fluid = self.lbm.temperature[iface.fluid_index];
-                let t_solid = self.solid_temp[iface.solid_index];
-                iface.k_fluid * (t_solid - t_fluid) / self.dx
+                match (
+                    self.lbm.temperature.get(iface.fluid_index),
+                    self.solid_temp.get(iface.solid_index),
+                ) {
+                    (Some(&t_fluid), Some(&t_solid)) => iface.heat_flux(t_fluid, t_solid, self.dx),
+                    _ => 0.0,
+                }
             })
             .collect();
 
@@ -947,6 +1237,9 @@ pub fn biot_number(h_conv: f64, length: f64, k_solid: f64) -> f64 {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod interface_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1269,7 +1562,8 @@ mod tests {
             .collect();
         let solid = SolidRegion::new(16.0, 500.0, 8000.0, "steel");
         let mut solver =
-            ConjugateHeatSolver::new(nx, ny, 1.0, 1.0, 1.0, 1.0, is_fluid, solid, 1.0, 1.0);
+            ConjugateHeatSolver::new(nx, ny, 1.0, 1.0, 1.0, 1.0, is_fluid, solid, 1.0, 1.0)
+                .unwrap();
         solver.step();
         assert_eq!(solver.step, 1);
         assert!((solver.time - 1.0).abs() < 1e-12);
@@ -1283,7 +1577,8 @@ mod tests {
         let is_fluid = vec![true; n];
         let solid = SolidRegion::new(1.0, 1000.0, 1000.0, "test");
         let solver =
-            ConjugateHeatSolver::new(nx, ny, 1.0, 1.0, 1.0, 1.0, is_fluid, solid, 1.0, 1.0);
+            ConjugateHeatSolver::new(nx, ny, 1.0, 1.0, 1.0, 1.0, is_fluid, solid, 1.0, 1.0)
+                .unwrap();
         let res = solver.results(1.0, 2.0, 0.6);
         assert_eq!(res.temperature.len(), n);
         assert!(res.t_max >= res.t_min);
